@@ -1,0 +1,11 @@
+# Concern: declares the package, the renderer's output types and the shared JSON spellings | Non-concern: the deny edges barring anything from depending on it (.annotated-tree.toml) | IO: none
+[package]
+name = "sva-analysis"
+description = "Post-hoc analyses over rendered buffers: onsets and trajectory are stable; masking and gain-reduction are still experimental"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sva-core = { workspace = true }
+sva-samples = { workspace = true }

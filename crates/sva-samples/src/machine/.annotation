@@ -1,0 +1,1 @@
+Concern: evaluates one sampled node per sample over its buffers | Non-concern: closed forms, which are evaluated before it runs (collapse.rs) | IO: (Shader, Ctx) -> Buffer

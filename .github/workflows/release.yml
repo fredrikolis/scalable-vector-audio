@@ -1,0 +1,305 @@
+# Concern: the whole release — tag, GH release, binaries, crates.io, npm | Non-concern: the checks a commit must clear | IO: (dispatch) -> tag, release, assets, crates, npm packages
+name: Release
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Nothing below may tag or publish a build that only compiles; it must also pass its tests.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      - run: cargo test --workspace --locked
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      ref: ${{ steps.tag.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v6
+      # Tag tracks the workspace version; there is no separate input for it.
+      - id: tag
+        run: |
+          set -eu
+          v="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          git tag "v$v"
+          git push origin "v$v"
+          echo "ref=refs/tags/v$v" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/create-gh-release-action@v1
+        with:
+          ref: ${{ steps.tag.outputs.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  binaries:
+    needs: release
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            build_tool: cargo-zigbuild
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            build_tool: cargo-zigbuild
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            build_tool: cargo-zigbuild
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release.outputs.ref }}
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: sva-cli
+          manifest-path: crates/sva-cli/Cargo.toml
+          target: ${{ matrix.target }}
+          build-tool: ${{ matrix.build_tool || 'cargo' }}
+          archive: $bin-$target
+          checksum: sha256
+          ref: ${{ needs.release.outputs.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # sva-wasm never appears below: it's a wasm-bindgen bundle, not a native dependency; npm only.
+  crates:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release.outputs.ref }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      # Order follows the crate DAG; cargo publish already waits for each to hit the index.
+      - name: Publish crates in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -eu
+          for crate in sva-ast sva-formula sva-samples sva-engine sva-core sva-analysis sva-cli; do
+            err="$(mktemp)"
+            if cargo publish -p "$crate" --locked 2>"$err"; then
+              continue
+            fi
+            cat "$err" >&2
+            grep -qE 'already (exists|been uploaded|uploaded)' "$err"
+            echo "$crate: version already on crates.io; nothing to do."
+          done
+
+  # No distribution/ tree: every manifest, shim and doc below is generated here, never committed.
+  npm-cli:
+    needs: [release, binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # mints the OIDC token trusted publishing exchanges for a publish, no token stored
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release.outputs.ref }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Pinned, not @latest: a future npm major must not change publish/OIDC behavior for free.
+      - run: npm install -g npm@11.5.1 && npm --version
+      - name: Stage every npm package inline and publish
+        env:
+          REF: ${{ needs.release.outputs.ref }} # GITHUB_REF_NAME is the dispatching branch, not this
+        run: |
+          set -euo pipefail
+          TAG="${REF#refs/tags/}"
+          V="${TAG#v}"
+          DESC="$(sed -n '/^\[package\]/,/^\[/s/^description = "\(.*\)"$/\1/p' crates/sva-cli/Cargo.toml | head -1)"
+          REPO_URL="https://github.com/fredrikolis/scalable-vector-audio"
+          STAGE="$RUNNER_TEMP/npm"
+          mkdir -p "$STAGE"
+
+          # plat            target                            os       cpu     libc
+          ROWS='
+          linux-x64-musl    x86_64-unknown-linux-musl          linux    x64     musl,glibc
+          linux-arm64-musl  aarch64-unknown-linux-musl         linux    arm64   musl,glibc
+          darwin-x64        x86_64-apple-darwin                darwin   x64     -
+          darwin-arm64      aarch64-apple-darwin               darwin   arm64   -
+          '
+
+          plats=() ; names=()
+          while read -r plat target os cpu libc; do
+            [ -n "$plat" ] || continue
+            name="sva-cli-$plat"
+            plats+=("$plat") ; names+=("$name")
+            dir="$STAGE/$name"
+            mkdir -p "$dir"
+
+            asset="sva-cli-$target.tar.gz"
+            gh release download "$TAG" --repo "${{ github.repository }}" \
+              -p "$asset" -O "$STAGE/$asset" --clobber
+            tar -xzf "$STAGE/$asset" -C "$dir"
+            bin="$(find "$dir" -type f -name sva-cli)"
+            [ "$bin" = "$dir/sva-cli" ] || mv "$bin" "$dir/sva-cli"
+            chmod +x "$dir/sva-cli"
+
+            libc_json="[]"
+            [ "$libc" = "-" ] || libc_json="$(printf '%s' "$libc" | tr ',' '\n' | jq -R . | jq -s .)"
+            jq -n --arg name "$name" --arg v "$V" \
+                  --arg desc "Prebuilt sva-cli binary for $os $cpu. Installed automatically as an optional dependency of \`sva-cli\`." \
+                  --arg repo "$REPO_URL" --arg os "$os" --arg cpu "$cpu" --argjson libc "$libc_json" '
+              {name: $name, version: $v, description: $desc, license: "MIT",
+               repository: {type: "git", url: ($repo + ".git")},
+               os: [$os], cpu: [$cpu]} + (if ($libc | length) > 0 then {libc: $libc} else {} end)
+              + {files: ["sva-cli"]}
+            ' > "$dir/package.json"
+          done <<< "$ROWS"
+
+          # The wrapper: one shim, picking the platform package the host actually installed.
+          wrapper="$STAGE/sva-cli"
+          mkdir -p "$wrapper/bin"
+          cp LICENSE "$wrapper/LICENSE"
+
+          cat > "$wrapper/bin/sva-cli.js" <<'JS'
+          #!/usr/bin/env node
+          "use strict";
+          const path = require("path");
+          const { spawnSync } = require("child_process");
+
+          const PLATFORM_PACKAGES = {
+            "linux-x64": "sva-cli-linux-x64-musl",
+            "linux-arm64": "sva-cli-linux-arm64-musl",
+            "darwin-x64": "sva-cli-darwin-x64",
+            "darwin-arm64": "sva-cli-darwin-arm64",
+          };
+
+          function resolveBinary() {
+            const key = `${process.platform}-${process.arch}`;
+            const pkg = PLATFORM_PACKAGES[key];
+            if (!pkg) return { key, pkg: null, bin: null };
+            try {
+              const pkgDir = path.dirname(require.resolve(`${pkg}/package.json`));
+              return { key, pkg, bin: path.join(pkgDir, "sva-cli") };
+            } catch (_err) {
+              return { key, pkg, bin: null };
+            }
+          }
+
+          const WRAPPER_FAILURE = 127; // the binary's own codes are verdicts about a render, not this
+
+          function fail(message) {
+            process.stderr.write(`sva-cli: ${message}\n`);
+            process.exit(WRAPPER_FAILURE);
+          }
+
+          function main() {
+            const { key, pkg, bin } = resolveBinary();
+            if (!pkg) {
+              fail(
+                `unsupported platform ${key}. No prebuilt binary is published for it. ` +
+                  "Build from source instead: cargo install sva-cli"
+              );
+            }
+            if (!bin) {
+              fail(
+                `the prebuilt binary for ${key} is missing (expected package "${pkg}"). ` +
+                  "Reinstall without skipping optional dependencies: npm install sva-cli " +
+                  `(do not pass --no-optional), or install "${pkg}" directly.`
+              );
+            }
+            const r = spawnSync(bin, process.argv.slice(2), { stdio: "inherit" });
+            if (r.error) fail(r.error.message);
+            if (r.signal) {
+              process.removeAllListeners(r.signal);
+              process.kill(process.pid, r.signal);
+            }
+            process.exit(r.status === null ? WRAPPER_FAILURE : r.status);
+          }
+
+          main();
+          JS
+          chmod +x "$wrapper/bin/sva-cli.js"
+
+          { printf '# sva-cli\n\n%s\n\n' "$DESC"
+            cat <<MD
+          Installs the prebuilt binary for your platform as an optional dependency and runs it —
+          no Rust toolchain needed. Full docs and the format: $REPO_URL
+
+          \`\`\`sh
+          npx sva-cli new my-song
+          \`\`\`
+
+          MIT. Built from $REPO_URL
+          MD
+          } > "$wrapper/README.md"
+
+          jq -n --arg v "$V" --arg desc "$DESC" --arg repo "$REPO_URL" \
+                --argjson plats "$(printf '%s\n' "${plats[@]}" | jq -R . | jq -s .)" '
+            {name: "sva-cli", version: $v, description: $desc, license: "MIT",
+             homepage: $repo, repository: {type: "git", url: ($repo + ".git")},
+             keywords: ["audio", "dsp", "synthesis", "cli", "sva"],
+             bin: {"sva-cli": "bin/sva-cli.js"},
+             files: ["bin/sva-cli.js"],
+             engines: {node: ">=18"},
+             optionalDependencies: ($plats | map({(("sva-cli-" + .)): $v}) | add)}
+          ' > "$wrapper/package.json"
+
+          # Every dir validated before any publish, and one already up skipped: no half-release.
+          for name in "${names[@]}" sva-cli; do npm publish --dry-run "$STAGE/$name"; done
+          for name in "${names[@]}" sva-cli; do
+            if npm view "$name@$V" version >/dev/null 2>&1; then
+              echo "$name@$V is already published; skipping"
+            else
+              npm publish --access public "$STAGE/$name"
+            fi
+          done
+
+  # Unlike npm-cli, this builds sva-wasm itself with a real Rust+wasm32 toolchain, not a repackage.
+  npm-wasm:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release.outputs.ref }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+          targets: wasm32-unknown-unknown
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: "latest"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Pinned before wasm-pack publish runs; same rationale as npm-cli.
+      - run: npm install -g npm@11.5.1 && npm --version
+      # wasm-pack looks for a LICENSE next to the crate's own Cargo.toml, not the workspace root.
+      - run: cp LICENSE crates/sva-wasm/LICENSE
+      # Single-threaded --target web, matching today's manual build; threading is a future major.
+      - name: Build the browser bundle
+        run: wasm-pack build --release --target web --out-dir target/wasm-web-pkg crates/sva-wasm
+      - name: Publish to npm
+        run: wasm-pack publish --target web --pkg-dir target/wasm-web-pkg crates/sva-wasm

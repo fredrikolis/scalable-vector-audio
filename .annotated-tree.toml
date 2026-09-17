@@ -1,0 +1,42 @@
+# Concern: the annotation rules and the crate DAG's deny edges | Non-concern: which paths the gate walks (.githooks/pre-commit) | IO: none
+
+[rules]
+# Explicit for reproducibility; requires annotated-tree >=0.7.0.
+max_annotation_length = 200
+
+require_package_charter = true
+
+forbid_cycles = true
+forbid_orphans = true
+
+# sva-ast and sva-formula are leaves; sva-samples reads it alone.
+deny = [
+    ["sva-formula", "sva-samples"],
+    ["sva-formula", "sva-ast"],
+    ["sva-ast", "sva-formula"],
+    ["sva-ast", "sva-samples"],
+    ["sva-formula", "sva-engine"],
+    ["sva-formula", "sva-core"],
+    ["sva-formula", "sva-cli"],
+    ["sva-formula", "sva-wasm"],
+    ["sva-formula", "sva-analysis"],
+    ["sva-samples", "sva-ast"],
+    ["sva-samples", "sva-engine"],
+    ["sva-samples", "sva-core"],
+    ["sva-samples", "sva-cli"],
+    ["sva-samples", "sva-wasm"],
+    ["sva-samples", "sva-analysis"],
+    ["sva-ast", "sva-engine"],
+    ["sva-ast", "sva-cli"],
+    ["sva-ast", "sva-wasm"],
+    ["sva-ast", "sva-core"],
+    ["sva-ast", "sva-analysis"],
+    ["sva-engine", "sva-cli"],
+    ["sva-engine", "sva-wasm"],
+    ["sva-engine", "sva-core"],
+    ["sva-engine", "sva-analysis"],
+    ["sva-core", "sva-cli"],
+    ["sva-core", "sva-wasm"],
+    ["sva-core", "sva-analysis"],
+    ["sva-wasm", "sva-cli"],
+]

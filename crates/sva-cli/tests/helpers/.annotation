@@ -1,0 +1,1 @@
+Concern: what every boundary suite in this crate shares | Non-concern: the assertions themselves | IO: (name) -> a path or a reading

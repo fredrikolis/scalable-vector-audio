@@ -1,0 +1,9 @@
+# Concern: declares the package holding laws in t and f | Non-concern: the deny edges barring it from seeing a buffer (.annotated-tree.toml) | IO: none
+[package]
+name = "sva-formula"
+description = "Laws in t and f: the normal form, the rule table, and the observations a law answers without sampling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

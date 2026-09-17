@@ -1,0 +1,2 @@
+; reverb(x, size, g) — combs in parallel, then diffusion
+@diffuse(t, x=@combs(t, x=x, size=size, g=g)*0.08)

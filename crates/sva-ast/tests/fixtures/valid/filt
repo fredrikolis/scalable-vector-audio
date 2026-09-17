@@ -1,0 +1,1 @@
+0.3*@lead-dry(t) + 0.7*self(t - 1sp)

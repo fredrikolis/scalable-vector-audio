@@ -1,0 +1,11 @@
+# Concern: declares the package and its dependency on the document model and the renderer | Non-concern: the deny edges barring sva-cli/sva-wasm's reach into it (.annotated-tree.toml) | IO: none
+[package]
+name = "sva-core"
+description = "The parse -> tempo -> render pipeline shared by both front ends"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sva-ast = { workspace = true }
+sva-engine = { workspace = true }

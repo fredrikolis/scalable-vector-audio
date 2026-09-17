@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Concern: the gate declarations for this repo | Non-concern: how a gate is checked (git-agent-verdict owns that) or what a reviewer judges | IO: (message, tool version) -> status, edited message
+
+# Line order IS review order: `set -e` stops at the first unattested gate.
+set -euo pipefail
+
+git agent-verdict --require-version 2.0
+
+git agent-verdict "$1" standards --model sonnet \
+  --standard programming --standard testing --standard cli --path .
+
+git agent-verdict "$1" standards --model sonnet \
+  --standard human-communication --path README.md

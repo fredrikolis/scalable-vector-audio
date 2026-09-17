@@ -1,0 +1,7 @@
+# Concern: excludes build output and local scratch from version control | Non-concern: what gets built | IO: none
+/target
+/scratchpad/*
+/artifacts
+/.claude
+*.wav
+!crates/**/tests/**/*.wav

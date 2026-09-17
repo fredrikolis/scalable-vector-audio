@@ -1,0 +1,2 @@
+; comb(x, delay, g) — one Schroeder feedback comb: y = x + g*y(t - delay)
+x + g*self(t - delay)

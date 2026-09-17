@@ -1,0 +1,1 @@
+Concern: the finite-difference solvers and what one call site's arguments must hold | Non-concern: argument evaluation (machine/), modal series (sva-formula) | IO: (Params, R) -> f64 per step

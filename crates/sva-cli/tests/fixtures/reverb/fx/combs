@@ -1,0 +1,2 @@
+; combs(x, size, g) — Freeverb's eight parallel combs, one file instead of eight
+@comb(t, x=x, delay=0.025306*size, g=g) + @comb(t, x=x, delay=0.026939*size, g=g) + @comb(t, x=x, delay=0.028957*size, g=g) + @comb(t, x=x, delay=0.030748*size, g=g) + @comb(t, x=x, delay=0.032245*size, g=g) + @comb(t, x=x, delay=0.033810*size, g=g) + @comb(t, x=x, delay=0.035306*size, g=g) + @comb(t, x=x, delay=0.036667*size, g=g)

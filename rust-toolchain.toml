@@ -1,0 +1,4 @@
+# Concern: pins the exact rustc, rustfmt and clippy every clone builds and lints with | Non-concern: crate dependencies and their versions (Cargo.toml) | IO: none
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]

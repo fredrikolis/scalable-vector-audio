@@ -1,0 +1,1 @@
+crop(0.7*@src + 0.3*@fx/reverb(t, x=@src, size=1, g=0.82), 0s, 2s)

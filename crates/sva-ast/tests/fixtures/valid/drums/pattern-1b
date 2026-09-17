@@ -1,0 +1,3 @@
+@kick*0.5
+
+@snare	@kick.lp(cutoff=2000)

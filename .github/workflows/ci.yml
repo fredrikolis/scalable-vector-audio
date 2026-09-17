@@ -1,0 +1,43 @@
+# Concern: the checks every push and pull request must clear | Non-concern: tagging and publishing a build (release.yml) | IO: (push, pull_request) -> a pass/fail verdict
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+          components: rustfmt
+      - run: cargo install --locked annotated-tree@0.7.0 comment-crusher@0.2.1
+      - run: ./.githooks/pre-commit
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+          targets: wasm32-unknown-unknown
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: "latest"
+      - run: wasm-pack test --node crates/sva-wasm
+
+  price:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      - run: cargo bench -p sva-engine --bench io_price

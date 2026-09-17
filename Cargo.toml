@@ -1,0 +1,32 @@
+# Concern: declares the resolver, the members, and the version every crate inherits | Non-concern: any crate's own dependencies, the firewall's deny edges (.annotated-tree.toml) | IO: none
+[workspace]
+resolver = "2"
+members = [
+    "crates/sva-ast",
+    "crates/sva-formula",
+    "crates/sva-samples",
+    "crates/sva-engine",
+    "crates/sva-core",
+    "crates/sva-analysis",
+    "crates/sva-cli",
+    "crates/sva-wasm",
+]
+
+[workspace.package]
+version = "0.1.0"
+license = "MIT"
+edition = "2024"
+
+# Version here must track workspace.package.version above; cargo publish refuses a path dep with none.
+[workspace.dependencies]
+sva-ast = { path = "crates/sva-ast", version = "0.1.0" }
+sva-formula = { path = "crates/sva-formula", version = "0.1.0" }
+sva-samples = { path = "crates/sva-samples", version = "0.1.0" }
+sva-engine = { path = "crates/sva-engine", version = "0.1.0" }
+sva-core = { path = "crates/sva-core", version = "0.1.0" }
+sva-analysis = { path = "crates/sva-analysis", version = "0.1.0" }
+sva-cli = { path = "crates/sva-cli", version = "0.1.0" }
+sva-wasm = { path = "crates/sva-wasm", version = "0.1.0" }
+
+[profile.dev]
+debug = "line-tables-only"

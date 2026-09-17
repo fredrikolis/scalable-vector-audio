@@ -1,0 +1,2 @@
+; diffuse(x) — Freeverb's four allpasses in series
+@allpass(t, x=@allpass(t, x=@allpass(t, x=@allpass(t, x=x, delay=0.012608, g=0.5), delay=0.010, g=0.5), delay=0.007732, g=0.5), delay=0.005102, g=0.5)

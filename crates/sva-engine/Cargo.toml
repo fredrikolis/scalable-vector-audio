@@ -1,0 +1,20 @@
+# Concern: declares the package and its dependencies on the document model and the law crate | Non-concern: the deny edges barring sva-cli's reach into it (.annotated-tree.toml) | IO: none
+[package]
+name = "sva-engine"
+description = "Renders a resolved graph into per-node buffers a query can be asked of"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sva-ast = { workspace = true }
+sva-formula = { workspace = true }
+sva-samples = { workspace = true }
+
+[dev-dependencies]
+sva-ast = { workspace = true }
+
+# Prints a number rather than asserting one, so it runs under `cargo bench`, not `cargo test`.
+[[bench]]
+name = "io_price"
+harness = false

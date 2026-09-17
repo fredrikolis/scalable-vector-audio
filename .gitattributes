@@ -1,0 +1,2 @@
+# Concern: routes checked-in audio fixtures through Git LFS instead of raw blobs | Non-concern: which files are tracked at all, .gitignore owns that | IO: none
+*.wav filter=lfs diff=lfs merge=lfs -text

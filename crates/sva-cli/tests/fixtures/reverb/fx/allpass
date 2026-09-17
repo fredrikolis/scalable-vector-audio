@@ -1,0 +1,2 @@
+; allpass(x, delay, g) — Schroeder allpass: -g*x + x(t - delay) + g*y(t - delay)
+-g*x + x(t - delay) + g*self(t - delay)

@@ -1,0 +1,9 @@
+# Concern: declares the package and NO dependencies at all | Non-concern: the deny edges that keep it a leaf (.annotated-tree.toml) | IO: none
+[package]
+name = "sva-ast"
+description = "The document model for a composition"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

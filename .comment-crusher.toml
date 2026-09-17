@@ -1,0 +1,8 @@
+# Concern: the comment budget this repo holds itself to | Non-concern: what makes a comment worth keeping | IO: none
+[rules.comment-ratio]
+min_chars = 1000
+
+[[allow]]
+paths = ["README.md", "**/README.md"]
+reason = "a public README stacks independent, self-contained sections (hook, install, examples, crate map) a skimming stranger jumps between, so it earns more lines than flowing prose does, not fewer"
+set = ["doc-length.max_lines=150"]

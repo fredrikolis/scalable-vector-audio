@@ -1,0 +1,1 @@
+Concern: every reading taken off rendered samples | Non-concern: readings a closed form answers symbolically (sva-formula), which node holds what (sva-engine) | IO: (planes, rate) -> a measurement

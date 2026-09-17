@@ -1,0 +1,1 @@
+@lead-dry(t) + 0.4*@lead-dry(t - 0.375s)

@@ -1,0 +1,10 @@
+# Concern: declares the package holding buffers and the machine that fills them | Non-concern: the deny edges barring it from the grammar and the engine (.annotated-tree.toml) | IO: none
+[package]
+name = "sva-samples"
+description = "Buffers, frames, the f64 machine, the collapse of a law onto a grid, and the measured observations over one"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sva-formula = { workspace = true }

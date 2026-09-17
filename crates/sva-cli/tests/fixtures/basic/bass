@@ -1,0 +1,1 @@
+lowpass(sin(2*pi*110*t), cutoff=400, q=3) * 0.3

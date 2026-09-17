@@ -1,0 +1,1 @@
+Concern: the argv surface this CLI answers, subcommand by subcommand | Non-concern: what a target names (sva-core), decoding a WAV (wav.rs) | IO: (argv) -> Command or CliError
