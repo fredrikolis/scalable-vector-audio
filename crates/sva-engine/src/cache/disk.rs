@@ -14,7 +14,7 @@ use sva_formula::Hash;
 use super::evict;
 use super::{Cache, Entry, Expected, Payload, PayloadKind};
 
-/// Chosen above what `benches/io_price.rs` prices: recompute wins a tie.
+/// Recompute wins a tie; `tests/stores.rs` prices a round trip against it.
 pub const IO_NANOS_PER_BYTE: u64 = 3;
 
 /// Below this, nothing is worth a file: an inode is not free.

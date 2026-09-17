@@ -13,8 +13,3 @@ sva-samples = { workspace = true }
 
 [dev-dependencies]
 sva-ast = { workspace = true }
-
-# Prints a number rather than asserting one, so it runs under `cargo bench`, not `cargo test`.
-[[bench]]
-name = "io_price"
-harness = false
