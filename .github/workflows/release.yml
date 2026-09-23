@@ -134,6 +134,7 @@ jobs:
           V="${TAG#v}"
           DESC="$(sed -n '/^\[package\]/,/^\[/s/^description = "\(.*\)"$/\1/p' crates/sva-cli/Cargo.toml | head -1)"
           REPO_URL="https://github.com/fredrikolis/scalable-vector-audio"
+          SCOPE="@scalable-vector-audio" # every name below is published under it; dirs stay bare
           STAGE="$RUNNER_TEMP/npm"
           mkdir -p "$STAGE"
 
@@ -163,8 +164,8 @@ jobs:
 
             libc_json="[]"
             [ "$libc" = "-" ] || libc_json="$(printf '%s' "$libc" | tr ',' '\n' | jq -R . | jq -s .)"
-            jq -n --arg name "$name" --arg v "$V" \
-                  --arg desc "Prebuilt sva-cli binary for $os $cpu. Installed automatically as an optional dependency of \`sva-cli\`." \
+            jq -n --arg name "$SCOPE/$name" --arg v "$V" \
+                  --arg desc "Prebuilt sva-cli binary for $os $cpu. Installed automatically as an optional dependency of \`$SCOPE/sva-cli\`." \
                   --arg repo "$REPO_URL" --arg os "$os" --arg cpu "$cpu" --argjson libc "$libc_json" '
               {name: $name, version: $v, description: $desc, license: "MIT",
                repository: {type: "git", url: ($repo + ".git")},
@@ -185,10 +186,10 @@ jobs:
           const { spawnSync } = require("child_process");
 
           const PLATFORM_PACKAGES = {
-            "linux-x64": "sva-cli-linux-x64-musl",
-            "linux-arm64": "sva-cli-linux-arm64-musl",
-            "darwin-x64": "sva-cli-darwin-x64",
-            "darwin-arm64": "sva-cli-darwin-arm64",
+            "linux-x64": "@scalable-vector-audio/sva-cli-linux-x64-musl",
+            "linux-arm64": "@scalable-vector-audio/sva-cli-linux-arm64-musl",
+            "darwin-x64": "@scalable-vector-audio/sva-cli-darwin-x64",
+            "darwin-arm64": "@scalable-vector-audio/sva-cli-darwin-arm64",
           };
 
           function resolveBinary() {
@@ -221,7 +222,7 @@ jobs:
             if (!bin) {
               fail(
                 `the prebuilt binary for ${key} is missing (expected package "${pkg}"). ` +
-                  "Reinstall without skipping optional dependencies: npm install sva-cli " +
+                  "Reinstall without skipping optional dependencies: npm install @scalable-vector-audio/sva-cli " +
                   `(do not pass --no-optional), or install "${pkg}" directly.`
               );
             }
@@ -244,29 +245,29 @@ jobs:
           no Rust toolchain needed. Full docs and the format: $REPO_URL
 
           \`\`\`sh
-          npx sva-cli new my-song
+          npx @scalable-vector-audio/sva-cli new my-song
           \`\`\`
 
           MIT. Built from $REPO_URL
           MD
           } > "$wrapper/README.md"
 
-          jq -n --arg v "$V" --arg desc "$DESC" --arg repo "$REPO_URL" \
+          jq -n --arg v "$V" --arg desc "$DESC" --arg repo "$REPO_URL" --arg scope "$SCOPE" \
                 --argjson plats "$(printf '%s\n' "${plats[@]}" | jq -R . | jq -s .)" '
-            {name: "sva-cli", version: $v, description: $desc, license: "MIT",
+            {name: ($scope + "/sva-cli"), version: $v, description: $desc, license: "MIT",
              homepage: $repo, repository: {type: "git", url: ($repo + ".git")},
              keywords: ["audio", "dsp", "synthesis", "cli", "sva"],
              bin: {"sva-cli": "bin/sva-cli.js"},
              files: ["bin/sva-cli.js"],
              engines: {node: ">=18"},
-             optionalDependencies: ($plats | map({(("sva-cli-" + .)): $v}) | add)}
+             optionalDependencies: ($plats | map({(($scope + "/sva-cli-" + .)): $v}) | add)}
           ' > "$wrapper/package.json"
 
           # Every dir validated before any publish, and one already up skipped: no half-release.
           for name in "${names[@]}" sva-cli; do npm publish --dry-run "$STAGE/$name"; done
           for name in "${names[@]}" sva-cli; do
-            if npm view "$name@$V" version >/dev/null 2>&1; then
-              echo "$name@$V is already published; skipping"
+            if npm view "$SCOPE/$name@$V" version >/dev/null 2>&1; then
+              echo "$SCOPE/$name@$V is already published; skipping"
             else
               npm publish --access public "$STAGE/$name"
             fi
@@ -300,6 +301,7 @@ jobs:
       - run: cp LICENSE crates/sva-wasm/LICENSE
       # Single-threaded --target web, matching today's manual build; threading is a future major.
       - name: Build the browser bundle
-        run: wasm-pack build --release --target web --out-dir target/wasm-web-pkg crates/sva-wasm
+        run: wasm-pack build --release --target web --scope scalable-vector-audio --out-dir target/wasm-web-pkg crates/sva-wasm
+      # A scoped name publishes restricted unless told otherwise.
       - name: Publish to npm
-        run: wasm-pack publish --target web --pkg-dir target/wasm-web-pkg crates/sva-wasm
+        run: wasm-pack publish --access public --target web --pkg-dir target/wasm-web-pkg crates/sva-wasm

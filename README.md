@@ -4,8 +4,8 @@
 
 [![Release](https://github.com/fredrikolis/scalable-vector-audio/actions/workflows/release.yml/badge.svg)](https://github.com/fredrikolis/scalable-vector-audio/actions/workflows/release.yml)
 [![crates.io](https://img.shields.io/crates/v/sva-cli)](https://crates.io/crates/sva-cli)
-[![npm sva-cli](https://img.shields.io/npm/v/sva-cli?label=npm%20sva-cli)](https://www.npmjs.com/package/sva-cli)
-[![npm sva-wasm](https://img.shields.io/npm/v/sva-wasm?label=npm%20sva-wasm)](https://www.npmjs.com/package/sva-wasm)
+[![npm sva-cli](https://img.shields.io/npm/v/@scalable-vector-audio/sva-cli?label=npm%20sva-cli)](https://www.npmjs.com/package/@scalable-vector-audio/sva-cli)
+[![npm sva-wasm](https://img.shields.io/npm/v/@scalable-vector-audio/sva-wasm?label=npm%20sva-wasm)](https://www.npmjs.com/package/@scalable-vector-audio/sva-wasm)
 
 Sounds written as equations. `sin(2*pi*440*t)` is a 440 Hz tone, and a composition is a
 directory of such equations that refer to each other. A render samples them at any rate (thus
@@ -93,7 +93,7 @@ the render's rate. The rest are `ms`, `m`, `h`, `khz` and `db`.
 ## sva-cli
 
 One Rust engine, JSON on stdout, one `--help` page listing every flag beside its default.
-`npm install -g sva-cli` installs a prebuilt binary, `cargo install sva-cli` builds one. Put
+`npm install -g @scalable-vector-audio/sva-cli` installs a prebuilt binary, `cargo install sva-cli` builds one. Put
 the three files above in a directory and run it there.
 
 ```
@@ -138,7 +138,7 @@ and the note-name grammar; the vocabulary is closed, so a name outside it does n
 `sva-cli new my-song` writes a larger composition, eleven files with a grid, a noise and a
 tempo, and prints nine commands in the order to run them.
 
-`sva-wasm` runs the same compositions in a browser: `npm install sva-wasm`.
+`sva-wasm` runs the same compositions in a browser: `npm install @scalable-vector-audio/sva-wasm`.
 
 MIT. See `LICENSE`.
 
