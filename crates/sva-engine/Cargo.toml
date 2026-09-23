@@ -5,6 +5,7 @@ description = "Renders a resolved graph into per-node buffers a query can be ask
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 sva-ast = { workspace = true }

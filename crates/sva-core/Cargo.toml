@@ -5,6 +5,7 @@ description = "The parse -> tempo -> render pipeline shared by both front ends"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 sva-ast = { workspace = true }

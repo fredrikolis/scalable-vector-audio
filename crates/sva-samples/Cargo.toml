@@ -5,6 +5,7 @@ description = "Buffers, frames, the f64 machine, the collapse of a law onto a gr
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 sva-formula = { workspace = true }

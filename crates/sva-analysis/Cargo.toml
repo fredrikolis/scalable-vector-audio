@@ -5,6 +5,7 @@ description = "Post-hoc analyses over rendered buffers: onsets and trajectory ar
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 sva-core = { workspace = true }

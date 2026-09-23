@@ -97,13 +97,23 @@ jobs:
         run: |
           set -eu
           for crate in sva-ast sva-formula sva-samples sva-engine sva-core sva-analysis sva-cli; do
-            err="$(mktemp)"
-            if cargo publish -p "$crate" --locked 2>"$err"; then
-              continue
-            fi
-            cat "$err" >&2
-            grep -qE 'already (exists|been uploaded|uploaded)' "$err"
-            echo "$crate: version already on crates.io; nothing to do."
+            while true; do
+              err="$(mktemp)"
+              if cargo publish -p "$crate" --locked 2>"$err"; then
+                break
+              fi
+              cat "$err" >&2
+              if grep -qE 'already (exists|been uploaded|uploaded)' "$err"; then
+                echo "$crate: version already on crates.io; nothing to do."
+                break
+              fi
+              # crates.io caps how many new crates appear in a burst and names the moment it lifts.
+              after="$(sed -n 's/.*try again after \(.* GMT\).*/\1/p' "$err" | head -1)"
+              [ -n "$after" ] || exit 1
+              wait=$(( $(date -d "$after" +%s) - $(date +%s) + 5 ))
+              echo "$crate: rate-limited; retrying in ${wait}s"
+              sleep "$(( wait > 0 ? wait : 5 ))"
+            done
           done
 
   # No distribution/ tree: every manifest, shim and doc below is generated here, never committed.

@@ -5,6 +5,7 @@ description = "The command-line front end for SVA"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "sva-cli"
