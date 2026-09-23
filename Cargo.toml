@@ -18,7 +18,7 @@ license = "MIT"
 repository = "https://github.com/fredrikolis/scalable-vector-audio"
 edition = "2024"
 
-# Version here must track workspace.package.version above; cargo publish refuses a path dep with none.
+# cargo publish needs a version on each path dep; keep it the one above.
 [workspace.dependencies]
 sva-ast = { path = "crates/sva-ast", version = "0.1.1" }
 sva-formula = { path = "crates/sva-formula", version = "0.1.1" }
