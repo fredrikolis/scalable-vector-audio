@@ -198,6 +198,27 @@ fn a_factor_of_a_product_has_no_share() {
     assert_eq!(named(&entries, "master").share, Some(1.0));
 }
 
+/// An inline solver holds no slot; the factor beside it is still no addend of the product.
+#[test]
+fn a_constant_factor_beside_an_inline_solver_has_no_share() {
+    let entries = ledger(
+        "factor-beside-a-solver",
+        &[
+            ("gain", "0.5\n"),
+            ("master", "sample(@gain) * chaigne_askenfelt(261.63)\n"),
+        ],
+        1,
+    );
+    let gain = named(&entries, "gain");
+    assert_eq!(gain.share, None, "`gain` is a factor, not an addend");
+    assert!(
+        (gain.rms - 0.5).abs() < 1e-12,
+        "`gain` states what it holds, not the product: {}",
+        gain.rms
+    );
+    assert_eq!(named(&entries, "master").share, Some(1.0));
+}
+
 /// A ref the window does not reach contributed nothing to it, whatever its own buffer holds.
 #[test]
 fn a_ref_outside_the_window_has_zero_share() {

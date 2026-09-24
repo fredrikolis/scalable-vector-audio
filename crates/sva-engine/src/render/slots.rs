@@ -84,19 +84,35 @@ pub(super) fn contributed(
         .map(Some)
 }
 
-/// Two slots under one product have no addend apiece, so neither stands alone.
+/// Two moving operands under one product have no addend apiece; a solver moves as a slot
+/// does. A filter is linear in what it filters, so only its slots count.
 fn separable(r: &NodeRenderer, kept: &dyn Fn(BufId) -> bool) -> bool {
     let parts = operands(r);
     match r {
         NodeRenderer::Add(_) | NodeRenderer::Sub(..) => parts.iter().all(|p| separable(p, kept)),
         _ => {
-            let mut holding = parts.iter().filter(|p| reads(p, &|_| true));
+            let counts = |p: &NodeRenderer| match r {
+                NodeRenderer::Filter { .. } => reads(p, &|_| true),
+                _ => moves(p),
+            };
+            let mut holding = parts.iter().filter(|p| counts(p));
             match (holding.next(), holding.next()) {
                 (None, _) => true,
                 (Some(only), None) => separable(only, kept),
                 _ => !reads(r, kept),
             }
         }
+    }
+}
+
+fn moves(r: &NodeRenderer) -> bool {
+    match r {
+        NodeRenderer::Const(_) => false,
+        NodeRenderer::Time
+        | NodeRenderer::Buffer { .. }
+        | NodeRenderer::SelfAt { .. }
+        | NodeRenderer::Physics { .. } => true,
+        other => operands(other).iter().any(|p| moves(p)),
     }
 }
 
