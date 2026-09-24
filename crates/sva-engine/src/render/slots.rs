@@ -118,10 +118,18 @@ fn silenced(r: &NodeRenderer, kept: &dyn Fn(BufId) -> bool) -> NodeRenderer {
         NodeRenderer::Pow(l, r) => NodeRenderer::Pow(one(l, kept), one(r, kept)),
         NodeRenderer::Zip(op, l, r) => NodeRenderer::Zip(*op, one(l, kept), one(r, kept)),
         NodeRenderer::Map(op, x) => NodeRenderer::Map(*op, one(x, kept)),
-        NodeRenderer::Crop { x, a, b } => NodeRenderer::Crop {
+        NodeRenderer::Crop {
+            x,
+            a,
+            b,
+            rise,
+            fall,
+        } => NodeRenderer::Crop {
             x: one(x, kept),
             a: *a,
             b: *b,
+            rise: *rise,
+            fall: *fall,
         },
         NodeRenderer::Channel { x, k } => NodeRenderer::Channel {
             x: one(x, kept),

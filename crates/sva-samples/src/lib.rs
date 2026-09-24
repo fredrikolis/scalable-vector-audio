@@ -17,8 +17,8 @@ pub mod stft;
 pub use biquad::Coeffs;
 pub use buffer::Buffer;
 pub use collapse::{
-    ALIAS_OVERSAMPLE, AliasScore, Audible, Horizon, Refs, eval_spectral_sum_at, eval_written_at,
-    lane_of, of_spectral_sum, of_spectral_sum_or_point, render, render_written,
+    ALIAS_OVERSAMPLE, AliasScore, Audible, Horizon, Refs, crop_gain, eval_spectral_sum_at,
+    eval_written_at, lane_of, of_spectral_sum, of_spectral_sum_or_point, render, render_written,
     truncate_spectral_sum, truncate_written, unary,
 };
 pub use error::{CollapseError, SampleError};

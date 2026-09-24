@@ -103,6 +103,7 @@ impl<'g> Lowering<'_, 'g> {
         if pieces.iter().any(|p| matches!(p, Piece::Value(_))) {
             return match (name, view.iter().find(|(k, _)| *k == "drive")) {
                 ("sat", Some((_, drive))) => self.driven(pieces, *drive, span, var),
+                ("crop", _) => self.sampled_crop(pieces, &view, span, var),
                 _ => self.operation(name, pieces, Some(span), var),
             };
         }
@@ -198,6 +199,27 @@ impl<'g> Lowering<'_, 'g> {
         pieces.push(Piece::ClosedForm(Body::Const(C64::real(drive))));
         let product = self.operation("*", pieces, Some(span), var)?;
         self.operation("sat", vec![product], Some(span), var)
+    }
+
+    /// A closed form's window: its shoulders, refused alike, ride along as two numbers.
+    fn sampled_crop(
+        &mut self,
+        mut pieces: Vec<Piece>,
+        named: &[(&str, f64)],
+        span: ByteSpan,
+        var: Var,
+    ) -> Result<Piece, EngineError> {
+        let (rise, fall) = (named_or(named, "rise", 0.0), named_or(named, "fall", 0.0));
+        if let [_, Piece::ClosedForm(l), Piece::ClosedForm(r)] = pieces.as_slice() {
+            let (l, r) = self.window(l, r, var, "crop", span)?;
+            self.shoulders(rise, fall, r.value() - l.value(), span)?;
+        }
+        if rise > 0.0 || fall > 0.0 {
+            for shoulder in [rise, fall] {
+                pieces.push(Piece::ClosedForm(Body::Const(C64::real(shoulder))));
+            }
+        }
+        self.operation("crop", pieces, Some(span), var)
     }
 
     fn non_integer_power(&self, written: &[&Expr], span: ByteSpan) -> EngineError {

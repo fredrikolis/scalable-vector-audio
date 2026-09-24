@@ -87,7 +87,7 @@ pub fn eval_body(
             r,
             rise,
             fall,
-        } => match raised_cosine(t, l.value(), r.value(), *rise, *fall) {
+        } => match crop_gain(t, l.value(), r.value(), *rise, *fall) {
             0.0 => C64::ZERO,
             gain => of(inner)?.scale(gain),
         },
@@ -125,7 +125,8 @@ pub fn eval_body(
 }
 
 /// FORMAT 15.6's window: one over the plateau, a raised cosine over each shoulder, zero out.
-fn raised_cosine(t: f64, l: f64, r: f64, rise: f64, fall: f64) -> f64 {
+/// The sampled crop reads it too.
+pub fn crop_gain(t: f64, l: f64, r: f64, rise: f64, fall: f64) -> f64 {
     if t < l || t >= r {
         return 0.0;
     }

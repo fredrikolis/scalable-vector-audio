@@ -7,8 +7,13 @@ use crate::machine::renderer::{Binary, BufId, NodeRenderer, Site, SiteId, Unary}
 pub(crate) enum Op {
     Const(f64),
     Time,
-    Read { id: BufId, shift: i64 },
-    SelfAt { steps: u32 },
+    Read {
+        id: BufId,
+        shift: i64,
+    },
+    SelfAt {
+        steps: u32,
+    },
     Add(usize),
     Mul(usize),
     Sub,
@@ -16,7 +21,12 @@ pub(crate) enum Op {
     Pow,
     Map(Unary),
     Zip(Binary),
-    Crop { a: f64, b: f64 },
+    Crop {
+        a: f64,
+        b: f64,
+        rise: f64,
+        fall: f64,
+    },
     Join(usize),
     Channel(usize),
     Filter(SiteId),
@@ -103,9 +113,21 @@ pub(crate) fn lower(
             let wb = lower(b, layout, ops, widths)?;
             push(Op::Zip(*f), meet(wa, wb)?, ops, widths)
         }
-        NodeRenderer::Crop { x, a, b } => {
+        NodeRenderer::Crop {
+            x,
+            a,
+            b,
+            rise,
+            fall,
+        } => {
             let w = lower(x, layout, ops, widths)?;
-            push(Op::Crop { a: *a, b: *b }, w, ops, widths)
+            let crop = Op::Crop {
+                a: *a,
+                b: *b,
+                rise: *rise,
+                fall: *fall,
+            };
+            push(crop, w, ops, widths)
         }
         NodeRenderer::Join(parts) => {
             let mut width = 0;

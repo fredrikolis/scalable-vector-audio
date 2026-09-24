@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use sva_formula::{Body, C64, NodeId, SpectralSum, Var};
 use sva_samples::{
     ALIAS_OVERSAMPLE, AliasScore, Audible, Buffer, CollapseError, Detail, Label, Refs, Rule,
-    Source, eval_spectral_sum_at, eval_written_at, lane_of, measure_alias, truncate_spectral_sum,
-    truncate_written, unary,
+    Source, crop_gain, eval_spectral_sum_at, eval_written_at, lane_of, measure_alias,
+    truncate_spectral_sum, truncate_written, unary,
 };
 
 use crate::error::{Diagnostic, EngineError, Located};
@@ -182,10 +182,14 @@ fn operation(
         "max" => C64::real(pair().0.re.max(pair().1.re)),
         "min" => C64::real(pair().0.re.min(pair().1.re)),
         "pow" => power(pair().0, pair().1.re),
-        "crop" => match t >= held_args[1].re && t <= held_args[2].re {
-            true => first(),
-            false => C64::ZERO,
-        },
+        "crop" => {
+            let shoulder = |at: usize| held_args.get(at).map_or(0.0, |s| s.re);
+            let (a, b) = (held_args[1].re, held_args[2].re);
+            match crop_gain(t, a, b, shoulder(3), shoulder(4)) {
+                0.0 => C64::ZERO,
+                gain => first().scale(gain),
+            }
+        }
         _ => match sva_formula::Unary::from_name(name) {
             Some(op) => unary(op, first()),
             None => return Err(CollapseError::NotEvaluable("this operation")),

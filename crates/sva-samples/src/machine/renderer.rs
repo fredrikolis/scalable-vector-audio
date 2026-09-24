@@ -49,10 +49,13 @@ pub enum NodeRenderer {
     Pow(Box<NodeRenderer>, Box<NodeRenderer>),
     Map(Unary, Box<NodeRenderer>),
     Zip(Binary, Box<NodeRenderer>, Box<NodeRenderer>),
+    /// `x` over the window `[a, b)` with a raised-cosine `rise` and `fall` inside it.
     Crop {
         x: Box<NodeRenderer>,
         a: f64,
         b: f64,
+        rise: f64,
+        fall: f64,
     },
     Join(Vec<NodeRenderer>),
     Channel {

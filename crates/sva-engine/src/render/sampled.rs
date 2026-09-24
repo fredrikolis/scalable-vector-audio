@@ -261,10 +261,17 @@ impl Build<'_> {
             }
             "crop" => {
                 let (a, b) = (constant(&lowered, 1), constant(&lowered, 2));
+                let shoulder = |at| match lowered.len() > at {
+                    true => constant(&lowered, at),
+                    false => 0.0,
+                };
+                let (rise, fall) = (shoulder(3), shoulder(4));
                 NodeRenderer::Crop {
                     x: Box::new(lowered.remove(0)),
                     a,
                     b,
+                    rise,
+                    fall,
                 }
             }
             "join" => NodeRenderer::Join(lowered),

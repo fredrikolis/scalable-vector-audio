@@ -240,10 +240,13 @@ fn fill(
                 *slot = f.apply(part(arg(0), c));
             }
         }
-        Op::Crop { a, b } => {
-            let inside = t >= *a && t < *b;
+        Op::Crop { a, b, rise, fall } => {
+            let gain = crate::collapse::crop_gain(t, *a, *b, *rise, *fall);
             for (c, slot) in result.iter_mut().enumerate() {
-                *slot = if inside { part(arg(0), c) } else { 0.0 };
+                *slot = match gain {
+                    0.0 => 0.0,
+                    gain => part(arg(0), c) * gain,
+                };
             }
         }
         Op::Join(_) => {

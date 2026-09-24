@@ -153,3 +153,67 @@ fn a_self_read_is_founded_sample_by_sample_without_a_block() {
     assert_eq!(buffer.at(0, 2), 1.0, "before the first founded read");
     assert_eq!(buffer.at(0, 3), 1.5, "the first founded read");
 }
+
+fn plane(g: &sva_ast::Graph, node: &str) -> Vec<f64> {
+    let held = render(g, node, RenderConfig::seconds(8_000, 0.05), None)
+        .unwrap_or_else(|e| panic!("{node}: {e}"));
+    let id = held.id(node).unwrap_or_else(|| panic!("{node} typed"));
+    held.buffer(id).expect("a rendered node").plane(0).to_vec()
+}
+
+/// The bug this closes: a sampled operand's crop kept its hard edges and dropped both
+/// shoulders, so the same signal cropped the same way sounded two different windows.
+#[test]
+fn a_sampled_crop_takes_the_closed_forms_window() {
+    let g = graph_of(
+        "crop-shoulders",
+        &[
+            (
+                "closed",
+                "crop(sin(2*pi*220*t), 10ms, 40ms, rise=5ms, fall=10ms)\n",
+            ),
+            (
+                "sampled",
+                "crop(sample(sin(2*pi*220*t)), 10ms, 40ms, rise=5ms, fall=10ms)\n",
+            ),
+            ("hard", "crop(sample(sin(2*pi*220*t)), 10ms, 40ms)\n"),
+        ],
+    );
+    let (closed, sampled) = (plane(&g, "closed"), plane(&g, "sampled"));
+    assert_eq!(closed.len(), sampled.len());
+    for (i, (c, s)) in closed.iter().zip(&sampled).enumerate() {
+        assert!(
+            (c - s).abs() < 1e-9,
+            "sample {i}: the closed form reads {c}, the sampled crop {s}"
+        );
+        let inside = (80..320).contains(&i);
+        assert!(inside || *s == 0.0, "sample {i} lies outside [10ms, 40ms)");
+    }
+    let hard = plane(&g, "hard");
+    let first = (0.01 * 8_000.0) as usize + 1;
+    assert!(
+        sampled[first].abs() < hard[first].abs(),
+        "the rise opens the window gradually: {} against {}",
+        sampled[first],
+        hard[first]
+    );
+}
+
+#[test]
+fn a_sampled_crop_refuses_the_shoulders_a_closed_form_refuses() {
+    let g = graph_of(
+        "crop-shoulders-refused",
+        &[(
+            "body",
+            "crop(sample(sin(2*pi*220*t)), 10ms, 20ms, rise=6ms, fall=6ms)\n",
+        )],
+    );
+    let Err(refused) = render(&g, "body", RenderConfig::seconds(8_000, 0.05), None) else {
+        panic!("two shoulders longer than their window render nothing");
+    };
+    assert!(
+        refused.to_string().contains("shoulder")
+            || format!("{refused:?}").contains("bad_crop_shoulder"),
+        "{refused:?}"
+    );
+}
