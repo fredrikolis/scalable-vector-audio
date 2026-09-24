@@ -11,7 +11,8 @@ use sva_core::{
     query_data, representation_for, retired, stats_json, window_for,
 };
 use sva_engine::{
-    Buffer, Cache, CacheStats, Horizon, MemoryCache, PSYCHOACOUSTIC_V1, Pack, Tiered, answer_buffer,
+    Buffer, Cache, CacheStats, Horizon, MemoryCache, PSYCHOACOUSTIC_V1, Pack, Slots, Tiered,
+    answer_buffer,
 };
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -98,6 +99,7 @@ impl Store {
 pub struct Composition {
     inner: sva_ast::Composition,
     store: Store,
+    slots: Slots,
 }
 
 #[wasm_bindgen]
@@ -111,6 +113,7 @@ impl Composition {
                 None => inner,
             },
             store: Store::Memory(MemoryCache::holding(DEFAULT_CACHE_BYTES)),
+            slots: Slots::default(),
         }
     }
 
@@ -149,18 +152,23 @@ impl Composition {
     }
 
     /// Unset, `target` is `master`; `seconds` is the horizon and `rate` the observation rate.
+    /// What reads a `volatile` parameter is kept in a slot, never in either store.
     pub fn render(
         &self,
         target: Option<String>,
         rate: Option<u32>,
         seconds: Option<f64>,
+        volatile: Option<Vec<String>>,
     ) -> Result<Rendering, JsValue> {
+        let volatile = volatile.unwrap_or_default();
         let rendered = execute(Job {
             target: target.as_deref(),
             until: seconds.map(WindowEdge::Secs),
             sample_rate: rate,
             reaching: true,
             cache: Some(self.store.cache()),
+            volatile: &volatile,
+            slots: Some(&self.slots),
             ..Job::over(&self.inner)
         });
         self.store.cache().sweep();
@@ -194,6 +202,25 @@ impl Composition {
     pub fn bound_cache(&mut self, max_bytes: f64) {
         self.store
             .remember_in(MemoryCache::holding(max_bytes.max(0.0) as u64));
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn volatile_bytes(&self) -> f64 {
+        self.slots.held_bytes() as f64
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn volatile_max_bytes(&self) -> f64 {
+        self.slots.max_bytes() as f64
+    }
+
+    #[wasm_bindgen(setter)]
+    pub fn set_volatile_max_bytes(&self, max_bytes: f64) {
+        self.slots.bound(max_bytes.max(0.0) as u64);
+    }
+
+    pub fn clear_volatile(&self) {
+        self.slots.clear();
     }
 
     /// Empties the memory tier only: a persistent pack outlives it by design.

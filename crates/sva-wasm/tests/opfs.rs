@@ -36,7 +36,7 @@ async fn opened(name: &str) -> Composition {
 
 fn hits(held: &Composition, tier: &str) -> f64 {
     let stats = held
-        .render(None, Some(8000), Some(0.25))
+        .render(None, Some(8000), Some(0.25), None)
         .unwrap_or_else(|_| unreachable!("`master` renders"))
         .stats()
         .unwrap_or_else(|_| unreachable!("stats answer"));

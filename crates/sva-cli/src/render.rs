@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use sva_core::{
-    Answer, Asked, CacheReport, CliError, Horizon, Job, Output, Report, SAMPLE_LIMIT, cwd, execute,
-    query_data, window_for,
+    Answer, Asked, CacheReport, CliError, Horizon, Job, Output, Report, SAMPLE_LIMIT, Slots, cwd,
+    execute, query_data, window_for,
 };
 use sva_engine::{
     Buffer, Cache, DEFAULT_FRAME_SECS, DiskCache, PSYCHOACOUSTIC_V1, Representation, answer_buffer,
@@ -28,6 +28,7 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
     }
     let store = args.cache.then(DiskCache::discover).flatten();
     let cache = store.as_ref().map(|c| c as &dyn Cache);
+    let slots = Slots::default();
     let source = sva_ast::Dir::at(&dir);
     let rendered = execute(Job {
         target: args.target.as_deref(),
@@ -40,6 +41,8 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
         // A named target pulls its own closure; nothing it never reads is parsed at all.
         reaching: args.target.is_some(),
         flop_budget: args.flop_budget,
+        volatile: &args.volatile,
+        slots: Some(&slots),
         ..Job::over(&source)
     })?;
 

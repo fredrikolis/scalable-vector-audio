@@ -26,11 +26,11 @@ use std::path::Path;
 use sva_ast::{Dir, Graph, Refusal, Source, SpanUnit};
 use sva_engine::{
     Ask, BindingFault, Cache, DEFAULT_SAMPLE_RATE, EngineError, PSYCHOACOUSTIC_V1, Render,
-    RenderConfig, render,
+    RenderConfig, render_with_slots,
 };
 
 pub use sva_engine::{Answer, Horizon, Label, Output, Representation};
-pub use sva_engine::{DiskCache, MemoryCache};
+pub use sva_engine::{DiskCache, MemoryCache, Slots};
 
 pub const ROOT: &str = "master";
 pub const PROBE: &str = "probe";
@@ -87,6 +87,8 @@ pub struct Job<'a> {
     pub representations: Vec<Representation>,
     /// The operation count the caller acknowledges paying; the profile's own where `None`.
     pub flop_budget: Option<u128>,
+    pub volatile: &'a [String],
+    pub slots: Option<&'a Slots>,
 }
 
 impl<'a> Job<'a> {
@@ -102,6 +104,8 @@ impl<'a> Job<'a> {
             reading: None,
             representations: Vec::new(),
             flop_budget: None,
+            volatile: &[],
+            slots: None,
         }
     }
 }
@@ -129,6 +133,7 @@ fn settle(job: &Job, asked: Option<&str>) -> Result<(Graph, String, RenderConfig
     if let Some(budget) = job.flop_budget {
         config.flop_budget = budget;
     }
+    config.volatile = job.volatile.to_vec();
     let node = job.reading.unwrap_or(&target);
     config.asks = job
         .representations
@@ -176,7 +181,7 @@ fn instance_read(graph: &Graph, text: &str) -> Option<sva_ast::Expr> {
 
 pub fn execute(job: Job) -> Result<Rendered, CliError> {
     let (graph, target, config) = settle(&job, job.target)?;
-    let refused = match render(&graph, &target, config.clone(), job.cache) {
+    let refused = match render_with_slots(&graph, &target, config.clone(), job.cache, job.slots) {
         Ok(render) => {
             return Ok(Rendered {
                 render,
@@ -225,7 +230,8 @@ fn instances_of(source: &dyn Source, target: &str) -> Option<Vec<String>> {
 /// One instance is the node the caller meant, read as if they had named it themselves.
 fn at_instance(job: &Job, instance: &str) -> Result<Rendered, CliError> {
     let (graph, target, config) = settle(job, Some(instance))?;
-    let render = render(&graph, &target, config.clone(), job.cache).map_err(CliError::Engine)?;
+    let render = render_with_slots(&graph, &target, config.clone(), job.cache, job.slots)
+        .map_err(CliError::Engine)?;
     Ok(Rendered {
         render,
         config,
@@ -381,5 +387,6 @@ pub fn config_for(
         profile: PSYCHOACOUSTIC_V1,
         asks: Vec::new(),
         flop_budget: PSYCHOACOUSTIC_V1.flop_budget,
+        volatile: Vec::new(),
     })
 }

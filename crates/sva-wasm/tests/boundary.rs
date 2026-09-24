@@ -37,12 +37,12 @@ fn page() -> Composition {
 }
 
 fn render(of: &Composition, target: &str) -> Rendering {
-    of.render(Some(target.to_string()), Some(8000), None)
+    of.render(Some(target.to_string()), Some(8000), None, None)
         .unwrap_or_else(|_| unreachable!("`{target}` renders"))
 }
 
 fn of_default(held: &Composition) -> Rendering {
-    held.render(None, Some(8000), None)
+    held.render(None, Some(8000), None, None)
         .unwrap_or_else(|_| unreachable!("`master` renders"))
 }
 
@@ -260,8 +260,11 @@ fn stats_cross_as_the_cli_object_and_a_repeated_render_is_all_hits() {
         field(&field(&warm, "hits"), "persistent").as_f64(),
         Some(0.0)
     );
+    assert_eq!(field(&field(&warm, "hits"), "volatile").as_f64(), Some(0.0));
     assert_eq!(field(&warm, "computed").as_f64(), Some(0.0));
     assert_eq!(field(&warm, "stored").as_f64(), Some(0.0));
+    assert_eq!(field(&warm, "slotted").as_f64(), Some(0.0));
+    assert_eq!(field(&warm, "replaced").as_f64(), Some(0.0));
     assert_eq!(
         field(&warm, "nodes").as_f64(),
         field(&cold, "nodes").as_f64()
@@ -281,6 +284,111 @@ fn stats_cross_as_the_cli_object_and_a_repeated_render_is_all_hits() {
     assert!(
         field(&first_cold, "tier").is_undefined(),
         "a miss has no tier"
+    );
+}
+
+fn knob(cutoff: u32) -> String {
+    format!("@tone(t, x=@note, cutoff={cutoff})")
+}
+
+fn played(held: &Composition, cutoff: u32, volatile: Option<Vec<String>>) -> Rendering {
+    held.render(Some(knob(cutoff)), Some(8000), Some(0.05), volatile)
+        .unwrap_or_else(|_| unreachable!("the knob at {cutoff} renders"))
+}
+
+fn stats_of(of: &Rendering) -> JsValue {
+    of.stats().unwrap_or_else(|_| unreachable!("stats answer"))
+}
+
+/// The fourth argument names the parameters a player is moving: what reads one lands in a slot
+/// the composition owns, the memory store is left as it was, and the audio is the same.
+#[wasm_bindgen_test]
+fn a_volatile_knob_crosses_as_a_fourth_argument_and_keeps_to_its_slots() {
+    let mut held = Composition::new(None);
+    held.insert("note", "sample(sin(2*pi*220*t))*0.5\n");
+    held.insert("tone", "lowpass(x, cutoff=cutoff, q=0.7)\n");
+    let cutoff = || Some(vec!["cutoff".to_string()]);
+    let plain = plane(&played(&held, 500, None));
+    let bytes = held.cache_bytes();
+    assert_eq!(held.volatile_bytes(), 0.0);
+
+    let moved = played(&held, 900, cutoff());
+    let cold = stats_of(&moved);
+    assert!(
+        field(&cold, "slotted").as_f64() > Some(0.0),
+        "{}",
+        as_text(&cold)
+    );
+    assert_eq!(
+        field(&cold, "stored").as_f64(),
+        Some(0.0),
+        "{}",
+        as_text(&cold)
+    );
+    assert!(held.volatile_bytes() > 0.0);
+    assert_eq!(held.cache_bytes(), bytes, "the memory store is as it was");
+
+    let again = stats_of(&played(&held, 900, cutoff()));
+    assert!(field(&field(&again, "hits"), "volatile").as_f64() > Some(0.0));
+    let tiers: Vec<String> = items(&again, "lookups")
+        .iter()
+        .filter_map(|l| field(&l, "tier").as_string())
+        .collect();
+    assert!(tiers.iter().any(|t| t == "volatile"), "{}", as_text(&again));
+
+    let back = played(&held, 500, cutoff());
+    assert_eq!(
+        plane(&back),
+        plain,
+        "a value the store holds is read from it"
+    );
+    assert_eq!(field(&stats_of(&back), "computed").as_f64(), Some(0.0));
+
+    let next = played(&held, 1300, cutoff());
+    let replaced = stats_of(&next);
+    assert!(
+        field(&replaced, "replaced").as_f64() > Some(0.0),
+        "{}",
+        as_text(&replaced)
+    );
+    assert!(
+        as_text(&replaced).contains("\"computed_replaced\""),
+        "{}",
+        as_text(&replaced)
+    );
+    assert_eq!(
+        plane(&next),
+        plane(&played(&held, 1300, None)),
+        "the same audio as a plain render"
+    );
+
+    let default = held.volatile_max_bytes();
+    assert!(default > 0.0);
+    held.set_volatile_max_bytes(0.0);
+    assert_eq!(
+        (held.volatile_max_bytes(), held.volatile_bytes()),
+        (0.0, 0.0)
+    );
+    held.set_volatile_max_bytes(default);
+    played(&held, 700, cutoff());
+    assert!(held.volatile_bytes() > 0.0);
+    held.clear_volatile();
+    assert_eq!(held.volatile_bytes(), 0.0);
+    held.clear_cache();
+
+    let refused = held
+        .render(
+            Some(knob(500)),
+            Some(8000),
+            Some(0.05),
+            Some(vec!["cutof".to_string()]),
+        )
+        .err()
+        .unwrap_or_else(|| unreachable!("a name nothing binds refuses"));
+    assert!(
+        as_text(&field(&refused, "refusal")).contains("render.volatile_unbound"),
+        "{}",
+        as_text(&field(&refused, "refusal"))
     );
 }
 
@@ -329,7 +437,7 @@ fn a_refusal_crosses_as_data_and_the_module_keeps_working() {
     held.insert("master", "@nowhere*2\n");
 
     let refused = held
-        .render(None, Some(8000), None)
+        .render(None, Some(8000), None, None)
         .err()
         .unwrap_or_else(|| unreachable!("a dangling ref refuses"));
 

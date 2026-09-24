@@ -145,6 +145,19 @@ impl Cache for DiskCache {
         }
     }
 
+    fn peek(&self, key: Hash, node: &str, expected: Expected) -> Option<Entry> {
+        let Expected::Samples {
+            rate,
+            width,
+            samples,
+        } = expected
+        else {
+            return None;
+        };
+        let bytes = fs::read(self.path_of(key)).ok()?;
+        entry_bytes::decode(&bytes, node, (rate, width, samples), self.codec.as_ref()).ok()
+    }
+
     /// Only samples have an encoding here; neither other payload is offered a file.
     fn worth_storing(&self, cost: Duration, bytes: usize, kind: PayloadKind) -> bool {
         kind == PayloadKind::Samples

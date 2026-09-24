@@ -87,6 +87,10 @@ impl Typing {
         &self.nodes[n.0 as usize]
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
     pub fn id(&self, path: &str) -> Option<NodeId> {
         self.by_path.get(path).copied()
     }

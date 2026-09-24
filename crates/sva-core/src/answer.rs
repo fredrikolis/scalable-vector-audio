@@ -468,14 +468,16 @@ fn cache_json(cache: Option<&CacheReport>) -> String {
     }
 }
 
-/// `computed` counts every miss, `stored` the misses the store kept; a lookup's `tier` is
-/// written only on a hit.
+/// `computed` counts every miss, `stored` the misses the store kept, `slotted` and `replaced`
+/// the volatile misses a slot kept; a lookup's `tier` is written only on a hit.
 pub fn stats_json(stats: &CacheStats) -> String {
     let lookups = list(&stats.lookups, |l| {
         let (outcome, tier) = match l.outcome {
             Outcome::Hit(tier) => ("hit", format!(", \"tier\": \"{}\"", tier_name(tier))),
             Outcome::ComputedStored => ("computed_stored", String::new()),
             Outcome::ComputedNotStored => ("computed_not_stored", String::new()),
+            Outcome::ComputedSlotted => ("computed_slotted", String::new()),
+            Outcome::ComputedReplaced => ("computed_replaced", String::new()),
         };
         format!(
             "{{ \"node\": \"{}\", \"key\": \"{}\", \"kind\": \"{}\", \"outcome\": \"{outcome}\"{tier} }}",
@@ -489,13 +491,17 @@ pub fn stats_json(stats: &CacheStats) -> String {
         )
     });
     format!(
-        "{{ \"nodes\": {}, \"hits\": {{ \"memory\": {}, \"persistent\": {} }}, \
-         \"computed\": {}, \"stored\": {}, \"lookups\": {lookups} }}",
+        "{{ \"nodes\": {}, \"hits\": {{ \"memory\": {}, \"persistent\": {}, \"volatile\": {} }}, \
+         \"computed\": {}, \"stored\": {}, \"slotted\": {}, \"replaced\": {}, \
+         \"lookups\": {lookups} }}",
         stats.nodes(),
         stats.hits_in(Tier::Memory),
         stats.hits_in(Tier::Persistent),
+        stats.hits_in(Tier::Volatile),
         stats.computed(),
-        stats.stored()
+        stats.stored(),
+        stats.slotted(),
+        stats.replaced()
     )
 }
 
@@ -503,6 +509,7 @@ fn tier_name(tier: Tier) -> &'static str {
     match tier {
         Tier::Memory => "memory",
         Tier::Persistent => "persistent",
+        Tier::Volatile => "volatile",
     }
 }
 

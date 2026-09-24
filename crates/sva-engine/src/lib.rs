@@ -20,9 +20,9 @@ mod vocabulary;
 
 pub use bindings::Binding;
 pub use cache::{
-    Cache, CacheStats, DiskCache, Entry, Expected, Hash, IO_NANOS_PER_BYTE, Lookup, Medium,
-    MemoryCache, Outcome, PACK_FORMAT, Pack, Payload, PayloadKind, RawF64, SampleCodec, Tier,
-    Tiered, VecMedium, buffer_key, symbolic_key,
+    Cache, CacheStats, DEFAULT_SLOT_BYTES, DiskCache, Entry, Expected, Hash, IO_NANOS_PER_BYTE,
+    Lookup, Medium, MemoryCache, Outcome, PACK_FORMAT, Pack, Payload, PayloadKind, Put, RawF64,
+    SampleCodec, Slots, Tier, Tiered, VecMedium, buffer_key, symbolic_key,
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
@@ -31,7 +31,9 @@ pub use loops::{Delay, Shift};
 pub use offset::Offset;
 pub use query::{Answer, Ask, DEFAULT_FRAME_SECS, Output, Representation};
 pub use refs::{Read, identity, nodes_in, resolve, spectral_sum_of, symbolic_hash};
-pub use render::{Render, RenderConfig, answer, answer_buffer, render, sketch_atom};
+pub use render::{
+    Render, RenderConfig, answer, answer_buffer, render, render_with_slots, sketch_atom,
+};
 pub use schedule::{Order, Schedule, schedule_from};
 pub use sva_formula::{C64, Codomain, Held, Line, NodeId, SpectralSum, Ty, Var};
 pub use sva_samples::{

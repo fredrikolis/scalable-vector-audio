@@ -18,8 +18,8 @@ pub const USAGE: &str = "usage: sva-cli render [<node|expression>] [query option
      sva-cli new <name> [--idempotency-key <key>]\n\
      query options: [--in <dir>] [--node <path>] [--from <time>] [--to <time>] \
      [--as <representation>[=<destination>]]... [--frame <secs>] [--depth <n>] [--peaks <n>] \
-     [--sample-rate <hz>] [--oversample <n>] [--flop-budget <n>] [--no-cache] [--brief] \
-     [--skim] [--pcm16] [--confirm]\n\
+     [--sample-rate <hz>] [--oversample <n>] [--flop-budget <n>] [--volatile <name>]... \
+     [--no-cache] [--brief] [--skim] [--pcm16] [--confirm]\n\
      representations: lines atoms spectrum envelope derivative samples ledger pitch formants \
      stereo bands crest loudness alias bindings flops\n\
      analyses (`analyze` only): onsets trajectory masking gain-reduction\n\
@@ -28,6 +28,9 @@ pub const USAGE: &str = "usage: sva-cli render [<node|expression>] [query option
      --node <path> names the instance a reading is taken of; required with `--as bindings`\n\
      --flop-budget <n> is the operation count the caller means to pay; the profile's own \
      budget refuses past it, and `--as flops` prints the tree that count came from\n\
+     --volatile <name> declares a bound parameter the player is moving: every node that reads \
+     it is rendered and kept in memory for this run only, never written to the cache, and \
+     sounds the same as without the flag; a name the target binds nowhere is refused\n\
      --brief condenses `ledger` to the nodes that clipped\n\
      --skim condenses `ledger`'s fields to node/channel/rms/peak/clipped\n\
      --pcm16 quantizes a `.wav` destination to 16-bit PCM instead of 32-bit float\n\
@@ -75,6 +78,7 @@ pub struct RenderArgs {
     /// The caller said a destination that already holds a file may be replaced.
     pub confirm: bool,
     pub flop_budget: Option<u128>,
+    pub volatile: Vec<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -415,6 +419,27 @@ mod tests {
         ));
         let args = rendered(&["render", "--as", "bindings", "--node", "kick"]);
         assert_eq!(args.node.as_deref(), Some("kick"));
+    }
+
+    #[test]
+    fn volatile_repeats_once_per_parameter_and_needs_a_name() {
+        let args = rendered(&["render", "--as", "samples", "--volatile", "cutoff"]);
+        assert_eq!(args.volatile, ["cutoff"]);
+        let args = rendered(&[
+            "render",
+            "--as",
+            "samples",
+            "--volatile",
+            "cutoff",
+            "--volatile",
+            "q",
+        ]);
+        assert_eq!(args.volatile, ["cutoff", "q"]);
+        assert!(rendered(&["render", "--as", "samples"]).volatile.is_empty());
+        assert!(matches!(
+            parse_args(&argv(&["render", "--as", "samples", "--volatile"])),
+            Err(CliError::Usage(_))
+        ));
     }
 
     #[test]

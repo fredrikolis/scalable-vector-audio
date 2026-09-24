@@ -32,6 +32,12 @@ impl<M: Medium> Cache for Tiered<M> {
         Some(entry)
     }
 
+    fn peek(&self, key: Hash, node: &str, expected: Expected) -> Option<Entry> {
+        self.front
+            .peek(key, node, expected)
+            .or_else(|| self.back.peek(key, node, expected))
+    }
+
     fn store(&self, key: Hash, payload: &Payload, traces: &[FilterTrace], label: Option<&Label>) {
         self.front.store(key, payload, traces, label);
         if self

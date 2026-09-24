@@ -563,6 +563,59 @@ fn two_readings_share_one_collapse() {
     );
 }
 
+/// `--volatile` keeps what a moving knob reaches out of the store, and the audio is the same.
+#[test]
+fn a_volatile_knob_renders_the_same_audio_and_slots_what_it_reaches() {
+    let dir = scratch("volatile-knob");
+    put(
+        &dir,
+        "tone",
+        "; Models: a tone knob | Neglects: resonance | IO: (t, x, cutoff) -> amplitude | Tags: test\n\
+         lowpass(x, cutoff=cutoff, q=0.7)\n",
+    );
+    put(
+        &dir,
+        "note",
+        "; Models: a note | Neglects: an envelope | IO: (t) -> amplitude | Tags: test\n\
+         sample(sin(2*pi*220*t))*0.5\n",
+    );
+    let out = scratch("volatile-knob-out");
+    let cache = scratch("volatile-knob-cache");
+    let target = "@tone(t, x=@note, cutoff=700)";
+    let render = |wav: &str, extra: &[&str]| {
+        let written = out.join(wav);
+        let dest = format!("samples={}", written.display());
+        let run = std::process::Command::new(env!("CARGO_BIN_EXE_sva-cli"))
+            .current_dir(&dir)
+            .env("SVA_CACHE", &cache)
+            .args(["render", target, "--to", "0.05", "--as", &dest])
+            .args(extra)
+            .output()
+            .expect("the binary runs");
+        let printed = String::from_utf8_lossy(&run.stdout).to_string();
+        (run.status.code(), printed, std::fs::read(written).ok())
+    };
+    let (code, printed, volatile) = render("volatile.wav", &["--volatile", "cutoff"]);
+    assert_eq!(code, Some(0), "{printed}");
+    assert!(
+        printed.contains("\"outcome\": \"computed_slotted\""),
+        "{printed}"
+    );
+    assert!(printed.contains("\"volatile\": 0"), "{printed}");
+    let (code, printed, plain) = render("plain.wav", &[]);
+    assert_eq!(code, Some(0), "{printed}");
+    assert!(!printed.contains("computed_slotted"), "{printed}");
+    assert_eq!(
+        volatile.expect("a wav"),
+        plain.expect("a wav"),
+        "the same audio"
+    );
+
+    let (code, printed, _) = render("refused.wav", &["--volatile", "cutof"]);
+    assert_ne!(code, Some(0));
+    assert!(printed.contains("render.volatile_unbound"), "{printed}");
+}
+
 /// `trace` names one instance of a parameterized file `<path>(<name>=<value>)`. `render`
 /// reads the same name for the same node, rather than parsing it as argv arithmetic.
 #[test]

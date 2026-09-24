@@ -117,6 +117,7 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
     let mut node: Option<String> = None;
     let mut sample_rate: Option<u32> = None;
     let mut flop_budget: Option<u128> = None;
+    let mut volatile: Vec<String> = Vec::new();
     while let Some(flag) = it.next() {
         if flags.read(flag, &mut it)? {
             continue;
@@ -128,6 +129,7 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
             "--pcm16" => pcm16 = true,
             "--confirm" => confirm = true,
             "--node" => node = Some(value(&mut it, "--node")?),
+            "--volatile" => volatile.push(value(&mut it, "--volatile")?),
             "--sample-rate" => sample_rate = Some(hertz(&value(&mut it, "--sample-rate")?)?),
             "--flop-budget" => {
                 flop_budget = Some(operations(
@@ -170,6 +172,7 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
         pcm16,
         confirm,
         flop_budget,
+        volatile,
     })))
 }
 

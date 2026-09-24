@@ -26,6 +26,15 @@ impl Held {
     fn bytes(&self) -> u64 {
         self.payload.bytes() as u64
     }
+
+    fn entry(&self, node: &str) -> Entry {
+        Entry {
+            payload: self.payload.clone(),
+            traces: super::renamed(&self.traces, node),
+            label: self.label.clone(),
+            tier: Tier::Memory,
+        }
+    }
 }
 
 pub struct MemoryCache {
@@ -101,19 +110,13 @@ impl Cache for MemoryCache {
             return None;
         }
         held.read = tick;
-        Some(Entry {
-            payload: held.payload.clone(),
-            traces: held
-                .traces
-                .iter()
-                .map(|t| FilterTrace {
-                    node: node.to_string(),
-                    ..t.clone()
-                })
-                .collect(),
-            label: held.label.clone(),
-            tier: Tier::Memory,
-        })
+        Some(held.entry(node))
+    }
+
+    fn peek(&self, key: Hash, node: &str, expected: Expected) -> Option<Entry> {
+        let entries = self.locked();
+        let held = entries.get(&key)?;
+        held.payload.answers(expected).then(|| held.entry(node))
     }
 
     /// A hit is a memcpy, so anything computed is kept until the budget says otherwise.

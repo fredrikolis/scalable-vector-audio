@@ -6,6 +6,7 @@ mod evict;
 mod label;
 mod memory;
 mod pack;
+mod slots;
 mod stats;
 mod tiered;
 
@@ -13,6 +14,7 @@ pub use disk::{DiskCache, IO_NANOS_PER_BYTE};
 pub use entry_bytes::{RawF64, SampleCodec};
 pub use memory::MemoryCache;
 pub use pack::{FORMAT as PACK_FORMAT, Medium, Pack, VecMedium};
+pub use slots::{DEFAULT_SLOT_BYTES, Put, Slots};
 pub(crate) use stats::Recording;
 pub use stats::{CacheStats, Lookup, Outcome};
 pub use sva_formula::Hash;
@@ -51,11 +53,12 @@ pub enum Expected {
     Symbolic,
 }
 
-/// Where a hit was answered from: this process's heap, or a store that outlives it.
+/// Where a hit was answered from: this process's heap, a store that outlives it, or a slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tier {
     Memory,
     Persistent,
+    Volatile,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -194,6 +197,16 @@ pub fn buffer_key(
     )
 }
 
+fn renamed(traces: &[FilterTrace], node: &str) -> Vec<FilterTrace> {
+    traces
+        .iter()
+        .map(|t| FilterTrace {
+            node: node.to_string(),
+            ..t.clone()
+        })
+        .collect()
+}
+
 const ADDRESS_ROTATE: u32 = 17;
 
 fn mixed(seed: Hash, parts: &[u64]) -> Hash {
@@ -206,6 +219,9 @@ fn mixed(seed: Hash, parts: &[u64]) -> Hash {
 
 pub trait Cache: Sync {
     fn load(&self, key: Hash, node: &str, expected: Expected) -> Option<Entry>;
+
+    /// `load` with no side effect: no recency, promotion, fault or removal.
+    fn peek(&self, key: Hash, node: &str, expected: Expected) -> Option<Entry>;
 
     fn store(&self, key: Hash, payload: &Payload, traces: &[FilterTrace], label: Option<&Label>);
 

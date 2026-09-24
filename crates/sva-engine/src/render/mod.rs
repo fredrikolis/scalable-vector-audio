@@ -4,6 +4,7 @@ mod answer;
 mod pointwise;
 mod sampled;
 mod slots;
+mod volatile;
 
 use std::collections::BTreeMap;
 
@@ -15,7 +16,7 @@ use sva_samples::{
 
 use crate::bindings::Binding;
 use crate::cache::{
-    CacheStats, Cost, Expected, Payload, PayloadKind, Recording, frames_key, symbolic_key,
+    CacheStats, Cost, Expected, Payload, PayloadKind, Recording, Slots, frames_key, symbolic_key,
 };
 use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
@@ -34,6 +35,8 @@ pub struct RenderConfig {
     pub asks: Vec<Ask>,
     /// The operation count this render may pay; the profile's own until a caller raises it.
     pub flop_budget: u128,
+    /// What reads one of these is kept in a slot, never in a store.
+    pub volatile: Vec<String>,
 }
 
 impl RenderConfig {
@@ -44,6 +47,7 @@ impl RenderConfig {
             profile: PSYCHOACOUSTIC_V1,
             asks: Vec::new(),
             flop_budget: PSYCHOACOUSTIC_V1.flop_budget,
+            volatile: Vec::new(),
         }
     }
 
@@ -106,13 +110,23 @@ impl Render {
     }
 }
 
-/// Nothing is materialized that no reading asked for: a closed form answered off its spectral sum
-/// allocates no buffer at all.
 pub fn render(
     graph: &Graph,
     target: &str,
     config: RenderConfig,
     cache: Option<&dyn crate::cache::Cache>,
+) -> Result<Render, EngineError> {
+    render_with_slots(graph, target, config, cache, None)
+}
+
+/// Nothing is materialized that no reading asked for: a closed form answered off its spectral sum
+/// allocates no buffer at all.
+pub fn render_with_slots(
+    graph: &Graph,
+    target: &str,
+    config: RenderConfig,
+    cache: Option<&dyn crate::cache::Cache>,
+    slots: Option<&Slots>,
 ) -> Result<Render, EngineError> {
     let instances = instantiate::instantiate(graph, target)?;
     let held = instances.instance_of(target)?;
@@ -140,13 +154,15 @@ pub fn render(
         bindings,
         cache_stats: None,
     };
+    let volatile = volatile::mark(&instances, &held.tys, &held.config, target)?;
     affordable(&held)?;
-    let recording = cache.map(Recording::over);
+    let recording = cache.map(|c| Recording::over(c, slots));
     for id in held.schedule.materialize.clone() {
+        let lens = recording.as_ref().map(|r| r.at(volatile.slot(id)));
         materialize(
             &mut held,
             id,
-            recording.as_ref().map(|r| r as &dyn crate::cache::Cache),
+            lens.as_ref().map(|l| l as &dyn crate::cache::Cache),
         )?;
     }
     held.cache_stats = recording.map(Recording::finish);

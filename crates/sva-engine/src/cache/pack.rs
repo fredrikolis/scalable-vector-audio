@@ -320,6 +320,22 @@ impl<M: Medium> Cache for Pack<M> {
         }
     }
 
+    fn peek(&self, key: Hash, node: &str, expected: Expected) -> Option<Entry> {
+        let Expected::Samples {
+            rate,
+            width,
+            samples,
+        } = expected
+        else {
+            return None;
+        };
+        let state = self.locked();
+        let slot = *state.index.get(&key)?;
+        let (found, body) = read_record(&self.medium, slot.off, state.end)?;
+        let entry = entry_bytes::decode(&body, node, (rate, width, samples), self.codec.as_ref());
+        entry.ok().filter(|_| found == key)
+    }
+
     /// No clock enters it: a value a browser renders has no measured cost to weigh.
     fn worth_storing(&self, _cost: Duration, _bytes: usize, kind: PayloadKind) -> bool {
         kind == PayloadKind::Samples
