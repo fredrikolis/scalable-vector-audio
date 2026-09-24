@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use fixtures::dir_of;
-use sva_engine::{Cache, DiskCache, Expected, Hash, MemoryCache, Payload, PayloadKind};
+use sva_engine::{
+    Cache, DiskCache, ENGINE_DIR_PREFIX, Expected, Hash, MemoryCache, Payload, PayloadKind,
+    RENDER_FINGERPRINT,
+};
 use sva_samples::{AutomationFrame, Buffer, FilterTrace};
 
 const FOUR: Expected = Expected::Samples {
@@ -334,4 +337,56 @@ fn a_disk_entry_another_codec_wrote_is_a_miss_and_is_kept() {
     assert_eq!(other.faults(), 0);
     assert!(other.holds(key), "left for the codec that wrote it");
     assert!(DiskCache::at(&dir).load(key, "n", FOUR).is_some());
+}
+
+/// The bug this closes: a key names what a node says, not the engine that rendered it, so two
+/// engines sharing one directory served each other's buffers. Each keeps its own, and the
+/// directories no engine this one is can read go when it opens.
+#[test]
+fn a_disk_store_keeps_one_directory_per_engine_and_drops_the_others() {
+    let root = dir_of("cache-engines", &[]);
+    let current = format!("{ENGINE_DIR_PREFIX}{RENDER_FINGERPRINT:016x}");
+    let stale = format!("{ENGINE_DIR_PREFIX}{:016x}", RENDER_FINGERPRINT ^ 1);
+    for kept_or_not in [stale.as_str(), "ab", "notes", current.as_str()] {
+        fs::create_dir_all(root.join(kept_or_not)).expect("a directory");
+        fs::write(root.join(kept_or_not).join("x.rbc"), b"old").expect("a file");
+    }
+
+    let cache = DiskCache::under(&root);
+    assert_eq!(cache.dir(), Some(root.join(&current).as_path()));
+    assert_eq!(cache.faults(), 0, "every stale directory went");
+    assert!(!root.join(&stale).exists(), "another engine's buffers went");
+    assert!(
+        !root.join("ab").exists(),
+        "the shards every engine shared went"
+    );
+    assert!(root.join("notes").exists(), "what no engine wrote stays");
+    assert!(
+        root.join(&current).join("x.rbc").exists(),
+        "this engine's own directory stays whole"
+    );
+
+    let key = Hash(3, 5);
+    cache.store(key, &holding(&odd_values()), &[], None);
+    assert!(cache.holds(key));
+    assert!(
+        !DiskCache::at(&root).holds(key),
+        "the entry lives under this engine's directory, not the shared root"
+    );
+}
+
+/// A stale directory that will not go is counted, not passed over.
+#[test]
+fn a_stale_directory_that_will_not_go_is_a_fault() {
+    let root = dir_of("cache-engines-stuck", &[]);
+    let stale = root.join(format!(
+        "{ENGINE_DIR_PREFIX}{:016x}",
+        RENDER_FINGERPRINT ^ 1
+    ));
+    fs::create_dir_all(stale.join("ab")).expect("a directory");
+    fs::write(stale.join("ab").join("x.rbc"), b"old").expect("a file");
+    fs::set_permissions(&stale, fs::Permissions::from_mode(0o500)).expect("read-only");
+    let cache = DiskCache::under(&root);
+    fs::set_permissions(&stale, fs::Permissions::from_mode(0o700)).expect("writable again");
+    assert_eq!(cache.faults(), 1, "the stuck directory is reported");
 }

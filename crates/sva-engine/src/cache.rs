@@ -10,7 +10,7 @@ mod slots;
 mod stats;
 mod tiered;
 
-pub use disk::{DiskCache, IO_NANOS_PER_BYTE};
+pub use disk::{DiskCache, ENGINE_DIR_PREFIX, IO_NANOS_PER_BYTE};
 pub use entry_bytes::{RawF64, SampleCodec};
 pub use memory::MemoryCache;
 pub use pack::{FORMAT as PACK_FORMAT, Medium, Pack, VecMedium};

@@ -24,6 +24,18 @@ pub const DEFAULT_MAX_BYTES: u64 = 16 << 30;
 /// Two threads can reach one key at once, so a per-process temp name is not enough.
 static WRITE: AtomicU64 = AtomicU64::new(0);
 
+pub const ENGINE_DIR_PREFIX: &str = "render-";
+
+fn engine_dir(name: &str) -> bool {
+    name.strip_prefix(ENGINE_DIR_PREFIX)
+        .is_some_and(|hex| hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// A shard every engine once shared.
+fn shared_shard(name: &str) -> bool {
+    name.len() == 2 && name.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 pub struct DiskCache {
     dir: PathBuf,
     max_bytes: u64,
@@ -38,7 +50,7 @@ impl DiskCache {
     /// `$SVA_CACHE`, else the XDG cache home. Never under `target/`: `cargo clean` would throw
     /// away hours of rendering, and an installed binary has no build directory to write into.
     pub fn discover() -> Option<DiskCache> {
-        let dir = match std::env::var_os("SVA_CACHE") {
+        let root = match std::env::var_os("SVA_CACHE") {
             Some(v) if !v.is_empty() => PathBuf::from(v),
             _ => match std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
                 Some(v) => PathBuf::from(v).join("sva"),
@@ -47,7 +59,26 @@ impl DiskCache {
                     .join("sva"),
             },
         };
-        Some(DiskCache::at(dir))
+        Some(DiskCache::under(root))
+    }
+
+    /// A key hashes what a node says, not the engine rendering it, so each engine keeps its own
+    /// directory under `root`; no other one's can answer it, so they go.
+    pub fn under(root: impl Into<PathBuf>) -> DiskCache {
+        let root = root.into();
+        let current = format!("{ENGINE_DIR_PREFIX}{:016x}", crate::RENDER_FINGERPRINT);
+        let mut stuck = 0;
+        for entry in fs::read_dir(&root).into_iter().flatten().flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+            if is_dir && name != current && (engine_dir(name) || shared_shard(name)) {
+                stuck += u64::from(fs::remove_dir_all(entry.path()).is_err());
+            }
+        }
+        let cache = DiskCache::at(root.join(current));
+        cache.faults.store(stuck, Ordering::Relaxed);
+        cache
     }
 
     pub fn at(dir: impl Into<PathBuf>) -> DiskCache {
