@@ -9,7 +9,7 @@ require_package_charter = true
 forbid_cycles = true
 forbid_orphans = true
 
-# sva-ast and sva-formula are leaves; sva-samples reads it alone.
+# sva-fingerprint, sva-ast and sva-formula are leaves; sva-samples reads sva-formula alone.
 deny = [
     ["sva-formula", "sva-samples"],
     ["sva-formula", "sva-ast"],
@@ -39,4 +39,12 @@ deny = [
     ["sva-core", "sva-wasm"],
     ["sva-core", "sva-analysis"],
     ["sva-wasm", "sva-cli"],
+    ["sva-fingerprint", "sva-ast"],
+    ["sva-fingerprint", "sva-formula"],
+    ["sva-fingerprint", "sva-samples"],
+    ["sva-fingerprint", "sva-engine"],
+    ["sva-fingerprint", "sva-core"],
+    ["sva-fingerprint", "sva-analysis"],
+    ["sva-fingerprint", "sva-cli"],
+    ["sva-fingerprint", "sva-wasm"],
 ]

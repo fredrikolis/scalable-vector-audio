@@ -32,3 +32,5 @@ jobs:
         with:
           version: "latest"
       - run: wasm-pack test --node crates/sva-wasm
+      # The runner image's own chromedriver matches its Chrome; one wasm-pack downloads may not.
+      - run: wasm-pack test --headless --chrome --chromedriver "$CHROMEWEBDRIVER/chromedriver" crates/sva-wasm --test opfs

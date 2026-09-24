@@ -46,3 +46,5 @@ pub use spectral_sum::image::crop_peeled;
 pub use spectral_sum::{Lane, SpectralSum};
 pub use table::{FAMILIES, TABLE_VERSION, dual, inverse, reflect};
 pub use ty::{Codomain, Held, MAX_WIDTH, Mismatch, Ty};
+
+pub const SOURCE_HASH: &str = env!("SVA_FORMULA_SRC_HASH");

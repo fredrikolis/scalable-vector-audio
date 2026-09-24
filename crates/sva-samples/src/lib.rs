@@ -45,3 +45,5 @@ pub use measure::stereo::{StereoFrame, StereoImage};
 pub use physics::{Params, Solver, site};
 pub use profile::{PSYCHOACOUSTIC_V1, Profile};
 pub use sva_formula::Shape;
+
+pub const SOURCE_HASH: &str = env!("SVA_SAMPLES_SRC_HASH");

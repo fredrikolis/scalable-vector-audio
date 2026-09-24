@@ -1,4 +1,4 @@
-# Concern: declares the package and NO dependencies at all | Non-concern: the deny edges that keep it a leaf (.annotated-tree.toml) | IO: none
+# Concern: declares the package and no runtime dependencies at all | Non-concern: the deny edges that keep it a leaf (.annotated-tree.toml) | IO: none
 [package]
 name = "sva-ast"
 description = "The document model for a composition"
@@ -8,3 +8,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+
+[build-dependencies]
+sva-fingerprint = { workspace = true }

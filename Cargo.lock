@@ -249,7 +249,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "sva-analysis"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "sva-core",
  "sva-samples",
@@ -257,11 +257,14 @@ dependencies = [
 
 [[package]]
 name = "sva-ast"
-version = "0.2.0"
+version = "0.3.0"
+dependencies = [
+ "sva-fingerprint",
+]
 
 [[package]]
 name = "sva-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hound",
  "sva-analysis",
@@ -273,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "sva-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "sva-ast",
  "sva-engine",
@@ -281,34 +284,45 @@ dependencies = [
 
 [[package]]
 name = "sva-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "sva-ast",
+ "sva-fingerprint",
  "sva-formula",
  "sva-samples",
 ]
 
 [[package]]
+name = "sva-fingerprint"
+version = "0.3.0"
+
+[[package]]
 name = "sva-formula"
-version = "0.2.0"
+version = "0.3.0"
+dependencies = [
+ "sva-fingerprint",
+]
 
 [[package]]
 name = "sva-samples"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
+ "sva-fingerprint",
  "sva-formula",
 ]
 
 [[package]]
 name = "sva-wasm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "js-sys",
  "sva-ast",
  "sva-core",
  "sva-engine",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "web-sys",
 ]
 
 [[package]]
@@ -431,6 +445,16 @@ name = "wasm-bindgen-test-shared"
 version = "0.2.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f37b4f992cebe528ef34964ae69681ac0fe7080071e7298e46008f9d380302af"
+
+[[package]]
+name = "web-sys"
+version = "0.3.105"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9fbddc4a036f00ec4f18c83445bd3115cb306a91da554919a099d9222fe4a7f8"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "winapi-util"

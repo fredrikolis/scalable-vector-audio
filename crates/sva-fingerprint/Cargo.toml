@@ -1,0 +1,10 @@
+# Concern: declares the package and NO dependencies at all | Non-concern: the deny edges that keep it a leaf (.annotated-tree.toml) | IO: none
+[package]
+name = "sva-fingerprint"
+description = "Fingerprints a crate's own sources, so a render persisted by one build is never read by another"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

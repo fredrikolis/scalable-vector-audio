@@ -48,6 +48,16 @@ use sva_ast::Graph;
 
 pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
 
+pub const SOURCE_HASH: &str = env!("SVA_ENGINE_SRC_HASH");
+
+/// Every crate whose source shapes a rendered sample, folded: equal only where a render is.
+pub const RENDER_FINGERPRINT: u64 = sva_fingerprint::fold(&[
+    sva_ast::SOURCE_HASH,
+    sva_formula::SOURCE_HASH,
+    sva_samples::SOURCE_HASH,
+    SOURCE_HASH,
+]);
+
 /// One inference, so a lint and a render refuse identically.
 pub fn check_structure(graph: &Graph, root: &str) -> Result<(), EngineError> {
     types(graph, root).map(|_| ())

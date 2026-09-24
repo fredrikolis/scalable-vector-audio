@@ -4,7 +4,7 @@ mod fixtures;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use fixtures::Relabelled;
+use fixtures::{Relabelled, graph_of};
 use sva_engine::{
     Cache, Expected, Hash, Medium, MemoryCache, Pack, Payload, Tier, Tiered, VecMedium,
 };
@@ -61,6 +61,7 @@ struct Flaky {
     writable: AtomicU64,
     truncates: AtomicBool,
     reads: AtomicBool,
+    flushes: AtomicU64,
 }
 
 impl Flaky {
@@ -70,6 +71,7 @@ impl Flaky {
             writable: AtomicU64::new(u64::MAX),
             truncates: AtomicBool::new(true),
             reads: AtomicBool::new(true),
+            flushes: AtomicU64::new(0),
         }
     }
 }
@@ -90,6 +92,7 @@ impl Medium for Flaky {
         self.truncates.load(Ordering::Relaxed) && self.inner.truncate(len)
     }
     fn flush(&self) -> bool {
+        self.flushes.fetch_add(1, Ordering::Relaxed);
         true
     }
 }
@@ -324,4 +327,44 @@ fn a_refused_read_is_a_counted_miss() {
     pack.medium().reads.store(false, Ordering::Relaxed);
     assert!(pack.load(Hash(1, 1), "n", READ).is_none());
     assert_eq!(pack.faults(), 1);
+}
+
+/// A flush is the dear call on a browser's file system, so a render answered wholly from the
+/// store, and the sweep after it, leave the medium untouched.
+#[test]
+fn a_render_of_nothing_but_hits_flushes_nothing() {
+    let graph = graph_of(
+        "flushes",
+        &[
+            ("osc", "saw(110*t)\n"),
+            ("master", "lowpass(sample(@osc), cutoff=900, q=0.8)*0.5\n"),
+        ],
+    );
+    let tiered = Tiered::new(MemoryCache::new(), Pack::open(Flaky::new(), u64::MAX));
+    let rendered = |tiered: &Tiered<Flaky>| {
+        let held = sva_engine::render(
+            &graph,
+            "master",
+            sva_engine::RenderConfig::seconds(8_000, 0.05),
+            Some(tiered),
+        )
+        .expect("a render");
+        tiered.sweep();
+        held.cache_stats.expect("stats")
+    };
+    let flushes = |tiered: &Tiered<Flaky>| tiered.back.medium().flushes.load(Ordering::Relaxed);
+
+    let cold = rendered(&tiered);
+    assert!(cold.stored() > 0);
+    assert_eq!(
+        flushes(&tiered),
+        1,
+        "what the cold render wrote is flushed once"
+    );
+
+    let warm = rendered(&tiered);
+    assert_eq!(warm.computed(), 0, "the second render is all hits");
+    assert_eq!(flushes(&tiered), 1, "and flushes nothing");
+    tiered.sweep();
+    assert_eq!(flushes(&tiered), 1, "nor does a bare sweep");
 }

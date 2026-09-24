@@ -4,11 +4,15 @@
 //! than read. A refusal crosses as a thrown `Error`: `name` is the CLI's error code,
 //! `refusal` the envelope it would print.
 
+mod opfs;
+
 use sva_core::{
     CliError, Diagnostic, Job, Rendered, Report, SAMPLE_LIMIT, WindowEdge, error_envelope, execute,
-    query_data, representation_for, retired, window_for,
+    query_data, representation_for, retired, stats_json, window_for,
 };
-use sva_engine::{Buffer, Cache, Horizon, MemoryCache, PSYCHOACOUSTIC_V1, answer_buffer};
+use sva_engine::{
+    Buffer, Cache, CacheStats, Horizon, MemoryCache, PSYCHOACOUSTIC_V1, Pack, Tiered, answer_buffer,
+};
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -53,11 +57,47 @@ fn refuse(message: String, help: &str) -> JsValue {
 
 /// Nothing in a browser pushes back when a store grows inside the tab's own address space.
 const DEFAULT_CACHE_BYTES: u64 = 256 << 20;
+const DEFAULT_PERSISTENT_BYTES: u64 = 512 << 20;
+
+enum Store {
+    Memory(MemoryCache),
+    Persistent(Box<Tiered<opfs::OpfsMedium>>),
+}
+
+impl Store {
+    fn cache(&self) -> &dyn Cache {
+        match self {
+            Store::Memory(memory) => memory,
+            Store::Persistent(tiered) => tiered.as_ref(),
+        }
+    }
+
+    fn memory(&self) -> &MemoryCache {
+        match self {
+            Store::Memory(memory) => memory,
+            Store::Persistent(tiered) => &tiered.front,
+        }
+    }
+
+    fn pack(&self) -> Option<&dyn Cache> {
+        match self {
+            Store::Memory(_) => None,
+            Store::Persistent(tiered) => Some(&tiered.back),
+        }
+    }
+
+    fn remember_in(&mut self, memory: MemoryCache) {
+        match self {
+            Store::Memory(held) => *held = memory,
+            Store::Persistent(tiered) => tiered.front = memory,
+        }
+    }
+}
 
 #[wasm_bindgen]
 pub struct Composition {
     inner: sva_ast::Composition,
-    cache: MemoryCache,
+    store: Store,
 }
 
 #[wasm_bindgen]
@@ -70,8 +110,38 @@ impl Composition {
                 Some(name) => inner.named(name),
                 None => inner,
             },
-            cache: MemoryCache::holding(DEFAULT_CACHE_BYTES),
+            store: Store::Memory(MemoryCache::holding(DEFAULT_CACHE_BYTES)),
         }
+    }
+
+    /// `name` labels the composition as `new` does; renders persist under `cache` in a dedicated
+    /// worker's private file system, and anywhere none opens, or `cache` is held, memory-only.
+    #[wasm_bindgen(js_name = persistent)]
+    pub async fn open_persistent(
+        name: Option<String>,
+        cache: String,
+        max_bytes: Option<f64>,
+    ) -> Result<Composition, JsValue> {
+        if cache.is_empty() || cache == "." || cache == ".." || cache.contains(['/', '\\']) {
+            return Err(refuse(
+                format!("`{cache}` cannot name a directory"),
+                "name the cache with one path component",
+            ));
+        }
+        let mut held = Composition::new(name);
+        if let Some(medium) = opfs::open(&cache).await {
+            let cap = max_bytes.map_or(DEFAULT_PERSISTENT_BYTES, |b| b.max(0.0) as u64);
+            held.store = Store::Persistent(Box::new(Tiered::new(
+                MemoryCache::holding(DEFAULT_CACHE_BYTES),
+                Pack::open(medium, cap),
+            )));
+        }
+        Ok(held)
+    }
+
+    #[wasm_bindgen(getter = persistent)]
+    pub fn is_persistent(&self) -> bool {
+        matches!(self.store, Store::Persistent(_))
     }
 
     pub fn insert(&mut self, path: &str, text: &str) {
@@ -85,34 +155,51 @@ impl Composition {
         rate: Option<u32>,
         seconds: Option<f64>,
     ) -> Result<Rendering, JsValue> {
-        execute(Job {
+        let rendered = execute(Job {
             target: target.as_deref(),
             until: seconds.map(WindowEdge::Secs),
             sample_rate: rate,
             reaching: true,
-            cache: Some(&self.cache),
+            cache: Some(self.store.cache()),
             ..Job::over(&self.inner)
-        })
-        .map(|inner| Rendering { inner })
-        .map_err(|e| thrown(&e))
+        });
+        self.store.cache().sweep();
+        rendered
+            .map(|inner| Rendering { inner })
+            .map_err(|e| thrown(&e))
     }
 
+    /// The memory tier's, as `cache_max_bytes` is; `persistent_bytes` is the pack's.
     #[wasm_bindgen(getter)]
     pub fn cache_bytes(&self) -> f64 {
-        self.cache.held_bytes() as f64
+        self.store.memory().held_bytes() as f64
     }
 
     #[wasm_bindgen(getter)]
     pub fn cache_max_bytes(&self) -> f64 {
-        self.cache.max_bytes() as f64
+        self.store.memory().max_bytes() as f64
+    }
+
+    /// Zero on a memory-only composition, as `persistent_max_bytes` is.
+    #[wasm_bindgen(getter)]
+    pub fn persistent_bytes(&self) -> f64 {
+        self.store.pack().map_or(0.0, |p| p.held_bytes() as f64)
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn persistent_max_bytes(&self) -> f64 {
+        self.store.pack().map_or(0.0, |p| p.max_bytes() as f64)
     }
 
     pub fn bound_cache(&mut self, max_bytes: f64) {
-        self.cache = MemoryCache::holding(max_bytes.max(0.0) as u64);
+        self.store
+            .remember_in(MemoryCache::holding(max_bytes.max(0.0) as u64));
     }
 
+    /// Empties the memory tier only: a persistent pack outlives it by design.
     pub fn clear_cache(&mut self) {
-        self.cache = MemoryCache::holding(self.cache.max_bytes());
+        let max_bytes = self.store.memory().max_bytes();
+        self.store.remember_in(MemoryCache::holding(max_bytes));
     }
 }
 
@@ -170,6 +257,14 @@ impl Rendering {
         }
         let held = buffer.as_f32(channel);
         Ok(held[range(buffer, over)].to_vec())
+    }
+
+    /// The object `sva-cli render` puts under `data.cache.stats`.
+    pub fn stats(&self) -> Result<JsValue, JsValue> {
+        let none = CacheStats::default();
+        parse(&stats_json(
+            self.inner.render.cache_stats.as_ref().unwrap_or(&none),
+        ))
     }
 
     /// The object `sva-cli render --as <name>` puts under `data`, arrays capped as it caps.

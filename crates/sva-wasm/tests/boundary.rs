@@ -236,6 +236,81 @@ fn a_cache_held_across_renders_locks_and_answers_what_the_first_render_did() {
     assert_eq!(plane(&render(&held, "partials/one")), after);
 }
 
+/// The object `sva-cli render` puts under `data.cache.stats`, with the second of two
+/// identical renders answered wholly from the composition's own store.
+#[wasm_bindgen_test]
+fn stats_cross_as_the_cli_object_and_a_repeated_render_is_all_hits() {
+    let held = page();
+    let cold = render(&held, "master")
+        .stats()
+        .unwrap_or_else(|_| unreachable!("stats answer"));
+    let warm = render(&held, "master")
+        .stats()
+        .unwrap_or_else(|_| unreachable!("stats answer"));
+
+    let lookups = items(&warm, "lookups");
+    assert!(lookups.length() > 0, "{}", as_text(&warm));
+    assert_eq!(
+        field(&field(&warm, "hits"), "memory").as_f64(),
+        Some(f64::from(lookups.length())),
+        "every lookup a hit: {}",
+        as_text(&warm)
+    );
+    assert_eq!(
+        field(&field(&warm, "hits"), "persistent").as_f64(),
+        Some(0.0)
+    );
+    assert_eq!(field(&warm, "computed").as_f64(), Some(0.0));
+    assert_eq!(field(&warm, "stored").as_f64(), Some(0.0));
+    assert_eq!(
+        field(&warm, "nodes").as_f64(),
+        field(&cold, "nodes").as_f64()
+    );
+    let first = lookups.get(0);
+    for key in ["node", "key", "kind"] {
+        assert!(field(&first, key).is_string(), "{key}: {}", as_text(&first));
+    }
+    assert_eq!(field(&first, "outcome").as_string().as_deref(), Some("hit"));
+    assert_eq!(field(&first, "tier").as_string().as_deref(), Some("memory"));
+
+    let first_cold = items(&cold, "lookups").get(0);
+    assert_eq!(
+        field(&first_cold, "outcome").as_string().as_deref(),
+        Some("computed_stored")
+    );
+    assert!(
+        field(&first_cold, "tier").is_undefined(),
+        "a miss has no tier"
+    );
+}
+
+/// Node has no origin-private file system, so the factory resolves the memory-only
+/// composition it falls back to everywhere one cannot be opened, and says so.
+#[wasm_bindgen_test]
+async fn a_persistent_composition_without_a_file_system_is_memory_only() {
+    let mut held = Composition::open_persistent(None, "a-registry".to_string(), None)
+        .await
+        .unwrap_or_else(|_| unreachable!("a fallback, not a refusal"));
+    assert!(!held.is_persistent());
+    assert_eq!(held.persistent_bytes(), 0.0, "no pack holds anything");
+    assert_eq!(held.persistent_max_bytes(), 0.0);
+    assert!(
+        held.cache_max_bytes() > 0.0,
+        "the memory tier still has its budget"
+    );
+    held.insert("master", "sin(2*pi*100*t)\n");
+    assert_eq!(of_default(&held).channels(), 1, "and it renders");
+
+    for name in ["", "..", "a/b"] {
+        assert!(
+            Composition::open_persistent(None, name.to_string(), None)
+                .await
+                .is_err(),
+            "`{name}` names no one directory"
+        );
+    }
+}
+
 #[wasm_bindgen_test]
 fn the_cache_budget_is_the_pages_own_and_survives_a_clear() {
     let mut held = page();

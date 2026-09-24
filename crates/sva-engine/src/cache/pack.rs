@@ -103,6 +103,8 @@ struct State {
     index: HashMap<Hash, Slot>,
     end: u64,
     clock: u64,
+    /// A flush is dear on some media, so a sweep after nothing but hits touches none.
+    unflushed: bool,
 }
 
 /// Records `[magic u32][len u32][key 16B][checksum u64][entry]`, appended and never rewritten
@@ -124,6 +126,7 @@ impl<M: Medium> Pack<M> {
             index: HashMap::new(),
             end: 0,
             clock: 0,
+            unflushed: false,
         };
         let len = medium.size();
         while let Some((key, slot)) = record_at(&medium, state.end, len, state.clock) {
@@ -133,6 +136,7 @@ impl<M: Medium> Pack<M> {
         }
         if state.end < len {
             medium.truncate(state.end);
+            state.unflushed = true;
         }
         Pack {
             medium,
@@ -191,6 +195,7 @@ impl<M: Medium> Pack<M> {
             self.fault();
         }
         state.end = cursor;
+        state.unflushed = true;
     }
 }
 
@@ -333,6 +338,7 @@ impl<M: Medium> Cache for Pack<M> {
         record.extend_from_slice(&body);
         let mut state = self.locked();
         let off = state.end;
+        state.unflushed = true;
         if !self.medium.write_at(off, &record) {
             self.fault();
             self.medium.truncate(off);
@@ -366,7 +372,7 @@ impl<M: Medium> Cache for Pack<M> {
             self.compact(&mut state);
         }
         self.evicted.store(evicted, Ordering::Relaxed);
-        if !self.medium.flush() {
+        if std::mem::take(&mut state.unflushed) && !self.medium.flush() {
             self.fault();
         }
     }

@@ -96,7 +96,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -eu
-          for crate in sva-ast sva-formula sva-samples sva-engine sva-core sva-analysis sva-cli; do
+          for crate in sva-fingerprint sva-ast sva-formula sva-samples sva-engine sva-core sva-analysis sva-cli; do
             while true; do
               err="$(mktemp)"
               if cargo publish -p "$crate" --locked 2>"$err"; then
