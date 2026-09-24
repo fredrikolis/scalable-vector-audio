@@ -1,7 +1,5 @@
 // Concern: states that a spectrum or series under any crop costs its unwindowed route and answers the same samples | Non-concern: which row a windowed form takes | IO: (a ClosedForm) -> Buffer
 
-use std::time::Instant;
-
 use sva_formula::{Body, ClosedForm, Edge, Origin, Part, Var, noise};
 use sva_samples::collapse::{self, AliasScore, Horizon};
 use sva_samples::{Buffer, CollapseError, Label, PSYCHOACOUSTIC_V1, Profile, Source};
@@ -45,22 +43,32 @@ fn cropped(of: Body, to_secs: f64) -> Body {
 #[test]
 fn a_cropped_noise_series_costs_its_uncropped_route() {
     let horizon = Horizon::secs(0.0, 4.0);
-    let started = Instant::now();
-    let (held, label) = render(
-        &form(cropped(hiss(), 4.0)),
-        RATE,
-        horizon,
-        &PSYCHOACOUSTIC_V1,
+    let len = horizon.len(RATE).expect("a horizon");
+    let law = form(cropped(hiss(), 4.0));
+    let sum = sva_formula::normalize_closed_form(&law).expect("a spectral sum");
+    let truncated = sva_samples::truncate_spectral_sum(
+        &sum,
+        sva_samples::Audible::of(&PSYCHOACOUSTIC_V1, RATE),
     )
-    .expect("a cropped noise series");
-    let took = started.elapsed();
-
-    assert_eq!(label.source, Source::Measured, "a window is measured");
-    assert_eq!(held.len(), 4 * RATE as usize);
+    .expect("a truncated form");
+    let swept = truncated
+        .lanes
+        .iter()
+        .map(|lane| lane.atoms.len())
+        .sum::<usize>() as u128
+        * len as u128;
+    let cost = collapse::plan::of(&sum, RATE, horizon, &PSYCHOACOUSTIC_V1, len)
+        .expect("a row")
+        .flops(len);
     assert!(
-        took < std::time::Duration::from_secs(5),
-        "the window took {took:?}, which is a term-by-term sweep"
+        cost < swept,
+        "a cropped series costs its placed route, not {swept} for a sweep: {cost}"
     );
+
+    let (held, label) =
+        render(&law, RATE, horizon, &PSYCHOACOUSTIC_V1).expect("a cropped noise series");
+    assert_eq!(label.source, Source::Measured, "a window is measured");
+    assert_eq!(held.len(), len);
 }
 
 #[test]

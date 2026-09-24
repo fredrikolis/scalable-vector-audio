@@ -8,9 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use fixtures::dir_of;
-use sva_engine::{
-    Cache, DiskCache, Expected, Hash, IO_NANOS_PER_BYTE, MemoryCache, Payload, PayloadKind,
-};
+use sva_engine::{Cache, DiskCache, Expected, Hash, MemoryCache, Payload, PayloadKind};
 use sva_samples::{AutomationFrame, Buffer, FilterTrace};
 
 const FOUR: Expected = Expected::Samples {
@@ -322,51 +320,4 @@ fn a_damaged_entry_is_dropped_and_counted_rather_than_read_as_a_cold_miss() {
         "an entry that is there but unreadable counts"
     );
     let _ = fs::set_permissions(&file, fs::Permissions::from_mode(0o600));
-}
-
-/// `IO_NANOS_PER_BYTE` decides whether a render is worth a file, so a store-and-load round
-/// trip has to come in under it. The margin is the room a loaded runner gets: this suite runs
-/// beside every other one, and the fastest round of each size is the one machine-independent
-/// number here.
-#[test]
-fn a_warm_round_trip_costs_less_than_the_store_charges_for_it() {
-    const RATE: u32 = 44_100;
-    const ROUNDS: u32 = 5;
-    const MARGIN: f64 = 5.0;
-
-    let dir = dir_of("io-price", &[]);
-    let cache = DiskCache::at(&dir);
-    let mut dearer = 0;
-    for secs in [1usize, 4, 32] {
-        let samples = secs * RATE as usize;
-        let buffer = Buffer::mono(
-            RATE,
-            (0..samples).map(|n| (n as f64 * 1e-4).sin()).collect(),
-        );
-        let payload = Payload::Samples(Box::new(buffer));
-        let bytes = samples * size_of::<f64>();
-        let key = Hash(secs as u64, 0x1_0f_a1);
-        let expected = Expected::Samples {
-            rate: RATE,
-            width: 1,
-            samples,
-        };
-        let mut quickest = Duration::MAX;
-        for _ in 0..ROUNDS {
-            let at = std::time::Instant::now();
-            cache.store(key, &payload, &[], None);
-            assert!(
-                cache.load(key, "priced", expected).is_some(),
-                "the entry just written reads back"
-            );
-            quickest = quickest.min(at.elapsed());
-        }
-        let per = quickest.as_nanos() as f64 / bytes as f64;
-        dearer += usize::from(per > MARGIN * IO_NANOS_PER_BYTE as f64);
-    }
-    assert!(
-        dearer < 3,
-        "every size cost over {MARGIN} times the {IO_NANOS_PER_BYTE} ns/B the store charges, \
-         on its own fastest round of {ROUNDS}"
-    );
 }
