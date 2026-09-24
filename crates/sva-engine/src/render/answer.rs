@@ -3,9 +3,9 @@
 use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
 use sva_formula::{AUDIBLE_CEILING_HZ, Line, SpectralSum, Var, d_dt, envelope, line_atoms};
 use sva_samples::{
-    AliasScore, Buffer, Consumes, Peak, PitchFrame, Source, measure::bands, measure::crest,
-    measure::envelope, measure::formants, measure::loudness, measure::pitch, measure::spectrum,
-    measure::stereo, measure_alias,
+    AliasScore, Buffer, Consumes, Horizon, Peak, PitchFrame, Source, measure::bands,
+    measure::crest, measure::envelope, measure::formants, measure::loudness, measure::pitch,
+    measure::spectrum, measure::stereo, measure_alias,
 };
 
 use crate::error::{Diagnostic, EngineError, Located};
@@ -407,7 +407,9 @@ fn measured(
             let reference = oversampled(render, behind(render, node)?, oversample)?;
             Output::Alias(Box::new(worst_alias(buffer, &reference, oversample)))
         }
-        Representation::Ledger { depth } => Output::Ledger(attributed(render, node, depth)?),
+        Representation::Ledger { depth } => {
+            Output::Ledger(attributed(render, node, depth, 0..buffer.len())?)
+        }
         other => {
             return off_buffer(buffer, other).map_err(|fault| match fault {
                 NoReading::NeedsAGraph => not_a_reading(render, node, other),
@@ -493,6 +495,7 @@ fn attributed(
     render: &Render,
     node: sva_formula::NodeId,
     depth: usize,
+    range: std::ops::Range<usize>,
 ) -> Result<Vec<sva_samples::LedgerEntry>, EngineError> {
     let mut buffers = std::collections::BTreeMap::new();
     let mut deps = std::collections::BTreeMap::new();
@@ -513,15 +516,35 @@ fn attributed(
             contributed_by.insert(render.tys.name(child).to_string(), held);
         }
     }
-    let len = render.buffers.get(&node).map_or(0, |b| b.len());
     Ok(sva_samples::measure::ledger::attribute(
         &buffers,
         &contributed_by,
         &deps,
         &kinds,
         render.tys.name(node),
-        0..len,
+        range,
         depth,
+    ))
+}
+
+/// The ledger over the part of a render `over` names: the same tree and the same shares,
+/// each summed over those samples alone, as a render over that window alone would sum them.
+pub fn ledger_over(
+    render: &Render,
+    node: sva_formula::NodeId,
+    depth: usize,
+    over: Horizon,
+) -> Result<Answer, EngineError> {
+    let representation = Representation::Ledger { depth };
+    let buffer = render
+        .buffers
+        .get(&node)
+        .ok_or_else(|| unmaterialized(render, node, representation))?;
+    Ok(Answer::whole(
+        Output::Ledger(attributed(render, node, depth, buffer.span_of(over))?),
+        Source::Measured,
+        render.config.profile.name,
+        Some(render.config.rate),
     ))
 }
 

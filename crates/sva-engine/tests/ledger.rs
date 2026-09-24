@@ -3,7 +3,9 @@
 mod fixtures;
 
 use fixtures::graph_of;
-use sva_engine::{Ask, LedgerEntry, Output, RenderConfig, Representation, answer, render};
+use sva_engine::{
+    Ask, Horizon, LedgerEntry, Output, RenderConfig, Representation, answer, ledger_over, render,
+};
 
 fn ledger(name: &str, files: &[(&str, &str)], depth: usize) -> Vec<LedgerEntry> {
     let g = graph_of(name, files);
@@ -285,5 +287,61 @@ fn ledger_walks_through_a_sampled_node_to_its_slots() {
     assert!(
         held.contains(&"chord"),
         "and the walk carries on through `glue` into the closed form it sampled: {held:?}"
+    );
+}
+
+/// A ledger over part of a render sums its energies over that part alone: a section silent
+/// there accounts for none of it, and the whole horizon is the ledger the render answers.
+#[test]
+fn a_ledger_over_a_window_shares_that_window_alone() {
+    let g = graph_of(
+        "windowed-ledger",
+        &[
+            ("early", "crop(0.8*sin(2*pi*200*t), 0s, 0.5s)\n"),
+            ("late", "crop(0.3*sin(2*pi*300*t), 0.5s, 1s)\n"),
+            ("master", "@early(t) + @late(t)\n"),
+        ],
+    );
+    let depth = 1;
+    let asks = vec![Ask {
+        node: "master".to_string(),
+        representation: Representation::Ledger { depth },
+    }];
+    let held = render(
+        &g,
+        "master",
+        RenderConfig::seconds(8_000, 1.0).asking(asks),
+        None,
+    )
+    .expect("a render");
+    let id = held.id("master").expect("the root");
+    let over = |from: f64, to: f64| match ledger_over(&held, id, depth, Horizon::secs(from, to))
+        .expect("a windowed ledger")
+        .value
+    {
+        Output::Ledger(entries) => entries,
+        other => panic!("expected a ledger, got {other:?}"),
+    };
+
+    let second_half = over(0.5, 1.0);
+    assert_eq!(named(&second_half, "early").share, Some(0.0));
+    assert_eq!(named(&second_half, "early").rms, 0.0);
+    let late = named(&second_half, "late");
+    assert!(
+        (late.share.expect("an audible share") - 1.0).abs() < 1e-9,
+        "late is the whole of the second half: {late:?}"
+    );
+
+    let whole = match answer(&held, id, Representation::Ledger { depth })
+        .expect("a ledger")
+        .value
+    {
+        Output::Ledger(entries) => entries,
+        other => panic!("expected a ledger, got {other:?}"),
+    };
+    assert_eq!(
+        over(0.0, 1.0),
+        whole,
+        "the whole window is the render's own ledger"
     );
 }

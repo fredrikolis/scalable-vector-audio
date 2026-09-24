@@ -11,8 +11,8 @@ use sva_core::{
     query_data, representation_for, retired, stats_json, window_for,
 };
 use sva_engine::{
-    Buffer, Cache, CacheStats, Horizon, MemoryCache, PSYCHOACOUSTIC_V1, Pack, Slots, Tiered,
-    answer_buffer,
+    Buffer, Cache, CacheStats, Horizon, MemoryCache, PSYCHOACOUSTIC_V1, Pack, Representation,
+    Slots, Tiered, answer_buffer, ledger_over,
 };
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -282,7 +282,7 @@ impl Rendering {
             ));
         }
         let held = buffer.as_f32(channel);
-        Ok(held[range(buffer, over)].to_vec())
+        Ok(held[buffer.span_of(over)].to_vec())
     }
 
     /// The object `sva-cli render` puts under `data.cache.stats`.
@@ -317,16 +317,24 @@ impl Rendering {
         let whole = self.inner.config.horizon;
         let narrowed = self.narrowed(asked);
         let whole_horizon = narrowed.is_none();
-        let (answer, over) = match narrowed {
-            None => (
+        let engine = |e| thrown(&CliError::Engine(e));
+        let (answer, over) = match (narrowed, wanted) {
+            (None, _) => (
                 self.inner
                     .answer(&self.inner.target, wanted)
                     .map_err(|e| thrown(&e))?,
                 whole,
             ),
-            Some((buffer, over)) => (
+            (Some((_, over)), Representation::Ledger { depth }) => {
+                let node = self.inner.render.node(&self.inner.target).map_err(engine)?;
+                (
+                    ledger_over(&self.inner.render, node, depth, over).map_err(engine)?,
+                    over,
+                )
+            }
+            (Some((buffer, over)), _) => (
                 answer_buffer(&self.inner.target, &buffer, wanted, PSYCHOACOUSTIC_V1.name)
-                    .map_err(|e| thrown(&sva_core::CliError::Engine(e)))?,
+                    .map_err(engine)?,
                 over,
             ),
         };
@@ -360,7 +368,7 @@ impl Rendering {
         }
         let over = Horizon::secs(start, end);
         let buffer = self.buffer()?;
-        let taken = range(buffer, over);
+        let taken = buffer.span_of(over);
         let mut held = Buffer::of_planes(
             buffer.rate,
             (0..buffer.width)
@@ -407,17 +415,4 @@ impl Rendering {
         let id = self.inner.render.id(&self.inner.target)?;
         self.inner.render.buffer(id)
     }
-}
-
-fn range(buffer: &Buffer, over: Horizon) -> std::ops::Range<usize> {
-    let rate = f64::from(buffer.rate);
-    let at = |secs: f64| {
-        (((secs - buffer.origin_secs) * rate).round().max(0.0) as usize).min(buffer.len())
-    };
-    let start = at(over.start_secs);
-    let end = match over.end_secs.is_finite() {
-        true => at(over.end_secs).max(start),
-        false => buffer.len(),
-    };
-    start..end
 }

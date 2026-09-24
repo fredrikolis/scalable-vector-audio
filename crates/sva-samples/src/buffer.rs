@@ -66,6 +66,20 @@ impl Buffer {
         self.planes[c][i]
     }
 
+    /// The samples `over` covers, nearest grid point at each end, held to what this holds.
+    pub fn span_of(&self, over: crate::Horizon) -> Range<usize> {
+        let rate = f64::from(self.rate);
+        let at = |secs: f64| {
+            (((secs - self.origin_secs) * rate).round().max(0.0) as usize).min(self.len())
+        };
+        let start = at(over.start_secs);
+        let end = match over.end_secs.is_finite() {
+            true => at(over.end_secs).max(start),
+            false => self.len(),
+        };
+        start..end
+    }
+
     pub fn window(&self, c: usize, range: Range<usize>) -> Cow<'_, [f64]> {
         let plane = self.plane(c);
         if range.end <= plane.len() {

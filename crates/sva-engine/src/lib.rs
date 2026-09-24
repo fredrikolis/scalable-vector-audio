@@ -33,7 +33,8 @@ pub use offset::Offset;
 pub use query::{Answer, Ask, DEFAULT_FRAME_SECS, Output, Representation};
 pub use refs::{Read, identity, nodes_in, resolve, spectral_sum_of, symbolic_hash};
 pub use render::{
-    Render, RenderConfig, answer, answer_buffer, render, render_with_slots, sketch_atom,
+    Render, RenderConfig, answer, answer_buffer, ledger_over, render, render_with_slots,
+    sketch_atom,
 };
 pub use schedule::{Order, Schedule, schedule_from};
 pub use sva_formula::{C64, Codomain, Held, Line, NodeId, SpectralSum, Ty, Var};

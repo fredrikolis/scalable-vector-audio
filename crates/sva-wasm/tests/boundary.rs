@@ -508,3 +508,29 @@ fn a_refusal_the_page_raised_crosses_exactly_as_a_pipeline_one_does() {
         as_text(&envelope)
     );
 }
+
+/// `sva-cli render --as ledger --from --to` answers a windowed ledger, so a page asking the
+/// same window gets one too, summed over that window alone.
+#[wasm_bindgen_test]
+fn a_ledger_narrows_to_the_window_asked_for() {
+    let held = of_default(&page());
+    let asked = held
+        .query("ledger", Some(0.25), Some(0.5))
+        .unwrap_or_else(|_| unreachable!("a windowed ledger answers"));
+    let window = field(&asked, "window");
+    assert_eq!(field(&window, "start_secs").as_f64(), Some(0.25));
+    assert_eq!(field(&window, "end_secs").as_f64(), Some(0.5));
+    let rows = items(&field(&asked, "ledger"), "value");
+    let spelled = as_text(&asked);
+    assert!(rows.length() >= 2, "the target and its ref: {spelled}");
+    let master = rows.get(0);
+    assert_eq!(
+        field(&master, "node").as_string().as_deref(),
+        Some("master")
+    );
+    let rms = field(&master, "rms").as_f64().unwrap_or(0.0);
+    assert!(
+        (rms - 0.5 / 2f64.sqrt()).abs() < 1e-3,
+        "a sine at 0.5 over whole periods: {spelled}"
+    );
+}
