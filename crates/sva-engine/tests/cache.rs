@@ -460,6 +460,7 @@ fn a_sampled_node_is_stored_and_answered_from_the_store() {
         sva_engine::identity(&cold.tys, id).expect("acc has an identity"),
         RATE,
         0.0,
+        (SECONDS * f64::from(RATE)).round() as usize,
         cold.tys.ty(id).width as usize,
         sva_samples::AliasScore::NotAsked,
     );
@@ -469,4 +470,82 @@ fn a_sampled_node_is_stored_and_answered_from_the_store() {
     let warm = all_of(&dir, "master", &["acc"], Some(&cache));
     assert_eq!(samples(&cold), samples(&warm), "byte for byte");
     assert_eq!(entries(&cache), filled, "and nothing was written twice");
+}
+
+fn over(dir: &Path, root: &str, seconds: f64, cache: &dyn Cache) -> Render {
+    let graph = sva_ast::parse_composition(dir).expect("a composition that parses");
+    render(
+        &graph,
+        root,
+        RenderConfig::seconds(RATE, seconds),
+        Some(cache),
+    )
+    .unwrap_or_else(|e| panic!("rendering `{root}` for {seconds}s: {e}"))
+}
+
+/// A disk store holds no spectral sum, so only the buffers are asked to hit.
+fn every_buffer_hit(r: &Render) -> bool {
+    let stats = r.cache_stats.as_ref().expect("a render handed a store");
+    stats
+        .lookups
+        .iter()
+        .filter(|l| l.kind == PayloadKind::Samples)
+        .all(|l| matches!(l.outcome, sva_engine::Outcome::Hit(_)))
+}
+
+#[test]
+fn two_horizons_of_one_node_are_two_entries_in_every_store() {
+    let dir = dir_of(
+        "horizons",
+        &[
+            ("acc", "sample(sin(2*pi*220*t))*0.5\n"),
+            ("master", "@acc + @acc*0.25\n"),
+        ],
+    );
+    let disk = store_all("horizons-disk");
+    let memory = MemoryCache::new();
+    for store in [&disk as &dyn Cache, &memory] {
+        let short = samples(&over(&dir, "master", SECONDS, store));
+        let long = samples(&over(&dir, "master", 2.0 * SECONDS, store));
+        let again_short = over(&dir, "master", SECONDS, store);
+        let again_long = over(&dir, "master", 2.0 * SECONDS, store);
+        assert!(
+            every_buffer_hit(&again_short),
+            "the short horizon stayed held"
+        );
+        assert!(every_buffer_hit(&again_long), "and so did the long one");
+        assert_eq!(samples(&again_short), short);
+        assert_eq!(samples(&again_long), long);
+        assert_eq!(store.faults(), 0, "no entry was read at the wrong length");
+    }
+}
+
+#[test]
+fn sat_drives_a_sampled_operand_as_it_drives_a_closed_form() {
+    let dir = dir_of(
+        "sat-drive",
+        &[
+            ("x", "sample(sin(2*pi*220*t))*0.5\n"),
+            ("soft", "sat(@x, drive=1)\n"),
+            ("hard", "sat(@x, drive=5)\n"),
+            ("written", "sat(@x*5)\n"),
+        ],
+    );
+    let store = MemoryCache::new();
+    let root = |node: &str| {
+        let held = rendered(&dir, node, Some(&store));
+        let id = held.id(node).expect("the root types");
+        let key = sva_engine::identity(&held.tys, id).expect("an identity");
+        (held.buffer(id).expect("a buffer").plane(0).to_vec(), key)
+    };
+    let (soft, soft_key) = root("soft");
+    let (hard, hard_key) = root("hard");
+    let (written, written_key) = root("written");
+    assert_ne!(soft, hard, "the drive reached the renderer");
+    assert_ne!(soft_key, hard_key, "and the key");
+    assert_eq!(
+        hard, written,
+        "sat(x, drive=d) is sat(x*d), sample for sample"
+    );
+    assert_eq!(hard_key, written_key, "under one key");
 }

@@ -101,7 +101,10 @@ impl<'g> Lowering<'_, 'g> {
             pieces.push(self.walk(x, cx, var)?);
         }
         if pieces.iter().any(|p| matches!(p, Piece::Value(_))) {
-            return self.operation(name, pieces, Some(span), var);
+            return match (name, view.iter().find(|(k, _)| *k == "drive")) {
+                ("sat", Some((_, drive))) => self.driven(pieces, *drive, span, var),
+                _ => self.operation(name, pieces, Some(span), var),
+            };
         }
         let bodies: Vec<Body> = pieces
             .into_iter()
@@ -182,6 +185,19 @@ impl<'g> Lowering<'_, 'g> {
             }
             other => Err(EngineError::UnknownBuiltin(other.to_string())),
         }
+    }
+
+    /// The product `arithmetic` writes, so the drive reaches the renderer and the identity.
+    fn driven(
+        &mut self,
+        mut pieces: Vec<Piece>,
+        drive: f64,
+        span: ByteSpan,
+        var: Var,
+    ) -> Result<Piece, EngineError> {
+        pieces.push(Piece::ClosedForm(Body::Const(C64::real(drive))));
+        let product = self.operation("*", pieces, Some(span), var)?;
+        self.operation("sat", vec![product], Some(span), var)
     }
 
     fn non_integer_power(&self, written: &[&Expr], span: ByteSpan) -> EngineError {

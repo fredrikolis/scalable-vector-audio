@@ -248,10 +248,12 @@ fn collapse_closed_form(
         Err(e) => return Err(e),
     };
     let score = held.alias_score(id);
+    let samples = length(held, id)?;
     let key = crate::cache::buffer_key(
         identity,
         held.config.rate,
         held.config.horizon.start_secs,
+        samples,
         held.tys.ty(id).width as usize,
         score,
     );
@@ -259,7 +261,7 @@ fn collapse_closed_form(
         held.symbolic.insert(id, sum.clone());
     }
     // FORMAT 9.3: the label belongs to the value, so an entry without one is no value.
-    if let Some((hit, label)) = warm(held, id, key, cache) {
+    if let Some((hit, label)) = warm(held, id, key, samples, cache) {
         held.buffers.insert(id, hit);
         held.labels.insert(id, label);
         return Ok(());
@@ -267,19 +269,29 @@ fn collapse_closed_form(
     let began = Cost::begun();
     let (buffer, label) = match (&sum, &written) {
         (Err(_), None) => pointwise::point_sample(held, id, score)?,
-        _ => sampled_form(held, &sum, written.as_ref(), score).map_err(|e| {
-            EngineError::refused(Diagnostic {
-                code: e.code().to_string(),
-                message: e.to_string(),
-                location: Located::at(held.tys.name(id), None),
-                help: e.help().to_string(),
-            })
-        })?,
+        _ => sampled_form(held, &sum, written.as_ref(), score)
+            .map_err(|e| collapse_refused(held, id, &e))?,
     };
     store(key, &buffer, &label, began.elapsed(), cache);
     held.buffers.insert(id, buffer);
     held.labels.insert(id, label);
     Ok(())
+}
+
+fn collapse_refused(held: &Render, id: NodeId, e: &sva_samples::CollapseError) -> EngineError {
+    EngineError::refused(Diagnostic {
+        code: e.code().to_string(),
+        message: e.to_string(),
+        location: Located::at(held.tys.name(id), None),
+        help: e.help().to_string(),
+    })
+}
+
+fn length(held: &Render, id: NodeId) -> Result<usize, EngineError> {
+    held.config
+        .horizon
+        .len(held.config.rate)
+        .map_err(|e| collapse_refused(held, id, &e))
 }
 
 /// A closed form with a spectral sum takes the six rows over it; one without takes the point-sampled
@@ -317,12 +329,13 @@ fn warm(
     held: &Render,
     id: NodeId,
     key: sva_formula::Hash,
+    samples: usize,
     cache: Option<&dyn crate::cache::Cache>,
 ) -> Option<(Buffer, Label)> {
     let expected = Expected::Samples {
         rate: held.config.rate,
         width: held.tys.ty(id).width as usize,
-        samples: held.config.horizon.len(held.config.rate).ok()?,
+        samples,
     };
     let entry = cache?.load(key, held.tys.name(id), expected)?;
     Some((entry.payload.samples().cloned()?, entry.label?))
@@ -359,6 +372,7 @@ fn frames_of(
             refs::identity(&held.tys, source)?,
             buffer.rate,
             buffer.origin_secs,
+            buffer.len(),
             buffer.width,
             AliasScore::NotAsked,
         ),

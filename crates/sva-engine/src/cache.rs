@@ -171,11 +171,13 @@ pub fn frames_key(buffer: Hash, window: usize, hop: usize) -> Hash {
     )
 }
 
-/// One closed form at one rate, origin and width, scored or not: the label is part of the value.
+/// One closed form at one rate, origin, length and width, scored or not: the label is part of
+/// the value.
 pub fn buffer_key(
     symbolic: Hash,
     rate: u32,
     origin_secs: f64,
+    samples: usize,
     width: usize,
     score: sva_samples::AliasScore,
 ) -> Hash {
@@ -184,6 +186,7 @@ pub fn buffer_key(
         &[
             u64::from(rate),
             origin_secs.to_bits(),
+            samples as u64,
             width as u64,
             u64::from(score == sva_samples::AliasScore::Asked),
             0x62_75_66_66_65_72_00_01,

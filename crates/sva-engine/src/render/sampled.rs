@@ -15,20 +15,22 @@ use crate::typing::Value;
 
 /// A sampled node is the dearest kind this engine runs, so it reads and writes the same
 /// store a collapse does: one key off the node's identity, the rate and the window it was
-/// stepped over. `Expected` refuses an entry of another length, so the key needs no span.
+/// stepped over.
 pub fn run(
     held: &mut Render,
     id: NodeId,
     cache: Option<&dyn crate::cache::Cache>,
 ) -> Result<(), EngineError> {
+    let samples = super::length(held, id)?;
     let key = crate::cache::buffer_key(
         crate::refs::identity(&held.tys, id)?,
         held.config.rate,
         held.config.horizon.start_secs,
+        samples,
         held.tys.ty(id).width as usize,
         sva_samples::AliasScore::NotAsked,
     );
-    if let Some((hit, label)) = super::warm(held, id, key, cache) {
+    if let Some((hit, label)) = super::warm(held, id, key, samples, cache) {
         held.buffers.insert(id, hit);
         held.labels.insert(id, label);
         return Ok(());
