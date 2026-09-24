@@ -529,8 +529,8 @@ fn lines_reads_a_pair_written_in_either_variable() {
     assert_eq!(listed("cos(2*pi*185*t)"), vec![-185.0, 185.0]);
 }
 
-/// FORMAT 14: one render, many readings. Two closed form readings of one node evaluate it once, and
-/// the report names it once rather than once per `--as`.
+/// FORMAT 14: one render, many readings. Two readings off one buffer collapse it once, and
+/// the cache report names that one lookup rather than one per `--as`.
 #[test]
 fn two_readings_share_one_collapse() {
     let dir = scratch("two-readings");
@@ -543,23 +543,23 @@ fn two_readings_share_one_collapse() {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sva-cli"))
         .current_dir(&dir)
         .env("SVA_CACHE", scratch("two-readings-cache"))
-        .args(["render", "master", "--as", "lines", "--as", "atoms"])
+        .args(["render", "master", "--as", "loudness", "--as", "envelope"])
         .output()
         .expect("the binary runs");
     let printed = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(0), "{printed}");
-    assert!(printed.contains("\"lines\""), "{printed}");
-    assert!(printed.contains("\"atoms\""), "{printed}");
+    assert!(printed.contains("\"loudness\""), "{printed}");
+    assert!(printed.contains("\"envelope\""), "{printed}");
 
-    let evaluated = printed
-        .split("\"evaluated\": ")
+    let lookups = printed
+        .split("\"lookups\": ")
         .nth(1)
         .and_then(|rest| rest.split(']').next())
-        .expect("the cache report names what was evaluated");
+        .expect("the cache report lists every lookup");
     assert_eq!(
-        evaluated.matches("\"master\"").count(),
+        lookups.matches("\"kind\": \"samples\"").count(),
         1,
-        "two readings evaluate the law once: {evaluated}"
+        "two readings collapse the one node once: {lookups}"
     );
 }
 

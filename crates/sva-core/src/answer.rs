@@ -3,9 +3,10 @@
 use std::path::Path;
 
 use sva_engine::{
-    Alias, AliasBand, Answer, BandCrest, BandTrack, Bands, Binding, Buffer, Cost, Crest, Detail,
-    EnvelopeFrame, FormantFrame, Horizon, Label, LedgerEntry, Loudness, LoudnessFrame, Output,
-    Source, SpectralSum, Spectrum, StereoFrame, StereoImage,
+    Alias, AliasBand, Answer, BandCrest, BandTrack, Bands, Binding, Buffer, CacheStats, Cost,
+    Crest, Detail, EnvelopeFrame, FormantFrame, Horizon, Label, LedgerEntry, Loudness,
+    LoudnessFrame, Outcome, Output, PayloadKind, Source, SpectralSum, Spectrum, StereoFrame,
+    StereoImage, Tier,
 };
 
 use crate::json::{NONE, capped, escape, list, num};
@@ -13,11 +14,10 @@ use crate::json::{NONE, capped, escape, list, num};
 /// Past this a caller reading stdout wants a narrower `--from`/`--to`, not a wall of JSON.
 pub const SAMPLE_LIMIT: usize = 4096;
 
-/// Which nodes were actually evaluated; everything else came back from the cache at `dir`.
+/// The store at `dir`, and every lookup the render made of it.
 pub struct CacheReport {
     pub dir: String,
-    pub reused: usize,
-    pub evaluated: Vec<String>,
+    pub stats: CacheStats,
     pub held_bytes: u64,
     pub max_bytes: u64,
     pub evicted_bytes: u64,
@@ -455,17 +455,54 @@ pub fn label_json(label: &Label) -> String {
 fn cache_json(cache: Option<&CacheReport>) -> String {
     match cache {
         Some(c) => format!(
-            "{{ \"dir\": \"{}\", \"reused\": {}, \"held_bytes\": {}, \"max_bytes\": {}, \
-             \"evicted_bytes\": {}, \"faults\": {}, \"evaluated\": {} }}",
+            "{{ \"dir\": \"{}\", \"held_bytes\": {}, \"max_bytes\": {}, \
+             \"evicted_bytes\": {}, \"faults\": {}, \"stats\": {} }}",
             escape(&c.dir),
-            c.reused,
             c.held_bytes,
             c.max_bytes,
             c.evicted_bytes,
             c.faults,
-            crate::json::strings(&c.evaluated)
+            stats_json(&c.stats)
         ),
         None => NONE.to_string(),
+    }
+}
+
+/// `computed` counts every miss, `stored` the misses the store kept; a lookup's `tier` is
+/// written only on a hit.
+pub fn stats_json(stats: &CacheStats) -> String {
+    let lookups = list(&stats.lookups, |l| {
+        let (outcome, tier) = match l.outcome {
+            Outcome::Hit(tier) => ("hit", format!(", \"tier\": \"{}\"", tier_name(tier))),
+            Outcome::ComputedStored => ("computed_stored", String::new()),
+            Outcome::ComputedNotStored => ("computed_not_stored", String::new()),
+        };
+        format!(
+            "{{ \"node\": \"{}\", \"key\": \"{}\", \"kind\": \"{}\", \"outcome\": \"{outcome}\"{tier} }}",
+            escape(&l.node),
+            l.key,
+            match l.kind {
+                PayloadKind::Samples => "samples",
+                PayloadKind::Frames => "frames",
+                PayloadKind::Symbolic => "symbolic",
+            }
+        )
+    });
+    format!(
+        "{{ \"nodes\": {}, \"hits\": {{ \"memory\": {}, \"persistent\": {} }}, \
+         \"computed\": {}, \"stored\": {}, \"lookups\": {lookups} }}",
+        stats.nodes(),
+        stats.hits_in(Tier::Memory),
+        stats.hits_in(Tier::Persistent),
+        stats.computed(),
+        stats.stored()
+    )
+}
+
+fn tier_name(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Memory => "memory",
+        Tier::Persistent => "persistent",
     }
 }
 

@@ -36,7 +36,8 @@ RENDER:
 
   `--from`/`--to` bound the window a collapse runs over. `--sample-rate <hz>` is
   the observation rate and is legal with every `--as`: no expression can read it.
-  `--no-cache` skips the disk store.
+  `--no-cache` skips the disk store. `cache.stats` lists every lookup the render
+  made of it, each a `hit` (with its `tier`) or computed, and stored or not.
 
   `--as ledger` prints one row per node under the target. A row's `share` is the
   part of its reader's own energy that row accounts for, so one reader's refs sum

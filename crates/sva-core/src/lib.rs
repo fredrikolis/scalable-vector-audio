@@ -10,7 +10,7 @@ mod query;
 mod tempo;
 
 pub use answer::{
-    CacheReport, Report, SAMPLE_LIMIT, answer_json, label_json, query_data, value_json,
+    CacheReport, Report, SAMPLE_LIMIT, answer_json, label_json, query_data, stats_json, value_json,
 };
 pub use cli_error::{CliError, LintViolation, lint_diagnostic};
 pub use lint_code::LintCode;

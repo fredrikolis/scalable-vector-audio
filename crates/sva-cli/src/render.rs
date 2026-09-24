@@ -71,15 +71,11 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
         dir: c
             .dir()
             .map_or_else(|| "memory".to_string(), |d| d.display().to_string()),
-        reused: rendered.render.buffers.len(),
-        evaluated: rendered
+        stats: rendered
             .render
-            .schedule
-            .materialize
-            .iter()
-            .chain(&rendered.render.schedule.compose)
-            .map(|id| rendered.render.tys.name(*id).to_string())
-            .collect(),
+            .cache_stats
+            .clone()
+            .expect("a render handed a store records every lookup it made"),
         held_bytes: c.held_bytes(),
         max_bytes: c.max_bytes(),
         evicted_bytes: c.evicted_bytes(),
