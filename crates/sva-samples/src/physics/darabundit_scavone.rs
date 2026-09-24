@@ -3,6 +3,7 @@
 //! A 1D acoustic bore with an optional fixed tonehole lattice — Darabundit & Scavone 2025
 //! ("D&S", §7.1-7.2). Propagation: Bilbao & Harrison 2016, Bilbao & Chick 2013 §II.D.
 
+use crate::error::SampleError;
 use crate::physics::Solver;
 use crate::physics::tonehole::{RadCoeffs, ToneholeBranch, build_tonehole, radiation_coeffs};
 
@@ -287,8 +288,8 @@ impl BoreSite {
     }
 }
 
-impl Solver for BoreSite {
-    fn step(&mut self) -> f64 {
+impl BoreSite {
+    fn advance(&mut self) -> f64 {
         let t = self.sample_index as f64 * self.dt;
         let source = crate::physics::raised_cosine_pulse(t, self.pulse_amp, self.pulse_width);
 
@@ -370,5 +371,11 @@ impl Solver for BoreSite {
         let sample = duct.psi[n];
         self.sample_index += 1;
         sample
+    }
+}
+
+impl Solver for BoreSite {
+    fn step(&mut self) -> Result<f64, SampleError> {
+        Ok(self.advance())
     }
 }

@@ -21,7 +21,7 @@ use willemsen_bilbao_serafin::{WillemsenBilbaoSerafinParams, WillemsenBilbaoSera
 
 /// One sample per call. The derivative half of the old pair died with the lanes.
 pub trait Solver {
-    fn step(&mut self) -> f64;
+    fn step(&mut self) -> Result<f64, SampleError>;
 }
 
 #[derive(Clone, Debug, PartialEq)]

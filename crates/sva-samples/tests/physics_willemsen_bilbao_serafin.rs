@@ -236,3 +236,18 @@ fn a_bow_between_nodes_notches_the_partial_its_position_names() {
         );
     }
 }
+
+/// A bow a thousand times faster than the reference drives the friction solve past settling:
+/// the site refuses at the sample it failed rather than handing the string a force.
+#[test]
+fn a_friction_solve_that_does_not_settle_refuses() {
+    let p = Params::WillemsenBilbaoSerafin(WillemsenBilbaoSerafinParams {
+        bow_vel: 1e3,
+        ..WillemsenBilbaoSerafinParams::at(440.0)
+    });
+    let mut solver = site(&p, 44_100).expect("a grid this rate holds");
+    let refused = (0..44_100)
+        .find_map(|_| solver.step().err())
+        .expect("the solve fails to settle within a second");
+    assert_eq!(refused.code(), "samples.contact_unsettled", "{refused}");
+}

@@ -3,6 +3,7 @@
 //! Chaigne & Doutaut, JASA 101(1) 539-557 (1997): `u_tt = -kappa^2 u_xxxx`, free-free BCs,
 //! uniform cross-section, driven by `hammer.rs`.
 
+use crate::error::SampleError;
 use crate::physics::Solver;
 
 use crate::physics::bound::Bound::*;
@@ -180,8 +181,8 @@ impl ChaigneDoutautSite {
     }
 }
 
-impl Solver for ChaigneDoutautSite {
-    fn step(&mut self) -> f64 {
+impl ChaigneDoutautSite {
+    fn advance(&mut self) -> f64 {
         let bar = &mut self.bar;
         let n = bar.n;
         let u_h = bar.u_now[self.contact_index];
@@ -226,5 +227,11 @@ impl Solver for ChaigneDoutautSite {
         }
 
         sample
+    }
+}
+
+impl Solver for ChaigneDoutautSite {
+    fn step(&mut self) -> Result<f64, SampleError> {
+        Ok(self.advance())
     }
 }

@@ -11,7 +11,10 @@ pub fn render(params: &Params, rate: u32, secs: f64) -> Buffer {
     );
     let len = (secs * f64::from(rate)).round() as usize;
     let mut solver = site(params, rate).expect("a grid this rate can hold");
-    Buffer::mono(rate, (0..len).map(|_| solver.step()).collect())
+    let samples = (0..len)
+        .map(|_| solver.step())
+        .collect::<Result<Vec<f64>, _>>();
+    Buffer::mono(rate, samples.expect("a solve that settles"))
 }
 
 pub fn peaks(buffer: &Buffer, max_peaks: usize, frame_secs: Option<f64>) -> Vec<f64> {

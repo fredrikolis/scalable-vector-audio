@@ -366,12 +366,18 @@ impl ChaigneAskenfeltSite {
     }
 }
 
-impl Solver for ChaigneAskenfeltSite {
-    fn step(&mut self) -> f64 {
+impl ChaigneAskenfeltSite {
+    fn advance(&mut self) -> f64 {
         match self.strings[0].far_termination {
             Termination::Rigid => self.step_single(),
             Termination::SharedBridge => self.step_unison(),
         }
+    }
+}
+
+impl Solver for ChaigneAskenfeltSite {
+    fn step(&mut self) -> Result<f64, SampleError> {
+        Ok(self.advance())
     }
 }
 

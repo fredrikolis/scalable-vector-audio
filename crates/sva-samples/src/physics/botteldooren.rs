@@ -3,6 +3,7 @@
 //! Botteldooren, JASA 95(5), 2313-2319 (1994), doi 10.1121/1.409866 -- paper unobtainable, so
 //! this is a first-principles rigid-Cartesian re-derivation, sized for a test enclosure.
 
+use crate::error::SampleError;
 use crate::physics::Solver;
 
 use crate::physics::bound::Bound::*;
@@ -269,9 +270,9 @@ impl BotteldoorenSite {
     }
 }
 
-impl Solver for BotteldoorenSite {
+impl BotteldoorenSite {
     /// Rigid walls fall out of [`laplacian`]'s own mirroring.
-    fn step(&mut self) -> f64 {
+    fn advance(&mut self) -> f64 {
         let t = self.sample_index as f64 * self.dt;
         let source = crate::physics::raised_cosine_pulse(t, self.pulse_amp, self.pulse_width);
 
@@ -312,5 +313,11 @@ impl Solver for BotteldoorenSite {
         std::mem::swap(&mut grid.p_now, &mut grid.p_next);
 
         sample
+    }
+}
+
+impl Solver for BotteldoorenSite {
+    fn step(&mut self) -> Result<f64, SampleError> {
+        Ok(self.advance())
     }
 }

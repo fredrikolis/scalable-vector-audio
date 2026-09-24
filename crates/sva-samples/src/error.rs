@@ -27,6 +27,11 @@ pub enum SampleError {
     StringPastRate {
         model: &'static str,
     },
+    /// A contact whose force solve settled on no value at a sample.
+    ContactUnsettled {
+        model: &'static str,
+        sample: usize,
+    },
 }
 
 /// What a collapse refuses, per FORMAT 16.3.
@@ -135,6 +140,7 @@ impl SampleError {
             SampleError::ChannelOutOfRange { .. } => "samples.channel_out_of_range",
             SampleError::GridTooLarge { .. } => "samples.grid_too_large",
             SampleError::StringPastRate { .. } => "samples.string_past_rate",
+            SampleError::ContactUnsettled { .. } => "samples.contact_unsettled",
         }
     }
 }
@@ -171,6 +177,11 @@ impl std::fmt::Display for SampleError {
                 f,
                 "`{model}` has no stable grid at this rate whose first two partials ring where \
                  asked. ask for a lower fundamental or `b`, or a higher --sample-rate"
+            ),
+            SampleError::ContactUnsettled { model, sample } => write!(
+                f,
+                "`{model}`'s contact force settled on no value at sample {sample}. ask for a \
+                 lower bow velocity or force, or a higher --sample-rate"
             ),
         }
     }

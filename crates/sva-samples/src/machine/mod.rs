@@ -126,7 +126,7 @@ fn run(p: &Program, ctx: &Ctx) -> Result<Buffer, SampleError> {
                     false => ctx.written,
                 },
             };
-            step(p, &held, &mut states, &mut stack, i, sr);
+            step(p, &held, &mut states, &mut stack, i, sr)?;
         }
         let top = &stack.values[*stack.pending.last().expect("a renderer leaves one value")];
         for c in 0..p.width {
@@ -140,7 +140,14 @@ fn run(p: &Program, ctx: &Ctx) -> Result<Buffer, SampleError> {
 
 /// One sample of the whole renderer. Postfix order puts every operand's slot before the slot
 /// that consumes it, so `split_at_mut` hands out the reads and the one write at once.
-fn step(p: &Program, ctx: &Ctx, states: &mut [State], stack: &mut Stack, i: usize, sr: f64) {
+fn step(
+    p: &Program,
+    ctx: &Ctx,
+    states: &mut [State],
+    stack: &mut Stack,
+    i: usize,
+    sr: f64,
+) -> Result<(), SampleError> {
     let t = ctx.origin_secs + i as f64 / sr;
     stack.pending.clear();
     for (slot, op) in p.ops.iter().enumerate() {
@@ -156,10 +163,11 @@ fn step(p: &Program, ctx: &Ctx, states: &mut [State], stack: &mut Stack, i: usiz
             i,
             t,
             sr,
-        );
+        )?;
         stack.pending.truncate(at);
         stack.pending.push(slot);
     }
+    Ok(())
 }
 
 fn arity_of(op: &Op) -> usize {
@@ -183,7 +191,7 @@ fn fill(
     i: usize,
     t: f64,
     sr: f64,
-) {
+) -> Result<(), SampleError> {
     let arg = |k: usize| done[srcs[k]].as_slice();
     match op {
         Op::Const(v) => result[0] = *v,
@@ -269,7 +277,8 @@ fn fill(
             let State::Physics(solver) = &mut states[id.0 as usize] else {
                 unreachable!("a physics op names a physics site")
             };
-            result[0] = solver.step();
+            result[0] = solver.step()?;
         }
     }
+    Ok(())
 }

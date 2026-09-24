@@ -3,6 +3,7 @@
 //! Rhaouti, Chaigne & Joly, JASA 105(6) (1999) 3545-3562, doi 10.1121/1.424679. eq. 3
 //! `F = K[(delta - u + W)+]^alpha` is `hammer.rs`; eq. 4-6's `W` windows a contact patch.
 
+use crate::error::SampleError;
 use crate::physics::Solver;
 
 use crate::physics::bound::Bound::*;
@@ -250,8 +251,8 @@ impl RhaoutiChaigneJolySite {
     }
 }
 
-impl Solver for RhaoutiChaigneJolySite {
-    fn step(&mut self) -> f64 {
+impl RhaoutiChaigneJolySite {
+    fn advance(&mut self) -> f64 {
         let grid = &mut self.grid;
         let (nx, ny) = (grid.nx, grid.ny);
         let u_h = if self.detached {
@@ -318,5 +319,11 @@ impl Solver for RhaoutiChaigneJolySite {
         std::mem::swap(&mut grid.u_now, &mut grid.u_next);
 
         sample
+    }
+}
+
+impl Solver for RhaoutiChaigneJolySite {
+    fn step(&mut self) -> Result<f64, SampleError> {
+        Ok(self.advance())
     }
 }

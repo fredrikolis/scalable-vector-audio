@@ -225,6 +225,8 @@ pub struct WillemsenBilbaoSerafinSite {
     r_prev: f64,
     last_v: f64,
     last_f: f64,
+    /// Samples stepped, which a refusal names.
+    steps: usize,
 }
 
 impl WillemsenBilbaoSerafinSite {
@@ -258,12 +260,13 @@ impl WillemsenBilbaoSerafinSite {
             r_prev: 0.0,
             last_v: 0.0,
             last_f: 0.0,
+            steps: 0,
         })
     }
 }
 
 impl Solver for WillemsenBilbaoSerafinSite {
-    fn step(&mut self) -> f64 {
+    fn step(&mut self) -> Result<f64, SampleError> {
         let dt = self.dt;
         let coupling_prev = (self.z, self.r_prev);
 
@@ -306,7 +309,13 @@ impl Solver for WillemsenBilbaoSerafinSite {
                 break;
             }
         }
-        debug_assert!(converged, "the friction solve never settled");
+        if !converged {
+            return Err(SampleError::ContactUnsettled {
+                model: "willemsen_bilbao_serafin",
+                sample: self.steps,
+            });
+        }
+        self.steps += 1;
 
         let r = bristle_rate(
             v,
@@ -332,6 +341,6 @@ impl Solver for WillemsenBilbaoSerafinSite {
         std::mem::swap(&mut grid.y_prev, &mut grid.y_now);
         std::mem::swap(&mut grid.y_now, &mut grid.y_next);
 
-        sample
+        Ok(sample)
     }
 }
