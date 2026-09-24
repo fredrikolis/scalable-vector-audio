@@ -8,7 +8,9 @@ git agent-verdict --require-version 2.0
 
 git agent-verdict "$1" standards --model sonnet \
   --standard programming --standard testing --standard cli \
-  --rule "A builtin exists only when performance needs native code; complexity alone goes in online registries." --path .
+  --rule "A builtin exists only when performance needs native code; complexity alone goes in online registries." \
+  --rule "Engine math stays exact: no approximations, fast paths, or fidelity traded for caching." \
+  --rule "No test asserts on wall-clock time." --path .
 
 git agent-verdict "$1" standards --model sonnet \
   --standard human-communication --path README.md
