@@ -1,13 +1,22 @@
 // Concern: declares what a store holds under a content hash and how a key is built | Non-concern: any one store's medium and budget (disk.rs, memory.rs) | IO: (Hash) -> a payload + traces
 
 mod disk;
+mod entry_bytes;
 mod evict;
 mod label;
 mod memory;
+mod pack;
+mod stats;
+mod tiered;
 
 pub use disk::{DiskCache, IO_NANOS_PER_BYTE};
+pub use entry_bytes::{RawF64, SampleCodec};
 pub use memory::MemoryCache;
+pub use pack::{FORMAT as PACK_FORMAT, Medium, Pack, VecMedium};
+pub(crate) use stats::Recording;
+pub use stats::{CacheStats, Lookup, Outcome};
 pub use sva_formula::Hash;
+pub use tiered::Tiered;
 
 use std::path::Path;
 use std::time::Duration;
@@ -42,12 +51,30 @@ pub enum Expected {
     Symbolic,
 }
 
+/// Where a hit was answered from: this process's heap, or a store that outlives it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tier {
+    Memory,
+    Persistent,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     pub payload: Payload,
     pub traces: Vec<FilterTrace>,
     /// FORMAT 9.3: the label is part of the value, so a hit answers with the cold run's.
     pub label: Option<Label>,
+    pub tier: Tier,
+}
+
+impl Expected {
+    pub fn kind(self) -> PayloadKind {
+        match self {
+            Expected::Samples { .. } => PayloadKind::Samples,
+            Expected::Frames => PayloadKind::Frames,
+            Expected::Symbolic => PayloadKind::Symbolic,
+        }
+    }
 }
 
 impl Payload {

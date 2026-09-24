@@ -10,7 +10,7 @@ use sva_samples::{FilterTrace, Label};
 use sva_formula::Hash;
 
 use super::evict;
-use super::{Cache, Entry, Expected, Payload, PayloadKind};
+use super::{Cache, Entry, Expected, Payload, PayloadKind, Tier};
 
 /// What a process can hold, not what a filesystem can.
 pub const DEFAULT_MAX_BYTES: u64 = 2 << 30;
@@ -112,6 +112,7 @@ impl Cache for MemoryCache {
                 })
                 .collect(),
             label: held.label.clone(),
+            tier: Tier::Memory,
         })
     }
 

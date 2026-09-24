@@ -321,3 +321,17 @@ fn a_damaged_entry_is_dropped_and_counted_rather_than_read_as_a_cold_miss() {
     );
     let _ = fs::set_permissions(&file, fs::Permissions::from_mode(0o600));
 }
+
+/// Another codec's file is sound, so it is neither counted as damage nor deleted.
+#[test]
+fn a_disk_entry_another_codec_wrote_is_a_miss_and_is_kept() {
+    let dir = dir_of("cache-codec", &[]);
+    let key = Hash(3, 5);
+    DiskCache::at(&dir).store(key, &holding(&odd_values()), &[], None);
+
+    let other = DiskCache::at(&dir).coded(Box::new(fixtures::Relabelled));
+    assert!(other.load(key, "n", FOUR).is_none());
+    assert_eq!(other.faults(), 0);
+    assert!(other.holds(key), "left for the codec that wrote it");
+    assert!(DiskCache::at(&dir).load(key, "n", FOUR).is_some());
+}

@@ -5,12 +5,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
-use sva_formula::filter::Shape;
-use sva_samples::Buffer;
-use sva_samples::{AutomationFrame, FilterTrace, Label};
+use sva_samples::{FilterTrace, Label};
 
 use sva_formula::Hash;
 
+use super::entry_bytes::{self, RawF64, SampleCodec, Unread};
 use super::evict;
 use super::{Cache, Entry, Expected, Payload, PayloadKind};
 
@@ -22,10 +21,6 @@ pub const MIN_COST: Duration = Duration::from_millis(1);
 /// A 160 s master's node set is about 6 GB; less than that is no cache at all.
 pub const DEFAULT_MAX_BYTES: u64 = 16 << 30;
 
-/// A tag after the magic makes an older file a miss rather than a misread.
-const MAGIC_TIME: &[u8; 4] = b"RBC6";
-const TAG_SAMPLES: u8 = 0;
-
 /// Two threads can reach one key at once, so a per-process temp name is not enough.
 static WRITE: AtomicU64 = AtomicU64::new(0);
 
@@ -36,6 +31,7 @@ pub struct DiskCache {
     held: AtomicU64,
     evicted: AtomicU64,
     faults: AtomicU64,
+    codec: Box<dyn SampleCodec>,
 }
 
 impl DiskCache {
@@ -70,7 +66,13 @@ impl DiskCache {
             held: AtomicU64::new(0),
             evicted: AtomicU64::new(0),
             faults: AtomicU64::new(0),
+            codec: Box::new(RawF64),
         }
+    }
+
+    pub fn coded(mut self, codec: Box<dyn SampleCodec>) -> DiskCache {
+        self.codec = codec;
+        self
     }
 
     /// The threshold is policy: a caller measuring reuse itself wants every node stored.
@@ -94,8 +96,6 @@ impl Cache for DiskCache {
         self.max_bytes
     }
 
-    /// A render that reuses nothing and evicted a lot has outgrown its budget, and nothing
-    /// else in the report says so.
     fn held_bytes(&self) -> u64 {
         self.held.load(Ordering::Relaxed)
     }
@@ -131,12 +131,13 @@ impl Cache for DiskCache {
                 return None;
             }
         };
-        match decode(&bytes, node, rate, width, samples) {
-            Some(entry) => {
+        match entry_bytes::decode(&bytes, node, (rate, width, samples), self.codec.as_ref()) {
+            Ok(entry) => {
                 touch(&path);
                 Some(entry)
             }
-            None => {
+            Err(Unread::OtherCodec) => None,
+            Err(Unread::Damaged) => {
                 self.faults.fetch_add(1, Ordering::Relaxed);
                 let _ = fs::remove_file(&path);
                 None
@@ -170,7 +171,12 @@ impl Cache for DiskCache {
             std::process::id(),
             WRITE.fetch_add(1, Ordering::Relaxed)
         ));
-        if fs::write(&temp, encode(buffer, traces, label)).is_err() {
+        if fs::write(
+            &temp,
+            entry_bytes::encode(buffer, traces, label, self.codec.as_ref()),
+        )
+        .is_err()
+        {
             self.faults.fetch_add(1, Ordering::Relaxed);
             let _ = fs::remove_file(&temp);
             return;
@@ -181,7 +187,6 @@ impl Cache for DiskCache {
         }
     }
 
-    /// The read time is the mtime `load` refreshes.
     fn sweep(&self) {
         let mut entries: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
         for shard in fs::read_dir(&self.dir).into_iter().flatten().flatten() {
@@ -203,157 +208,4 @@ fn touch(path: &Path) {
     if let Ok(file) = fs::OpenOptions::new().write(true).open(path) {
         let _ = file.set_modified(SystemTime::now());
     }
-}
-
-pub(super) struct Writer(pub Vec<u8>);
-
-impl Writer {
-    pub(super) fn u32(&mut self, v: u32) {
-        self.0.extend_from_slice(&v.to_le_bytes());
-    }
-    fn u64(&mut self, v: u64) {
-        self.0.extend_from_slice(&v.to_le_bytes());
-    }
-    pub(super) fn f64(&mut self, v: f64) {
-        self.0.extend_from_slice(&v.to_le_bytes());
-    }
-}
-
-fn encode(buffer: &Buffer, traces: &[FilterTrace], label: Option<&Label>) -> Vec<u8> {
-    encode_time(buffer, traces, label)
-}
-
-fn write_traces(w: &mut Writer, traces: &[FilterTrace]) {
-    w.u32(traces.len() as u32);
-    for trace in traces {
-        w.u32(trace.site as u32);
-        w.u32(trace.channel.map_or(u32::MAX, |c| c as u32));
-        w.0.push(u8::from(trace.clamped));
-        w.u32(trace.shape.len() as u32);
-        w.0.extend_from_slice(trace.shape.as_bytes());
-        w.f64(trace.trace_secs);
-        w.u32(trace.frames.len() as u32);
-        for f in &trace.frames {
-            w.f64(f.t_secs);
-            w.f64(f.cutoff);
-            w.f64(f.q);
-            w.f64(f.gain_db);
-        }
-    }
-}
-
-fn encode_time(buffer: &Buffer, traces: &[FilterTrace], label: Option<&Label>) -> Vec<u8> {
-    let mut w = Writer(Vec::with_capacity(buffer.len() * buffer.width * 8 + 64));
-    w.0.extend_from_slice(MAGIC_TIME);
-    w.0.push(TAG_SAMPLES);
-    w.u32(buffer.rate);
-    w.u64(buffer.len() as u64);
-    w.u32(buffer.width as u32);
-    write_traces(&mut w, traces);
-    super::label::write(&mut w, label);
-    for c in 0..buffer.width {
-        for &s in buffer.plane(c) {
-            w.0.extend_from_slice(&s.to_le_bytes());
-        }
-    }
-    w.0
-}
-
-pub(super) struct Reader<'a>(&'a [u8]);
-
-impl<'a> Reader<'a> {
-    pub(super) fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        let (head, rest) = self.0.split_at_checked(n)?;
-        self.0 = rest;
-        Some(head)
-    }
-    pub(super) fn u32(&mut self) -> Option<u32> {
-        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
-    }
-    fn u64(&mut self) -> Option<u64> {
-        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
-    }
-    pub(super) fn f64(&mut self) -> Option<f64> {
-        Some(f64::from_le_bytes(self.take(8)?.try_into().ok()?))
-    }
-}
-
-fn read_f64s(r: &mut Reader, n: usize) -> Option<Vec<f64>> {
-    Some(
-        r.take(n * 8)?
-            .chunks_exact(8)
-            .map(|c| f64::from_le_bytes(c.try_into().expect("chunks_exact(8)")))
-            .collect(),
-    )
-}
-
-fn read_traces(r: &mut Reader, node: &str) -> Option<Vec<FilterTrace>> {
-    let mut traces = Vec::new();
-    for _ in 0..r.u32()? {
-        let site = r.u32()? as usize;
-        let channel = match r.u32()? {
-            u32::MAX => None,
-            c => Some(c as usize),
-        };
-        let clamped = r.take(1)?[0] == 1;
-        let name_len = r.u32()? as usize;
-        let shape = Shape::from_name(std::str::from_utf8(r.take(name_len)?).ok()?)?.name();
-        let trace_secs = r.f64()?;
-        let frame_count = r.u32()? as usize;
-        let mut frames = Vec::with_capacity(frame_count.min(1 << 20));
-        for _ in 0..frame_count {
-            frames.push(AutomationFrame {
-                t_secs: r.f64()?,
-                cutoff: r.f64()?,
-                q: r.f64()?,
-                gain_db: r.f64()?,
-            });
-        }
-        traces.push(FilterTrace {
-            node: node.to_string(),
-            site,
-            channel,
-            shape,
-            clamped,
-            trace_secs,
-            frames,
-        });
-    }
-    Some(traces)
-}
-
-/// Every field is checked against what the caller asked for, not merely parsed: the hash
-/// already rules out a mismatch, so one here means the hash's domain is wrong and the only
-/// safe answer is to re-render.
-fn decode(bytes: &[u8], node: &str, rate: u32, width: usize, samples: usize) -> Option<Entry> {
-    let mut r = Reader(bytes);
-    if r.take(4)? != MAGIC_TIME || r.take(1)?[0] != TAG_SAMPLES {
-        return None;
-    }
-    decode_time(&mut r, node, rate, width, samples)
-}
-
-fn decode_time(
-    r: &mut Reader,
-    node: &str,
-    sample_rate: u32,
-    width: usize,
-    samples: usize,
-) -> Option<Entry> {
-    if r.u32()? != sample_rate || r.u64()? != samples as u64 || r.u32()? != width as u32 {
-        return None;
-    }
-    let traces = read_traces(r, node)?;
-    let label = super::label::read(r)?;
-    let planes: Vec<Vec<f64>> = (0..width)
-        .map(|_| read_f64s(r, samples))
-        .collect::<Option<_>>()?;
-    if !r.0.is_empty() {
-        return None;
-    }
-    Some(Entry {
-        payload: Payload::Samples(Box::new(Buffer::of_planes(sample_rate, planes))),
-        traces,
-        label,
-    })
 }

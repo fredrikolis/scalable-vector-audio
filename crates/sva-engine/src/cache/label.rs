@@ -2,7 +2,7 @@
 
 use sva_samples::{Detail, Dropped, Label, Rule, Source};
 
-use super::disk::{Reader, Writer};
+use super::entry_bytes::{Reader, Writer};
 
 /// A label nested past this is a corrupt file, not a sum anything wrote.
 const MAX_DEPTH: usize = 32;

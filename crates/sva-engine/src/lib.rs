@@ -20,8 +20,9 @@ mod vocabulary;
 
 pub use bindings::Binding;
 pub use cache::{
-    Cache, DiskCache, Entry, Expected, Hash, IO_NANOS_PER_BYTE, MemoryCache, Payload, PayloadKind,
-    buffer_key, symbolic_key,
+    Cache, CacheStats, DiskCache, Entry, Expected, Hash, IO_NANOS_PER_BYTE, Lookup, Medium,
+    MemoryCache, Outcome, PACK_FORMAT, Pack, Payload, PayloadKind, RawF64, SampleCodec, Tier,
+    Tiered, VecMedium, buffer_key, symbolic_key,
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};

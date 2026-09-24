@@ -14,7 +14,9 @@ use sva_samples::{
 };
 
 use crate::bindings::Binding;
-use crate::cache::{Cost, Expected, Payload, PayloadKind, frames_key, symbolic_key};
+use crate::cache::{
+    CacheStats, Cost, Expected, Payload, PayloadKind, Recording, frames_key, symbolic_key,
+};
 use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate;
@@ -64,6 +66,7 @@ pub struct Render {
     pub config: RenderConfig,
     pub schedule: Schedule,
     pub bindings: BTreeMap<NodeId, Vec<Binding>>,
+    pub cache_stats: Option<CacheStats>,
 }
 
 impl Render {
@@ -135,11 +138,18 @@ pub fn render(
         config,
         schedule,
         bindings,
+        cache_stats: None,
     };
     affordable(&held)?;
+    let recording = cache.map(Recording::over);
     for id in held.schedule.materialize.clone() {
-        materialize(&mut held, id, cache)?;
+        materialize(
+            &mut held,
+            id,
+            recording.as_ref().map(|r| r as &dyn crate::cache::Cache),
+        )?;
     }
+    held.cache_stats = recording.map(Recording::finish);
     compose_read(&mut held);
     stamp(&mut held);
     Ok(held)
