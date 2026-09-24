@@ -1,7 +1,9 @@
 // Concern: states what a chaigne_askenfelt solver must hold over the buffer it steps out | Non-concern: the site's own FD math (src/physics/chaigne_askenfelt.rs) | IO: (Params) -> asserted peaks
 
 mod fd;
+mod partials;
 
+use partials::{level_db, ringing_hz, stiff_partial};
 use sva_samples::measure::spectrum;
 use sva_samples::physics::chaigne_askenfelt::ChaigneAskenfeltParams;
 use sva_samples::{Params, site};
@@ -177,22 +179,6 @@ fn a_call_naming_no_unison_mechanics_renders_its_frozen_samples() {
     assert_eq!(hash, 0xdde4_9120_eca8_40d4, "a published unison changed");
 }
 
-/// A partial's level over one Hann window, off the single DFT bin at `hz`.
-fn level_db(x: &[f64], rate: f64, hz: f64, start: usize, len: usize) -> f64 {
-    let (mut re, mut im) = (0.0, 0.0);
-    for (i, s) in x[start..start + len].iter().enumerate() {
-        let w = 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / len as f64).cos();
-        let phase = std::f64::consts::TAU * hz * (start + i) as f64 / rate;
-        re += w * s * phase.cos();
-        im -= w * s * phase.sin();
-    }
-    10.0 * (re * re + im * im).log10()
-}
-
-fn partial_hz(p: &ChaigneAskenfeltParams, k: u32) -> f64 {
-    f64::from(k) * p.f0 * (1.0 + p.b * f64::from(k * k)).sqrt()
-}
-
 /// The 5-95 percentile spread of a partial's level about its own straight-line decay, over
 /// the sustain from 0.3 s: a unison beating to nulls spreads by tens of dB.
 fn beat_depth_db(x: &[f64], rate: f64, hz: f64) -> f64 {
@@ -224,7 +210,7 @@ fn sustain_beat_depth_db(p: &ChaigneAskenfeltParams, x: &[f64], rate: f64) -> f6
     let (at, len) = ((0.5 * rate) as usize, (0.1 * rate) as usize);
     let mut rows: Vec<(f64, f64)> = (1..=12)
         .map(|k| {
-            let hz = partial_hz(p, k);
+            let hz = stiff_partial(p.f0, p.b, k);
             (
                 beat_depth_db(x, rate, hz),
                 10f64.powf(level_db(x, rate, hz, at, len) / 10.0),
@@ -263,7 +249,7 @@ fn a_massive_bridge_and_unequal_strings_keep_a_unison_from_beating_to_nulls() {
     let onset = (0.05 * rate) as usize;
     let (mut drift, mut power) = (0.0, 0.0);
     for k in 1..=10 {
-        let hz = partial_hz(&published, k);
+        let hz = stiff_partial(published.f0, published.b, k);
         let (was, now) = (
             level_db(a.plane(0), rate, hz, 0, onset),
             level_db(b.plane(0), rate, hz, 0, onset),
@@ -277,31 +263,6 @@ fn a_massive_bridge_and_unequal_strings_keep_a_unison_from_beating_to_nulls() {
         "the strike's first 50 ms moved {} dB",
         drift / power
     );
-}
-
-/// Where a partial rings, to well under a cent: the DFT bin that peaks near `hz`, refined by
-/// golden section on the single-bin level.
-fn ringing_hz(x: &[f64], rate: f64, hz: f64) -> f64 {
-    let (mags, bin_hz, _, _) = spectrum::magnitudes(x, rate, None);
-    let lo = ((hz * 0.97) / bin_hz) as usize;
-    let hi = ((hz * 1.03) / bin_hz) as usize;
-    let peak = (lo..=hi)
-        .max_by(|&a, &b| mags[a].total_cmp(&mags[b]))
-        .expect("a band with bins") as f64
-        * bin_hz;
-    let start = (0.05 * rate) as usize;
-    let level = |f: f64| level_db(x, rate, f, start, x.len() - start);
-    let golden = (5f64.sqrt() - 1.0) / 2.0;
-    let (mut a, mut b) = (peak - bin_hz, peak + bin_hz);
-    while b - a > 1e-6 {
-        let (c, d) = (b - golden * (b - a), a + golden * (b - a));
-        if level(c) > level(d) {
-            b = d;
-        } else {
-            a = c;
-        }
-    }
-    (a + b) / 2.0
 }
 
 /// The grid's own dispersion is inverted, so partials 1 and 2 ring on `k f0 sqrt(1 + b k^2)`:
@@ -318,8 +279,8 @@ fn partials_one_and_two_imply_the_asked_f0_and_b_at_any_rate() {
             let buffer = fd::render(&Params::ChaigneAskenfelt(p.clone()), rate, 1.0);
             let x = buffer.plane(0);
             let (f1, f2) = (
-                ringing_hz(x, f64::from(rate), partial_hz(&p, 1)),
-                ringing_hz(x, f64::from(rate), partial_hz(&p, 2)),
+                ringing_hz(x, f64::from(rate), stiff_partial(p.f0, p.b, 1)),
+                ringing_hz(x, f64::from(rate), stiff_partial(p.f0, p.b, 2)),
             );
             let r = (f2 / (2.0 * f1)).powi(2);
             let realized_b = (r - 1.0) / (4.0 - r);
@@ -339,7 +300,7 @@ fn partials_one_and_two_imply_the_asked_f0_and_b_at_any_rate() {
 /// The largest level within a quarter of `f0` of partial `k`.
 fn partial_db(p: &ChaigneAskenfeltParams, x: &[f64], rate: f64, k: u32) -> f64 {
     let (mags, bin_hz, _, _) = spectrum::magnitudes(x, rate, None);
-    let hz = partial_hz(p, k);
+    let hz = stiff_partial(p.f0, p.b, k);
     let band = ((hz - p.f0 / 4.0) / bin_hz) as usize..=((hz + p.f0 / 4.0) / bin_hz) as usize;
     20.0 * mags[band].iter().fold(0.0f64, |m, &v| m.max(v)).log10()
 }

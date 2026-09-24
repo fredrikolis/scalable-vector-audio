@@ -4,11 +4,14 @@
 //! bowed use: Serafin/Avanzini/Rocchesso, SMAC-03. Corrected eqs. (7)-(9)/FD coupling:
 //! Willemsen/Bilbao/Serafin, DAFx-19 pp. 40-46. Reuses `chaigne_askenfelt`'s FD string.
 
+use crate::error::SampleError;
 use crate::physics::Solver;
 
 use crate::physics::bound::Bound::*;
 use crate::physics::bound::all;
-use crate::physics::chaigne_askenfelt::{StringGrid, stencil_update, stiff_string_grid};
+use crate::physics::chaigne_askenfelt::{
+    StringGrid, Wire, dispersive_grid, grid_tension, point_weights, read_at, spread, stencil_update,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WillemsenBilbaoSerafinParams {
@@ -75,21 +78,22 @@ const WIRE_LENGTH_M: f64 = 1.0;
 const NR_MAX_ITERATIONS: usize = 50;
 const NR_TOLERANCE: f64 = 1e-7;
 
-/// `c` comes back with the grid so `tension` shares the derivation.
-fn build_grid(params: &WillemsenBilbaoSerafinParams, sr: f64) -> (StringGrid, f64) {
+/// Table 1's wire at `c = 2 f0 L`.
+fn build_grid(params: &WillemsenBilbaoSerafinParams, sr: f64) -> Option<StringGrid> {
     let rho = std::f64::consts::PI * WIRE_RADIUS_M * WIRE_RADIUS_M * WIRE_DENSITY_KG_M3;
-    let c = 2.0 * params.f0 * WIRE_LENGTH_M;
-    let kappa = c * WIRE_LENGTH_M * params.b.sqrt() / std::f64::consts::PI;
-    let grid = stiff_string_grid(
+    let wire = Wire {
         rho,
-        c,
-        WIRE_LENGTH_M,
-        kappa,
+        c: 2.0 * params.f0 * WIRE_LENGTH_M,
+        length: WIRE_LENGTH_M,
+    };
+    dispersive_grid(
+        wire,
+        params.f0,
+        params.b,
         params.damp_dc,
         params.damp_freq,
         sr,
-    );
-    (grid, c)
+    )
 }
 
 fn sgn(x: f64) -> f64 {
@@ -202,7 +206,9 @@ impl Coupling {
 
 pub struct WillemsenBilbaoSerafinSite {
     strings: Vec<StringGrid>,
-    contact_index: usize,
+    /// Read and spread alike.
+    bow: Vec<f64>,
+    bow_self: f64,
     tension: f64,
     dt: f64,
     bow_vel: f64,
@@ -222,19 +228,21 @@ pub struct WillemsenBilbaoSerafinSite {
 }
 
 impl WillemsenBilbaoSerafinSite {
-    pub fn new(params: &WillemsenBilbaoSerafinParams, sr: f64) -> WillemsenBilbaoSerafinSite {
-        let (grid, c) = build_grid(params, sr);
-        let contact_index = (params.bow_pos * grid.n as f64)
-            .round()
-            .clamp(1.0, (grid.n - 1) as f64) as usize;
-        let tension = c * c * grid.rho;
+    pub fn new(params: &WillemsenBilbaoSerafinParams, sr: f64) -> Result<Self, SampleError> {
+        let grid = build_grid(params, sr).ok_or(SampleError::StringPastRate {
+            model: "willemsen_bilbao_serafin",
+        })?;
+        let bow = point_weights(grid.n, params.bow_pos);
+        let bow_self = read_at(&bow, &bow);
+        let tension = grid_tension(&grid, 1.0 / sr);
         let f_c = params.mu_c * params.bow_force;
         let f_s = params.mu_s * params.bow_force;
         // Table 1: z_ba = 0.7*f_C/s0 — off the kinetic (mu_c) force, not the static one.
         let z_ba = 0.7 * f_c / params.bristle_stiffness;
-        WillemsenBilbaoSerafinSite {
+        Ok(WillemsenBilbaoSerafinSite {
             strings: vec![grid],
-            contact_index,
+            bow,
+            bow_self,
             tension,
             dt: 1.0 / sr,
             bow_vel: params.bow_vel,
@@ -250,32 +258,28 @@ impl WillemsenBilbaoSerafinSite {
             r_prev: 0.0,
             last_v: 0.0,
             last_f: 0.0,
-        }
+        })
     }
 }
 
 impl Solver for WillemsenBilbaoSerafinSite {
     fn step(&mut self) -> f64 {
         let dt = self.dt;
-        let l = self.contact_index;
         let coupling_prev = (self.z, self.r_prev);
 
         let grid = &mut self.strings[0];
         let n = grid.n;
-        let mut free_next_l = 0.0;
         for i in 1..n {
-            let next = stencil_update(grid, i, 0.0, 0.0);
-            if i == l {
-                free_next_l = next;
-            }
-            grid.y_next[i] = next;
+            grid.y_next[i] = stencil_update(grid, i, 0.0, 0.0);
         }
         grid.y_next[0] = 0.0;
         grid.y_next[n] = 0.0;
+        let free_next = read_at(&self.bow, &grid.y_next);
+        let bow_prev = read_at(&self.bow, &grid.y_prev);
 
         let coupling = Coupling {
-            coeff: dt / (2.0 * grid.rho * grid.dx),
-            b_known: (free_next_l - grid.y_prev[l]) / (2.0 * dt) - self.bow_vel,
+            coeff: dt * self.bow_self / (2.0 * grid.rho * grid.dx),
+            b_known: (free_next - bow_prev) / (2.0 * dt) - self.bow_vel,
             s0: self.s0,
             s1: self.s1,
             s2: self.s2,
@@ -315,7 +319,7 @@ impl Solver for WillemsenBilbaoSerafinSite {
         );
         let f = friction_force(v, z, r, self.s0, self.s1, self.s2);
         let grid = &mut self.strings[0];
-        grid.y_next[l] = free_next_l - (dt * dt / (grid.rho * grid.dx)) * f;
+        spread(grid, &self.bow, -f, dt);
 
         self.z_prev = self.z;
         self.z = z;
