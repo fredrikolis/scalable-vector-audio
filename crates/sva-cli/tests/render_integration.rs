@@ -929,3 +929,45 @@ fn a_capped_reading_names_the_second_its_items_stop_before() {
         );
     }
 }
+
+/// The bug this closes: the CLI never swept, so its store reported holding nothing and grew
+/// past `SVA_CACHE_MAX_BYTES`. A render sweeps once it has written, as sva-wasm's does.
+#[test]
+fn a_cached_render_sweeps_its_store_to_the_budget() {
+    let dir = scratch("sweep-budget");
+    put(
+        &dir,
+        "master",
+        "; Models: a tone | Neglects: an envelope | IO: (t) -> amplitude | Tags: test\n\
+         sin(2*pi*100*t)\n",
+    );
+    let cache = scratch("sweep-budget-cache");
+    let engine = cache.join(format!(
+        "{}{:016x}",
+        sva_engine::ENGINE_DIR_PREFIX,
+        sva_engine::RENDER_FINGERPRINT
+    ));
+    let stale = engine.join("00").join("old.rbc");
+    std::fs::create_dir_all(stale.parent().expect("a shard")).expect("a shard");
+    std::fs::write(&stale, vec![0u8; 4096]).expect("an old entry");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sva-cli"))
+        .current_dir(&dir)
+        .env("SVA_CACHE", &cache)
+        .env("SVA_CACHE_MAX_BYTES", "1024")
+        .args(["render", "master", "--to", "0.05", "--as", "loudness"])
+        .output()
+        .expect("the binary runs");
+    let printed = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{printed}");
+    assert!(!stale.exists(), "an entry past the budget went: {printed}");
+    let field = |name: &str| -> u64 {
+        printed
+            .split(&format!("\"{name}\": "))
+            .nth(1)
+            .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("the cache report states {name}: {printed}"))
+    };
+    assert!(field("evicted_bytes") >= 4096, "{printed}");
+    assert!(field("held_bytes") <= 1024, "{printed}");
+}

@@ -171,7 +171,6 @@ impl Composition {
             slots: Some(&self.slots),
             ..Job::over(&self.inner)
         });
-        self.store.cache().sweep();
         rendered
             .map(|inner| Rendering { inner })
             .map_err(|e| thrown(&e))

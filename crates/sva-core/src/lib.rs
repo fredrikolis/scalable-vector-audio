@@ -180,6 +180,15 @@ fn instance_read(graph: &Graph, text: &str) -> Option<sva_ast::Expr> {
 }
 
 pub fn execute(job: Job) -> Result<Rendered, CliError> {
+    let cache = job.cache;
+    let rendered = rendered(job);
+    if let Some(store) = cache {
+        store.sweep();
+    }
+    rendered
+}
+
+fn rendered(job: Job) -> Result<Rendered, CliError> {
     let (graph, target, config) = settle(&job, job.target)?;
     let refused = match render_with_slots(&graph, &target, config.clone(), job.cache, job.slots) {
         Ok(render) => {
