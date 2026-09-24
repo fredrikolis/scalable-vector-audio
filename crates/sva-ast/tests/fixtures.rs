@@ -137,6 +137,10 @@ fn a_default_line_is_read_off_the_top_of_a_file_and_bounded_to_arithmetic() {
     for (content, why) in [
         ("g = 1\ng = 2\nt*g\n", "two defaults for one name"),
         ("g = 1\nsin(t)\n", "the body never reads it"),
+        (
+            "k = 1\nsum(k, 0, 3, sin(k*t))\n",
+            "the series index is not the default",
+        ),
     ] {
         let d = tmp("defaults-bad");
         write(&d, "song", content);
@@ -148,6 +152,13 @@ fn a_default_line_is_read_off_the_top_of_a_file_and_bounded_to_arithmetic() {
             refusals[0].reason
         );
     }
+
+    let bound = tmp("defaults-series-bound");
+    write(&bound, "song", "k = 3\nsum(i, 0, k, sin(i*t))\n");
+    assert!(
+        parse_composition(&bound).is_ok(),
+        "a series bound reads the default"
+    );
 }
 
 /// A name no ref can spell is no node, whatever it holds: the walk passes over it and says

@@ -3,6 +3,7 @@
 use crate::diag::ByteSpan;
 
 pub const JOIN: &str = "join";
+pub const SERIES: &str = "sum";
 
 #[derive(Clone, Copy, Debug)]
 pub enum BinOp {

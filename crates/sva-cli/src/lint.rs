@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use sva_ast::{Binds, Expr, Graph, Skip, Source, children, ref_spans, resolve_ref_path};
+use sva_ast::{MAX_TAG_CHARS, MAX_TAGS, is_plain_tag, parse_doc_comment};
 use sva_core::{
     CliError, Diagnostic, LintCode, LintViolation, ROOT, Severity, lint_diagnostic, prepared,
     refuse_unresolved_bars, settled,
@@ -250,11 +251,6 @@ fn lint_violations(source: &dyn Source, graph: &Graph) -> Vec<LintViolation> {
 /// Even a justified multi-line block stays under this.
 const LONG_COMMENT_BLOCK_CHARS: usize = 1000;
 
-/// Above real compound tags (`sustained-pad`=13, `transient-response`=18).
-const MAX_TAG_CHARS: usize = 24;
-/// Few tags keep `Tags:` a quick triage aid, not a second `Neglects:` field.
-const MAX_TAGS: usize = 3;
-
 /// The line-1 doc-comment's own run is excluded from the count.
 fn long_comment_block_violations(source: &dyn Source, graph: &Graph) -> Vec<LintViolation> {
     let mut violations = Vec::new();
@@ -308,10 +304,8 @@ fn flush_comment_run(
     }
 }
 
-/// Mirrors `annotated-tree`'s Concern/Non-concern/IO: exactly one
-/// `; Models: ... | Neglects: ... | IO: ... -> ... | Tags: ...` line at the top, or `lint`
-/// refuses it. Judges only the leading run — a grid's own inline `; lane` comments stay out
-/// of scope.
+/// Exactly one doc-comment line at the top, or `lint` refuses it. Only the leading run is
+/// judged — a grid's own inline `; lane` comments stay out of scope.
 fn doc_comment_violations(source: &dyn Source, graph: &Graph) -> Vec<LintViolation> {
     let mut violations = Vec::new();
     for path in graph.paths() {
@@ -335,7 +329,7 @@ fn doc_comment_violations(source: &dyn Source, graph: &Graph) -> Vec<LintViolati
                 line: None,
             }),
             1 => {
-                if let Err(reason) = malformed_doc_comment(header[0]) {
+                if let Err(reason) = parse_doc_comment(header[0]) {
                     violations.push(LintViolation {
                         code: LintCode::MalformedComment,
                         severity: Severity::Error,
@@ -363,74 +357,16 @@ fn doc_comment_violations(source: &dyn Source, graph: &Graph) -> Vec<LintViolati
     violations
 }
 
-/// Four ` | `-delimited, non-empty, exact-labeled fields; `IO:` needs an arrow too.
-fn malformed_doc_comment(line: &str) -> Result<(), String> {
-    let content = line.trim_start().trim_start_matches(';').trim();
-    let fields: Vec<&str> = content.split(" | ").collect();
-    let [models, neglects, io, tags] = fields.as_slice() else {
-        return Err("expected exactly four ` | `-delimited fields".to_string());
-    };
-
-    let models = models
-        .strip_prefix("Models:")
-        .ok_or("first field must start with `Models:`")?
-        .trim();
-    if models.is_empty() {
-        return Err("`Models:` field is empty".to_string());
-    }
-
-    let neglects = neglects
-        .strip_prefix("Neglects:")
-        .ok_or("second field must start with `Neglects:`")?
-        .trim();
-    if neglects.is_empty() {
-        return Err("`Neglects:` field is empty".to_string());
-    }
-
-    let io = io
-        .strip_prefix("IO:")
-        .ok_or("third field must start with `IO:`")?
-        .trim();
-    let Some((input, output)) = io.split_once("->") else {
-        return Err("`IO:` field must be `<input> -> <output>`".to_string());
-    };
-    if input.trim().is_empty() || output.trim().is_empty() {
-        return Err("`IO:` field's input and output must both be non-empty".to_string());
-    }
-
-    let tags = tags
-        .strip_prefix("Tags:")
-        .ok_or("fourth field must start with `Tags:`")?
-        .trim();
-    if tags.is_empty() {
-        return Err("`Tags:` field is empty".to_string());
-    }
-    for tag in tags.split(',').map(str::trim) {
-        if tag.is_empty() {
-            return Err("`Tags:` field has an empty tag between commas".to_string());
-        }
-    }
-
-    Ok(())
-}
-
 /// FORMAT 15.1 writes the shape as `Tags: <tag>[, <tag>]` and refuses a comment that does
 /// not parse into its four fields. How many tags and what a tag looks like is house style,
 /// so a numeral or a fourth tag is advised here and never refuses a composition.
 fn tag_advice(line: &str) -> Option<String> {
-    let content = line.trim_start().trim_start_matches(';').trim();
-    let tags = content.split(" | ").nth(3)?.strip_prefix("Tags:")?.trim();
-    let held: Vec<&str> = tags.split(',').map(str::trim).collect();
-    let plain = |tag: &str| {
-        !tag.starts_with('-')
-            && !tag.ends_with('-')
-            && !tag.contains("--")
-            && tag.chars().count() <= MAX_TAG_CHARS
-            && tag
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-    };
-    let odd: Vec<&str> = held.iter().copied().filter(|t| !plain(t)).collect();
+    let held = parse_doc_comment(line).ok()?.tags;
+    let odd: Vec<&str> = held
+        .iter()
+        .map(String::as_str)
+        .filter(|t| !is_plain_tag(t))
+        .collect();
     let mut notes = Vec::new();
     if held.len() > MAX_TAGS {
         notes.push(format!(

@@ -8,9 +8,8 @@ use crate::overload::FINITE_DIFFERENCE as PHYSICS;
 /// Enough for surround; ambisonics is deferred rather than pretended at.
 pub const MAX_WIDTH: usize = 8;
 
-pub use sva_ast::JOIN;
+pub use sva_ast::{JOIN, SERIES};
 pub const CHANNEL: &str = "ch";
-pub const SERIES: &str = "sum";
 
 const ARITHMETIC: [&str; 21] = [
     "sin", "cos", "exp", "log", "pow", "sqrt", "abs", "tanh", "max", "min", "saw", "square",

@@ -440,3 +440,33 @@ fn a_default_may_read_a_bound_default() {
         "the caller's key reaches the default written off it, one instance each"
     );
 }
+
+/// A series index is its own name inside the body, so a default written as a series over the
+/// parameter's name does not read the bound parameter.
+#[test]
+fn a_series_index_shadows_a_bound_default() {
+    let files = &[
+        (
+            "motif",
+            "key = 200\nharm = sum(key, 1, 3, key)\nsin(2*pi*key*harm*t)\n",
+        ),
+        ("master", "@motif(t) + @motif(t, key=300)\n"),
+    ];
+    let g = graph_of("series-shadows-default", files);
+    let held = instantiate(&g, "master").expect("a series over a parameter's name");
+
+    let mut named: Vec<String> = held
+        .paths()
+        .filter(|p| p.starts_with("motif("))
+        .map(str::to_string)
+        .collect();
+    named.sort();
+    assert_eq!(
+        named,
+        vec![
+            "motif(harm=sum(key, 1, 3, key), key=200)".to_string(),
+            "motif(harm=sum(key, 1, 3, key), key=300)".to_string()
+        ],
+        "the index is never replaced by the caller's key"
+    );
+}

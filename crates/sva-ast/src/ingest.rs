@@ -1,7 +1,7 @@
 // Concern: classifies one file's raw content and parses it to an Expr | Non-concern: walking the directory, resolving refs (graph.rs) | IO: (name, content) -> Expr or a Diag
 
 use crate::diag::{ByteSpan, Diag, DiagCode};
-use crate::expr::{Arg, Binds, Expr, Literal, children};
+use crate::expr::{Arg, Binds, Expr, Literal, SERIES, children};
 use crate::filename::{SpanUnit, parse_filename};
 use crate::parser::parse;
 use crate::tsv::{Grid, materialize, parse_grid};
@@ -32,11 +32,11 @@ pub fn parse_file(base_name: &str, content: &str) -> Result<Parsed, Diag> {
     let mut live = vec![false; defaults.len()];
     for at in (0..defaults.len()).rev() {
         let name = &defaults[at].0;
-        live[at] = mentions(&parsed.expr, name)
+        live[at] = occurs_free(&parsed.expr, name)
             || defaults[at + 1..]
                 .iter()
                 .enumerate()
-                .any(|(k, (_, value))| live[at + 1 + k] && mentions(value, name));
+                .any(|(k, (_, value))| live[at + 1 + k] && occurs_free(value, name));
     }
     for (at, (name, _)) in defaults.iter().enumerate() {
         if !live[at] {
@@ -130,14 +130,27 @@ fn shift(d: Diag, by: usize) -> Diag {
     )
 }
 
-/// Syntactic: a name the body never writes down, in any position, has a dead default.
-pub fn mentions(e: &Expr, name: &str) -> bool {
+/// Whether `name` is read: as a variable or a call, anywhere but inside a `sum` binding it.
+pub fn occurs_free(e: &Expr, name: &str) -> bool {
     match e {
+        Expr::Call {
+            name: called, args, ..
+        } if called == SERIES => match args.as_slice() {
+            [Arg::Pos(Expr::Var(index)), lo, hi, body] => {
+                let [lo, hi, body] = [lo, hi, body].map(|(Arg::Pos(x) | Arg::Named(_, x))| x);
+                occurs_free(lo, name)
+                    || occurs_free(hi, name)
+                    || (index != name && occurs_free(body, name))
+            }
+            _ => children(e, Binds::Substitute)
+                .into_iter()
+                .any(|c| occurs_free(c, name)),
+        },
         Expr::Var(n) => n == name,
         Expr::Call { name: called, .. } if called == name => true,
         _ => children(e, Binds::Substitute)
             .into_iter()
-            .any(|c| mentions(c, name)),
+            .any(|c| occurs_free(c, name)),
     }
 }
 

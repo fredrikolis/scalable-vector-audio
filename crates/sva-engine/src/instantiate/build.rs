@@ -97,7 +97,7 @@ pub fn from_roots<'g>(
 
 /// Whether an expression names any of the parameters bound so far.
 fn names_any(e: &Expr, binds: &[(String, Thunk<'_>)]) -> bool {
-    binds.iter().any(|(name, _)| sva_ast::mentions(e, name))
+    binds.iter().any(|(name, _)| sva_ast::occurs_free(e, name))
 }
 
 /// An unbound variable is the CALLER's omission, so it is reported where the invocation is
