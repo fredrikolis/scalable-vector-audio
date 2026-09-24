@@ -1,9 +1,10 @@
 // Concern: classifies a self-reference, and folds the shift one reads at to a constant | Non-concern: running either kind (sva-samples), lowering the rest (lower/) | IO: (body, Cx) -> SelfKind, Shift
 
-use sva_ast::{Arg, BinOp, Expr, Literal};
+use sva_ast::{Arg, BinOp, ByteSpan, Expr, Literal};
 use sva_formula::closed_form::map_children;
 use sva_formula::{Body, C64, IndexId, Part, Series, Var};
 
+use crate::arguments::Chosen;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Cx, Instances, Node};
 
@@ -324,7 +325,27 @@ fn walk(inst: &Instances, e: &Expr, cx: Cx, sign: f64) -> Option<(bool, f64, f64
 /// A written duration over every operator FORMAT 3.3 folds, seconds and grid steps kept
 /// apart. What this drops is defaulted, never refused.
 pub(crate) fn amount(inst: &Instances, e: &Expr, cx: Cx) -> Option<(f64, f64)> {
-    if let Some(r) = inst.follow(e, cx, |e2, cx2| amount(inst, e2, cx2)) {
+    folded(inst, e, cx, &mut None)
+}
+
+/// `amount`, noting each `min`/`max` written in the text it starts in.
+pub(crate) fn amount_choosing(
+    inst: &Instances,
+    e: &Expr,
+    cx: Cx,
+    chosen: &mut Vec<Chosen>,
+) -> Option<(f64, f64)> {
+    folded(inst, e, cx, &mut Some(chosen))
+}
+
+/// A followed name continues in another text, with spans of its own.
+fn folded(
+    inst: &Instances,
+    e: &Expr,
+    cx: Cx,
+    chosen: &mut Option<&mut Vec<Chosen>>,
+) -> Option<(f64, f64)> {
+    if let Some(r) = inst.follow(e, cx, |e2, cx2| folded(inst, e2, cx2, &mut None)) {
         return r;
     }
     match inst.node(e, cx) {
@@ -333,7 +354,7 @@ pub(crate) fn amount(inst: &Instances, e: &Expr, cx: Cx) -> Option<(f64, f64)> {
         Node::Name("pi") => Some((std::f64::consts::PI, 0.0)),
         Node::Name(other) => sva_formula::note::frequency(other).map(|hz| (hz, 0.0)),
         Node::Bin(op, l, r) => {
-            let (a, b) = (amount(inst, l, cx)?, amount(inst, r, cx)?);
+            let (a, b) = (folded(inst, l, cx, chosen)?, folded(inst, r, cx, chosen)?);
             Some(match op {
                 BinOp::Add => (a.0 + b.0, a.1 + b.1),
                 BinOp::Sub => (a.0 - b.0, a.1 - b.1),
@@ -345,11 +366,11 @@ pub(crate) fn amount(inst: &Instances, e: &Expr, cx: Cx) -> Option<(f64, f64)> {
                 BinOp::Mod => (crate::lower::constant_modulo(plain(a)?, plain(b)?)?, 0.0),
             })
         }
-        Node::Call { name, args, .. } => called(inst, name, args, cx),
+        Node::Call { name, args, span } => called(inst, (name, span), args, cx, chosen),
         // FORMAT 15.3: a ref naming one number is that number, read at bare `t`.
         Node::Read { path, arg, .. } if inst.is_now(arg, cx) => {
             let (body, held) = inst.at(path)?;
-            amount(inst, body, held)
+            folded(inst, body, held, &mut None)
         }
         _ => None,
     }
@@ -364,16 +385,34 @@ fn scaled(a: (f64, f64), b: (f64, f64)) -> Option<(f64, f64)> {
     }
 }
 
-fn called(inst: &Instances, name: &str, args: &[Arg], cx: Cx) -> Option<(f64, f64)> {
+fn called(
+    inst: &Instances,
+    (name, at): (&str, ByteSpan),
+    args: &[Arg],
+    cx: Cx,
+    chosen: &mut Option<&mut Vec<Chosen>>,
+) -> Option<(f64, f64)> {
     let mut positional = Vec::new();
     let mut named = Vec::new();
     for arg in args {
         match arg {
-            Arg::Pos(x) => positional.push(plain(amount(inst, x, cx)?)?),
-            Arg::Named(key, x) => named.push((key.as_str(), plain(amount(inst, x, cx)?)?)),
+            Arg::Pos(x) => positional.push(plain(folded(inst, x, cx, chosen)?)?),
+            Arg::Named(key, x) => {
+                named.push((key.as_str(), plain(folded(inst, x, cx, chosen)?)?));
+            }
         }
     }
-    crate::lower::constant_call(name, &positional, &named).map(|n| (n, 0.0))
+    let n = crate::lower::constant_call(name, &positional, &named)?;
+    let won = positional.iter().position(|v| v.to_bits() == n.to_bits());
+    if let (Some(held), "min" | "max", Some(won)) = (chosen.as_mut(), name, won) {
+        held.push(Chosen {
+            name: name.to_string(),
+            at,
+            operands: positional,
+            chosen: won,
+        });
+    }
+    Some((n, 0.0))
 }
 
 pub(crate) fn plain(amount: (f64, f64)) -> Option<f64> {

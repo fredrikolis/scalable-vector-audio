@@ -144,7 +144,13 @@ fn a_representation_crosses_as_the_object_the_cli_puts_under_data() {
 fn every_representation_name_the_cli_answers_crosses_and_the_removed_ones_refuse() {
     let one = render(&page(), "partials/one");
     for name in [
-        "lines", "atoms", "samples", "ledger", "loudness", "envelope",
+        "lines",
+        "atoms",
+        "samples",
+        "ledger",
+        "loudness",
+        "envelope",
+        "arguments",
     ] {
         let answered = one
             .query(name, None, None)

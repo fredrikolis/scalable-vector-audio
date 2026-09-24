@@ -244,3 +244,78 @@ fn a_negative_whole_power_of_zero_names_no_number() {
         "{refused:?}"
     );
 }
+
+fn arguments_of(g: &sva_ast::Graph, target: &str) -> (Vec<sva_engine::Arguments>, usize) {
+    let asks = vec![sva_engine::Ask {
+        node: target.to_string(),
+        representation: sva_engine::Representation::Arguments,
+    }];
+    let held = render(
+        g,
+        target,
+        RenderConfig::seconds(8_000, 0.05).asking(asks),
+        None,
+    )
+    .expect("a render");
+    let id = held.id(target).expect("the target");
+    match sva_engine::answer(&held, id, sva_engine::Representation::Arguments)
+        .expect("an answer")
+        .value
+    {
+        sva_engine::Output::Arguments(found) => (found, held.buffers.len()),
+        other => panic!("expected arguments, got {other:?}"),
+    }
+}
+
+/// Each binding answers the numbers its solver was handed, the defaults it filled in beside
+/// the ones written, and which operand each `max` chose, without rendering a sample.
+#[test]
+fn the_arguments_reading_answers_what_each_binding_handed_its_builtins() {
+    let piano = "0.5*chaigne_askenfelt(f0, vel=vel, b=max(1.4e-4, 4.1e-4*pow(f0/262, 1.9)), \
+                 hammer_k=2e10*max(1, pow(f0/523, 0.6)))\n";
+    let g = graph_of(
+        "arguments-reading",
+        &[
+            ("piano", piano),
+            (
+                "chord",
+                "@piano(t, f0=130.81, vel=3) + @piano(t, f0=1046.5, vel=3)\n",
+            ),
+        ],
+    );
+    let (found, buffers) = arguments_of(&g, "chord");
+    assert_eq!(buffers, 0, "a structural reading renders nothing");
+    for (f0, b_wins, k_wins) in [(130.81f64, 0, 0), (1046.5, 1, 1)] {
+        let node = format!("piano(f0={f0}, vel=3)");
+        let held = found
+            .iter()
+            .find(|a| a.node == node)
+            .unwrap_or_else(|| panic!("{node} in {found:?}"));
+        let [call] = held.calls.as_slice() else {
+            panic!("one solver call: {held:?}")
+        };
+        assert_eq!(call.name, "chaigne_askenfelt");
+        assert_eq!(&piano[call.at.start..call.at.end], "chaigne_askenfelt");
+        let arg = |name: &str| {
+            call.arguments
+                .iter()
+                .find(|a| a.name == name)
+                .unwrap_or_else(|| panic!("{name} in {call:?}"))
+        };
+        let b = (1.4e-4f64).max(4.1e-4 * (f0 / 262.0).powf(1.9));
+        assert_eq!((arg("b").value, arg("b").written), (b, true), "{f0}");
+        let k = 2e10 * 1f64.max((f0 / 523.0).powf(0.6));
+        assert_eq!(arg("hammer_k").value, k, "{f0}");
+        assert_eq!((arg("f0").value, arg("vel").value), (f0, 3.0));
+        let strike = arg("strike_pos");
+        assert!(!strike.written, "a default the solver filled in says so");
+        assert_eq!(strike.value, 0.125, "the reference set's own strike");
+
+        let chosen: Vec<(&str, usize)> = held
+            .chosen
+            .iter()
+            .map(|c| (&piano[c.at.start..c.at.end], c.chosen))
+            .collect();
+        assert_eq!(chosen, [("max", b_wins), ("max", k_wins)], "{f0}");
+    }
+}

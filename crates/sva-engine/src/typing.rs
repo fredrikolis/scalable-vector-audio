@@ -6,6 +6,7 @@ use sva_formula::filter::Shape;
 use sva_formula::{ClosedForm, Codomain, Env, Held, NodeId, Origin, ParamId, Ty, Var, infer};
 use sva_samples::Params;
 
+use crate::arguments::{Arguments, Called, Chosen};
 use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::Instances;
@@ -54,6 +55,7 @@ pub struct Node {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Typing {
     nodes: Vec<Node>,
+    arguments: BTreeMap<String, Arguments>,
     by_path: BTreeMap<String, NodeId>,
     files: BTreeMap<String, Vec<NodeId>>,
     origins: Vec<Located>,
@@ -65,6 +67,30 @@ impl Typing {
     pub(crate) fn next_index(&mut self) -> sva_formula::IndexId {
         self.indices += 1;
         sva_formula::IndexId(self.indices)
+    }
+
+    /// A call lowered twice is noted once, at its latest lowering.
+    pub(crate) fn note(&mut self, node: &str, call: Option<Called>, chosen: Vec<Chosen>) {
+        let held = self
+            .arguments
+            .entry(node.to_string())
+            .or_insert_with(|| Arguments {
+                node: node.to_string(),
+                ..Arguments::default()
+            });
+        if let Some(call) = call {
+            held.calls
+                .retain(|c| (c.at.start, &c.name) != (call.at.start, &call.name));
+            held.calls.push(call);
+        }
+        for one in chosen {
+            held.chosen.retain(|c| c.at.start != one.at.start);
+            held.chosen.push(one);
+        }
+    }
+
+    pub fn arguments(&self, node: &str) -> Option<&Arguments> {
+        self.arguments.get(node)
     }
 
     pub fn ty(&self, n: NodeId) -> Ty {

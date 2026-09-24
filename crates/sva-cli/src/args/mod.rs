@@ -22,7 +22,7 @@ pub const USAGE: &str = "usage: sva-cli render [<node|expression>] [query option
      [--sample-rate <hz>] [--oversample <n>] [--flop-budget <n>] [--volatile <name>]... \
      [--no-cache] [--brief] [--skim] [--pcm16] [--confirm]\n\
      representations: lines atoms spectrum envelope derivative samples ledger pitch formants \
-     stereo bands crest loudness alias bindings flops\n\
+     stereo bands crest loudness alias bindings arguments flops\n\
      analyses (`analyze` only): onsets trajectory masking gain-reduction\n\
      --against <file.wav> is the second signal `--as masking` is read against\n\
      --sample-rate <hz> is the observation rate, legal with any --as\n\

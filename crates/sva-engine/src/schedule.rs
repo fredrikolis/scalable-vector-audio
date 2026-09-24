@@ -200,10 +200,12 @@ pub fn plan(typing: &Typing, order: &Order, root: NodeId, asks: &[Ask]) -> Sched
         let Some(id) = typing.id(&ask.node) else {
             continue;
         };
-        // FORMAT 14.2: `bindings` is structural and `flops` counts; neither composes.
+        // FORMAT 14.2: `bindings` and `arguments` are structural and `flops` counts; none composes.
         if matches!(
             ask.representation,
-            crate::query::Representation::Bindings | crate::query::Representation::Flops
+            crate::query::Representation::Bindings
+                | crate::query::Representation::Arguments
+                | crate::query::Representation::Flops
         ) {
             continue;
         }

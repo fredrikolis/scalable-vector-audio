@@ -31,6 +31,14 @@ pub fn answer(
             None,
         ));
     }
+    if representation == Representation::Arguments {
+        return Ok(Answer::whole(
+            Output::Arguments(arguments_under(render, node)),
+            Source::Exact,
+            profile,
+            None,
+        ));
+    }
     if representation == Representation::Bindings {
         return Ok(Answer::whole(
             Output::Bindings(render.bindings.get(&node).cloned().unwrap_or_default()),
@@ -546,6 +554,40 @@ pub fn ledger_over(
         render.config.profile.name,
         Some(render.config.rate),
     ))
+}
+
+/// What every instance under `node` was lowered with, `node` first, then breadth first. The
+/// walk is over what each node was lowered to, so it needs no buffer.
+fn arguments_under(render: &Render, node: sva_formula::NodeId) -> Vec<crate::Arguments> {
+    let under = |id: sva_formula::NodeId| -> Vec<sva_formula::NodeId> {
+        match render.tys.value(id) {
+            Value::ClosedForm(form) => refs::nodes_in(&form.body),
+            Value::Read { source, .. } | Value::Cast(_, source) => vec![*source],
+            Value::Op { args, .. } => args.clone(),
+            Value::Filter {
+                x, cutoff, q, gain, ..
+            } => vec![*x, *cutoff, *q, *gain],
+            Value::SelfAt(_) | Value::Grid(_) | Value::Solver(_) => Vec::new(),
+        }
+    };
+    let mut names: Vec<&str> = Vec::new();
+    let mut seen = std::collections::BTreeSet::from([node]);
+    let mut level = vec![node];
+    while !level.is_empty() {
+        let mut next = Vec::new();
+        for at in level {
+            let name = render.tys.name(at);
+            if !names.contains(&name) {
+                names.push(name);
+            }
+            next.extend(under(at).into_iter().filter(|c| seen.insert(*c)));
+        }
+        level = next;
+    }
+    names
+        .into_iter()
+        .filter_map(|name| render.tys.arguments(name).cloned())
+        .collect()
 }
 
 /// The tree a ledger walks; a node several read is attributed to the first to reach it.

@@ -1,5 +1,6 @@
 // Concern: resolves a graph into instances a caller can ask about, and keeps their buffers | Non-concern: parsing (sva-ast), CLI framing (sva-cli) | IO: (&Graph, root) -> Instances, Traced
 
+mod arguments;
 mod bindings;
 mod cache;
 mod cast;
@@ -18,6 +19,7 @@ mod trace;
 mod typing;
 mod vocabulary;
 
+pub use arguments::{Argument, Arguments, Called, Chosen};
 pub use bindings::Binding;
 pub use cache::{
     Cache, CacheStats, DEFAULT_SLOT_BYTES, DiskCache, ENGINE_DIR_PREFIX, Entry, Expected, Hash,

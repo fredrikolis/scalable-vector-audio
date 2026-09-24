@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use sva_engine::{
-    Alias, AliasBand, Answer, BandCrest, BandTrack, Bands, Binding, Buffer, CacheStats, Cost,
-    Crest, Detail, EnvelopeFrame, FormantFrame, Horizon, Label, LedgerEntry, Loudness,
+    Alias, AliasBand, Answer, Arguments, BandCrest, BandTrack, Bands, Binding, Buffer, CacheStats,
+    Cost, Crest, Detail, EnvelopeFrame, FormantFrame, Horizon, Label, LedgerEntry, Loudness,
     LoudnessFrame, Outcome, Output, PayloadKind, Source, SpectralSum, Spectrum, StereoFrame,
     StereoImage, Tier,
 };
@@ -261,6 +261,38 @@ fn binding_json(b: &Binding) -> String {
     )
 }
 
+fn arguments_json(a: &Arguments) -> String {
+    let at = |s: sva_ast::ByteSpan| format!("{{ \"start\": {}, \"end\": {} }}", s.start, s.end);
+    let calls = list(&a.calls, |c| {
+        let arguments = list(&c.arguments, |x| {
+            format!(
+                "{{ \"name\": \"{}\", \"value\": {}, \"written\": {} }}",
+                escape(&x.name),
+                num(x.value),
+                x.written
+            )
+        });
+        format!(
+            "\n      {{ \"name\": \"{}\", \"at\": {}, \"arguments\": {arguments} }}",
+            escape(&c.name),
+            at(c.at)
+        )
+    });
+    let chosen = list(&a.chosen, |c| {
+        format!(
+            "\n      {{ \"name\": \"{}\", \"at\": {}, \"operands\": {}, \"chosen\": {} }}",
+            escape(&c.name),
+            at(c.at),
+            list(&c.operands, |v| num(*v)),
+            c.chosen
+        )
+    });
+    format!(
+        "\n    {{ \"node\": \"{}\", \"calls\": {calls}, \"chosen\": {chosen} }}",
+        escape(&a.node)
+    )
+}
+
 /// One object per component: a buffer is planar, and the component IS the channel.
 fn samples_json(b: &Buffer, limit: Option<usize>) -> String {
     let component = |c: usize| {
@@ -335,6 +367,7 @@ pub fn value_json(output: &Output, limit: Option<usize>, skim: bool) -> String {
         Output::Crest(c) => crest_json(c),
         Output::Alias(a) => alias_json(a),
         Output::Bindings(b) => list(b, binding_json),
+        Output::Arguments(a) => list(a, arguments_json),
         Output::Flops(tree) => flops_json(tree),
         Output::Envelope(frames) => list(frames, |f: &EnvelopeFrame| {
             format!(

@@ -46,6 +46,12 @@ RENDER:
   collapse per attributed ref beyond the render, and `--depth` bounds how many.
   `--brief` keeps only the rows that clipped, `--skim` drops the wider fields.
 
+  `--as arguments` renders nothing: for every instance under the target it
+  prints each builtin call's named arguments as the numbers the call was lowered
+  with, a solver's whole parameter set with `written: false` on each default it
+  filled in, and each `min`/`max` of numbers with the operand it `chosen`. `at`
+  spans are bytes of the instance's own body, as `sva-cli outline` counts them.
+
 ANALYZE:
   sva-cli analyze <file.wav> [--as <representation>[=<destination>]]...
 

@@ -4,6 +4,7 @@ use sva_ast::{Arg, ByteSpan, Expr};
 use sva_formula::filter::Shape;
 use sva_formula::{Body, C64, Codomain, Edge, Fold, Held, Origin, Part, Ty, Unary, Var, hash};
 
+use crate::arguments::{Argument, Called, Chosen};
 use crate::cast::Cast;
 use crate::error::EngineError;
 use crate::instantiate::Cx;
@@ -33,22 +34,29 @@ impl<'g> Lowering<'_, 'g> {
             .collect();
         crate::overload::check_arity(name, written, &keys)
             .map_err(|m| self.refuse(name, &m, Some(span)))?;
-        let named = self.named_values(args, cx);
+        let mut chosen = Vec::new();
+        let named = self.named_values(args, cx, &mut chosen);
         let view: Vec<(&str, f64)> = named.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        let solved = crate::overload::FINITE_DIFFERENCE.contains(&name);
+        if solved || super::physics::MODAL.contains(&name) {
+            let Some(numbers) = positional_values(self, args, cx, &mut chosen) else {
+                return Err(EngineError::BadArity(name.to_string()));
+            };
+            if !solved {
+                self.note_call(name, span, positional_named(name, &numbers, &named), chosen);
+                return self.modal(name, &numbers, &view);
+            }
+            return self.solver(name, &numbers, &view, span, chosen, var);
+        }
+        self.note_call(name, span, written_named(&named), chosen);
         if let Some(cast) = Cast::from_name(name, &view) {
             return self.cast(cast, args, span, cx, var);
         }
         if let Some(shape) = Shape::from_name(name) {
             return self.filter(shape, args, span, cx, var);
         }
-        if super::physics::MODAL.contains(&name) {
-            let Some(numbers) = positional_values(self, args, cx) else {
-                return Err(EngineError::BadArity(name.to_string()));
-            };
-            return self.modal(name, &numbers, &view);
-        }
         if name == "noise" {
-            let Some(numbers) = positional_values(self, args, cx) else {
+            let Some(numbers) = positional_values(self, args, cx, &mut Vec::new()) else {
                 return Err(EngineError::BadArity(name.to_string()));
             };
             let [seed, ..] = numbers.as_slice() else {
@@ -61,27 +69,6 @@ impl<'g> Lowering<'_, 'g> {
                     named_or(&view, "color", 0.0),
                 ),
             ))));
-        }
-        if crate::overload::FINITE_DIFFERENCE.contains(&name) {
-            let Some(numbers) = positional_values(self, args, cx) else {
-                return Err(EngineError::BadArity(name.to_string()));
-            };
-            let [first, ..] = numbers.as_slice() else {
-                return Err(EngineError::BadArity(name.to_string()));
-            };
-            let params = super::solvers::params(name, *first, &view);
-            // The grid is sized from these, so an out-of-range value reaches an allocation.
-            if !params.valid() {
-                return Err(EngineError::refused(crate::error::Diagnostic {
-                    code: "engine.physics_out_of_range".to_string(),
-                    message: format!("`{name}` was given an argument outside the range it models"),
-                    location: crate::error::Located::at(name, Some(span)),
-                    help: "`sva-cli builtins` names every argument each solver takes".to_string(),
-                }));
-            }
-            let value = Value::Solver(Box::new(params));
-            let ty = Ty::discrete(Held::Sampled, Codomain::Real);
-            return Ok(Piece::Value(self.register(value, ty, var)));
         }
         let positional: Vec<&Expr> = args
             .iter()
@@ -309,13 +296,76 @@ impl<'g> Lowering<'_, 'g> {
             .collect()
     }
 
-    fn named_values(&self, args: &[Arg], cx: Cx) -> Vec<(String, f64)> {
+    fn named_values(&self, args: &[Arg], cx: Cx, chosen: &mut Vec<Chosen>) -> Vec<(String, f64)> {
         args.iter()
             .filter_map(|a| match a {
-                Arg::Named(key, value) => Some((key.clone(), self.named_value(value, cx)?)),
+                Arg::Named(key, value) => {
+                    Some((key.clone(), self.chosen_value(value, cx, chosen)?))
+                }
                 Arg::Pos(_) => None,
             })
             .collect()
+    }
+
+    fn chosen_value(&self, e: &Expr, cx: Cx, chosen: &mut Vec<Chosen>) -> Option<f64> {
+        crate::loops::plain(crate::loops::amount_choosing(self.inst, e, cx, chosen)?)
+    }
+
+    /// The numbers a call was lowered with, where it was written, and what each constant
+    /// `min`/`max` inside them chose.
+    fn note_call(
+        &mut self,
+        name: &str,
+        at: ByteSpan,
+        arguments: Vec<Argument>,
+        chosen: Vec<Chosen>,
+    ) {
+        if arguments.is_empty() && chosen.is_empty() {
+            return;
+        }
+        let call = (!arguments.is_empty()).then(|| Called {
+            name: name.to_string(),
+            at,
+            arguments,
+        });
+        self.typing.note(self.node, call, chosen);
+    }
+
+    /// Checked in range before its grid is sized from it, then noted and registered.
+    fn solver(
+        &mut self,
+        name: &str,
+        numbers: &[f64],
+        view: &[(&str, f64)],
+        span: ByteSpan,
+        chosen: Vec<Chosen>,
+        var: Var,
+    ) -> Result<Piece, EngineError> {
+        let [first, ..] = numbers else {
+            return Err(EngineError::BadArity(name.to_string()));
+        };
+        let params = super::solvers::params(name, *first, view);
+        if !params.valid() {
+            return Err(EngineError::refused(crate::error::Diagnostic {
+                code: "engine.physics_out_of_range".to_string(),
+                message: format!("`{name}` was given an argument outside the range it models"),
+                location: crate::error::Located::at(name, Some(span)),
+                help: "`sva-cli builtins` names every argument each solver takes".to_string(),
+            }));
+        }
+        let handed = super::solvers::handed(&params)
+            .into_iter()
+            .enumerate()
+            .map(|(at, (key, value))| Argument {
+                written: at == 0 || view.iter().any(|(k, _)| *k == key),
+                name: key,
+                value,
+            })
+            .collect();
+        self.note_call(name, span, handed, chosen);
+        let value = Value::Solver(Box::new(params));
+        let ty = Ty::discrete(Held::Sampled, Codomain::Real);
+        Ok(Piece::Value(self.register(value, ty, var)))
     }
 
     /// A number a call reads as an argument. A grid count is not one: `1sp` names no
@@ -439,11 +489,38 @@ pub(super) fn named_or(named: &[(&str, f64)], key: &str, fallback: f64) -> f64 {
 
 /// Every positional argument as a number, in written order. A positional this cannot fold
 /// is not skipped: skipping one would move every argument after it into the wrong field.
-fn positional_values(low: &Lowering, args: &[Arg], cx: Cx) -> Option<Vec<f64>> {
+fn positional_values(
+    low: &Lowering,
+    args: &[Arg],
+    cx: Cx,
+    chosen: &mut Vec<Chosen>,
+) -> Option<Vec<f64>> {
     args.iter()
         .filter_map(|a| match a {
-            Arg::Pos(x) => Some(low.named_value(x, cx)),
+            Arg::Pos(x) => Some(low.chosen_value(x, cx, chosen)),
             Arg::Named(..) => None,
         })
         .collect()
+}
+
+fn written_named(named: &[(String, f64)]) -> Vec<Argument> {
+    named
+        .iter()
+        .map(|(name, value)| Argument {
+            name: name.clone(),
+            value: *value,
+            written: true,
+        })
+        .collect()
+}
+
+/// A modal bank's positionals under the names its signature gives them, then its named ones.
+fn positional_named(name: &str, numbers: &[f64], named: &[(String, f64)]) -> Vec<Argument> {
+    let params = crate::overload::signature(name).map_or(&[][..], |s| s.params);
+    let positional = params.iter().zip(numbers).map(|(p, value)| Argument {
+        name: p.name.to_string(),
+        value: *value,
+        written: true,
+    });
+    positional.chain(written_named(named)).collect()
 }

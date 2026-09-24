@@ -6,6 +6,7 @@ use sva_samples::{
     PitchFrame, Source, Spectrum, StereoImage,
 };
 
+use crate::arguments::Arguments;
 use crate::bindings::Binding;
 
 /// The default window a framed reading uses when the observation names none.
@@ -45,6 +46,7 @@ pub enum Representation {
         oversample: u32,
     },
     Bindings,
+    Arguments,
     Flops,
 }
 
@@ -72,6 +74,7 @@ pub enum Output {
     Alias(Box<Alias>),
     Ledger(Vec<LedgerEntry>),
     Bindings(Vec<Binding>),
+    Arguments(Vec<Arguments>),
     Flops(Box<crate::flops::Tree>),
 }
 
@@ -124,6 +127,7 @@ impl Representation {
             Representation::Loudness => "loudness",
             Representation::Alias { .. } => "alias",
             Representation::Bindings => "bindings",
+            Representation::Arguments => "arguments",
             Representation::Flops => "flops",
         }
     }
@@ -141,8 +145,10 @@ impl Representation {
             {
                 Consumes::ClosedForm
             }
-            // Neither reads a buffer: one is resolved first, the other counts the schedule.
-            Representation::Bindings | Representation::Flops => Consumes::ClosedForm,
+            // None reads a buffer: two are resolved first, the other counts the schedule.
+            Representation::Bindings | Representation::Arguments | Representation::Flops => {
+                Consumes::ClosedForm
+            }
             _ => Consumes::Buffer,
         }
     }
@@ -175,6 +181,7 @@ impl Representation {
             "loudness" => Representation::Loudness,
             "alias" => Representation::Alias { oversample: 4 },
             "bindings" => Representation::Bindings,
+            "arguments" => Representation::Arguments,
             "flops" => Representation::Flops,
             _ => return None,
         })
