@@ -3,6 +3,7 @@
 //! Chaigne & Askenfelt 1994's coupled hammer/stiff-string model. A physics citation, not an
 //! instrument: nothing here, or anywhere this is wired in, may name one.
 
+use crate::error::SampleError;
 use crate::physics::Solver;
 
 use crate::physics::bound::Bound::*;
@@ -148,11 +149,32 @@ pub(crate) fn stiff_string_grid(
     sr: f64,
 ) -> StringGrid {
     let dt = 1.0 / sr;
+    let n = finest_stable_points(c, length, kappa, dt).max(4);
+    let dx = length / n as f64;
+    let (c2, dt2, k2) = (c * c, dt * dt, kappa * kappa);
+    let mut grid = lossy_grid(n, rho, length, damp_dc, damp_freq, dt);
+    grid.courant_sq = c2 * dt2 / (dx * dx);
+    grid.stiff_sq = k2 * dt2 / dx.powi(4);
+    grid
+}
+
+/// The most intervals the lossless scheme keeps stable.
+fn finest_stable_points(c: f64, length: f64, kappa: f64, dt: f64) -> usize {
     let (c2, dt2, k2) = (c * c, dt * dt, kappa * kappa);
     let dx_bound = ((c2 * dt2 + (c2 * c2 * dt2 * dt2 + 16.0 * k2 * dt2).sqrt()) / 2.0).sqrt();
-    let n = ((length / dx_bound).floor() as usize).max(4);
-    let dx = length / n as f64;
+    (length / dx_bound).floor() as usize
+}
 
+/// At rest, losses set; the caller sets the restoring terms.
+fn lossy_grid(
+    n: usize,
+    rho: f64,
+    length: f64,
+    damp_dc: f64,
+    damp_freq: f64,
+    dt: f64,
+) -> StringGrid {
+    let dx = length / n as f64;
     StringGrid {
         y_now: vec![0.0; n + 1],
         y_prev: vec![0.0; n + 1],
@@ -160,22 +182,99 @@ pub(crate) fn stiff_string_grid(
         n,
         dx,
         rho,
-        courant_sq: c2 * dt2 / (dx * dx),
-        stiff_sq: k2 * dt2 / dx.powi(4),
+        courant_sq: 0.0,
+        stiff_sq: 0.0,
         damp_a: 2.0 * damp_dc * dt,
         damp_b: 2.0 * damp_freq * dt / (dx * dx),
         far_termination: Termination::Rigid,
     }
 }
 
-/// Derives a concrete grid from `(f0, b)`: fixes a generic wire's `c`, scales this note's own
-/// length `L = c/(2 f0)`, its stiffness `kappa = c L sqrt(b)/pi`, and a CFL-stable `dx`.
-fn build_grid(params: &ChaigneAskenfeltParams, f0: f64, sr: f64) -> StringGrid {
+/// Pinned mode `m` is exactly `sin(m pi j/n)`.
+fn mode_s(m: usize, n: usize) -> f64 {
+    (m as f64 * std::f64::consts::PI / (2.0 * n as f64))
+        .sin()
+        .powi(2)
+}
+
+fn mode_sigma(grid: &StringGrid, s: f64) -> f64 {
+    grid.damp_a + 4.0 * grid.damp_b * s
+}
+
+/// `2 - sigma - 2 sqrt(1 - sigma) cos(theta)`, without cancellation.
+fn stiffness_for(theta: f64, sigma: f64) -> f64 {
+    let r = (1.0 - sigma).sqrt();
+    (sigma / (1.0 + r)).powi(2) + 4.0 * r * (theta / 2.0).sin().powi(2)
+}
+
+/// Jury's test on `z^2 + (D + sigma - 2) z + 1 - sigma`, every mode.
+fn is_stable(grid: &StringGrid) -> bool {
+    (1..grid.n).all(|m| {
+        let s = mode_s(m, grid.n);
+        let sigma = mode_sigma(grid, s);
+        let d = 4.0 * grid.courant_sq * s + 16.0 * grid.stiff_sq * s * s;
+        (0.0..2.0).contains(&sigma) && d > 0.0 && d < 4.0 - 2.0 * sigma
+    })
+}
+
+/// `L = c/(2 f0)`, then the discrete dispersion relation inverted so partials 1 and 2 ring at
+/// `k f0 sqrt(1 + b k^2)`, on the finest stable grid.
+fn build_grid(params: &ChaigneAskenfeltParams, f0: f64, sr: f64) -> Option<StringGrid> {
+    let dt = 1.0 / sr;
     let rho = std::f64::consts::PI * WIRE_RADIUS_M * WIRE_RADIUS_M * WIRE_DENSITY_KG_M3;
     let c = (STRING_TENSION_N / rho).sqrt();
     let length = c / (2.0 * f0);
     let kappa = c * length * params.b.sqrt() / std::f64::consts::PI;
-    stiff_string_grid(rho, c, length, kappa, params.damp_dc, params.damp_freq, sr)
+    let theta = |k: f64| std::f64::consts::TAU * f0 * k * (1.0 + params.b * k * k).sqrt() * dt;
+    let (theta_1, theta_2) = (theta(1.0), theta(2.0));
+    if theta_2 >= std::f64::consts::PI {
+        return None;
+    }
+    (3..=finest_stable_points(c, length, kappa, dt))
+        .rev()
+        .find_map(|n| {
+            let mut grid = lossy_grid(n, rho, length, params.damp_dc, params.damp_freq, dt);
+            let (s1, s2) = (mode_s(1, n), mode_s(2, n));
+            let (sigma_1, sigma_2) = (mode_sigma(&grid, s1), mode_sigma(&grid, s2));
+            if sigma_1 >= 1.0 || sigma_2 >= 1.0 {
+                return None;
+            }
+            let (d1, d2) = (
+                stiffness_for(theta_1, sigma_1),
+                stiffness_for(theta_2, sigma_2),
+            );
+            // `D_m = 4 lambda^2 s_m + 16 mu^2 s_m^2`, m = 1, 2.
+            let det = s1 * s2 * (s2 - s1);
+            grid.courant_sq = (d1 * s2 * s2 - d2 * s1 * s1) / (4.0 * det);
+            grid.stiff_sq = (s1 * d2 - s2 * d1) / (16.0 * det);
+            (grid.courant_sq > 0.0 && is_stable(&grid)).then_some(grid)
+        })
+}
+
+/// Modal content `sin(m pi x)` for every grid mode; `1` alone on a node. Read and spread alike.
+fn point_weights(n: usize, x: f64) -> Vec<f64> {
+    let nf = n as f64;
+    // sum_{m=1}^{n-1} cos(m theta)
+    let cos_sum = |theta: f64| {
+        let half = theta / 2.0;
+        let sh = half.sin();
+        if sh == 0.0 {
+            nf - 1.0
+        } else {
+            (nf * half).sin() * ((nf - 1.0) * half).cos() / sh - 1.0
+        }
+    };
+    (0..=n)
+        .map(|j| match j {
+            0 => 0.0,
+            j if j == n => 0.0,
+            j => {
+                let xj = j as f64 / nf;
+                let pi = std::f64::consts::PI;
+                (cos_sum(pi * (x - xj)) - cos_sum(pi * (x + xj))) / nf
+            }
+        })
+        .collect()
 }
 
 /// Strings placed symmetrically in log frequency around `f0` at `+-sqrt(detune)`, then each
@@ -199,44 +298,49 @@ const MAX_UNISON: usize = 3;
 
 pub struct ChaigneAskenfeltSite {
     strings: Vec<StringGrid>,
+    /// Per string, `rho (lambda dx/dt)^2`.
+    tensions: Vec<f64>,
+    strike: Vec<Vec<f64>>,
     hammer: Hammer,
-    detached: bool,
-    contact_index: usize,
-    contact_indices: Vec<usize>,
-    strings_detached: Vec<bool>,
+    detached: Vec<bool>,
     bridge_now: f64,
     bridge_prev: f64,
     bridge_coupling: f64,
     bridge_mass: f64,
-    tension: f64,
     dt: f64,
 }
 
 impl ChaigneAskenfeltSite {
-    pub fn new(params: &ChaigneAskenfeltParams, sr: f64) -> ChaigneAskenfeltSite {
+    pub fn new(params: &ChaigneAskenfeltParams, sr: f64) -> Result<Self, SampleError> {
         let unison_count = params.unison_count.round().clamp(1.0, MAX_UNISON as f64) as usize;
         let freqs =
             unison_frequencies(params.f0, params.detune, unison_count, &params.string_cents);
-        let mut strings: Vec<StringGrid> =
-            freqs.iter().map(|&f0| build_grid(params, f0, sr)).collect();
+        let mut strings = freqs
+            .iter()
+            .map(|&f0| build_grid(params, f0, sr))
+            .collect::<Option<Vec<StringGrid>>>()
+            .ok_or(SampleError::StringPastRate {
+                model: "chaigne_askenfelt",
+            })?;
         if strings.len() > 1 {
             for grid in &mut strings {
                 grid.far_termination = Termination::SharedBridge;
             }
         }
-        let contact_indices: Vec<usize> = strings
-            .iter()
-            .map(|g| {
-                (params.strike_pos * g.n as f64)
-                    .round()
-                    .clamp(1.0, (g.n - 1) as f64) as usize
-            })
-            .collect();
-        let contact_index = contact_indices[0];
-        let strings_detached = vec![false; strings.len()];
         let dt = 1.0 / sr;
-        ChaigneAskenfeltSite {
+        let tensions = strings
+            .iter()
+            .map(|g| g.rho * g.courant_sq * g.dx * g.dx / (dt * dt))
+            .collect();
+        let strike = strings
+            .iter()
+            .map(|g| point_weights(g.n, params.strike_pos))
+            .collect();
+        Ok(ChaigneAskenfeltSite {
+            detached: vec![false; strings.len()],
             strings,
+            tensions,
+            strike,
             hammer: Hammer::new(
                 params.hammer_mass,
                 params.hammer_k,
@@ -245,17 +349,12 @@ impl ChaigneAskenfeltSite {
                 dt,
             )
             .with_anvil_ratios(&params.string_hammer_k_ratio[..unison_count]),
-            detached: false,
-            contact_index,
-            contact_indices,
-            strings_detached,
             bridge_now: 0.0,
             bridge_prev: 0.0,
             bridge_coupling: params.bridge_coupling,
             bridge_mass: params.bridge_mass,
-            tension: STRING_TENSION_N,
             dt,
-        }
+        })
     }
 }
 
@@ -269,32 +368,39 @@ impl Solver for ChaigneAskenfeltSite {
 }
 
 impl ChaigneAskenfeltSite {
-    /// The contact point is frozen at this sample's start.
-    fn step_single(&mut self) -> f64 {
-        let grid = &mut self.strings[0];
-        let n = grid.n;
-        let y_h = grid.y_now[self.contact_index];
-
-        let mut forces = [0.0f64; 1];
+    /// A released anvil is not read.
+    fn hammer_forces(&mut self, forces: &mut [f64]) {
+        let mut y_h = [0.0f64; MAX_UNISON];
+        for (i, grid) in self.strings.iter().enumerate() {
+            if !self.detached[i] {
+                y_h[i] = self.strike[i]
+                    .iter()
+                    .zip(&grid.y_now)
+                    .map(|(w, y)| w * y)
+                    .sum();
+            }
+        }
         self.hammer.substeps(
             self.dt,
-            &[y_h],
-            std::slice::from_mut(&mut self.detached),
-            &mut forces,
+            &y_h[..self.strings.len()],
+            &mut self.detached,
+            forces,
         );
-        let force = forces[0];
+    }
 
+    fn step_single(&mut self) -> f64 {
+        let mut forces = [0.0f64; 1];
+        self.hammer_forces(&mut forces);
+        let grid = &mut self.strings[0];
+        let n = grid.n;
         for i in 1..n {
-            let mut next = stencil_update(grid, i, 0.0, 0.0);
-            if i == self.contact_index {
-                next += (self.dt * self.dt / (grid.rho * grid.dx)) * force;
-            }
-            grid.y_next[i] = next;
+            grid.y_next[i] = stencil_update(grid, i, 0.0, 0.0);
         }
+        spread(grid, &self.strike[0], forces[0], self.dt);
         grid.y_next[0] = 0.0;
         grid.y_next[n] = 0.0;
 
-        let sample = self.tension * (grid.y_now[n] - grid.y_now[n - 1]) / grid.dx;
+        let sample = self.tensions[0] * (grid.y_now[n] - grid.y_now[n - 1]) / grid.dx;
 
         std::mem::swap(&mut grid.y_prev, &mut grid.y_now);
         std::mem::swap(&mut grid.y_now, &mut grid.y_next);
@@ -302,18 +408,11 @@ impl ChaigneAskenfeltSite {
         sample
     }
 
-    /// One hammer against every contact point: the reaction is summed, not divided.
+    /// The hammer's reaction is summed over the strings, not divided.
     fn step_unison(&mut self) -> f64 {
-        let count = self.strings.len();
-
-        let y_h: Vec<f64> = (0..count)
-            .map(|i| self.strings[i].y_now[self.contact_indices[i]])
-            .collect();
-
         let mut forces = [0.0f64; MAX_UNISON];
-        let forces = &mut forces[..count];
-        self.hammer
-            .substeps(self.dt, &y_h, &mut self.strings_detached, forces);
+        let forces = &mut forces[..self.strings.len()];
+        self.hammer_forces(forces);
 
         let (bridge_now, bridge_prev) = (self.bridge_now, self.bridge_prev);
         // Bridge `M a + R_B v = net string force`, implicit in its next position like the strings.
@@ -322,21 +421,19 @@ impl ChaigneAskenfeltSite {
         let mut sample = 0.0;
         for (i, &force) in forces.iter().enumerate() {
             let grid = &mut self.strings[i];
+            let tension = self.tensions[i];
             let n = grid.n;
             for j in 1..n {
-                let mut next = stencil_update(grid, j, bridge_now, bridge_prev);
-                if j == self.contact_indices[i] {
-                    next += (self.dt * self.dt / (grid.rho * grid.dx)) * force;
-                }
-                grid.y_next[j] = next;
+                grid.y_next[j] = stencil_update(grid, j, bridge_now, bridge_prev);
             }
+            spread(grid, &self.strike[i], force, self.dt);
             grid.y_next[0] = 0.0;
-            k_eff += self.tension / grid.dx;
-            rhs_sum += self.tension * grid.y_now[n - 1] / grid.dx;
-            sample += self.tension * (grid.y_now[n] - grid.y_now[n - 1]) / grid.dx;
+            k_eff += tension / grid.dx;
+            rhs_sum += tension * grid.y_now[n - 1] / grid.dx;
+            sample += tension * (grid.y_now[n] - grid.y_now[n - 1]) / grid.dx;
         }
 
-        let z_string = (self.tension * self.strings[0].rho).sqrt();
+        let z_string = (self.tensions[0] * self.strings[0].rho).sqrt();
         let r_bridge = self.bridge_coupling * z_string;
         let r_over_dt = r_bridge / self.dt;
         let m_over_dt2 = self.bridge_mass / (self.dt * self.dt);
@@ -357,5 +454,16 @@ impl ChaigneAskenfeltSite {
         }
 
         sample
+    }
+}
+
+/// The readout's adjoint.
+fn spread(grid: &mut StringGrid, weights: &[f64], force: f64, dt: f64) {
+    if force == 0.0 {
+        return;
+    }
+    let scale = (dt * dt / (grid.rho * grid.dx)) * force;
+    for (y, w) in grid.y_next.iter_mut().zip(weights) {
+        *y += scale * w;
     }
 }

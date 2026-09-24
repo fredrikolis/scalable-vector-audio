@@ -23,6 +23,10 @@ pub enum SampleError {
         nodes: usize,
         ceiling: usize,
     },
+    /// A string no stable grid at this rate rings at the partials it was asked for.
+    StringPastRate {
+        model: &'static str,
+    },
 }
 
 /// What a collapse refuses, per FORMAT 16.3.
@@ -130,6 +134,7 @@ impl SampleError {
             SampleError::WidthMismatch { .. } => "type.width_mismatch",
             SampleError::ChannelOutOfRange { .. } => "samples.channel_out_of_range",
             SampleError::GridTooLarge { .. } => "samples.grid_too_large",
+            SampleError::StringPastRate { .. } => "samples.string_past_rate",
         }
     }
 }
@@ -161,6 +166,11 @@ impl std::fmt::Display for SampleError {
                 f,
                 "`{model}` sizes a {nodes}-node grid at this rate, past the {ceiling} one \
                  call may hold. ask for a higher fundamental, or a lower --sample-rate"
+            ),
+            SampleError::StringPastRate { model } => write!(
+                f,
+                "`{model}` has no stable grid at this rate whose first two partials ring where \
+                 asked. ask for a lower fundamental or `b`, or a higher --sample-rate"
             ),
         }
     }

@@ -63,7 +63,7 @@ impl Params {
 pub fn site(p: &Params, rate: u32) -> Result<Box<dyn Solver>, SampleError> {
     let sr = f64::from(rate);
     Ok(match p {
-        Params::ChaigneAskenfelt(p) => Box::new(ChaigneAskenfeltSite::new(p, sr)),
+        Params::ChaigneAskenfelt(p) => Box::new(ChaigneAskenfeltSite::new(p, sr)?),
         Params::WillemsenBilbaoSerafin(p) => Box::new(WillemsenBilbaoSerafinSite::new(p, sr)),
         Params::DarabunditScavone(p) => Box::new(BoreSite::new(p, sr)),
         Params::RhaoutiChaigneJoly(p) => {

@@ -2,8 +2,9 @@
 
 mod fd;
 
-use sva_samples::Params;
+use sva_samples::measure::spectrum;
 use sva_samples::physics::chaigne_askenfelt::ChaigneAskenfeltParams;
+use sva_samples::{Params, site};
 
 #[test]
 fn a_stepped_spectrum_matches_the_stiff_string_partial_formula() {
@@ -107,6 +108,16 @@ fn a_parameter_out_of_range_is_refused() {
     );
 }
 
+/// A partial 2 past Nyquist has no grid to ring on, so the site refuses instead of diverging.
+#[test]
+fn a_string_whose_second_partial_passes_nyquist_refuses() {
+    let p = Params::ChaigneAskenfelt(ChaigneAskenfeltParams::at(12_000.0));
+    let Err(refused) = site(&p, 44_100) else {
+        panic!("a 12 kHz string rang at 44.1 kHz");
+    };
+    assert_eq!(refused.code(), "samples.string_past_rate", "{refused:?}");
+}
+
 #[test]
 fn an_undamped_run_stays_bounded() {
     fd::stays_bounded(
@@ -150,10 +161,10 @@ fn weinreich_unison() -> ChaigneAskenfeltParams {
     }
 }
 
-/// Every published equation predates the unison mechanics, so one naming none of them must
-/// step out the very samples it always did: FNV-1a over the bits of one second.
+/// A published unison names none of the unison mechanics, so adding them must leave its
+/// samples alone: FNV-1a over the bits of one second.
 #[test]
-fn a_call_naming_no_unison_mechanics_renders_the_samples_it_always_did() {
+fn a_call_naming_no_unison_mechanics_renders_its_frozen_samples() {
     let buffer = fd::render(&Params::ChaigneAskenfelt(published_unison()), 44_100, 1.0);
     let hash = buffer
         .plane(0)
@@ -163,7 +174,7 @@ fn a_call_naming_no_unison_mechanics_renders_the_samples_it_always_did() {
                 (h ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
             })
         });
-    assert_eq!(hash, 0x76fb_a801_eddd_be0c, "a published unison changed");
+    assert_eq!(hash, 0xdde4_9120_eca8_40d4, "a published unison changed");
 }
 
 /// A partial's level over one Hann window, off the single DFT bin at `hz`.
@@ -266,4 +277,99 @@ fn a_massive_bridge_and_unequal_strings_keep_a_unison_from_beating_to_nulls() {
         "the strike's first 50 ms moved {} dB",
         drift / power
     );
+}
+
+/// Where a partial rings, to well under a cent: the DFT bin that peaks near `hz`, refined by
+/// golden section on the single-bin level.
+fn ringing_hz(x: &[f64], rate: f64, hz: f64) -> f64 {
+    let (mags, bin_hz, _, _) = spectrum::magnitudes(x, rate, None);
+    let lo = ((hz * 0.97) / bin_hz) as usize;
+    let hi = ((hz * 1.03) / bin_hz) as usize;
+    let peak = (lo..=hi)
+        .max_by(|&a, &b| mags[a].total_cmp(&mags[b]))
+        .expect("a band with bins") as f64
+        * bin_hz;
+    let start = (0.05 * rate) as usize;
+    let level = |f: f64| level_db(x, rate, f, start, x.len() - start);
+    let golden = (5f64.sqrt() - 1.0) / 2.0;
+    let (mut a, mut b) = (peak - bin_hz, peak + bin_hz);
+    while b - a > 1e-6 {
+        let (c, d) = (b - golden * (b - a), a + golden * (b - a));
+        if level(c) > level(d) {
+            b = d;
+        } else {
+            a = c;
+        }
+    }
+    (a + b) / 2.0
+}
+
+/// The grid's own dispersion is inverted, so partials 1 and 2 ring on `k f0 sqrt(1 + b k^2)`:
+/// the fundamental and inharmonicity they imply are the ones asked for, at either rate.
+#[test]
+fn partials_one_and_two_imply_the_asked_f0_and_b_at_any_rate() {
+    let b = 0.000_492_652_403_124_032_3;
+    for rate in [44_100u32, 96_000] {
+        for f0 in [65.406_4, 261.625_6, 1_046.502_3, 2_093.004_5] {
+            let p = ChaigneAskenfeltParams {
+                b,
+                ..ChaigneAskenfeltParams::at(f0)
+            };
+            let buffer = fd::render(&Params::ChaigneAskenfelt(p.clone()), rate, 1.0);
+            let x = buffer.plane(0);
+            let (f1, f2) = (
+                ringing_hz(x, f64::from(rate), partial_hz(&p, 1)),
+                ringing_hz(x, f64::from(rate), partial_hz(&p, 2)),
+            );
+            let r = (f2 / (2.0 * f1)).powi(2);
+            let realized_b = (r - 1.0) / (4.0 - r);
+            let cents = 1200.0 * (f1 / (1.0 + realized_b).sqrt() / f0).log2();
+            assert!(
+                cents.abs() < 0.001,
+                "{f0} Hz at {rate} rings {cents} cents off"
+            );
+            assert!(
+                (realized_b / b - 1.0).abs() < 1e-4,
+                "{f0} Hz at {rate} rings b = {realized_b}, asked {b}"
+            );
+        }
+    }
+}
+
+/// The largest level within a quarter of `f0` of partial `k`.
+fn partial_db(p: &ChaigneAskenfeltParams, x: &[f64], rate: f64, k: u32) -> f64 {
+    let (mags, bin_hz, _, _) = spectrum::magnitudes(x, rate, None);
+    let hz = partial_hz(p, k);
+    let band = ((hz - p.f0 / 4.0) / bin_hz) as usize..=((hz + p.f0 / 4.0) / bin_hz) as usize;
+    20.0 * mags[band].iter().fold(0.0f64, |m, &v| m.max(v)).log10()
+}
+
+/// At C6 the grid holds about twenty points, so 1/7 and 1/8 once struck the same node. Struck
+/// where written, each silences its own partial: `sin(k pi x) = 0` at `k = 1/x`.
+#[test]
+fn a_strike_between_nodes_notches_the_partial_its_position_names() {
+    let rate = 44_100.0;
+    let struck = |k: u32| {
+        let p = ChaigneAskenfeltParams {
+            strike_pos: 1.0 / f64::from(k),
+            ..ChaigneAskenfeltParams::at(1_046.502_3)
+        };
+        let buffer = fd::render(&Params::ChaigneAskenfelt(p.clone()), 44_100, 1.0);
+        (1..=9)
+            .map(|j| partial_db(&p, buffer.plane(0), rate, j))
+            .collect::<Vec<f64>>()
+    };
+    let (at_7, at_8) = (struck(7), struck(8));
+    for (k, notched, other) in [(7, &at_7, &at_8), (8, &at_8, &at_7)] {
+        let depth = notched[k - 1] - notched[k - 2].max(notched[k]);
+        assert!(
+            depth < -60.0,
+            "struck at 1/{k}, partial {k} sits {depth} dB"
+        );
+        let moved = notched[k - 1] - other[k - 1];
+        assert!(
+            moved < -60.0,
+            "partial {k} struck at 1/{k} is only {moved} dB below the other strike's"
+        );
+    }
 }
