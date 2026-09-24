@@ -280,6 +280,7 @@ version = "0.3.2"
 dependencies = [
  "sva-ast",
  "sva-engine",
+ "sva-formula",
 ]
 
 [[package]]

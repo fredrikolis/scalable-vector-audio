@@ -95,6 +95,11 @@ impl Store {
     }
 }
 
+#[wasm_bindgen]
+pub fn builtins() -> Result<JsValue, JsValue> {
+    parse(&sva_core::builtins_data(&sva_core::builtins()))
+}
+
 /// `sva-cli outline`'s `data`.
 #[wasm_bindgen]
 pub fn outline(text: &str) -> Result<JsValue, JsValue> {

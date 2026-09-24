@@ -105,8 +105,9 @@ BUILTINS:
   sva-cli builtins
 
   Prints the whole callable and syntactic vocabulary: every builtin with its
-  arity and named arguments, unit suffixes, the note-name grammar, reserved
-  identifiers, special call shapes, and what has no operator at all.
+  arity and named arguments, each argument's `meaning`, `unit` and the model
+  `part` it moves, unit suffixes, the note-name grammar, reserved identifiers,
+  special call shapes, and what has no operator at all.
 
 OUTLINE:
   sva-cli outline <expression>

@@ -1,9 +1,14 @@
-// Concern: assembles the language's callable/syntactic vocabulary off the engine's own tables | Non-concern: what a builtin renders, the JSON shape (output.rs) | IO: none -> a Builtins value
+// Concern: assembles the language's callable/syntactic vocabulary off the engine's own tables, as the `data` object | Non-concern: what a builtin renders | IO: none -> Builtins, JSON
 
 use sva_engine::overload::{notation, signature};
-use sva_engine::{BUILTINS, Cast, Codomain, Held, MAX_WIDTH, REGISTRY, Ty, Var, recognized_named};
+use sva_engine::{
+    BUILTINS, Cast, Codomain, Held, MAX_WIDTH, Meaning, REGISTRY, Ty, Var, meaning,
+    recognized_named,
+};
 use sva_formula::filter::{ALL_SHAPES, Shape};
 use sva_formula::{FAMILIES, TABLE_VERSION};
+
+use crate::json::{NONE, escape, list, pair_list, strings};
 
 pub struct Callable {
     pub name: &'static str,
@@ -14,6 +19,19 @@ pub struct Callable {
     /// fallback. Every builtin leaves this empty today.
     pub required_named: &'static [&'static str],
     pub takes_gain: Option<bool>,
+    /// Each of `named`, in its order, beside what it means.
+    pub arguments: Vec<(&'static str, Meaning)>,
+}
+
+fn meanings(builtin: &str, named: &'static [&'static str]) -> Vec<(&'static str, Meaning)> {
+    named
+        .iter()
+        .map(|key| {
+            let held = meaning(builtin, key)
+                .unwrap_or_else(|| unreachable!("`{builtin}` takes `{key}` with no meaning"));
+            (*key, held)
+        })
+        .collect()
 }
 
 /// `(spelling, meaning)`, in the lexer's own longest-match-first order.
@@ -113,6 +131,7 @@ fn plain_callable(name: &'static str) -> Callable {
         named: sig.named(),
         required_named: &[],
         takes_gain: None,
+        arguments: meanings(name, sig.named()),
     }
 }
 
@@ -127,13 +146,15 @@ fn filter_callable(shape: Shape) -> Callable {
     } else {
         3
     };
+    let named = recognized_named(shape.name()).unwrap_or(&[]);
     Callable {
         name: shape.name(),
         required: 2,
         max_positional,
-        named: recognized_named(shape.name()).unwrap_or(&[]),
+        named,
         required_named: &[],
         takes_gain: Some(gain),
+        arguments: meanings(shape.name(), named),
     }
 }
 
@@ -188,6 +209,57 @@ pub fn builtins() -> Builtins {
         special_forms: &SPECIAL_FORMS,
         not_supported: &NOT_SUPPORTED,
     }
+}
+
+pub fn builtins_data(b: &Builtins) -> String {
+    let callables = list(&b.callables, |c| {
+        format!(
+            "\n    {{ \"name\": \"{}\", \"required\": {}, \"max_positional\": {}, \"named\": {}, \
+             \"required_named\": {}, \"takes_gain\": {}, \"arguments\": {} }}",
+            escape(c.name),
+            c.required,
+            c.max_positional,
+            strings(c.named),
+            strings(c.required_named),
+            c.takes_gain
+                .map_or_else(|| NONE.to_string(), |g| g.to_string()),
+            list(&c.arguments, argument_json)
+        )
+    });
+    let casts = list(&b.casts, |c| {
+        format!(
+            "\n    {{ \"name\": \"{}\", \"crossings\": {} }}",
+            escape(c.name),
+            list(&c.rows, |(from, to)| format!(
+                "{{ \"from\": \"{from}\", \"to\": \"{to}\" }}"
+            ))
+        )
+    });
+    format!(
+        "{{\n  \"callables\": {callables},\n  \"casts\": {casts},\n  \
+         \"rule_table\": {{ \"version\": {}, \"families\": {} }},\n  \
+         \"refusals\": {},\n  \"unit_suffixes\": {},\n  \"note_names\": \"{}\",\n  \
+         \"reserved\": {},\n  \"special_forms\": {},\n  \"not_supported\": {}\n}}",
+        b.table_version,
+        pair_list(b.families, "name", "duals"),
+        pair_list(b.refusals, "code", "when"),
+        pair_list(b.unit_suffixes, "suffix", "meaning"),
+        escape(b.note_names),
+        pair_list(b.reserved, "name", "note"),
+        pair_list(b.special_forms, "name", "shape"),
+        strings(b.not_supported)
+    )
+}
+
+fn argument_json((name, m): &(&str, Meaning)) -> String {
+    format!(
+        "{{ \"name\": \"{}\", \"meaning\": \"{}\", \"unit\": \"{}\", \"part\": {} }}",
+        escape(name),
+        escape(m.text),
+        escape(m.unit),
+        m.part
+            .map_or_else(|| NONE.to_string(), |p| format!("\"{}\"", escape(p)))
+    )
 }
 
 #[cfg(test)]
@@ -251,6 +323,30 @@ mod tests {
                 .unwrap_or_else(|| panic!("{} is missing", shape.name()));
             assert_eq!(found.takes_gain, Some(shape.takes_gain()));
         }
+    }
+
+    /// `builtins()` refuses to assemble a named argument with no meaning, so this reaching
+    /// every callable is the whole vocabulary explained.
+    #[test]
+    fn every_named_argument_says_what_it_means_and_in_what_unit() {
+        for c in builtins().callables {
+            let named: Vec<&str> = c.arguments.iter().map(|(k, _)| *k).collect();
+            assert_eq!(named, c.named, "{}", c.name);
+            for (key, m) in &c.arguments {
+                assert!(!m.text.is_empty() && !m.unit.is_empty(), "{}.{key}", c.name);
+            }
+        }
+        let b = builtins();
+        let solver = b
+            .callables
+            .iter()
+            .find(|c| c.name == "chaigne_askenfelt")
+            .expect("the solver");
+        let (_, stiffness) = solver.arguments[0];
+        assert_eq!(
+            (stiffness.text, stiffness.unit, stiffness.part),
+            ("string stiffness (inharmonicity)", "none", Some("string"))
+        );
     }
 
     #[test]

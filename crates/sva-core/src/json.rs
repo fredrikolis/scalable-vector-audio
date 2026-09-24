@@ -67,6 +67,16 @@ pub fn capped<T>(
     collection(items[..shown].iter().map(f), items.len(), next)
 }
 
+pub fn pair_list(items: &[(&str, &str)], key: &str, value: &str) -> String {
+    list(items, |(a, b)| {
+        format!(
+            "{{ \"{key}\": \"{}\", \"{value}\": \"{}\" }}",
+            escape(a),
+            escape(b)
+        )
+    })
+}
+
 pub fn strings(items: &[impl AsRef<str>]) -> String {
     list(items, |s| format!("\"{}\"", escape(s.as_ref())))
 }

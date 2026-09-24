@@ -1,6 +1,7 @@
 // Concern: the parse->tempo->render pipeline shared by both front ends | Non-concern: argv (sva-cli), JS bindings (sva-wasm) | IO: (a Source, a target) -> Rendered or CliError
 
 mod answer;
+mod builtins;
 mod cli_error;
 mod duration;
 pub mod json;
@@ -13,6 +14,7 @@ mod tempo;
 pub use answer::{
     CacheReport, Report, SAMPLE_LIMIT, answer_json, label_json, query_data, stats_json, value_json,
 };
+pub use builtins::{Builtins, Callable, Crossing, builtins, builtins_data};
 pub use cli_error::{CliError, LintViolation, lint_diagnostic};
 pub use lint_code::LintCode;
 pub use outline::outline_data;

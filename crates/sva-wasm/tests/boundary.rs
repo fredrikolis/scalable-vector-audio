@@ -5,7 +5,7 @@
 //! reaching for either compiles clean and traps only at RUNTIME. Hence one session for the
 //! whole surface. Run it with `wasm-pack test --node crates/sva-wasm`.
 
-use sva_wasm::{Composition, Rendering, outline};
+use sva_wasm::{Composition, Rendering, builtins, outline};
 use wasm_bindgen::JsValue;
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -569,4 +569,22 @@ fn an_outline_crosses_as_the_object_the_cli_puts_under_data() {
         field(&refused, "name").as_string().as_deref(),
         Some("validation_error")
     );
+}
+
+#[wasm_bindgen_test]
+fn builtins_cross_with_what_each_named_argument_means() {
+    let answered = builtins().unwrap_or_else(|_| unreachable!("the vocabulary assembles"));
+    let callables = items(&answered, "callables");
+    let solver = callables
+        .iter()
+        .find(|c| field(c, "name").as_string().as_deref() == Some("chaigne_askenfelt"))
+        .unwrap_or_else(|| unreachable!("the solver is a builtin"));
+    let b = items(&solver, "arguments").get(0);
+    assert_eq!(field(&b, "name").as_string().as_deref(), Some("b"));
+    assert_eq!(
+        field(&b, "meaning").as_string().as_deref(),
+        Some("string stiffness (inharmonicity)")
+    );
+    assert_eq!(field(&b, "unit").as_string().as_deref(), Some("none"));
+    assert_eq!(field(&b, "part").as_string().as_deref(), Some("string"));
 }
