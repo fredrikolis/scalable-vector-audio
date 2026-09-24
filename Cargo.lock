@@ -249,7 +249,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "sva-analysis"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "sva-core",
  "sva-samples",
@@ -257,14 +257,14 @@ dependencies = [
 
 [[package]]
 name = "sva-ast"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "sva-fingerprint",
 ]
 
 [[package]]
 name = "sva-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "hound",
  "sva-analysis",
@@ -276,7 +276,7 @@ dependencies = [
 
 [[package]]
 name = "sva-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "sva-ast",
  "sva-engine",
@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "sva-engine"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "sva-ast",
  "sva-fingerprint",
@@ -294,18 +294,18 @@ dependencies = [
 
 [[package]]
 name = "sva-fingerprint"
-version = "0.3.1"
+version = "0.3.2"
 
 [[package]]
 name = "sva-formula"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "sva-fingerprint",
 ]
 
 [[package]]
 name = "sva-samples"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "sva-fingerprint",
  "sva-formula",
@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "sva-wasm"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "js-sys",
  "sva-ast",
