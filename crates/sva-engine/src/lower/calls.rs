@@ -35,7 +35,7 @@ impl<'g> Lowering<'_, 'g> {
         crate::overload::check_arity(name, written, &keys)
             .map_err(|m| self.refuse(name, &m, Some(span)))?;
         let mut chosen = Vec::new();
-        let named = self.named_values(args, cx, &mut chosen);
+        let named = self.named_values(name, args, span, cx, &mut chosen)?;
         let view: Vec<(&str, f64)> = named.iter().map(|(k, v)| (k.as_str(), *v)).collect();
         let solved = crate::overload::FINITE_DIFFERENCE.contains(&name);
         if solved || super::physics::MODAL.contains(&name) {
@@ -296,15 +296,38 @@ impl<'g> Lowering<'_, 'g> {
             .collect()
     }
 
-    fn named_values(&self, args: &[Arg], cx: Cx, chosen: &mut Vec<Chosen>) -> Vec<(String, f64)> {
-        args.iter()
-            .filter_map(|a| match a {
-                Arg::Named(key, value) => {
-                    Some((key.clone(), self.chosen_value(value, cx, chosen)?))
+    /// Every named number a call reads. One the vocabulary lets move is its builtin's to route
+    /// when it folds to none; any other that folds to none is refused, never defaulted.
+    fn named_values(
+        &self,
+        name: &str,
+        args: &[Arg],
+        span: ByteSpan,
+        cx: Cx,
+        chosen: &mut Vec<Chosen>,
+    ) -> Result<Vec<(String, f64)>, EngineError> {
+        let mut out = Vec::new();
+        for arg in args {
+            let Arg::Named(key, value) = arg else {
+                continue;
+            };
+            match self.chosen_value(value, cx, chosen) {
+                Some(v) => out.push((key.clone(), v)),
+                None if crate::vocabulary::named_may_move(name, key) => {}
+                None => {
+                    return Err(self.refused_at(
+                        "engine.non_constant_argument",
+                        format!(
+                            "`{name}` reads `{key}={}` as one number, and it names none.",
+                            sva_ast::render_expr(value)
+                        ),
+                        "write a constant there: a number, a unit, or a ref naming one",
+                        Some(span),
+                    ));
                 }
-                Arg::Pos(_) => None,
-            })
-            .collect()
+            }
+        }
+        Ok(out)
     }
 
     fn chosen_value(&self, e: &Expr, cx: Cx, chosen: &mut Vec<Chosen>) -> Option<f64> {

@@ -37,7 +37,7 @@ fn drawn(name: &str, body: &str) -> f64 {
     }
 }
 
-/// A dropped argument is replaced by the builtin's default, silently.
+/// A named argument written as arithmetic folds to the number it names.
 #[test]
 fn a_modulo_inside_a_constant_argument_folds() {
     let written = "bandpass(sin(2*pi*300*t), cutoff=1450 + 130*(5 % 4), q=1.15)\n";
@@ -318,4 +318,38 @@ fn the_arguments_reading_answers_what_each_binding_handed_its_builtins() {
             .collect();
         assert_eq!(chosen, [("max", b_wins), ("max", k_wins)], "{f0}");
     }
+}
+
+/// A named number that folds to none is refused where it is written, never replaced by the
+/// builtin's default; only a filter's cutoff, q and gain may move.
+#[test]
+fn a_named_argument_that_names_no_number_is_refused_not_defaulted() {
+    for written in [
+        "chaigne_askenfelt(261.63, b=0.0001*sin(2*pi*t))\n",
+        "crop(sample(sin(2*pi*220*t)), 0s, 1s, rise=@lfo)\n",
+        "sat(sin(2*pi*220*t), drive=1 + t)\n",
+    ] {
+        let g = graph_of(
+            "moving-argument",
+            &[("lfo", "0.1*sin(2*pi*3*t)\n"), ("body", written)],
+        );
+        let Err(EngineError::Refused(d)) = types(&g, "body") else {
+            panic!("{written} types, with its argument silently defaulted");
+        };
+        assert_eq!(d.code, "engine.non_constant_argument", "{written}: {d:?}");
+        let span = d.location.span.expect("located at the call");
+        assert!(
+            written[span.start..span.end]
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_')
+        );
+    }
+    let swept = graph_of(
+        "moving-cutoff",
+        &[(
+            "body",
+            "lowpass(sample(sin(2*pi*1000*t)), cutoff=150 + 7800*t, q=0.707)\n",
+        )],
+    );
+    types(&swept, "body").expect("a filter routes a moving cutoff itself");
 }

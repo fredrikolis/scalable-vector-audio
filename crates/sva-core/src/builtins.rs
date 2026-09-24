@@ -2,7 +2,7 @@
 
 use sva_engine::overload::{notation, signature};
 use sva_engine::{
-    BUILTINS, Cast, Codomain, Held, MAX_WIDTH, Meaning, REGISTRY, Ty, Var, meaning,
+    BUILTINS, Cast, Codomain, Held, MAX_WIDTH, Meaning, REGISTRY, Ty, Var, meaning, named_may_move,
     recognized_named,
 };
 use sva_formula::filter::{ALL_SHAPES, Shape};
@@ -19,17 +19,17 @@ pub struct Callable {
     /// fallback. Every builtin leaves this empty today.
     pub required_named: &'static [&'static str],
     pub takes_gain: Option<bool>,
-    /// Each of `named`, in its order, beside what it means.
-    pub arguments: Vec<(&'static str, Meaning)>,
+    /// Each of `named`, in its order, beside what it means and whether it may move with `t`.
+    pub arguments: Vec<(&'static str, Meaning, bool)>,
 }
 
-fn meanings(builtin: &str, named: &'static [&'static str]) -> Vec<(&'static str, Meaning)> {
+fn meanings(builtin: &str, named: &'static [&'static str]) -> Vec<(&'static str, Meaning, bool)> {
     named
         .iter()
         .map(|key| {
             let held = meaning(builtin, key)
                 .unwrap_or_else(|| unreachable!("`{builtin}` takes `{key}` with no meaning"));
-            (*key, held)
+            (*key, held, named_may_move(builtin, key))
         })
         .collect()
 }
@@ -251,9 +251,10 @@ pub fn builtins_data(b: &Builtins) -> String {
     )
 }
 
-fn argument_json((name, m): &(&str, Meaning)) -> String {
+fn argument_json((name, m, moves): &(&str, Meaning, bool)) -> String {
     format!(
-        "{{ \"name\": \"{}\", \"meaning\": \"{}\", \"unit\": \"{}\", \"part\": {} }}",
+        "{{ \"name\": \"{}\", \"meaning\": \"{}\", \"unit\": \"{}\", \"part\": {}, \
+         \"moves\": {moves} }}",
         escape(name),
         escape(m.text),
         escape(m.unit),
@@ -330,9 +331,9 @@ mod tests {
     #[test]
     fn every_named_argument_says_what_it_means_and_in_what_unit() {
         for c in builtins().callables {
-            let named: Vec<&str> = c.arguments.iter().map(|(k, _)| *k).collect();
+            let named: Vec<&str> = c.arguments.iter().map(|(k, ..)| *k).collect();
             assert_eq!(named, c.named, "{}", c.name);
-            for (key, m) in &c.arguments {
+            for (key, m, _) in &c.arguments {
                 assert!(!m.text.is_empty() && !m.unit.is_empty(), "{}.{key}", c.name);
             }
         }
@@ -342,7 +343,17 @@ mod tests {
             .iter()
             .find(|c| c.name == "chaigne_askenfelt")
             .expect("the solver");
-        let (_, stiffness) = solver.arguments[0];
+        let (_, stiffness, moves) = solver.arguments[0];
+        assert!(!moves, "a solver's stiffness is one number");
+        let lowpass = b
+            .callables
+            .iter()
+            .find(|c| c.name == "lowpass")
+            .expect("a filter");
+        assert!(
+            lowpass.arguments.iter().all(|(_, _, moves)| *moves),
+            "a cutoff may sweep"
+        );
         assert_eq!(
             (stiffness.text, stiffness.unit, stiffness.part),
             ("string stiffness (inharmonicity)", "none", Some("string"))

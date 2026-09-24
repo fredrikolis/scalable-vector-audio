@@ -197,6 +197,12 @@ const BOTTELDOOREN_NAMED: &[&str] = &[
     "damp_freq",
 ];
 
+/// A filter's cutoff, q and gain may move with `t` or read a signal: the filter routes each
+/// itself. Every other named argument is one number.
+pub fn named_may_move(name: &str, key: &str) -> bool {
+    Shape::from_name(name).is_some() && FILTER_NAMED.contains(&key)
+}
+
 /// `None` for a name `is_builtin` does not recognize.
 pub fn recognized_named(name: &str) -> Option<&'static [&'static str]> {
     if Shape::from_name(name).is_some() {

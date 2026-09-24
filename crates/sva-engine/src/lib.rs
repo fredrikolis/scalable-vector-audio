@@ -50,7 +50,7 @@ pub use sva_samples::{
 };
 pub use trace::{Traced, Up, trace};
 pub use typing::{Typing, Value};
-pub use vocabulary::{BUILTINS, MAX_WIDTH, is_builtin, recognized_named};
+pub use vocabulary::{BUILTINS, MAX_WIDTH, is_builtin, named_may_move, recognized_named};
 
 use sva_ast::Graph;
 
