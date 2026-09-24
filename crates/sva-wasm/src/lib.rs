@@ -95,6 +95,12 @@ impl Store {
     }
 }
 
+/// `sva-cli outline`'s `data`.
+#[wasm_bindgen]
+pub fn outline(text: &str) -> Result<JsValue, JsValue> {
+    parse(&sva_core::outline_data(text).map_err(|e| thrown(&e))?)
+}
+
 #[wasm_bindgen]
 pub struct Composition {
     inner: sva_ast::Composition,

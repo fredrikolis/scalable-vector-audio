@@ -5,6 +5,7 @@ mod cli_error;
 mod duration;
 pub mod json;
 mod lint_code;
+mod outline;
 mod output;
 mod query;
 mod tempo;
@@ -14,6 +15,7 @@ pub use answer::{
 };
 pub use cli_error::{CliError, LintViolation, lint_diagnostic};
 pub use lint_code::LintCode;
+pub use outline::outline_data;
 pub use output::{Diagnostic, Severity, diagnostics_json, error_envelope, success_envelope};
 pub use query::{
     Asked, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, REPRESENTATIONS, RETIRED,

@@ -9,6 +9,26 @@ pub const MAX_DEPTH: u32 = 128;
 pub const MAX_TOKENS: usize = 4096;
 
 pub fn parse(src: &str) -> Result<Expr, Diag> {
+    parse_marking(src, None).map(|(expr, _)| expr)
+}
+
+/// Where the parser wrote each node it built, in the order `outline` walks them back: a node
+/// after its operands, and a named argument's key before its value.
+pub(crate) enum Mark {
+    Node {
+        span: ByteSpan,
+        head: Option<ByteSpan>,
+        written: bool,
+    },
+    Key(ByteSpan),
+}
+
+/// The tree `parse` builds, beside where each node of it was written.
+pub(crate) fn parse_marked(src: &str) -> Result<(Expr, Vec<Mark>), Diag> {
+    parse_marking(src, Some(Vec::new())).map(|(expr, marks)| (expr, marks.unwrap_or_default()))
+}
+
+fn parse_marking(src: &str, marks: Option<Vec<Mark>>) -> Result<(Expr, Option<Vec<Mark>>), Diag> {
     let tokens = tokenize(src)?;
     if tokens.is_empty() {
         return Err(Diag::new(
@@ -30,6 +50,7 @@ pub fn parse(src: &str) -> Result<Expr, Diag> {
         pos: 0,
         depth: 0,
         end: src.len(),
+        marks,
     };
     let expr = p.parse_expr(0)?;
     if let Some(t) = p.peek() {
@@ -45,7 +66,7 @@ pub fn parse(src: &str) -> Result<Expr, Diag> {
         };
         return Err(Diag::new(code, t.span, msg));
     }
-    Ok(expr)
+    Ok((expr, p.marks))
 }
 
 /// The units a time position accepts, in the order a refusal names them.
@@ -78,6 +99,7 @@ struct Parser<'t> {
     pos: usize,
     depth: u32,
     end: usize,
+    marks: Option<Vec<Mark>>,
 }
 
 impl<'t> Parser<'t> {
@@ -91,6 +113,25 @@ impl<'t> Parser<'t> {
             self.pos += 1;
         }
         t
+    }
+
+    /// The node just built spans token `from` through the last one taken.
+    fn mark(&mut self, from: usize, head: Option<ByteSpan>) {
+        let span = ByteSpan::new(
+            self.tokens[from].span.start,
+            self.tokens[self.pos - 1].span.end,
+        );
+        self.note(Mark::Node {
+            span,
+            head,
+            written: true,
+        });
+    }
+
+    fn note(&mut self, mark: Mark) {
+        if let Some(marks) = self.marks.as_mut() {
+            marks.push(mark);
+        }
     }
 
     fn eof_span(&self) -> ByteSpan {
@@ -114,10 +155,11 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_expr_inner(&mut self, min_bp: u8) -> Result<Expr, Diag> {
+        let from = self.pos;
         let mut lhs = self.parse_prefix()?;
 
         loop {
-            lhs = self.try_chain_dot(lhs)?;
+            lhs = self.try_chain_dot(lhs, from)?;
 
             let Some(tok) = self.peek() else { break };
             let kind = tok.kind.clone();
@@ -127,9 +169,11 @@ impl<'t> Parser<'t> {
             if l_bp < min_bp {
                 break;
             }
+            let op = tok.span;
             self.advance();
             let rhs = self.parse_expr(r_bp)?;
             lhs = Expr::Bin(bin_op(&kind), Box::new(lhs), Box::new(rhs));
+            self.mark(from, Some(op));
         }
 
         Ok(lhs)
@@ -137,7 +181,7 @@ impl<'t> Parser<'t> {
 
     /// `.name(args)` after a primary is sugar for `name(primary, args)` — desugared here so
     /// the tree only ever holds plain nested `Call`s (per FORMAT.md).
-    fn try_chain_dot(&mut self, receiver: Expr) -> Result<Expr, Diag> {
+    fn try_chain_dot(&mut self, receiver: Expr, from: usize) -> Result<Expr, Diag> {
         let mut lhs = receiver;
         while matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Dot)) {
             self.advance();
@@ -167,11 +211,13 @@ impl<'t> Parser<'t> {
                 args: bare(args),
                 span: name_span,
             };
+            self.mark(from, Some(name_span));
         }
         Ok(lhs)
     }
 
     fn parse_prefix(&mut self) -> Result<Expr, Diag> {
+        let from = self.pos;
         let Some(tok) = self.advance() else {
             return Err(Diag::new(
                 DiagCode::UnexpectedEof,
@@ -181,15 +227,23 @@ impl<'t> Parser<'t> {
         };
         let span = tok.span;
         if let Some(lit) = literal(&tok.kind, 1.0) {
+            self.mark(from, None);
             return Ok(Expr::Lit(lit));
         }
         match &tok.kind {
             TokenKind::Minus => {
                 if let Some(folded) = self.peek().and_then(|t| literal(&t.kind, -1.0)) {
                     self.advance();
+                    self.mark(from, None);
                     return Ok(Expr::Lit(folded));
                 }
+                self.note(Mark::Node {
+                    span,
+                    head: None,
+                    written: false,
+                });
                 let rhs = self.parse_expr(PREFIX_BP)?;
+                self.mark(from, Some(span));
                 Ok(Expr::Bin(
                     BinOp::Sub,
                     Box::new(Expr::Lit(Literal::Num(0.0))),
@@ -216,8 +270,14 @@ impl<'t> Parser<'t> {
                     if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::LParen)) {
                         self.parse_invocation(path, span)?
                     } else {
+                        self.note(Mark::Node {
+                            span: ByteSpan::at(span.end),
+                            head: None,
+                            written: false,
+                        });
                         (Expr::Var("t".to_string()), Vec::new())
                     };
+                self.mark(from, Some(span));
                 Ok(Expr::Ref {
                     path: path.clone(),
                     arg: Box::new(arg),
@@ -250,6 +310,7 @@ impl<'t> Parser<'t> {
                         "`self`'s argument must be positional",
                     ));
                 };
+                self.mark(from, Some(span));
                 Ok(Expr::SelfRef {
                     arg: Box::new(arg),
                     span,
@@ -259,12 +320,14 @@ impl<'t> Parser<'t> {
                 if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::LParen)) {
                     let args = self.parse_call_args()?;
                     self.refuse_bare_times(name, &args)?;
+                    self.mark(from, Some(span));
                     Ok(Expr::Call {
                         name: name.clone(),
                         args: bare(args),
                         span,
                     })
                 } else {
+                    self.mark(from, None);
                     Ok(Expr::Var(name.clone()))
                 }
             }
@@ -514,6 +577,7 @@ impl<'t> Parser<'t> {
         ) = (self.tokens.get(self.pos), self.tokens.get(self.pos + 1))
         {
             let name = name.clone();
+            self.note(Mark::Key(self.tokens[self.pos].span));
             self.pos += 2;
             let value = self.parse_expr(0)?;
             return Ok(Arg::Named(name, value));

@@ -9,7 +9,7 @@ pub fn help_text() -> String {
     let budget = PSYCHOACOUSTIC_V1.flop_budget;
     format!(
         r#"USAGE:
-  sva-cli (render | analyze | lint | trace | builtins | new) [arguments]
+  sva-cli (render | analyze | lint | trace | builtins | outline | new) [arguments]
 
 DESCRIPTION:
   A composition is a directory of node files, each one closed-form expression in
@@ -101,6 +101,16 @@ BUILTINS:
   Prints the whole callable and syntactic vocabulary: every builtin with its
   arity and named arguments, unit suffixes, the note-name grammar, reserved
   identifiers, special call shapes, and what has no operator at all.
+
+OUTLINE:
+  sva-cli outline <expression>
+
+  Prints the parse tree the engine builds from one expression, each node with
+  the byte `span` it was written in: calls by `name` with positional and named
+  `args`, operators by `op`, refs by `path` with their `binds`, literals by
+  `value` and `unit`, names by `name`. A node the parser supplies itself, the
+  `0` of a prefix minus or the `t` of a bare `@ref`, has `written: false`.
+  Reads no composition.
 
 NEW:
   sva-cli new <name> [--idempotency-key <key>]

@@ -46,6 +46,9 @@ fn run() -> ExitCode {
         }) => lint_composition(target.as_deref(), dir.as_deref(), format),
         Ok(Command::Trace { target, dir }) => trace_node(&target, dir.as_deref()),
         Ok(Command::Builtins) => Ok(success_envelope(&builtins_data(&builtins()), &[])),
+        Ok(Command::Outline { text }) => {
+            sva_core::outline_data(&text).map(|data| success_envelope(&data, &[]))
+        }
         Ok(Command::New {
             name,
             idempotency_key,

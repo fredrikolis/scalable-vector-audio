@@ -15,6 +15,7 @@ pub const USAGE: &str = "usage: sva-cli render [<node|expression>] [query option
      sva-cli lint [<node|expression>] [--in <dir>] [--format <json|text>]\n       \
      sva-cli trace <node|expression> [--in <dir>]\n       \
      sva-cli builtins\n       \
+     sva-cli outline <expression>\n       \
      sva-cli new <name> [--idempotency-key <key>]\n\
      query options: [--in <dir>] [--node <path>] [--from <time>] [--to <time>] \
      [--as <representation>[=<destination>]]... [--frame <secs>] [--depth <n>] [--peaks <n>] \
@@ -112,6 +113,10 @@ pub enum Command {
         dir: Option<String>,
     },
     Builtins,
+    /// An expression's own parse tree; it reads no composition.
+    Outline {
+        text: String,
+    },
     New {
         name: String,
         /// Present where the caller says this is a retry, per the `cli` standard's own
@@ -174,6 +179,7 @@ pub fn parse_args(argv: &[String]) -> Result<Command, CliError> {
         "lint" => lint_args(rest),
         "trace" => trace_args(rest),
         "builtins" => builtins_args(rest),
+        "outline" => outline_args(rest),
         "new" => new_args(rest),
         other => Err(CliError::Usage(format!(
             "unknown subcommand `{other}`\n{USAGE}"
@@ -186,6 +192,15 @@ fn builtins_args(rest: &[String]) -> Result<Command, CliError> {
         None => Ok(Command::Builtins),
         Some(extra) => Err(CliError::Usage(format!(
             "builtins takes no arguments, not `{extra}`\n{USAGE}"
+        ))),
+    }
+}
+
+fn outline_args(rest: &[String]) -> Result<Command, CliError> {
+    match rest {
+        [text] => Ok(Command::Outline { text: text.clone() }),
+        _ => Err(CliError::Usage(format!(
+            "outline takes one <expression>, quoted as one argument\n{USAGE}"
         ))),
     }
 }

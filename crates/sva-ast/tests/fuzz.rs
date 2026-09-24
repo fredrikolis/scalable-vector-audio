@@ -1,8 +1,8 @@
-// Concern: proves parse_expr and parse_composition never panic on hostile input | Non-concern: what any input evaluates to, the internal modules | IO: (hostile &str / &Path) -> no panic
+// Concern: proves parse_expr, outline and parse_composition never panic on hostile input | Non-concern: what any input evaluates to, the internal modules | IO: (hostile &str / &Path) -> no panic
 
 use std::fs;
 use std::path::Path;
-use sva_ast::parse_expr;
+use sva_ast::{outline, parse_expr};
 
 const HOSTILE: &[&str] = &[
     "",
@@ -31,6 +31,7 @@ const HOSTILE: &[&str] = &[
 fn hostile_expression_text_never_panics() {
     for s in HOSTILE {
         let _ = parse_expr(s);
+        let _ = outline(s);
     }
 }
 
@@ -39,6 +40,7 @@ fn truncated_and_deeply_nested_never_panics() {
     for depth in [1, 10, 100, 1000, 10_000] {
         let deep_parens = format!("{}1{}", "(".repeat(depth), ")".repeat(depth));
         let _ = parse_expr(&deep_parens);
+        let _ = outline(&deep_parens);
         let deep_refs = format!("{}t{}", "self(".repeat(depth), ")".repeat(depth));
         let _ = parse_expr(&deep_refs);
         let truncated = &deep_parens[..deep_parens.len() / 2];

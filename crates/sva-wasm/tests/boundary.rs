@@ -5,7 +5,7 @@
 //! reaching for either compiles clean and traps only at RUNTIME. Hence one session for the
 //! whole surface. Run it with `wasm-pack test --node crates/sva-wasm`.
 
-use sva_wasm::{Composition, Rendering};
+use sva_wasm::{Composition, Rendering, outline};
 use wasm_bindgen::JsValue;
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -532,5 +532,35 @@ fn a_ledger_narrows_to_the_window_asked_for() {
     assert!(
         (rms - 0.5 / 2f64.sqrt()).abs() < 1e-3,
         "a sine at 0.5 over whole periods: {spelled}"
+    );
+}
+
+#[wasm_bindgen_test]
+fn an_outline_crosses_as_the_object_the_cli_puts_under_data() {
+    let text = "0.5*lowpass(@note, cutoff=700)";
+    let answered = outline(text).unwrap_or_else(|_| unreachable!("it parses"));
+    let tree = field(&answered, "outline");
+    assert_eq!(field(&tree, "op").as_string().as_deref(), Some("*"));
+    let call = field(&tree, "right");
+    assert_eq!(field(&call, "name").as_string().as_deref(), Some("lowpass"));
+    let named = js_sys::Array::from(&field(&field(&call, "args"), "items")).get(1);
+    assert_eq!(field(&named, "name").as_string().as_deref(), Some("cutoff"));
+    let at = field(&field(&named, "value"), "span");
+    let (start, end) = (
+        field(&at, "start").as_f64().unwrap_or(0.0) as usize,
+        field(&at, "end").as_f64().unwrap_or(0.0) as usize,
+    );
+    assert_eq!(
+        &text[start..end],
+        "700",
+        "a span indexes the text it came from"
+    );
+
+    let Err(refused) = outline("sin(") else {
+        unreachable!("an unclosed call refuses")
+    };
+    assert_eq!(
+        field(&refused, "name").as_string().as_deref(),
+        Some("validation_error")
     );
 }
