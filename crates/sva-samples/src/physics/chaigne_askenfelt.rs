@@ -23,6 +23,11 @@ pub struct ChaigneAskenfeltParams {
     pub unison_count: f64,
     pub detune: f64,
     pub bridge_coupling: f64,
+    /// kg; `0` is massless.
+    pub bridge_mass: f64,
+    /// Cents off `detune`'s placing.
+    pub string_cents: [f64; MAX_UNISON],
+    pub string_hammer_k_ratio: [f64; MAX_UNISON],
 }
 
 impl ChaigneAskenfeltParams {
@@ -41,12 +46,17 @@ impl ChaigneAskenfeltParams {
             unison_count: 1.0,
             detune: 2f64.powf(3.0 / 1200.0),
             bridge_coupling: 1000.0,
+            bridge_mass: 0.0,
+            string_cents: [0.0; MAX_UNISON],
+            string_hammer_k_ratio: [1.0; MAX_UNISON],
         }
     }
 }
 
 impl ChaigneAskenfeltParams {
     pub fn valid(&self) -> bool {
+        let [c1, c2, c3] = self.string_cents;
+        let [k1, k2, k3] = self.string_hammer_k_ratio;
         all(&[
             (self.f0, Positive),
             (self.b, NonNegative),
@@ -60,6 +70,13 @@ impl ChaigneAskenfeltParams {
             (self.unison_count, Within(1.0, MAX_UNISON as f64)),
             (self.detune, AtLeast(1.0)),
             (self.bridge_coupling, Positive),
+            (self.bridge_mass, NonNegative),
+            (c1, Finite),
+            (c2, Finite),
+            (c3, Finite),
+            (k1, Positive),
+            (k2, Positive),
+            (k3, Positive),
         ])
     }
 }
@@ -161,14 +178,20 @@ fn build_grid(params: &ChaigneAskenfeltParams, f0: f64, sr: f64) -> StringGrid {
     stiff_string_grid(rho, c, length, kappa, params.damp_dc, params.damp_freq, sr)
 }
 
-/// Strings placed symmetrically in log frequency around `f0` at `+-sqrt(detune)`.
-fn unison_frequencies(f0: f64, detune: f64, unison_count: usize) -> Vec<f64> {
+/// Strings placed symmetrically in log frequency around `f0` at `+-sqrt(detune)`, then each
+/// moved by its own `cents`.
+fn unison_frequencies(f0: f64, detune: f64, unison_count: usize, cents: &[f64]) -> Vec<f64> {
     let spread = detune.sqrt();
-    match unison_count {
+    let placed = match unison_count {
         1 => vec![f0],
         2 => vec![f0 / spread, f0 * spread],
         _ => vec![f0 / spread, f0, f0 * spread],
-    }
+    };
+    placed
+        .iter()
+        .zip(cents)
+        .map(|(&f, &c)| f * 2f64.powf(c / 1200.0))
+        .collect()
 }
 
 /// Bounds `valid()`, so the per-string force buffer can be a stack array.
@@ -184,6 +207,7 @@ pub struct ChaigneAskenfeltSite {
     bridge_now: f64,
     bridge_prev: f64,
     bridge_coupling: f64,
+    bridge_mass: f64,
     tension: f64,
     dt: f64,
 }
@@ -191,7 +215,8 @@ pub struct ChaigneAskenfeltSite {
 impl ChaigneAskenfeltSite {
     pub fn new(params: &ChaigneAskenfeltParams, sr: f64) -> ChaigneAskenfeltSite {
         let unison_count = params.unison_count.round().clamp(1.0, MAX_UNISON as f64) as usize;
-        let freqs = unison_frequencies(params.f0, params.detune, unison_count);
+        let freqs =
+            unison_frequencies(params.f0, params.detune, unison_count, &params.string_cents);
         let mut strings: Vec<StringGrid> =
             freqs.iter().map(|&f0| build_grid(params, f0, sr)).collect();
         if strings.len() > 1 {
@@ -218,7 +243,8 @@ impl ChaigneAskenfeltSite {
                 params.hammer_p,
                 params.vel,
                 dt,
-            ),
+            )
+            .with_anvil_ratios(&params.string_hammer_k_ratio[..unison_count]),
             detached: false,
             contact_index,
             contact_indices,
@@ -226,6 +252,7 @@ impl ChaigneAskenfeltSite {
             bridge_now: 0.0,
             bridge_prev: 0.0,
             bridge_coupling: params.bridge_coupling,
+            bridge_mass: params.bridge_mass,
             tension: STRING_TENSION_N,
             dt,
         }
@@ -289,7 +316,7 @@ impl ChaigneAskenfeltSite {
             .substeps(self.dt, &y_h, &mut self.strings_detached, forces);
 
         let (bridge_now, bridge_prev) = (self.bridge_now, self.bridge_prev);
-        // Massless resistive bridge: R_B*v = net string force, solved as a stable weighted average.
+        // Bridge `M a + R_B v = net string force`, implicit in its next position like the strings.
         let mut k_eff = 0.0;
         let mut rhs_sum = 0.0;
         let mut sample = 0.0;
@@ -312,7 +339,10 @@ impl ChaigneAskenfeltSite {
         let z_string = (self.tension * self.strings[0].rho).sqrt();
         let r_bridge = self.bridge_coupling * z_string;
         let r_over_dt = r_bridge / self.dt;
-        let bridge_next = (rhs_sum + r_over_dt * bridge_now) / (k_eff + r_over_dt);
+        let m_over_dt2 = self.bridge_mass / (self.dt * self.dt);
+        let bridge_next =
+            (rhs_sum + r_over_dt * bridge_now + m_over_dt2 * (2.0 * bridge_now - bridge_prev))
+                / (k_eff + r_over_dt + m_over_dt2);
         for grid in &mut self.strings {
             let n = grid.n;
             grid.y_next[n] = bridge_next;

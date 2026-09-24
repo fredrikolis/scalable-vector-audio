@@ -29,6 +29,17 @@ pub(super) fn params(name: &str, first: f64, named: &[(&str, f64)]) -> Params {
                 unison_count: at("unison_count", p.unison_count),
                 detune: at("detune", p.detune),
                 bridge_coupling: at("bridge_coupling", p.bridge_coupling),
+                bridge_mass: at("bridge_mass", p.bridge_mass),
+                string_cents: [
+                    at("string1_cents", p.string_cents[0]),
+                    at("string2_cents", p.string_cents[1]),
+                    at("string3_cents", p.string_cents[2]),
+                ],
+                string_hammer_k_ratio: [
+                    at("string1_hammer_k_ratio", p.string_hammer_k_ratio[0]),
+                    at("string2_hammer_k_ratio", p.string_hammer_k_ratio[1]),
+                    at("string3_hammer_k_ratio", p.string_hammer_k_ratio[2]),
+                ],
                 ..p
             })
         }

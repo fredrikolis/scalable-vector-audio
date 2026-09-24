@@ -7,6 +7,7 @@ pub struct Hammer {
     prev: f64,
     mass: f64,
     k: f64,
+    anvil_k: Vec<f64>,
     p: f64,
 }
 
@@ -19,8 +20,15 @@ impl Hammer {
             prev: -vel * m_dt * 0.5,
             mass,
             k,
+            anvil_k: Vec::new(),
             p,
         }
+    }
+
+    /// Anvil `i` meets the felt at `k * ratios[i]`.
+    pub fn with_anvil_ratios(mut self, ratios: &[f64]) -> Hammer {
+        self.anvil_k = ratios.iter().map(|r| self.k * r).collect();
+        self
     }
 
     pub fn pos(&self) -> f64 {
@@ -37,7 +45,7 @@ impl Hammer {
             for i in 0..anvils.len() {
                 let compression = hp - anvils[i];
                 let force = if !detached[i] && compression > 0.0 {
-                    self.k * compression.powf(self.p)
+                    self.anvil_k.get(i).copied().unwrap_or(self.k) * compression.powf(self.p)
                 } else {
                     detached[i] = true;
                     0.0

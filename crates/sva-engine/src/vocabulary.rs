@@ -109,6 +109,13 @@ const CHAIGNE_ASKENFELT_NAMED: &[&str] = &[
     "unison_count",
     "detune",
     "bridge_coupling",
+    "bridge_mass",
+    "string1_cents",
+    "string2_cents",
+    "string3_cents",
+    "string1_hammer_k_ratio",
+    "string2_hammer_k_ratio",
+    "string3_hammer_k_ratio",
 ];
 const WILLEMSEN_BILBAO_SERAFIN_NAMED: &[&str] = &[
     "b",
