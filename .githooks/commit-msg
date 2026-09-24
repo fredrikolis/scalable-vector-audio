@@ -7,7 +7,8 @@ set -euo pipefail
 git agent-verdict --require-version 2.0
 
 git agent-verdict "$1" standards --model sonnet \
-  --standard programming --standard testing --standard cli --path .
+  --standard programming --standard testing --standard cli \
+  --rule "A builtin holds only general mechanisms; author values live in compositions." --path .
 
 git agent-verdict "$1" standards --model sonnet \
   --standard human-communication --path README.md
