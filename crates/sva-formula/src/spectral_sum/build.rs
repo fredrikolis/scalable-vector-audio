@@ -259,6 +259,16 @@ fn per_line(mut infinite: Lane, by: &Lane) -> Result<Lane, Left> {
     Ok(infinite)
 }
 
+/// A constant base has no pole to place: `k^-n` is the number `1/k^n`, the reciprocal a pole's
+/// own weight takes. A zero base names no number, exactly as `1/0` does.
+fn reciprocal_power(k: C64, order: u16, var: Var, origin: Origin) -> Result<SpectralSum, Left> {
+    let magnitude = k.powi(u32::from(order));
+    if magnitude.is_zero() {
+        return Err(left(origin, Factor::Value, LeftReason::NoValue));
+    }
+    Ok(one(var, SpectralAtom::constant(magnitude.inv(), origin)))
+}
+
 fn scale(n: SpectralSum, k: C64) -> Result<SpectralSum, Left> {
     let gain = Lane::of(vec![SpectralAtom::constant(k, Origin::UNKNOWN)]);
     zip(n, SpectralSum::of(Var::T, vec![gain]), multiply_lanes)
@@ -290,6 +300,9 @@ fn power(base: &Part, n: i32, var: Var) -> Result<SpectralSum, Left> {
     }
     let order = u16::try_from(n.unsigned_abs())
         .map_err(|_| left(base.origin, Factor::Pole, LeftReason::PoleOrder(u16::MAX)))?;
+    if let Some(k) = sole_constant(&inner) {
+        return reciprocal_power(k, order, var, base.origin);
+    }
     let Some((a, b)) = affine_atoms(&inner) else {
         return Err(left(base.origin, Factor::Pole, LeftReason::Reciprocal));
     };

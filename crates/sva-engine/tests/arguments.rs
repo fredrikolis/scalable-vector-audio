@@ -182,3 +182,65 @@ fn a_filter_cutoff_may_be_a_scalar_variable() {
         "a scalar ref in a filter argument is the number it names"
     );
 }
+
+fn plane_of(g: &sva_ast::Graph, node: &str) -> Vec<f64> {
+    let held = render(g, node, RenderConfig::seconds(44_100, 0.02), None)
+        .unwrap_or_else(|e| panic!("{node}: {e}"));
+    let id = held.id(node).unwrap_or_else(|| panic!("{node} typed"));
+    held.buffer(id).expect("a rendered solve").plane(0).to_vec()
+}
+
+/// The bug this closes: a negative whole exponent of a constant lowered to a pole atom, which
+/// no fold reads as a number, so `b=` fell back to its default for every such exponent.
+#[test]
+fn a_negative_whole_power_inside_a_solver_argument_is_the_number_it_names() {
+    let x = 261.63_f64 / 262.0;
+    // `C64::inv` of a real `k`, the reciprocal every pole weight and quotient takes.
+    let inv = |k: f64| k / (k * k);
+    for (exponent, reciprocal) in [
+        ("-1", inv(x)),
+        ("-1.0", inv(x)),
+        ("-2", inv(x * x)),
+        ("-3", inv(x * x * x)),
+    ] {
+        let g = graph_of(
+            "negative-power",
+            &[
+                (
+                    "powered",
+                    &format!(
+                        "f0 = 261.63\nchaigne_askenfelt(f0, b=0.0001*pow(f0/262, {exponent}))\n"
+                    ),
+                ),
+                (
+                    "spelled",
+                    &format!("chaigne_askenfelt(261.63, b=0.0001*{reciprocal:?})\n"),
+                ),
+                ("omitted", "chaigne_askenfelt(261.63)\n"),
+            ],
+        );
+        let powered = plane_of(&g, "powered");
+        assert_eq!(
+            powered,
+            plane_of(&g, "spelled"),
+            "pow(f0/262, {exponent}) is {reciprocal:?}"
+        );
+        assert_ne!(
+            powered,
+            plane_of(&g, "omitted"),
+            "pow(f0/262, {exponent}) is not the default b"
+        );
+    }
+}
+
+#[test]
+fn a_negative_whole_power_of_zero_names_no_number() {
+    let g = graph_of("zero-power", &[("body", "sin(2*pi*300*t) * pow(0, -2)\n")]);
+    let Err(refused) = render(&g, "body", RenderConfig::seconds(44_100, 0.01), None) else {
+        panic!("0^-2 names no number and renders nothing");
+    };
+    assert!(
+        matches!(&refused, EngineError::Refused(d) if d.message.contains("no number") || d.message.contains("no value")),
+        "{refused:?}"
+    );
+}

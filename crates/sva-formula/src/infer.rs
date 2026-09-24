@@ -221,6 +221,10 @@ fn power(base: &Part, n: i32, var: Var, env: &dyn Env) -> Result<Info, Refusal> 
     }
     let alg = match n {
         0 => Alg::scalar(),
+        n if n < 0 && inner.alg.constant => Alg {
+            escaped: inner.alg.escaped,
+            ..Alg::scalar()
+        },
         n if n > 0 => (1..n).fold(inner.alg.clone(), |acc, _| acc.product(inner.alg.clone())),
         n => Alg {
             classes: vec![AtomClass {
