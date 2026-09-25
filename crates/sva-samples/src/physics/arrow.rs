@@ -55,9 +55,17 @@ impl Arrow {
         self.schur().is_some_and(|s| s.lo() > 0.0)
     }
 
-    fn seems_positive(&self) -> bool {
-        let pulled: f64 = self.diag.iter().map(|(a, z)| z.c * z.c / a.c).sum();
-        self.diag.iter().all(|(a, _)| a.c > 0.0) && self.corner.c - pulled > 0.0
+    fn seems(x: &Arrow, p: f64, y: &Arrow, q: f64) -> bool {
+        let mut pulled = 0.0;
+        for (&(a, z), &(b, w)) in x.diag.iter().zip(&y.diag) {
+            let d = p * a.c - q * b.c;
+            if d <= 0.0 {
+                return false;
+            }
+            let t = p * z.c - q * w.c;
+            pulled += t * t / d;
+        }
+        p * x.corner.c - q * y.corner.c - pulled > 0.0
     }
 
     /// `x'A^-1 x`, `x` given as `(index, x_m, sign of z_m)` with no corner part.
@@ -103,12 +111,12 @@ fn search(
 /// A proven `c` with `c y - x > 0`: over every `x'Xx/x'Yx`, `y` positive.
 pub(crate) fn ceiling(x: &Arrow, y: &Arrow) -> Option<f64> {
     let over = |c: f64| y.scaled(c).less(1.0, x);
+    let seems = |c: f64| Arrow::seems(y, c, x, 1.0);
     let mut hi = 1.0f64;
-    while !over(hi).seems_positive() {
+    while !seems(hi) {
         hi *= 2.0;
         (hi < 1e300).then_some(())?;
     }
-    let seems = |c: f64| over(c).seems_positive();
     search(0.0, hi, &seems, &|c| over(c).proven_positive())
 }
 
@@ -116,11 +124,47 @@ pub(crate) fn ceiling(x: &Arrow, y: &Arrow) -> Option<f64> {
 pub(crate) fn floor(x: &Arrow, y: &Arrow) -> Option<f64> {
     x.proven_positive().then_some(())?;
     let under = |c: f64| x.less(c, y);
+    let seems = |c: f64| Arrow::seems(x, 1.0, y, c);
     let mut lo = 1.0f64;
-    while under(lo).seems_positive() {
+    while seems(lo) {
         lo *= 2.0;
         (lo < 1e300).then_some(())?;
     }
-    let seems = |c: f64| under(c).seems_positive();
     Some(search(lo, 0.0, &seems, &|c| c > 0.0 && under(c).proven_positive()).unwrap_or(0.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arrow(diag: &[(f64, f64)], corner: f64) -> Arrow {
+        Arrow {
+            diag: diag
+                .iter()
+                .map(|&(a, z)| (Ball::exact(a), Ball::exact(z)))
+                .collect(),
+            corner: Ball::exact(corner),
+        }
+    }
+
+    /// `[[a, z], [z, d]]` over the identity: its eigenvalues in closed form.
+    #[test]
+    fn the_ratio_bounds_bracket_the_eigenvalues_they_certify() {
+        for (a, z, d) in [(2.0, 0.5, 1.0), (1e-4, 3e-3, 1.0), (4.0, 0.0, 1e-6)] {
+            let x = arrow(&[(a, z)], d);
+            let id = Arrow::identity(1);
+            let (mid, half) = ((a + d) / 2.0, (((a - d) / 2.0).powi(2) + z * z).sqrt());
+            let (least, most) = (mid - half, mid + half);
+            let top = ceiling(&x, &id).expect("a ceiling");
+            assert!(
+                top >= most && top <= most * (1.0 + 1e-9),
+                "{top} over {most}"
+            );
+            let low = floor(&x, &id).expect("a positive arrow");
+            assert!(
+                low <= least && low >= least * (1.0 - 1e-6),
+                "{low} under {least}"
+            );
+        }
+    }
 }
