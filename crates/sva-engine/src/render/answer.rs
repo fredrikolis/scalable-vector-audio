@@ -314,18 +314,15 @@ fn lines(
 
 fn line_of(var: Var, a: &SpectralAtom) -> Option<Line> {
     match (var, a.sing) {
-        (Var::F, Singular::Delta { at, order: 0 }) => Some(Line { hz: at, amp: a.c }),
+        (Var::F, Singular::Delta { at, order: 0 }) => Some(Line::bare(at, a.c)),
         (Var::T, Singular::Regular) => {
             if a.poly > 0 || a.gauss.is_some() || a.ind.is_some() || a.pole.is_some() {
                 return None;
             }
             match a.exp {
                 // A constant turns at no rate, which is the line at zero hertz.
-                None => Some(Line { hz: 0.0, amp: a.c }),
-                Some(e) if e.sigma == 0.0 => Some(Line {
-                    hz: e.omega / std::f64::consts::TAU,
-                    amp: a.c,
-                }),
+                None => Some(Line::bare(0.0, a.c)),
+                Some(e) if e.sigma == 0.0 => Some(Line::bare(e.omega / std::f64::consts::TAU, a.c)),
                 Some(_) => None,
             }
         }

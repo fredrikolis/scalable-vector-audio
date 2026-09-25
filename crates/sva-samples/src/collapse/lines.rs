@@ -127,10 +127,7 @@ fn as_line(a: &SpectralAtom) -> Option<Line> {
     let omega = a
         .exp
         .map_or(0.0, |e| if e.sigma == 0.0 { e.omega } else { f64::NAN });
-    omega.is_finite().then(|| Line {
-        hz: omega / TAU,
-        amp: a.c,
-    })
+    omega.is_finite().then(|| Line::bare(omega / TAU, a.c))
 }
 
 /// A lane's atoms as line spectra under their common real factors, one group per factor.
@@ -156,10 +153,7 @@ pub fn grouped(lane: &Lane) -> Option<Vec<(SpectralAtom, Vec<Line>)>> {
             ));
             out.len() - 1
         });
-        out[held].1.push(Line {
-            hz: exp.omega / TAU,
-            amp: a.c,
-        });
+        out[held].1.push(Line::bare(exp.omega / TAU, a.c));
     }
     Some(out)
 }

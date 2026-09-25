@@ -140,6 +140,26 @@ fn reaches(f: &Body, leaf: &dyn Fn(&Body) -> bool) -> bool {
 pub struct Line {
     pub hz: f64,
     pub amp: C64,
+    /// Where the term's own frequency places it, which `hz` rounds.
+    pub rung: Option<Rung>,
+}
+
+impl Line {
+    pub fn bare(hz: f64, amp: C64) -> Line {
+        Line {
+            hz,
+            amp,
+            rung: None,
+        }
+    }
+}
+
+/// Exactly `offset + step*k` Hz: the frequency a series term writes at index `k`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rung {
+    pub offset: f64,
+    pub step: f64,
+    pub k: i64,
 }
 
 /// `tail_db` is the loudest dropped line against the loudest taken one.
@@ -184,20 +204,25 @@ pub fn lines(s: &Series, ceiling: f64, floor_db: f64, precision: f64) -> Lines {
         })
         .filter(|r| *r < 1.0);
     let floor = 10f64.powf(floor_db / 20.0);
+    let ladders: Vec<Option<(f64, f64)>> = voices
+        .iter()
+        .map(|(place, _)| ladder(place, s.index))
+        .collect();
 
     let mut taken = Vec::new();
     let mut dropped = Vec::new();
     let mut first = 0.0f64;
     for k in s.lo..=hi {
         let mut here = Vec::new();
-        for (place, weight) in &voices {
+        for ((place, weight), ladder) in voices.iter().zip(&ladders) {
             let (Some(hz), Some(amp)) = (
                 at_index(place, s.index, k).map(|c| c.re),
                 at_index(weight, s.index, k),
             ) else {
                 continue;
             };
-            here.push(Line { hz, amp });
+            let rung = ladder.map(|(offset, step)| Rung { offset, step, k });
+            here.push(Line { hz, amp, rung });
         }
         let loudest = here.iter().map(|l| l.amp.abs()).fold(0.0f64, f64::max);
         if k == s.lo {
@@ -231,6 +256,13 @@ pub fn lines(s: &Series, ceiling: f64, floor_db: f64, precision: f64) -> Lines {
         taken,
         dropped,
     }
+}
+
+fn ladder(place: &Body, k: IndexId) -> Option<(f64, f64)> {
+    let (slope, offset) = affine_in(place, Reading::Index(k))?;
+    let (slope, offset) = (slope.exact()?, offset.exact()?);
+    let real = slope.im == 0.0 && offset.im == 0.0;
+    (real && slope.re.is_finite() && offset.re.is_finite()).then_some((offset.re, slope.re))
 }
 
 /// The step a series' own frequency walks: every term lands on a multiple of it. A

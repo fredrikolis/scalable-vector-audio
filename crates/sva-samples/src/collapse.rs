@@ -7,6 +7,7 @@ mod lines;
 pub mod plan;
 mod point;
 mod reading;
+pub mod run;
 mod span;
 mod sum;
 mod tail;

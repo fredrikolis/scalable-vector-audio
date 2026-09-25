@@ -16,6 +16,7 @@ pub mod note;
 pub mod origin;
 pub mod rational;
 pub mod refusal;
+pub mod run;
 pub mod series;
 pub mod spectral_sum;
 pub mod table;
@@ -37,8 +38,10 @@ pub use modal::{Geometry, modes};
 pub use noise::noise;
 pub use origin::Origin;
 pub use refusal::{AtomSketch, Code, Factor, Left, LeftReason, Refusal};
+pub use run::{Mirror, Run};
 pub use series::{
-    AUDIBLE_CEILING_HZ, Enumerated, Line, Lines, commensurate, line_atoms, lines, spacing, summable,
+    AUDIBLE_CEILING_HZ, Enumerated, Line, Lines, Rung, commensurate, line_atoms, lines, spacing,
+    summable,
 };
 pub use spectral_sum::atom::{Exp, Factors, Gauss, Indicator, Pole, Singular, SpectralAtom};
 pub use spectral_sum::build::{normalize, normalize_closed_form};
