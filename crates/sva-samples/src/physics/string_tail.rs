@@ -155,6 +155,7 @@ pub(crate) fn energy_gain(grid: &StringGrid, gain: f64, dt: f64) -> f64 {
 }
 
 /// Rounding lifts `sqrt(E)` by `per_step` a step while the dashpot ramps, then `after` once.
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Settling {
     pub(crate) per_step: f64,
     pub(crate) after: f64,

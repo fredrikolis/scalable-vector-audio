@@ -1,7 +1,8 @@
 // Concern: states that a chaigne_askenfelt tail bound holds every later sample and its energy never rises | Non-concern: rendering until silent (sva-engine) | IO: (Params) -> asserted bounds
 
 use sva_samples::physics::chaigne_askenfelt::{ChaigneAskenfeltParams, ChaigneAskenfeltSite};
-use sva_samples::{Params, Solver, tail};
+use sva_samples::physics::chaigne_doutaut::ChaigneDoutautParams;
+use sva_samples::{Params, Solver, tail, tail_from};
 
 const RATE: u32 = 44_100;
 const STEP: usize = 256;
@@ -164,6 +165,23 @@ fn a_horizon_that_ends_before_the_hammer_lets_go_bounds_nothing() {
     assert!(tail(&p, RATE, 0, 10, 0.0).is_err());
 }
 
+/// A lossless unison proves no settling, yet a horizon ending in the strike asks for none.
+#[test]
+fn a_horizon_ending_before_let_go_bounds_nothing_even_where_no_bound_is_proven() {
+    let lossless = ChaigneAskenfeltParams {
+        damp_dc: 0.0,
+        damp_freq: 0.0,
+        ..unison(261.63, f64::INFINITY)
+    };
+    let whole = Params::ChaigneAskenfelt(lossless);
+    let early = tail(&whole, RATE, 1, 8, 0.0)
+        .expect("nothing to prove yet")
+        .at;
+    assert!(early.iter().all(|v| v.is_infinite()));
+    let refused = tail(&whole, RATE, STEP, 400, 0.0).expect_err("a lossless unison");
+    assert!(refused.contains("loses nothing"), "{refused}");
+}
+
 fn released(p: ChaigneAskenfeltParams, at: f64) -> ChaigneAskenfeltParams {
     ChaigneAskenfeltParams { release: at, ..p }
 }
@@ -265,4 +283,32 @@ fn a_felted_bound_under_its_level_is_held_there_for_every_later_instant() {
         .iter()
         .fold(0.0f64, |a, s| a.max(s.abs()));
     assert!(held[under] >= later, "{} under {later}", held[under]);
+}
+
+/// Past what the rest-state bound hears exactly, its instants are the energy bound of the
+/// state there, so a bound taken from a site stepped to that state is the same numbers.
+#[test]
+fn a_tail_from_a_held_state_is_the_tail_from_rest_from_there_on() {
+    let skip = 40;
+    for p in [
+        released(note(261.63, 4.5, 0.125), 0.05),
+        unison(261.63, f64::INFINITY),
+        unison(65.406, 0.05),
+    ] {
+        let whole = Params::ChaigneAskenfelt(p.clone());
+        let points = 120;
+        let rest = tail(&whole, RATE, STEP, points, 0.0).expect("a bound").at;
+        let mut site = ChaigneAskenfeltSite::new(&p, f64::from(RATE)).expect("a grid");
+        for _ in 0..skip * STEP {
+            site.step().expect("a sample");
+        }
+        let from = tail_from(&site, STEP, points - skip, 0.0)
+            .expect("a chaigne_askenfelt site")
+            .expect("a bound")
+            .at;
+        assert_eq!(from[..], rest[skip..], "f0 {}", p.f0);
+    }
+    let bar = Params::ChaigneDoutaut(ChaigneDoutautParams::at(440.0));
+    let other = sva_samples::site(&bar, RATE).expect("a bar");
+    assert!(tail_from(other.as_ref(), STEP, 10, 0.0).is_none());
 }

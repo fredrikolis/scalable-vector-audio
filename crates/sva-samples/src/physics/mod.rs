@@ -144,6 +144,17 @@ pub fn tail(p: &Params, rate: u32, step: usize, points: usize, level: f64) -> Re
     }
 }
 
+/// [`tail`] from the state `solver` holds now; `None` for a model with no bound.
+pub fn tail_from(
+    solver: &dyn Solver,
+    step: usize,
+    points: usize,
+    level: f64,
+) -> Option<Result<Tail, String>> {
+    let site = solver.as_any().downcast_ref::<ChaigneAskenfeltSite>()?;
+    Some(chaigne_tail::tail_from(site, step, points, level))
+}
+
 fn under_ceiling(model: &'static str, nodes: f64, ceiling: usize) -> Result<(), SampleError> {
     match nodes > ceiling as f64 {
         true => Err(SampleError::GridTooLarge {

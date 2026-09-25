@@ -3,6 +3,8 @@
 //! Chaigne & Askenfelt 1994's coupled hammer/stiff-string model. A physics citation, not an
 //! instrument: nothing here, or anywhere this is wired in, may name one.
 
+use std::cell::OnceCell;
+
 use crate::error::SampleError;
 use crate::physics::Solver;
 
@@ -13,7 +15,7 @@ use crate::physics::hammer::Hammer;
 use crate::physics::stiff_string::{
     StringGrid, Wire, dispersive_grid, grid_tension, point_weights, read_at, spread, stencil_update,
 };
-use crate::physics::string_tail::{Felt, energy, energy_gain, press};
+use crate::physics::string_tail::{Felt, Settling, Unringing, energy, energy_gain, press};
 use crate::physics::unison_tail::{unison_energy, unison_gain, unison_stable};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -168,6 +170,8 @@ pub struct ChaigneAskenfeltSite {
     pub(crate) felt: Vec<Vec<Felt>>,
     pub(crate) landing: Option<(u64, f64)>,
     pub(crate) steps: u64,
+    /// Its energy bound's settling and gain, found once by `chaigne_tail`.
+    pub(crate) proven: OnceCell<Result<(Settling, f64), Unringing>>,
 }
 
 pub fn landing_step(release: f64, sr: f64) -> Option<u64> {
@@ -224,6 +228,7 @@ impl ChaigneAskenfeltSite {
             felt,
             landing,
             steps: 0,
+            proven: OnceCell::new(),
             detached: vec![false; strings.len()],
             strings,
             tensions,
@@ -319,7 +324,7 @@ impl Solver for ChaigneAskenfeltSite {
         Ok(self.advance())
     }
 
-    /// Strings, hammer, bridge and step count move; the felt and its landing stay this site's.
+    /// Strings, hammer, bridge and step count move; the felt, landing and proof stay this site's.
     fn take_motion(&mut self, held: &dyn Solver) -> bool {
         let Some(held) = held.as_any().downcast_ref::<ChaigneAskenfeltSite>() else {
             return false;

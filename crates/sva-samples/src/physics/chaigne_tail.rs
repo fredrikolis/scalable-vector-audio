@@ -1,9 +1,9 @@
-// Concern: bounds every later sample of one chaigne_askenfelt call site | Non-concern: the bound's math (string_tail.rs), stepping the site | IO: (params, sr, step, points, level) -> a bound per instant
+// Concern: bounds every later sample of one chaigne_askenfelt call site, from rest or a held state | Non-concern: the bound's math (string_tail.rs) | IO: (params or site, step, points, level) -> bounds
 
 use crate::physics::Tail;
 use crate::physics::chaigne_askenfelt::{ChaigneAskenfeltParams, ChaigneAskenfeltSite};
-use crate::physics::string_tail::{Ringdown, Unringing, energy, energy_gain, settling};
-use crate::physics::unison_tail::{unison_energy, unison_gain, unison_settling};
+use crate::physics::string_tail::{Ringdown, Settling, Unringing, energy, settling};
+use crate::physics::unison_tail::{unison_energy, unison_settling};
 
 fn unringing(why: Unringing, unison: bool) -> String {
     let what = match unison {
@@ -21,9 +21,7 @@ fn unringing(why: Unringing, unison: bool) -> String {
     }
 }
 
-/// Stepped until every anvil lets go and any felt has pressed, heard exactly until then. An
-/// unfelted string's modes bound every sample after; a felted one's energy bounds each grid
-/// instant's future, stepped until one falls under `level` and held there.
+/// A site at rest, bounded by [`tail_from`].
 pub fn tail(
     params: &ChaigneAskenfeltParams,
     sr: f64,
@@ -31,10 +29,33 @@ pub fn tail(
     points: usize,
     level: f64,
 ) -> Result<Tail, String> {
-    let mut site = ChaigneAskenfeltSite::new(params, sr).map_err(|e| e.to_string())?;
+    let site = ChaigneAskenfeltSite::new(params, sr).map_err(|e| e.to_string())?;
+    tail_from(&site, step, points, level)
+}
+
+/// What a felted or unison site's energy bound reads; its parameters alone set it.
+fn proof(site: &ChaigneAskenfeltSite) -> Result<(Settling, f64), Unringing> {
+    let settled = match site.strings.as_slice() {
+        [grid] => settling(grid, &site.felt[0])?,
+        _ => unison_settling(site)?,
+    };
+    Ok((settled, site.energy_gain().ok_or(Unringing::Lossless)?))
+}
+
+/// From `from`'s state, a copy stepped until every anvil lets go and any felt has pressed, heard
+/// exactly until then; after, an unfelted string's modes bound every sample, and otherwise the
+/// energy bounds each instant's future, stepped until one falls under `level` and held there.
+pub fn tail_from(
+    from: &ChaigneAskenfeltSite,
+    step: usize,
+    points: usize,
+    level: f64,
+) -> Result<Tail, String> {
     if step == 0 {
         return Err("a tail bound on a grid with no step".to_string());
     }
+    let unison = from.strings.len() > 1;
+    let mut site = from.clone();
     let pressed = |site: &ChaigneAskenfeltSite| site.landing.is_none_or(|(at, _)| site.steps > at);
     let mut heard = Vec::new();
     while !(site.let_go() && pressed(&site) && heard.len() % step == 0)
@@ -48,29 +69,24 @@ pub fn tail(
             held: false,
         });
     }
+    let proven = match unison || from.landing.is_some() {
+        true => {
+            let found = *from.proven.get_or_init(|| proof(from));
+            Some(found.map_err(|why| unringing(why, unison))?)
+        }
+        false => None,
+    };
     let free = heard.len() / step;
     let mut at = vec![0.0f64; points];
     let mut held = false;
-    let gain = site.tensions[0] / site.strings[0].dx;
-    let unison = site.strings.len() > 1;
-    match site.landing {
-        None if !unison => {
+    match proven {
+        None => {
+            let gain = site.tensions[0] / site.strings[0].dx;
             let ring = Ringdown::of(&site.strings[0], gain).map_err(|why| unringing(why, false))?;
             at[free..].copy_from_slice(&ring.along(0, step, points - free));
         }
-        landing => {
-            let why = |why| unringing(why, unison);
-            let (settled, c) = match unison {
-                true => (
-                    unison_settling(&site).map_err(why)?,
-                    unison_gain(&site).ok_or_else(|| why(Unringing::Lossless))?,
-                ),
-                false => (
-                    settling(&site.strings[0], &site.felt[0]).map_err(why)?,
-                    energy_gain(&site.strings[0], gain, site.dt),
-                ),
-            };
-            let ramped = landing.map_or(0, |(at, ramp)| at + ramp.ceil() as u64);
+        Some((settled, c)) => {
+            let ramped = site.landing.map_or(0, |(at, ramp)| at + ramp.ceil() as u64);
             for j in free..points {
                 let upper = match unison {
                     true => unison_energy(&site).1,
@@ -84,8 +100,10 @@ pub fn tail(
                     break;
                 }
                 at[j] = bound;
-                for _ in 0..step {
-                    site.advance();
+                if j + 1 < points {
+                    for _ in 0..step {
+                        site.advance();
+                    }
                 }
             }
         }
