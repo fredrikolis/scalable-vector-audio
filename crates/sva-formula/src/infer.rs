@@ -125,6 +125,21 @@ fn walk(f: &Body, origin: Origin, var: Var, env: &dyn Env) -> Result<Info, Refus
             1,
             Codomain::Real,
         )),
+        Body::Run(run) => Ok(closed_form(
+            Alg::atom(AtomClass {
+                factors: Factors {
+                    exp: true,
+                    ..Factors::default()
+                },
+                ..AtomClass::regular()
+            }),
+            var,
+            1,
+            match run.mirror {
+                crate::run::Mirror::Conjugate => Codomain::Real,
+                _ => Codomain::Complex,
+            },
+        )),
     }
 }
 

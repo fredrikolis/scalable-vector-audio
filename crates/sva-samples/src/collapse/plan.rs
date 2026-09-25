@@ -208,6 +208,7 @@ fn nodes_at(f: &Body, component: usize) -> usize {
             }
         }
         Body::Channel(of, k) => 1 + branch(of, usize::from(*k)),
+        Body::Run(run) => super::run::steps(run),
         other => {
             1 + sva_formula::closed_form::children(other)
                 .iter()

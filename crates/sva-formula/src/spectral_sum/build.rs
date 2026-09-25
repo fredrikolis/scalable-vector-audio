@@ -6,7 +6,7 @@ use crate::complex::C64;
 use crate::origin::Origin;
 use crate::rational::expand;
 use crate::refusal::{Factor, Left, LeftReason};
-use crate::spectral_sum::atom::{Factors, Indicator, Pole, Singular, SpectralAtom};
+use crate::spectral_sum::atom::{Exp, Factors, Indicator, Pole, Singular, SpectralAtom};
 use crate::spectral_sum::image::{
     affine_atoms, apply, constant, crop, crop_window, delta, derive, fold, left, one,
     principal_value, shift,
@@ -147,6 +147,17 @@ fn lower(f: &Body, origin: Origin, var: Var) -> Result<SpectralSum, Left> {
                 ..Lane::default()
             }],
         )),
+        Body::Run(run) => {
+            let atoms = run.lines().into_iter().map(|l| {
+                let exp = Some(Exp::at(0.0, std::f64::consts::TAU * l.hz));
+                let factors = Factors {
+                    exp,
+                    ..Factors::NONE
+                };
+                SpectralAtom::new(l.amp, factors, Singular::Regular, origin)
+            });
+            Ok(SpectralSum::mono(var, atoms.collect()))
+        }
     }
 }
 

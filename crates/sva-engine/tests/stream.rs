@@ -16,6 +16,12 @@ const PIANO3: &str = "0.0014822 * chaigne_askenfelt(f0, vel=vel, b=max(1.4e-4, \
     - 0.506*log(f0/262)*log(f0/262)), string1_cents=-0.2, string2_cents=0, string3_cents=0.25, \
     string1_hammer_k_ratio=1, string2_hammer_k_ratio=0.8, string3_hammer_k_ratio=0.6)\n";
 
+/// The demo synth voice: two detuned saws through a lowpass under an ADSR.
+const VOICE: &str = "lowpass(sample(0.3*vel*(saw(f0*8ct) + saw(f0/8ct))*(crop(min(t/0.005, 1)*(0.6 + \
+    0.4*exp(-t/0.25)), 0s, release) + crop(min(release/0.005, 1)*(0.6 + \
+    0.4*exp(-release/0.25))*exp(-(t - release)/0.3), release, 3600s))), cutoff=min(f0*(2 + \
+    10*vel), 18000), q=0.9)\n";
+
 const ECHO: &str = "feedback = 0.35\nx + feedback*self(t - 0.25s)\n";
 
 fn composition() -> Graph {
@@ -45,6 +51,13 @@ fn composition() -> Graph {
                  release, 60s))), cutoff=900, q=0.8)\n",
             ),
             ("keyed_up", "@keyed(t, release=0.05)\n"),
+            ("voice", VOICE),
+            ("low", "@voice(t, f0=65.406, vel=0.8, release=0.1)\n"),
+            ("high", "@voice(t, f0=1046.502, vel=0.8, release=0.1)\n"),
+            (
+                "released",
+                "@voice(t, f0=1046.502, vel=0.8, release=0.05)\n",
+            ),
         ],
     )
 }
@@ -129,6 +142,53 @@ fn a_streamed_closed_form_is_the_same_in_blocks_of_any_size() {
             );
         }
     }
+}
+
+/// Each saw's harmonics are one run, summed at each instant by the same evaluator both read.
+#[test]
+fn a_streamed_synth_voice_is_the_whole_render_bit_for_bit_in_blocks_of_any_size() {
+    let g = composition();
+    let samples = 10_000;
+    for target in ["low", "high"] {
+        let want = whole(&g, target, samples);
+        sounds(&want);
+        for block in [1, 64, 441, 5_000] {
+            assert_eq!(
+                streamed(&g, target, block, samples),
+                want,
+                "{target} in blocks of {block}"
+            );
+        }
+    }
+}
+
+/// Past the proven end, a render twice as long hears nothing at the threshold.
+#[test]
+fn a_released_synth_voice_ends_before_any_sample_brute_force_hears() {
+    let g = composition();
+    let silent = Silent {
+        bits: 24,
+        max_secs: 10.0,
+    };
+    let config = StreamConfig {
+        rate: RATE,
+        block: 441,
+        silent: Some(silent),
+    };
+    let mut stream = Stream::open(&g, "released", &[], config).expect("a released voice");
+    let mut heard = Vec::new();
+    while let Some(block) = stream.next_block().expect("a block") {
+        heard.extend_from_slice(block.plane(0));
+    }
+    let end = stream.end().expect("a proven end");
+    assert_eq!(heard.len(), end);
+    let brute = whole(&g, "released", 2 * end);
+    assert_eq!(heard[..], brute[..end]);
+    let last = brute.iter().rposition(|v| v.abs() >= silent.threshold());
+    assert!(
+        last.is_some_and(|at| at < end),
+        "heard at {last:?}, past {end}"
+    );
 }
 
 #[test]

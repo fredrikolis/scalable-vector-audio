@@ -114,6 +114,7 @@ pub fn eval_body(
             sum
         }
         Body::Node(id) => refs.value(*id, component, t)?,
+        Body::Run(run) => super::run::at(run, t),
         other => return Err(CollapseError::NotEvaluable(sketch(other))),
     };
     match value.is_finite() {

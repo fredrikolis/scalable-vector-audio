@@ -235,6 +235,7 @@ pub enum Body {
     Rational(Rational),
     Series(Box<Series>),
     Modal(ModalBank),
+    Run(Box<crate::run::Run>),
 }
 
 /// The subterms of one node: a walker states its recursion once, and every new variant
@@ -247,7 +248,8 @@ pub fn children(f: &Body) -> Vec<&Part> {
         | Body::Param(_)
         | Body::Node(_)
         | Body::Rational(_)
-        | Body::Modal(_) => Vec::new(),
+        | Body::Modal(_)
+        | Body::Run(_) => Vec::new(),
         Body::Keyed { of, .. } => vec![of],
         Body::Add(parts) | Body::Mul(parts) | Body::Join(parts) | Body::Fold(_, parts) => {
             parts.iter().collect()
@@ -274,7 +276,8 @@ pub fn map_children(f: &Body, mut g: impl FnMut(&Part) -> Part) -> Body {
         | Body::Param(_)
         | Body::Node(_)
         | Body::Rational(_)
-        | Body::Modal(_) => f.clone(),
+        | Body::Modal(_)
+        | Body::Run(_) => f.clone(),
         Body::Keyed { seed, of } => Body::Keyed {
             seed: *seed,
             of: one(of, &mut g),
@@ -371,6 +374,6 @@ pub fn read_at(f: &Body, at: &Body) -> Body {
 pub fn shifts_opaquely(f: &Body) -> bool {
     matches!(
         f,
-        Body::Node(_) | Body::Param(_) | Body::Rational(_) | Body::Modal(_)
+        Body::Node(_) | Body::Param(_) | Body::Rational(_) | Body::Modal(_) | Body::Run(_)
     ) || children(f).iter().any(|p| shifts_opaquely(&p.body))
 }

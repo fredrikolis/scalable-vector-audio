@@ -22,10 +22,19 @@ pub fn at(run: &Run, t: f64) -> C64 {
     }
 }
 
+/// A conjugate mirror takes none of its own.
+pub fn steps(run: &Run) -> usize {
+    match &run.mirror {
+        Mirror::Held(amps) => run.amps.len() + amps.len(),
+        Mirror::None | Mirror::Conjugate => run.amps.len(),
+    }
+}
+
 /// `|at(run, t) - S(t)|` at every finite `t`, given `sin` and `cos` within `2^-52`.
 pub fn bound(run: &Run) -> f64 {
     let rotor = (32.0 + 12.0 * (run.first as f64).abs()) * U;
-    let term = |j: usize| (rotor + j as f64 * STEP + (j + 1) as f64 * OPS).exp_m1();
+    let term =
+        |j: usize| (rotor + j as f64 * STEP_ROTOR + (j + 1) as f64 * PRODUCT_AND_SUM).exp_m1();
     let ladder = |amps: &[C64]| -> (f64, f64) {
         amps.iter()
             .enumerate()
@@ -45,10 +54,9 @@ pub fn bound(run: &Run) -> f64 {
 
 const U: f64 = f64::EPSILON / 2.0;
 
-const STEP: f64 = 24.0 * U;
+const STEP_ROTOR: f64 = 24.0 * U;
 
-/// Per Horner step, a complex product's `sqrt(5)` and a sum's one.
-const OPS: f64 = (2.236_067_977_499_8 + 1.0) * U;
+const PRODUCT_AND_SUM: f64 = (2.236_067_977_499_8 + 1.0) * U;
 
 fn horner(amps: &[C64], z: C64) -> C64 {
     let mut rest = amps.iter().rev();

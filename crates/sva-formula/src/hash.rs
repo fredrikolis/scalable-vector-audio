@@ -8,6 +8,7 @@ use crate::closed_form::{
 };
 use crate::complex::{C64, canonical};
 use crate::lanes::Lanes;
+use crate::run::Mirror;
 use crate::spectral_sum::atom::{Singular, SpectralAtom};
 use crate::spectral_sum::{Lane, SpectralSum};
 use crate::table::TABLE_VERSION;
@@ -198,6 +199,13 @@ impl Sink {
         self.formula(&s.term.body);
     }
 
+    fn amps(&mut self, amps: &[C64]) {
+        self.u64(amps.len() as u64);
+        for a in amps {
+            self.c64(*a);
+        }
+    }
+
     fn modal(&mut self, m: &ModalBank) {
         self.u64(m.modes.len() as u64);
         for Mode {
@@ -354,6 +362,21 @@ impl Sink {
             Body::Modal(m) => {
                 self.byte(0x25);
                 self.modal(m);
+            }
+            Body::Run(run) => {
+                self.byte(0x28);
+                self.f64(run.offset);
+                self.f64(run.step);
+                self.i64(run.first);
+                self.amps(&run.amps);
+                match &run.mirror {
+                    Mirror::None => self.byte(0),
+                    Mirror::Conjugate => self.byte(1),
+                    Mirror::Held(amps) => {
+                        self.byte(2);
+                        self.amps(amps);
+                    }
+                }
             }
             Body::Keyed { seed, of } => {
                 self.byte(0x26);

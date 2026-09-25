@@ -8,7 +8,7 @@ use sva_formula::series::{mentions_line, ratio, substitute};
 use sva_formula::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom};
 use sva_formula::table::series::{Shape, read};
 use sva_formula::{
-    Body, C64, Codomain, Env, Lane, NodeId, ParamId, Part, SpectralSum, Ty, Unary, Var, lines,
+    Body, C64, Codomain, Env, Lane, NodeId, ParamId, Part, Run, SpectralSum, Ty, Unary, Var, lines,
 };
 
 use crate::error::CollapseError;
@@ -107,11 +107,12 @@ fn atoms(s: &Series, band: Audible) -> Result<Vec<SpectralAtom>, CollapseError> 
     Ok(held.lanes.into_iter().flat_map(|l| l.atoms).collect())
 }
 
-/// A line series places its terms analytically; anything else is summed term by term.
+/// A line series keeps its terms as runs; anything else is summed term by term.
 fn expanded(s: &Series, band: Audible) -> Result<Body, CollapseError> {
     let taken = enumerated(s, band);
     if !taken.is_empty() {
-        return Ok(sum(taken.iter().map(wave).collect()));
+        let runs = Run::of(&taken).into_iter();
+        return Ok(sum(runs.map(|r| Body::Run(Box::new(r))).collect()));
     }
     let count = terms(s, band)?;
     let mut parts = Vec::with_capacity(count);
@@ -127,19 +128,6 @@ fn enumerated(s: &Series, band: Audible) -> Vec<sva_formula::Line> {
         Some(Shape::Lines(_)) => lines(s, band.ceiling, band.floor_db, band.precision).taken,
         _ => Vec::new(),
     }
-}
-
-fn wave(l: &sva_formula::Line) -> Body {
-    Body::Mul(vec![
-        Part::bare(Body::Const(l.amp)),
-        Part::bare(Body::Apply(
-            sva_formula::Unary::Exp,
-            Part::bare(Body::Mul(vec![
-                Part::bare(Body::Const(C64::new(0.0, TAU * l.hz))),
-                Part::bare(Body::Line),
-            ])),
-        )),
-    ])
 }
 
 fn sum(parts: Vec<Body>) -> Body {

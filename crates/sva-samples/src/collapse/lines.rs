@@ -5,7 +5,9 @@ use std::f64::consts::TAU;
 use std::collections::BTreeMap;
 
 use sva_formula::spectral_sum::atom::{Exp, Singular, SpectralAtom, SpectralAtomKey};
-use sva_formula::{C64, Lane, Line, Origin, commensurate, lines as series_lines, modal, spacing};
+use sva_formula::{
+    C64, Lane, Line, Origin, Run, commensurate, lines as series_lines, modal, spacing,
+};
 
 use crate::fft::idft;
 use crate::label::Dropped;
@@ -158,16 +160,10 @@ pub fn grouped(lane: &Lane) -> Option<Vec<(SpectralAtom, Vec<Line>)>> {
     Some(out)
 }
 
-pub fn at(kept: &[Line], t: f64) -> C64 {
-    kept.iter().fold(C64::ZERO, |acc, l| {
-        acc + l.amp * C64::new(0.0, TAU * l.hz * t).exp()
-    })
-}
-
-/// Kept lines summed at one instant: the constant lines folded to one level, the rest turned.
+/// Kept lines summed at one instant: the constant lines folded to one level, the rest as runs.
 pub struct Direct {
     level: f64,
-    moving: Vec<Line>,
+    runs: Vec<Run>,
 }
 
 impl Direct {
@@ -178,12 +174,13 @@ impl Direct {
         let (dc, moving): (Vec<Line>, Vec<Line>) = kept.iter().partition(|l| l.hz == 0.0);
         Some(Direct {
             level: dc.iter().map(|l| l.amp.re).sum(),
-            moving,
+            runs: Run::of(&moving),
         })
     }
 
     pub fn at(&self, t: f64) -> f64 {
-        self.level + at(&self.moving, t).re
+        let moving: f64 = self.runs.iter().map(|r| super::run::at(r, t).re).sum();
+        self.level + moving
     }
 }
 

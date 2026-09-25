@@ -149,7 +149,7 @@ fn flops_tree_folds_rows_under_one_percent() {
     let mut addends = vec!["@big(t)".to_string()];
     files.push((
         "big",
-        "sin(2*pi*100*pow(2, t/4)*t) * sum(k, 1, 200, (1/k)*sin(2*pi*100*k*t))\n".to_string(),
+        "sin(2*pi*100*pow(2, t/4)*t) * sum(k, 1, 200, (1/k)*sin(2*pi*20*k*t))\n".to_string(),
     ));
     for i in 0..6 {
         let name = format!("small{i}");
