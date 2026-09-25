@@ -221,6 +221,22 @@ fn a_constant_factor_beside_an_inline_solver_has_no_share() {
     assert_eq!(named(&entries, "master").share, Some(1.0));
 }
 
+/// A self-read written inline moves as a slot does, so the factor beside it is no addend of
+/// the product.
+#[test]
+fn a_constant_factor_beside_a_self_read_has_no_share() {
+    let master = "sample(@gain) * self(t - 1sp) + sample(0.25)\n";
+    let entries = ledger("self-read", &[("gain", "0.5\n"), ("master", master)], 1);
+    let gain = named(&entries, "gain");
+    assert_eq!(gain.share, None, "`gain` is a factor, not an addend");
+    assert!(
+        (gain.rms - 0.5).abs() < 1e-12,
+        "`gain` states its own 0.5, not the product: {}",
+        gain.rms
+    );
+    assert_eq!(named(&entries, "master").share, Some(1.0));
+}
+
 /// A ref the window does not reach contributed nothing to it, whatever its own buffer holds.
 #[test]
 fn a_ref_outside_the_window_has_zero_share() {
