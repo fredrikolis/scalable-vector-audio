@@ -181,7 +181,7 @@ fn operation(
         "%" => C64::real(pair().0.re.rem_euclid(pair().1.re)),
         "max" => C64::real(pair().0.re.max(pair().1.re)),
         "min" => C64::real(pair().0.re.min(pair().1.re)),
-        "pow" => power(pair().0, pair().1.re),
+        "pow" => power(pair().0, pair().1.re)?,
         "crop" => {
             let shoulder = |at: usize| held_args.get(at).map_or(0.0, |s| s.re);
             let (a, b) = (held_args[1].re, held_args[2].re);
@@ -197,15 +197,18 @@ fn operation(
     })
 }
 
-fn power(x: C64, exponent: f64) -> C64 {
+fn power(x: C64, exponent: f64) -> Result<C64, CollapseError> {
     let whole = exponent.round();
     if (exponent - whole).abs() > f64::EPSILON {
-        return C64::real(x.re.powf(exponent));
+        return Ok(C64::real(x.re.powf(exponent)));
     }
-    match whole >= 0.0 {
+    if whole.abs() > f64::from(u16::MAX) {
+        return Err(CollapseError::NotEvaluable("a whole power past 65535"));
+    }
+    Ok(match whole >= 0.0 {
         true => x.powi(whole as u32),
         false => x.powi((-whole) as u32).inv(),
-    }
+    })
 }
 
 fn plan(held: &Render, id: NodeId) -> Result<Point, EngineError> {

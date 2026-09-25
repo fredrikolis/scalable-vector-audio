@@ -219,7 +219,7 @@ impl<'g> Lowering<'_, 'g> {
                 "`pow` raises a signal to `{}`, which names no polynomial power.",
                 sva_ast::render_expr(exponent)
             ),
-            "write a whole exponent within i32, or a positive constant base, which raises \
+            "write a whole exponent within 65535, or a positive constant base, which raises \
              as exp(x*ln(base))",
             Some(span),
         )
@@ -497,9 +497,9 @@ fn power(base: &Body, exponent: &Body, var: Var, origin: Origin) -> Option<Body>
     Some(Body::Apply(Unary::Exp, part(scaled)))
 }
 
-/// Whether a real exponent names a polynomial power rather than a root.
+/// Whether a real exponent names a polynomial power an atom's u16 order holds.
 fn whole(n: f64) -> bool {
-    n.fract() == 0.0 && n.abs() <= f64::from(i32::MAX)
+    n.fract() == 0.0 && n.abs() <= f64::from(u16::MAX)
 }
 
 /// A named argument's number, or what the builtin takes when the call left it out.

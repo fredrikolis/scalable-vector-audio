@@ -373,3 +373,34 @@ fn the_bore_reads_its_positional_as_a_length() {
         .collect();
     assert_eq!(rendered, stepped, "the length reaches the model unchanged");
 }
+
+/// A whole power past 65535 is no polynomial factor: a constant base raises by `powf`, and a
+/// signal base is refused rather than multiplied out two billion times.
+#[test]
+fn a_whole_power_past_the_order_cap_is_no_polynomial() {
+    let g = graph_of(
+        "huge-power",
+        &[
+            (
+                "constant",
+                "sin(2*pi*300*t) * pow(1.0000000001, 2000000000)\n",
+            ),
+            ("signal", "pow(sin(2*pi*300*t), 2000000000)\n"),
+        ],
+    );
+    let held = render(&g, "constant", RenderConfig::seconds(8_000, 0.01), None)
+        .expect("a constant base folds by powf");
+    let id = held.id("constant").expect("the node");
+    let peak = held
+        .buffer(id)
+        .expect("a law")
+        .plane(0)
+        .iter()
+        .fold(0f64, |m, s| m.max(s.abs()));
+    let gain = 1.000_000_000_1f64.powf(2e9);
+    assert!((peak - gain).abs() < 1e-2 * gain, "{peak} against {gain}");
+    let Err(EngineError::Refused(d)) = types(&g, "signal") else {
+        panic!("a signal to the two billionth names no polynomial power");
+    };
+    assert_eq!(d.code, "type.non_integer_power", "{d:?}");
+}

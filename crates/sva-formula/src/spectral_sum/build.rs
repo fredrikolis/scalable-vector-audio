@@ -288,18 +288,18 @@ pub fn sole_constant(n: &SpectralSum) -> Option<C64> {
 
 fn power(base: &Part, n: i32, var: Var) -> Result<SpectralSum, Left> {
     let inner = lower_part(base, var)?;
+    let order = u16::try_from(n.unsigned_abs())
+        .map_err(|_| left(base.origin, Factor::Pole, LeftReason::PoleOrder(u16::MAX)))?;
     if n >= 0 {
         let mut acc = SpectralSum::mono(
             inner.var,
             vec![SpectralAtom::constant(C64::ONE, base.origin)],
         );
-        for _ in 0..n {
+        for _ in 0..order {
             acc = zip(acc, inner.clone(), multiply_lanes)?;
         }
         return Ok(acc);
     }
-    let order = u16::try_from(n.unsigned_abs())
-        .map_err(|_| left(base.origin, Factor::Pole, LeftReason::PoleOrder(u16::MAX)))?;
     if let Some(k) = sole_constant(&inner) {
         return reciprocal_power(k, order, var, base.origin);
     }
