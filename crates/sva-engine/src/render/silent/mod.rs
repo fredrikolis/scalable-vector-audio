@@ -213,27 +213,37 @@ fn bounded(
 
 fn not_by(held: &Prepared, envelope: &Envelope, silent: Silent) -> EngineError {
     let last = envelope.at.last().copied().unwrap_or(f64::INFINITY);
-    not_silent_by(&held.tys, held.root, last, silent)
+    not_silent_by(&held.tys, held.root, Some(last), silent)
 }
 
+/// `last` is the bound the latest proof found, `None` where none has run.
 pub(crate) fn not_silent_by(
     tys: &crate::typing::Typing,
     root: NodeId,
-    last: f64,
+    last: Option<f64>,
     silent: Silent,
 ) -> EngineError {
+    let floor = format!(
+        "the {}-bit floor of {}",
+        silent.bits,
+        dbfs(silent.threshold())
+    );
+    let found = match last {
+        Some(last) => format!(
+            "its bound at {}s is {}, not under {floor}",
+            silent.max_secs,
+            dbfs(last)
+        ),
+        None => format!(
+            "no block has ended by {}s to prove it under {floor}",
+            silent.max_secs
+        ),
+    };
     refusal(
         tys,
         root,
         "engine.not_silent_by",
-        format!(
-            "its bound at {}s is {}, not under the {}-bit floor of {}, so silence is not \
-             proven by then.",
-            silent.max_secs,
-            dbfs(last),
-            silent.bits,
-            dbfs(silent.threshold())
-        ),
+        format!("{found}, so silence is not proven by then."),
         "if it decays, raise --max or lower the bits",
     )
 }

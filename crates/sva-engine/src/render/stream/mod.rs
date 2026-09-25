@@ -39,7 +39,7 @@ pub struct Stream {
     at: usize,
     /// Silence at the threshold, to be proven by `limit`, and the last bound found.
     silent: Option<(Silent, usize)>,
-    bound: f64,
+    bound: Option<f64>,
     kept: Kept,
     end: Option<usize>,
 }
@@ -132,7 +132,7 @@ impl Stream {
             root,
             at: 0,
             silent,
-            bound: f64::INFINITY,
+            bound: None,
             kept: Kept::default(),
             end: None,
         })
@@ -147,8 +147,9 @@ impl Stream {
         let live = live::View::of(&self.nodes, self.at);
         let (tys, root) = (&self.shell.tys, self.shell.root);
         let config = &self.shell.config;
-        self.bound = bound_from(tys, root, config, silent, &live, self.at, &self.kept)?;
-        if self.bound < silent.threshold() {
+        let bound = bound_from(tys, root, config, silent, &live, self.at, &self.kept)?;
+        self.bound = Some(bound);
+        if bound < silent.threshold() {
             self.end = Some(self.at.max(1));
         }
         Ok(())

@@ -374,3 +374,23 @@ fn a_stream_its_state_does_not_prove_silent_by_max_secs_refuses_there() {
     assert_eq!(refused.code(), "engine.not_silent_by", "{refused}");
     assert!(stream.position() >= limit && stream.end().is_none());
 }
+
+/// At `max_secs = 0` no block may run, so no proof has run either, and the refusal says so.
+#[test]
+fn a_stream_asked_silent_by_its_opening_refuses_before_any_block() {
+    let g = composition();
+    let config = StreamConfig {
+        rate: RATE,
+        block: 256,
+        silent: Some(Silent {
+            bits: 24,
+            max_secs: 0.0,
+        }),
+    };
+    let mut stream = Stream::open(&g, "slow", &[], config).expect("a decay opens");
+    let refused = stream.next_block().err().expect("no block before a proof");
+    assert_eq!(refused.code(), "engine.not_silent_by", "{refused}");
+    let text = refused.to_string();
+    assert!(text.contains("no block has ended by 0s"), "{text}");
+    assert_eq!(stream.position(), 0);
+}
