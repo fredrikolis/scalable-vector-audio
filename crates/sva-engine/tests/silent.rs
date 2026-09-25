@@ -134,33 +134,46 @@ fn a_slow_decay_is_not_silent_by_the_latest_time_asked() {
 /// A damped high string, so the ring-down fits a short render.
 const STRING: &str = "chaigne_askenfelt(1046.5, damp_dc=20)\n";
 
-#[test]
-fn a_struck_string_ends_where_its_modes_prove_every_later_sample_silent() {
+/// Ends where silence at 16 bits is proven, the fixed render's prefix, and silent after.
+fn rings_down(body: &str) -> usize {
     let loud = Silent {
         bits: 16,
         max_secs: 10.0,
     };
-    let render =
-        until_silent(&[("body", STRING)], "body", loud).expect("a single string rings down");
+    let render = until_silent(&[("body", body)], "body", loud).expect("a single string rings down");
     let samples = heard(&render);
     let end = samples.len();
-    assert!(samples[end - 1].abs() >= loud.threshold());
-    let g = graph_of("body", &[("body", STRING)]);
-    let longer = sva_engine::render(
-        &g,
-        "body",
-        RenderConfig::seconds(RATE, secs(&samples) + 1.0),
-        None,
-    )
-    .expect("a fixed render");
-    let longer = heard(&longer);
+    let last = samples[end - 1].abs();
+    assert!(
+        last >= loud.threshold(),
+        "{body}: the last sample {last} is not heard"
+    );
+    let g = graph_of("body", &[("body", body)]);
+    let config = RenderConfig::seconds(RATE, secs(&samples) + 1.0);
+    let longer = heard(&sva_engine::render(&g, "body", config, None).expect("a fixed render"));
     assert_eq!(
         &longer[..end],
         &samples[..],
-        "the silent render is the fixed one's prefix"
+        "{body}: not the fixed render's prefix"
     );
     let after = longer[end..].iter().fold(0.0f64, |a, s| a.max(s.abs()));
-    assert!(after < loud.threshold(), "{after} heard after the end");
+    assert!(
+        after < loud.threshold(),
+        "{body}: {after} heard after the end"
+    );
+    end
+}
+
+#[test]
+fn a_struck_string_ends_where_its_modes_prove_every_later_sample_silent() {
+    rings_down(STRING);
+}
+
+#[test]
+fn a_felted_string_ends_where_its_energy_proves_every_later_sample_silent() {
+    let held = rings_down(STRING);
+    let felted = rings_down("chaigne_askenfelt(1046.5, damp_dc=20, release=0.1)\n");
+    assert!(felted < held, "felted at {felted}, held at {held}");
 }
 
 #[test]

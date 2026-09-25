@@ -134,3 +134,41 @@ fn a_past_read_of_a_releasing_node_is_causal() {
     assert_eq!(late[(0.3 * f64::from(RATE)) as usize], 1.0);
     assert_eq!(late[(0.7 * f64::from(RATE)) as usize], 0.0);
 }
+
+const STRING: &str = "chaigne_askenfelt(f0, release=release)\n";
+
+#[test]
+fn a_felted_string_is_the_held_string_until_its_felt_lands() {
+    let files = [
+        ("string", STRING),
+        ("released", "@string(t, f0=261.63, release=0.5)\n"),
+        ("held", "@string(t, f0=261.63)\n"),
+        ("plain", "chaigne_askenfelt(261.63)\n"),
+    ];
+    let released = samples(&files, "released", 1.0);
+    let held = samples(&files, "held", 1.0);
+    assert_eq!(
+        held,
+        samples(&files, "plain", 1.0),
+        "an unbound release never lands"
+    );
+    let landing = (0.5 * f64::from(RATE)).ceil() as usize;
+    assert_eq!(released[..=landing], held[..=landing]);
+    assert_ne!(released[landing + 1..], held[landing + 1..]);
+}
+
+#[test]
+fn a_solver_reads_release_only_as_its_own_landing() {
+    for body in [
+        "chaigne_askenfelt(261.63, damper_r=release)\n",
+        "chaigne_askenfelt(261.63, release=release + 0.1)\n",
+        "willemsen_bilbao_serafin(261.63, bow_vel=release)\n",
+    ] {
+        let refused = refusal(body);
+        assert_eq!(
+            refused.code(),
+            "engine.release_not_causal",
+            "{body}: {refused}"
+        );
+    }
+}

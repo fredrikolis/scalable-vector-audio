@@ -77,7 +77,7 @@ pub const DEFAULTED: [(&str, &str); 1] = [(
     sva_engine::instantiate::RELEASE,
     "the key-up time in seconds, bound like a parameter and never where no caller binds it; \
      read only as a crop's end with no fall, as the start of a crop, in a product with such \
-     a crop, or through a past read",
+     a crop, through a past read, or as chaigne_askenfelt's own `release=`",
 )];
 
 /// `(name, its call shape)`.

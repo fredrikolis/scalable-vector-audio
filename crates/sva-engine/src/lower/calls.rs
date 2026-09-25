@@ -7,7 +7,7 @@ use sva_formula::{Body, C64, Codomain, Edge, Fold, Held, Origin, Part, Ty, Unary
 use crate::arguments::{Argument, Called, Chosen};
 use crate::cast::Cast;
 use crate::error::EngineError;
-use crate::instantiate::Cx;
+use crate::instantiate::{Cx, RELEASE};
 use crate::lower::{Lowering, Piece};
 use crate::typing::Value;
 use crate::vocabulary::SERIES;
@@ -329,6 +329,11 @@ impl<'g> Lowering<'_, 'g> {
             };
             match self.chosen_value(value, cx, chosen) {
                 Some(v) => out.push((key.clone(), v)),
+                None if matches!(value, Expr::Var(name) if name == RELEASE)
+                    && crate::release::never(self.inst, cx.scope) =>
+                {
+                    out.push((key.clone(), f64::INFINITY))
+                }
                 None if crate::vocabulary::named_may_move(name, key) => {}
                 None => {
                     return Err(self.refused_at(

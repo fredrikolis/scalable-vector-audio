@@ -40,6 +40,11 @@ const CHAIGNE_ASKENFELT: &[Field<ChaigneAskenfeltParams>] = &[
     ("string3_hammer_k_ratio", |p| {
         &mut p.string_hammer_k_ratio[2]
     }),
+    ("release", |p| &mut p.release),
+    ("damper_pos", |p| &mut p.damper_pos),
+    ("damper_r", |p| &mut p.damper_r),
+    ("damper_k", |p| &mut p.damper_k),
+    ("damper_ramp", |p| &mut p.damper_ramp),
 ];
 
 const WILLEMSEN_BILBAO_SERAFIN: &[Field<WillemsenBilbaoSerafinParams>] = &[

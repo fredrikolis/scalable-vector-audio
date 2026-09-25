@@ -116,6 +116,11 @@ const CHAIGNE_ASKENFELT_NAMED: &[&str] = &[
     "string1_hammer_k_ratio",
     "string2_hammer_k_ratio",
     "string3_hammer_k_ratio",
+    "release",
+    "damper_pos",
+    "damper_r",
+    "damper_k",
+    "damper_ramp",
 ];
 const WILLEMSEN_BILBAO_SERAFIN_NAMED: &[&str] = &[
     "b",

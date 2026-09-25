@@ -182,6 +182,9 @@ impl Walk<'_, '_> {
         for a in args {
             let (Arg::Pos(x) | Arg::Named(_, x)) = a;
             held = match self.term(x, cx)? {
+                Use::Bare if matches!(a, Arg::Named(key, _) if key == RELEASE && lands(name)) => {
+                    Use::Causal
+                }
                 Use::Bare => {
                     return Err(offense(
                         e,
@@ -284,7 +287,7 @@ impl Walk<'_, '_> {
 
 /// Whether the `release` a scope reads comes to no number: unbound there, or handed down as
 /// `release=release` from a scope where it is.
-fn never(inst: &Instances, scope: ScopeId) -> bool {
+pub(crate) fn never(inst: &Instances, scope: ScopeId) -> bool {
     let mut scope = scope;
     loop {
         match inst.binds(scope, RELEASE) {
@@ -295,6 +298,11 @@ fn never(inst: &Instances, scope: ScopeId) -> bool {
             },
         }
     }
+}
+
+/// Its `release=` changes no earlier sample.
+fn lands(name: &str) -> bool {
+    name == "chaigne_askenfelt"
 }
 
 /// A transform whose every output reads every input instant, the future included.
