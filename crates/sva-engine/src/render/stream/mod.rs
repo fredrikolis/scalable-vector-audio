@@ -37,7 +37,7 @@ pub struct Stream {
     nodes: Vec<Streamed>,
     root: usize,
     at: usize,
-    /// Silence at the threshold, to be proven by `limit`, and the last bound found.
+    /// Silence to prove by `limit`, and the last bound a proof found.
     silent: Option<(Silent, usize)>,
     bound: Option<f64>,
     kept: Kept,
@@ -118,6 +118,7 @@ impl Stream {
             cache_stats: None,
         };
         let nodes = node::built(&shell, config.block)?;
+        let kept = Kept::new(shell.tys.clone(), shell.config.clone());
         let root = nodes
             .iter()
             .position(|n| n.id == shell.root)
@@ -133,21 +134,18 @@ impl Stream {
             at: 0,
             silent,
             bound: None,
-            kept: Kept::default(),
+            kept,
             end: None,
         })
     }
 
-    /// Ends the stream here where every later sample is proven under the threshold from the
-    /// states it holds now.
+    /// Ends the stream here where its states now prove every later sample under the threshold.
     fn settle(&mut self) -> Result<(), EngineError> {
         let (Some((silent, _)), None) = (self.silent, self.end) else {
             return Ok(());
         };
         let live = live::View::of(&self.nodes, self.at);
-        let (tys, root) = (&self.shell.tys, self.shell.root);
-        let config = &self.shell.config;
-        let bound = bound_from(tys, root, config, silent, &live, self.at, &self.kept)?;
+        let bound = bound_from(&self.kept, self.shell.root, silent, &live, self.at)?;
         self.bound = Some(bound);
         if bound < silent.threshold() {
             self.end = Some(self.at.max(1));

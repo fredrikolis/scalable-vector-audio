@@ -1,5 +1,6 @@
 // Concern: bounds each node's magnitude from every grid instant on, per node class | Non-concern: choosing the horizon from the bound | IO: (NodeId) -> Envelope, or the class no bound is derived for
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -147,7 +148,7 @@ pub(super) struct Bounds<'a> {
     pub(super) held_flat: bool,
     /// Bounds taken from a stream's state at the grid's start rather than from rest.
     pub(super) live: Option<&'a dyn Live>,
-    forms: &'a Forms,
+    forms: &'a Forms<'a>,
     held: BTreeMap<NodeId, Result<Envelope, Unbounded>>,
     open: BTreeSet<NodeId>,
 }
@@ -162,22 +163,35 @@ pub(super) enum Form {
     Unbounded(&'static str),
 }
 
-/// Each node's form, compiled once for every proof sharing it.
-pub(super) type Forms = RefCell<BTreeMap<NodeId, Option<Rc<Form>>>>;
+/// Each node's form, compiled once for every proof sharing it, under the typing and config
+/// it holds: a proof reads both from here, so no form is read under another.
+pub(super) struct Forms<'a> {
+    pub(super) tys: Cow<'a, Typing>,
+    pub(super) config: Cow<'a, RenderConfig>,
+    compiled: RefCell<BTreeMap<NodeId, Option<Rc<Form>>>>,
+}
+
+impl<'a> Forms<'a> {
+    pub(super) fn new(tys: Cow<'a, Typing>, config: Cow<'a, RenderConfig>) -> Forms<'a> {
+        Forms {
+            tys,
+            config,
+            compiled: RefCell::default(),
+        }
+    }
+}
 
 impl<'a> Bounds<'a> {
     pub(super) fn new(
-        tys: &'a Typing,
+        forms: &'a Forms<'a>,
         grid: Grid,
-        config: &'a RenderConfig,
         rendered: &'a dyn Fn(NodeId, f64) -> Result<Buffer, EngineError>,
         level: f64,
-        forms: &'a Forms,
     ) -> Bounds<'a> {
         Bounds {
-            tys,
+            tys: &forms.tys,
             grid,
-            config,
+            config: &forms.config,
             rendered,
             level,
             held_flat: false,
@@ -209,11 +223,11 @@ impl<'a> Bounds<'a> {
     }
 
     fn form(&self, id: NodeId) -> Option<Rc<Form>> {
-        if let Some(form) = self.forms.borrow().get(&id) {
+        if let Some(form) = self.forms.compiled.borrow().get(&id) {
             return form.clone();
         }
         let form = self.compiled(id).map(Rc::new);
-        self.forms.borrow_mut().insert(id, form.clone());
+        self.forms.compiled.borrow_mut().insert(id, form.clone());
         form
     }
 
