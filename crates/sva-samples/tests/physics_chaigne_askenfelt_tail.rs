@@ -116,3 +116,63 @@ fn a_horizon_that_ends_before_the_hammer_lets_go_bounds_nothing() {
     }
     assert!(tail(&p, RATE, 0, 10).is_err());
 }
+
+fn released(p: ChaigneAskenfeltParams, at: f64) -> ChaigneAskenfeltParams {
+    ChaigneAskenfeltParams { release: at, ..p }
+}
+
+#[test]
+fn a_released_note_is_the_held_note_until_the_felt_lands() {
+    for unison_count in [1.0, 3.0] {
+        let held = ChaigneAskenfeltParams {
+            unison_count,
+            ..note(261.63, 4.5, 0.125)
+        };
+        let len = RATE as usize;
+        let before = samples(&held, len);
+        let after = samples(&released(held, 0.5), len);
+        let landing = (0.5 * f64::from(RATE)).ceil() as usize;
+        assert_eq!(
+            before[..=landing],
+            after[..=landing],
+            "{unison_count} strings"
+        );
+        let tail_of = |s: &[f64]| s[len - 4410..].iter().fold(0.0f64, |a, v| a.max(v.abs()));
+        assert!(
+            tail_of(&after) < tail_of(&before) / 3.0,
+            "{unison_count} strings: the felt took off only {} of {}",
+            tail_of(&after),
+            tail_of(&before)
+        );
+    }
+}
+
+#[test]
+fn a_felted_string_never_gains_energy_once_pressed_and_its_bound_holds() {
+    for (f0, damper_k) in [(65.406, 0.0), (261.63, 0.0), (261.63, 5e3), (2093.0, 2e3)] {
+        let p = ChaigneAskenfeltParams {
+            damper_k,
+            ..released(note(f0, 4.5, 0.125), 0.1)
+        };
+        let fallen = dominates(&p, 1.5);
+        assert!(
+            fallen < -10.0,
+            "f0 {f0}: the felted bound fell only {fallen} dB"
+        );
+        let mut site = ChaigneAskenfeltSite::new(&p, f64::from(RATE)).expect("a grid");
+        let landing = (0.1 * f64::from(RATE)).ceil() as usize;
+        for _ in 0..=landing {
+            site.step().expect("a sample");
+        }
+        let mut held = site.energy().expect("one string");
+        for k in 0..RATE as usize / 2 {
+            site.step().expect("a sample");
+            let now = site.energy().expect("one string");
+            assert!(
+                now <= held * (1.0 + 1e-10),
+                "f0 {f0} step {k}: E rose {held} -> {now}"
+            );
+            held = now;
+        }
+    }
+}

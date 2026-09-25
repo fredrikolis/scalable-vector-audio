@@ -12,7 +12,7 @@ use crate::physics::hammer::Hammer;
 use crate::physics::stiff_string::{
     StringGrid, Wire, dispersive_grid, grid_tension, point_weights, read_at, spread, stencil_update,
 };
-use crate::physics::string_tail::{Ringdown, Unringing, energy, energy_gain};
+use crate::physics::string_tail::{Felt, energy, energy_gain, press};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChaigneAskenfeltParams {
@@ -33,6 +33,14 @@ pub struct ChaigneAskenfeltParams {
     /// Cents off `detune`'s placing.
     pub string_cents: [f64; MAX_UNISON],
     pub string_hammer_k_ratio: [f64; MAX_UNISON],
+    /// Seconds to the felt's landing; `INFINITY` is never.
+    pub release: f64,
+    pub damper_pos: f64,
+    /// N s/m.
+    pub damper_r: f64,
+    /// N/m.
+    pub damper_k: f64,
+    pub damper_ramp: f64,
 }
 
 impl ChaigneAskenfeltParams {
@@ -54,6 +62,11 @@ impl ChaigneAskenfeltParams {
             bridge_mass: 0.0,
             string_cents: [0.0; MAX_UNISON],
             string_hammer_k_ratio: [1.0; MAX_UNISON],
+            release: f64::INFINITY,
+            damper_pos: DAMPER_POS,
+            damper_r: DAMPER_R_C4 * (262.0 / f0).powi(2),
+            damper_k: DAMPER_K,
+            damper_ramp: DAMPER_RAMP,
         }
     }
 }
@@ -82,9 +95,21 @@ impl ChaigneAskenfeltParams {
             (k1, Positive),
             (k2, Positive),
             (k3, Positive),
-        ])
+            (self.damper_pos, OpenUnit),
+            (self.damper_r, NonNegative),
+            (self.damper_k, NonNegative),
+            (self.damper_ramp, NonNegative),
+        ]) && self.release >= 0.0
     }
 }
+
+/// Position, dashpot, ramp and felt length fitted to MAPS ENSTDkCl forte key-off slopes,
+/// A0 to C5 (Emiya, Badeau & David 2010); the spring is unfitted.
+const DAMPER_POS: f64 = 0.15;
+const DAMPER_R_C4: f64 = 0.1;
+const DAMPER_K: f64 = 0.0;
+const DAMPER_RAMP: f64 = 0.03;
+const FELT_LENGTH_M: f64 = 0.04;
 
 const WIRE_DENSITY_KG_M3: f64 = 7850.0;
 /// A generic wire radius, tuned against this module's bridge-force and contact-time tests.
@@ -126,9 +151,9 @@ fn unison_frequencies(f0: f64, detune: f64, unison_count: usize, cents: &[f64]) 
 const MAX_UNISON: usize = 3;
 
 pub struct ChaigneAskenfeltSite {
-    strings: Vec<StringGrid>,
+    pub(crate) strings: Vec<StringGrid>,
     /// Per string, `rho (lambda dx/dt)^2`.
-    tensions: Vec<f64>,
+    pub(crate) tensions: Vec<f64>,
     strike: Vec<Vec<f64>>,
     hammer: Hammer,
     detached: Vec<bool>,
@@ -136,7 +161,33 @@ pub struct ChaigneAskenfeltSite {
     bridge_prev: f64,
     bridge_coupling: f64,
     bridge_mass: f64,
-    dt: f64,
+    pub(crate) dt: f64,
+    pub(crate) felt: Vec<Vec<Felt>>,
+    pub(crate) landing: Option<(u64, f64)>,
+    pub(crate) steps: u64,
+}
+
+/// Every node under the felt, or the nearest, sharing it evenly.
+fn felt_on(grid: &StringGrid, params: &ChaigneAskenfeltParams, dt: f64) -> Vec<Felt> {
+    let n = grid.n;
+    let at = params.damper_pos * n as f64;
+    let half = FELT_LENGTH_M / 2.0 / grid.dx;
+    let mut nodes: Vec<usize> = (1..n).filter(|&j| (j as f64 - at).abs() <= half).collect();
+    if nodes.is_empty() {
+        nodes.push((at.round() as usize).clamp(1, n - 1));
+    }
+    let psi = 1.0 / nodes.len() as f64;
+    let unit = dt / (grid.rho * grid.dx);
+    nodes
+        .into_iter()
+        .map(|j| {
+            (
+                j,
+                params.damper_k * psi * dt * unit,
+                params.damper_r * psi * unit / 2.0,
+            )
+        })
+        .collect()
 }
 
 impl ChaigneAskenfeltSite {
@@ -157,7 +208,18 @@ impl ChaigneAskenfeltSite {
             .iter()
             .map(|g| point_weights(g.n, params.strike_pos))
             .collect();
+        let landing = params
+            .release
+            .is_finite()
+            .then(|| ((params.release * sr).ceil() as u64, params.damper_ramp * sr));
+        let felt = match landing {
+            Some(_) => strings.iter().map(|g| felt_on(g, params, dt)).collect(),
+            None => vec![Vec::new(); strings.len()],
+        };
         Ok(ChaigneAskenfeltSite {
+            felt,
+            landing,
+            steps: 0,
             detached: vec![false; strings.len()],
             strings,
             tensions,
@@ -180,17 +242,19 @@ impl ChaigneAskenfeltSite {
 }
 
 impl ChaigneAskenfeltSite {
-    fn advance(&mut self) -> f64 {
+    pub(crate) fn advance(&mut self) -> f64 {
         // One string ends on a rigid pin; a unison ends on its shared bridge.
-        match self.strings.len() {
+        let sample = match self.strings.len() {
             1 => self.step_single(),
             _ => self.step_unison(),
-        }
+        };
+        self.steps += 1;
+        sample
     }
 }
 
 impl ChaigneAskenfeltSite {
-    /// Every anvil has let go, so no later step is driven.
+    /// No later step is driven.
     pub fn let_go(&self) -> bool {
         self.detached.iter().all(|d| *d)
     }
@@ -198,9 +262,24 @@ impl ChaigneAskenfeltSite {
     /// The single string's discrete energy, in joules; a unison's bridge coupling holds none.
     pub fn energy(&self) -> Option<f64> {
         match self.strings.as_slice() {
-            [grid] => Some(energy(grid, self.dt)),
+            [grid] => Some(energy(grid, self.dt, self.springs(0)).0),
             _ => None,
         }
+    }
+
+    pub(crate) fn springs(&self, i: usize) -> &[Felt] {
+        match self.landing {
+            Some((at, _)) if self.steps > at => &self.felt[i],
+            _ => &[],
+        }
+    }
+
+    fn pressing(&self) -> Option<f64> {
+        let (at, ramp) = self.landing?;
+        (self.steps >= at).then(|| match ramp > 0.0 {
+            true => ((self.steps - at) as f64 / ramp).min(1.0),
+            false => 1.0,
+        })
     }
 
     /// `c` with `|sample| <= c sqrt(energy)` at every later step once nothing drives it.
@@ -210,56 +289,6 @@ impl ChaigneAskenfeltSite {
             _ => None,
         }
     }
-}
-
-const UNISON: &str = "a chaigne_askenfelt unison on its bridge, whose coupling holds no exact \
-    discrete energy: the bridge takes the strings' tension but not the bending and \
-    frequency-dependent loss their ghost points exert on it";
-
-/// Stepped until every anvil lets go, heard exactly until then; the free string's modes
-/// bound every sample after.
-pub fn tail(
-    params: &ChaigneAskenfeltParams,
-    sr: f64,
-    step: usize,
-    points: usize,
-) -> Result<Vec<f64>, String> {
-    let mut site = ChaigneAskenfeltSite::new(params, sr).map_err(|e| e.to_string())?;
-    if site.strings.len() > 1 {
-        return Err(UNISON.to_string());
-    }
-    if step == 0 {
-        return Err("a tail bound on a grid with no step".to_string());
-    }
-    let mut heard = Vec::new();
-    while !(site.let_go() && heard.len() % step == 0) && heard.len() < points * step {
-        heard.push(site.advance().abs());
-    }
-    if heard.len() >= points * step {
-        return Ok(vec![f64::INFINITY; points]);
-    }
-    let grid = &site.strings[0];
-    let ring = Ringdown::of(grid, site.tensions[0] / grid.dx).map_err(|why| {
-        match why {
-            Unringing::Lossless => "a chaigne_askenfelt string with a mode that loses nothing",
-            Unringing::Critical => "a chaigne_askenfelt string with a mode near critical damping",
-            Unringing::Rounding => "a chaigne_askenfelt string whose rounding outpaces its decay",
-        }
-        .to_string()
-    })?;
-    let free = heard.len() / step;
-    let mut at = vec![0.0f64; points];
-    if free < points {
-        at[free..].copy_from_slice(&ring.along(0, step, points - free));
-    }
-    let mut running = at[free];
-    for k in (0..heard.len()).rev() {
-        running = running.max(heard[k]);
-        if k % step == 0 && k / step < points {
-            at[k / step] = running;
-        }
-    }
-    Ok(at)
 }
 
 impl Solver for ChaigneAskenfeltSite {
@@ -288,12 +317,16 @@ impl ChaigneAskenfeltSite {
     fn step_single(&mut self) -> f64 {
         let mut forces = [0.0f64; 1];
         self.hammer_forces(&mut forces);
+        let pressing = self.pressing();
         let grid = &mut self.strings[0];
         let n = grid.n;
         for i in 1..n {
             grid.y_next[i] = stencil_update(grid, i, 0.0, 0.0);
         }
         spread(grid, &self.strike[0], forces[0], self.dt);
+        if let Some(share) = pressing {
+            press(grid, &self.felt[0], share);
+        }
         grid.y_next[0] = 0.0;
         grid.y_next[n] = 0.0;
 
@@ -310,6 +343,7 @@ impl ChaigneAskenfeltSite {
         let mut forces = [0.0f64; MAX_UNISON];
         let forces = &mut forces[..self.strings.len()];
         self.hammer_forces(forces);
+        let pressing = self.pressing();
 
         let (bridge_now, bridge_prev) = (self.bridge_now, self.bridge_prev);
         // Bridge `M a + R_B v = net string force`, implicit in its next position like the strings.
@@ -324,6 +358,9 @@ impl ChaigneAskenfeltSite {
                 grid.y_next[j] = stencil_update(grid, j, bridge_now, bridge_prev);
             }
             spread(grid, &self.strike[i], force, self.dt);
+            if let Some(share) = pressing {
+                press(grid, &self.felt[i], share);
+            }
             grid.y_next[0] = 0.0;
             k_eff += tension / grid.dx;
             rhs_sum += tension * grid.y_now[n - 1] / grid.dx;

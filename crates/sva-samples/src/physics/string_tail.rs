@@ -1,4 +1,4 @@
-// Concern: a pinned stiff string's discrete energy and the bound its modes give every later sample | Non-concern: stepping the grid (stiff_string.rs), the strike | IO: (&StringGrid) -> energy, bound
+// Concern: a pinned stiff string's energy, its felt's press, and the bound both give later samples | Non-concern: stepping the grid (stiff_string.rs), the strike | IO: (&StringGrid) -> energy, bound
 
 //! Mode `m` of a free pinned grid steps as `q+ = (2 - D - sigma) q - (1 - sigma) q-`, with
 //! `D = 4 lambda^2 s + 16 mu^2 s^2`, `sigma = a + 4 b s`, `s = sin^2(m pi/2n)`.
@@ -65,19 +65,51 @@ fn pinned(y: &[f64], n: usize, j: usize) -> f64 {
     }
 }
 
-/// `E = w (v'(I - A/2)v + y'K y-)/2` joules, `v = y - y-`, `w = rho dx/dt^2`.
-pub(crate) fn energy(grid: &StringGrid, dt: f64) -> f64 {
+/// `(j, k psi dt^2/(rho dx), R psi dt/(2 rho dx))`, `psi` node `j`'s share of the felt.
+pub(crate) type Felt = (usize, f64, f64);
+
+/// Spring and dashpot centred on `y^n`.
+pub(crate) fn press(grid: &mut StringGrid, felt: &[Felt], share: f64) {
+    for &(j, kappa, rho) in felt {
+        let rho = rho * share;
+        grid.y_next[j] =
+            (grid.y_next[j] + (rho - kappa / 2.0) * grid.y_prev[j]) / (1.0 + kappa / 2.0 + rho);
+    }
+}
+
+/// `E = w (v'(I - A/2)v + y'K y- + (y'ky + y-'ky-)/2)/2` joules, `k` the felt's springs,
+/// and a bound over its rounding.
+pub(crate) fn energy(grid: &StringGrid, dt: f64, felt: &[Felt]) -> (f64, f64) {
     let (n, y, yp) = (grid.n, &grid.y_now, &grid.y_prev);
     let v: Vec<f64> = y.iter().zip(yp).map(|(a, b)| a - b).collect();
-    let kinetic = (1.0 - grid.damp_a / 2.0) * v[1..n].iter().map(|x| x * x).sum::<f64>()
-        - grid.damp_b / 2.0 * slopes(&v, n).map(|x| x * x).sum::<f64>();
-    let tension: f64 = slopes(y, n).zip(slopes(yp, n)).map(|(a, b)| a * b).sum();
-    let bending: f64 = curvatures(y, n)
+    let squares = v[1..n].iter().map(|x| x * x).sum::<f64>();
+    let bent = slopes(&v, n).map(|x| x * x).sum::<f64>();
+    let tension: Vec<f64> = slopes(y, n)
+        .zip(slopes(yp, n))
+        .map(|(a, b)| a * b)
+        .collect();
+    let bending: Vec<f64> = curvatures(y, n)
         .zip(curvatures(yp, n))
         .map(|(a, b)| a * b)
+        .collect();
+    let spring: f64 = felt
+        .iter()
+        .map(|&(j, kappa, _)| kappa * (y[j] * y[j] + yp[j] * yp[j]) / 2.0)
         .sum();
-    let potential = grid.courant_sq * tension + grid.stiff_sq * bending;
-    grid.rho * grid.dx / (dt * dt) * (kinetic + potential) / 2.0
+    let sum = |t: &[f64]| t.iter().sum::<f64>();
+    let mass = |t: &[f64]| t.iter().map(|x| x.abs()).sum::<f64>();
+    let value = (1.0 - grid.damp_a / 2.0) * squares - grid.damp_b / 2.0 * bent
+        + grid.courant_sq * sum(&tension)
+        + grid.stiff_sq * sum(&bending)
+        + spring;
+    let spread = squares
+        + grid.damp_b * bent
+        + grid.courant_sq * mass(&tension)
+        + grid.stiff_sq * mass(&bending)
+        + spring;
+    let w = grid.rho * grid.dx / (dt * dt) / 2.0;
+    let joules = w * value;
+    (joules, joules + w * spread * gamma(8.0 * n as f64 + 64.0))
 }
 
 /// `c` with `gain |y_{n-1}| <= c sqrt(E)`: `|q_m| <= sqrt(H_m (1/alpha + 1/beta)/2)`,
@@ -100,7 +132,55 @@ pub(crate) fn energy_gain(grid: &StringGrid, gain: f64, dt: f64) -> f64 {
     gain * (2.0 * weight / (w * n as f64)).sqrt() * (1.0 + gamma(4.0 * n as f64 + 64.0))
 }
 
-/// Each mode's `A_m r_m^k`, and the rounding every step adds, decaying at `rate`.
+/// Rounding lifts `sqrt(E)` by `per_step` a step while the dashpot ramps, then `after` once.
+pub(crate) struct Settling {
+    pub(crate) per_step: f64,
+    pub(crate) after: f64,
+}
+
+/// With `M = I - A/2 - K/4 + k/4`, `Kf = K + k`, `B = A + 2 rho` over `w`, the felted scheme is
+/// `M dv + Kf pbar + B vbar = 0`, `dp = vbar`; `F = E + eps (p'Mv + p'Bp/2)` falls by at least
+/// `eps Q(zbar)` a step, a contraction `q` of `sqrt(F)`.
+pub(crate) fn settling(grid: &StringGrid, felt: &[Felt]) -> Result<Settling, Unringing> {
+    let modes = modes(grid);
+    let fold = |f: &dyn Fn(&Mode) -> f64, pick: fn(f64, f64) -> f64, from: f64| {
+        modes.iter().map(f).fold(from, pick)
+    };
+    let alpha = |m: &Mode| 1.0 - m.sigma / 2.0 - m.d / 4.0;
+    let slack = gamma(16.0) * 4.0;
+    let spring = felt.iter().map(|f| f.1).fold(0.0f64, f64::max);
+    let dashpot = felt.iter().map(|f| f.2).fold(0.0f64, f64::max);
+    let mass_lo = fold(&alpha, f64::min, f64::INFINITY) - slack;
+    let mass_hi = fold(&alpha, f64::max, 0.0) + spring / 4.0 + slack;
+    let stiff_lo = fold(&|m| m.d, f64::min, f64::INFINITY) * (1.0 - slack);
+    let stiff_hi = (fold(&|m| m.d, f64::max, 0.0) + spring) * (1.0 + slack);
+    let loss_lo = fold(&|m| m.sigma, f64::min, f64::INFINITY) * (1.0 - slack);
+    let loss_hi = (fold(&|m| m.sigma, f64::max, 0.0) + 2.0 * dashpot) * (1.0 + slack);
+    if loss_lo <= 0.0 || mass_lo <= 0.0 || stiff_lo <= 0.0 {
+        return Err(Unringing::Lossless);
+    }
+    let cross = mass_hi / (stiff_lo * mass_lo).sqrt() + loss_hi / stiff_lo;
+    let eps = (loss_lo / (2.0 * mass_hi)).min(1.0 / (2.0 * cross));
+    let reach = 2.0 * (stiff_hi / mass_lo).sqrt() + loss_hi / mass_lo;
+    let fall = (4.0 * eps / 3.0) / (1.0 + reach / 2.0).powi(2);
+    let q = (1.0 / (1.0 + fall)).sqrt() * (1.0 + gamma(8.0));
+    let node = gamma(64.0) * (stencil_mass(grid) + spring / 2.0 + dashpot);
+    let gamma_e = ((mass_hi + stiff_hi / 4.0) / 2.0).sqrt()
+        * ((grid.n - 1) as f64).sqrt()
+        * node
+        * 2f64.sqrt()
+        * (1.0 / stiff_lo.sqrt() + 1.0 / (2.0 * mass_lo.sqrt()))
+        * (1.0 + gamma(32.0));
+    let lift = 3f64.sqrt() * gamma_e;
+    if q + lift >= 1.0 {
+        return Err(Unringing::Rounding);
+    }
+    Ok(Settling {
+        per_step: 1.0 + gamma_e,
+        after: (1.0 + lift / (1.0 - q - lift)) * (1.0 + gamma(8.0)),
+    })
+}
+
 pub(crate) struct Ringdown {
     terms: Vec<(f64, f64)>,
     slack: f64,

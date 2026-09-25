@@ -4,6 +4,7 @@ pub mod botteldooren;
 pub mod bound;
 pub mod chaigne_askenfelt;
 pub mod chaigne_doutaut;
+mod chaigne_tail;
 pub mod darabundit_scavone;
 pub mod hammer;
 pub mod rhaouti_chaigne_joly;
@@ -91,7 +92,7 @@ pub fn site(p: &Params, rate: u32) -> Result<Box<dyn Solver>, SampleError> {
 /// `at[j]` bounds every sample from `j * step` on.
 pub fn tail(p: &Params, rate: u32, step: usize, points: usize) -> Result<Vec<f64>, String> {
     match p {
-        Params::ChaigneAskenfelt(p) => chaigne_askenfelt::tail(p, f64::from(rate), step, points),
+        Params::ChaigneAskenfelt(p) => chaigne_tail::tail(p, f64::from(rate), step, points),
         other => Err(format!("the {} solver", other.name())),
     }
 }
