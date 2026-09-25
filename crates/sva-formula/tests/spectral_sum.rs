@@ -214,5 +214,7 @@ fn a_value_on_one_axis_inverts_correctly_rounded() {
             (1.0 / x).to_bits(),
             "1/{x}"
         );
+        let by_i = C64::real(1.0) / C64::new(0.0, x);
+        assert_eq!(by_i.im.to_bits(), (-1.0 / x).to_bits(), "1/({x}i)");
     }
 }
