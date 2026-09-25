@@ -14,22 +14,22 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.2"
+version = "0.4.0"
 license = "MIT"
 repository = "https://github.com/fredrikolis/scalable-vector-audio"
 edition = "2024"
 
 # cargo publish needs a version on each path dep; keep it the one above.
 [workspace.dependencies]
-sva-fingerprint = { path = "crates/sva-fingerprint", version = "0.3.2" }
-sva-ast = { path = "crates/sva-ast", version = "0.3.2" }
-sva-formula = { path = "crates/sva-formula", version = "0.3.2" }
-sva-samples = { path = "crates/sva-samples", version = "0.3.2" }
-sva-engine = { path = "crates/sva-engine", version = "0.3.2" }
-sva-core = { path = "crates/sva-core", version = "0.3.2" }
-sva-analysis = { path = "crates/sva-analysis", version = "0.3.2" }
-sva-cli = { path = "crates/sva-cli", version = "0.3.2" }
-sva-wasm = { path = "crates/sva-wasm", version = "0.3.2" }
+sva-fingerprint = { path = "crates/sva-fingerprint", version = "0.4.0" }
+sva-ast = { path = "crates/sva-ast", version = "0.4.0" }
+sva-formula = { path = "crates/sva-formula", version = "0.4.0" }
+sva-samples = { path = "crates/sva-samples", version = "0.4.0" }
+sva-engine = { path = "crates/sva-engine", version = "0.4.0" }
+sva-core = { path = "crates/sva-core", version = "0.4.0" }
+sva-analysis = { path = "crates/sva-analysis", version = "0.4.0" }
+sva-cli = { path = "crates/sva-cli", version = "0.4.0" }
+sva-wasm = { path = "crates/sva-wasm", version = "0.4.0" }
 
 [profile.dev]
 debug = "line-tables-only"
