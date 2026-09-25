@@ -21,6 +21,16 @@ pub struct Callable {
     pub takes_gain: Option<bool>,
     /// Each of `named`, in its order, beside what it means and whether it may move with `t`.
     pub arguments: Vec<(&'static str, Meaning, bool)>,
+    /// The signature's positional names, each beside its meaning where the model states one.
+    pub positional: Vec<(&'static str, Option<Meaning>)>,
+}
+
+fn positional(builtin: &str) -> Vec<(&'static str, Option<Meaning>)> {
+    signature(builtin)
+        .map_or(&[][..], |s| s.params)
+        .iter()
+        .map(|p| (p.name, meaning(builtin, p.name)))
+        .collect()
 }
 
 fn meanings(builtin: &str, named: &'static [&'static str]) -> Vec<(&'static str, Meaning, bool)> {
@@ -132,6 +142,7 @@ fn plain_callable(name: &'static str) -> Callable {
         required_named: &[],
         takes_gain: None,
         arguments: meanings(name, sig.named()),
+        positional: positional(name),
     }
 }
 
@@ -155,6 +166,7 @@ fn filter_callable(shape: Shape) -> Callable {
         required_named: &[],
         takes_gain: Some(gain),
         arguments: meanings(shape.name(), named),
+        positional: positional(shape.name()),
     }
 }
 
@@ -215,7 +227,7 @@ pub fn builtins_data(b: &Builtins) -> String {
     let callables = list(&b.callables, |c| {
         format!(
             "\n    {{ \"name\": \"{}\", \"required\": {}, \"max_positional\": {}, \"named\": {}, \
-             \"required_named\": {}, \"takes_gain\": {}, \"arguments\": {} }}",
+             \"required_named\": {}, \"takes_gain\": {}, \"arguments\": {}, \"positional\": {} }}",
             escape(c.name),
             c.required,
             c.max_positional,
@@ -223,7 +235,8 @@ pub fn builtins_data(b: &Builtins) -> String {
             strings(c.required_named),
             c.takes_gain
                 .map_or_else(|| NONE.to_string(), |g| g.to_string()),
-            list(&c.arguments, argument_json)
+            list(&c.arguments, argument_json),
+            list(&c.positional, positional_json)
         )
     });
     let casts = list(&b.casts, |c| {
@@ -248,6 +261,18 @@ pub fn builtins_data(b: &Builtins) -> String {
         pair_list(b.reserved, "name", "note"),
         pair_list(b.special_forms, "name", "shape"),
         strings(b.not_supported)
+    )
+}
+
+fn positional_json((name, m): &(&str, Option<Meaning>)) -> String {
+    let text =
+        |t: Option<&str>| t.map_or_else(|| NONE.to_string(), |t| format!("\"{}\"", escape(t)));
+    format!(
+        "{{ \"name\": \"{}\", \"meaning\": {}, \"unit\": {}, \"part\": {} }}",
+        escape(name),
+        text(m.map(|m| m.text)),
+        text(m.map(|m| m.unit)),
+        text(m.and_then(|m| m.part))
     )
 }
 
@@ -345,6 +370,14 @@ mod tests {
             .expect("the solver");
         let (_, stiffness, moves) = solver.arguments[0];
         assert!(!moves, "a solver's stiffness is one number");
+        let bore = b.callables.iter().find(|c| c.name == "darabundit_scavone");
+        let (name, held) = bore.expect("the bore").positional[0];
+        let held = held.expect("the bore states its positional");
+        assert_eq!(
+            (name, held.unit),
+            ("length", "m"),
+            "the bore reads a length"
+        );
         let lowpass = b
             .callables
             .iter()

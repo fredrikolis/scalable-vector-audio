@@ -237,8 +237,8 @@ impl<'g> Lowering<'_, 'g> {
         span: ByteSpan,
     ) -> Result<(Edge, Edge), EngineError> {
         Ok((
-            self.edge(l, var, name, "a", span)?,
-            self.edge(r, var, name, "b", span)?,
+            self.edge(l, var, name, "start", span)?,
+            self.edge(r, var, name, "end", span)?,
         ))
     }
 

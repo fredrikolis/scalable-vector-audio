@@ -29,7 +29,7 @@ const fn plain(text: &'static str, unit: &'static str) -> Meaning {
     }
 }
 
-/// `None` for a name `builtin` does not take.
+/// `None` for a name `builtin` does not take, by name or, for a solver or a bank, by position.
 pub fn meaning(builtin: &str, key: &str) -> Option<Meaning> {
     if Shape::from_name(builtin).is_some() {
         return filter(key);
@@ -105,6 +105,8 @@ fn solver(builtin: &str, key: &str) -> Option<Meaning> {
         };
     }
     Some(match (builtin, key) {
+        ("darabundit_scavone", "length") => m("bore length", "m", part),
+        (_, "f0") => m("fundamental frequency", "Hz", part),
         ("darabundit_scavone", "damp_dc") => m("scale on the viscous wall loss", "none", part),
         ("darabundit_scavone", "damp_freq") => m("scale on the thermal wall loss", "none", part),
         (_, "damp_dc") => m("frequency-independent loss", "1/s", part),
@@ -171,6 +173,13 @@ fn numbered<'k>(key: &'k str, stem: &str) -> Option<(u32, &'k str)> {
 /// A strike's hammer, and the decay every mode shares: `1/tau = damp_dc + damp_freq f^2`.
 fn modal(builtin: &str, key: &str) -> Option<Meaning> {
     Some(match (builtin, key) {
+        ("hammer_pulse", "vel") => m("strike velocity", "m/s", "hammer"),
+        ("helmholtz", "volume") => m("cavity volume", "m^3", "cavity"),
+        ("string", "f0") => m("fundamental frequency", "Hz", "string"),
+        ("membrane" | "room", "lx") => m("side along x", "m", builtin_part(builtin)),
+        ("membrane" | "room", "ly") => m("side along y", "m", builtin_part(builtin)),
+        ("room", "lz") => m("side along z", "m", "room"),
+        ("bar" | "bore", "length") => m("length", "m", builtin_part(builtin)),
         (_, "damp_dc") => m("decay rate every mode shares", "1/s", "damping"),
         (_, "damp_freq") => m("decay rate per squared hertz", "s", "damping"),
         (_, "modes") => plain("how many modes the bank holds", "none"),
@@ -200,4 +209,13 @@ fn modal(builtin: &str, key: &str) -> Option<Meaning> {
         ("helmholtz", "radius") => m("neck radius, for the 1.7 r end correction", "m", "neck"),
         _ => return None,
     })
+}
+
+fn builtin_part(builtin: &str) -> &'static str {
+    match builtin {
+        "membrane" => "membrane",
+        "room" => "room",
+        "bar" => "bar",
+        _ => "bore",
+    }
 }

@@ -64,8 +64,8 @@ const WAVE: &[Param] = &[
 ];
 const CROP: &[Param] = &[
     need("x", ParamKind::Signal),
-    need("a", ParamKind::Scalar),
-    need("b", ParamKind::Scalar),
+    need("start", ParamKind::Scalar),
+    need("end", ParamKind::Scalar),
 ];
 const DRIVEN: &[Param] = &[
     need("x", ParamKind::Signal),
@@ -285,7 +285,7 @@ pub static SIGNATURES: &[Signature] = &[
     plain("ch", CHANNEL_PARAMS, channel),
     plain("chaigne_askenfelt", FUNDAMENTAL, samples),
     plain("willemsen_bilbao_serafin", FUNDAMENTAL, samples),
-    plain("darabundit_scavone", FUNDAMENTAL, samples),
+    plain("darabundit_scavone", LENGTH, samples),
     plain("rhaouti_chaigne_joly", FUNDAMENTAL, samples),
     plain("chaigne_doutaut", FUNDAMENTAL, samples),
     plain("botteldooren", FUNDAMENTAL, samples),

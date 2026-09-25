@@ -107,9 +107,10 @@ BUILTINS:
   Prints the whole callable and syntactic vocabulary: every builtin with its
   arity and named arguments, each argument's `meaning`, `unit`, the model
   `part` it sets and whether it `moves` with `t` (a filter's cutoff, q and gain;
-  every other named argument is one number, refused when it names none), unit
-  suffixes, the note-name grammar, reserved identifiers, special call shapes,
-  and what has no operator at all.
+  every other named argument is one number, refused when it names none), each
+  positional's meaning where the model states one, unit suffixes, the note-name
+  grammar, reserved identifiers, special call shapes, and what has no operator
+  at all.
 
 OUTLINE:
   sva-cli outline <expression>

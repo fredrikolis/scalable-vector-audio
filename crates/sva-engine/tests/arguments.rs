@@ -353,3 +353,23 @@ fn a_named_argument_that_names_no_number_is_refused_not_defaulted() {
     );
     types(&swept, "body").expect("a filter routes a moving cutoff itself");
 }
+
+/// The bore's one positional is its length in metres, and the model reads it as that.
+#[test]
+fn the_bore_reads_its_positional_as_a_length() {
+    let g = graph_of("bore-length", &[("body", "darabundit_scavone(0.3)\n")]);
+    let (found, _) = arguments_of(&g, "body");
+    let first = &found[0].calls[0].arguments[0];
+    assert_eq!((first.name.as_str(), first.value), ("length", 0.3));
+    let held = render(&g, "body", RenderConfig::seconds(8_000, 0.05), None).expect("a render");
+    let id = held.id("body").expect("the root");
+    let rendered = held.buffer(id).expect("a solve").plane(0).to_vec();
+    let params = sva_samples::Params::DarabunditScavone(
+        sva_samples::physics::darabundit_scavone::BoreParams::at(0.3),
+    );
+    let mut solver = sva_samples::site(&params, 8_000).expect("a grid");
+    let stepped: Vec<f64> = (0..rendered.len())
+        .map(|_| solver.step().expect("a settled step"))
+        .collect();
+    assert_eq!(rendered, stepped, "the length reaches the model unchanged");
+}
