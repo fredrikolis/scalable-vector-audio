@@ -971,3 +971,30 @@ fn a_cached_render_sweeps_its_store_to_the_budget() {
     assert!(field("evicted_bytes") >= 4096, "{printed}");
     assert!(field("held_bytes") <= 1024, "{printed}");
 }
+
+/// The window a reading reports is the one silence ended, not the latest time asked.
+#[test]
+fn a_render_until_silent_reports_the_window_silence_ended() {
+    let dir = scratch("silent");
+    put(
+        &dir,
+        "echo",
+        "crop(sin(2*pi*440*t), 0s, 0.05s) + 0.35*self(t - 0.25s)\n",
+    );
+    let silent = sva_core::Silent {
+        bits: 24,
+        max_secs: 30.0,
+    };
+    let rendered = execute(Job {
+        target: Some("echo"),
+        silent: Some(silent),
+        ..Job::over(&Dir::at(&dir))
+    })
+    .expect("the echo falls silent");
+    let end = secs(&rendered);
+    assert!((3.79..=3.8).contains(&end), "{end}");
+    assert_eq!(
+        plane(&rendered, "echo").len(),
+        (end * 44_100.0).round() as usize
+    );
+}

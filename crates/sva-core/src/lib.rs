@@ -20,8 +20,9 @@ pub use lint_code::LintCode;
 pub use outline::outline_data;
 pub use output::{Diagnostic, Severity, diagnostics_json, error_envelope, success_envelope};
 pub use query::{
-    Asked, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, REPRESENTATIONS, RETIRED,
-    Shaping, WindowEdge, is_wav, representation_for, retired, window_edge, window_for,
+    Asked, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, DEFAULT_SILENT_BITS,
+    DEFAULT_SILENT_MAX_SECS, REPRESENTATIONS, RETIRED, Shaping, WindowEdge, is_wav,
+    representation_for, retired, silent_edge, window_edge, window_for,
 };
 pub use tempo::refuse_unresolved_bars;
 
@@ -30,8 +31,10 @@ use std::path::Path;
 use sva_ast::{Dir, Graph, Refusal, Source, SpanUnit};
 use sva_engine::{
     Ask, BindingFault, Cache, DEFAULT_SAMPLE_RATE, EngineError, PSYCHOACOUSTIC_V1, Render,
-    RenderConfig, render_with_slots,
+    RenderConfig, render_until_silent, render_with_slots,
 };
+
+pub use sva_engine::Silent;
 
 pub use sva_engine::{Answer, Horizon, Label, Output, Representation};
 pub use sva_engine::{DiskCache, MemoryCache, Slots};
@@ -93,6 +96,8 @@ pub struct Job<'a> {
     pub flop_budget: Option<u128>,
     pub volatile: &'a [String],
     pub slots: Option<&'a Slots>,
+    /// Render until silence is proven, in place of `until`.
+    pub silent: Option<Silent>,
 }
 
 impl<'a> Job<'a> {
@@ -110,6 +115,7 @@ impl<'a> Job<'a> {
             flop_budget: None,
             volatile: &[],
             slots: None,
+            silent: None,
         }
     }
 }
@@ -133,7 +139,11 @@ fn settle(job: &Job, asked: Option<&str>) -> Result<(Graph, String, RenderConfig
             PROBE.to_string()
         }
     };
-    let mut config = config_for(&graph, &target, job.from, job.until, job.sample_rate)?;
+    let until = match job.silent {
+        Some(silent) => Some(WindowEdge::Secs(silent.max_secs)),
+        None => job.until,
+    };
+    let mut config = config_for(&graph, &target, job.from, until, job.sample_rate)?;
     if let Some(budget) = job.flop_budget {
         config.flop_budget = budget;
     }
@@ -194,11 +204,11 @@ pub fn execute(job: Job) -> Result<Rendered, CliError> {
 
 fn rendered(job: Job) -> Result<Rendered, CliError> {
     let (graph, target, config) = settle(&job, job.target)?;
-    let refused = match render_with_slots(&graph, &target, config.clone(), job.cache, job.slots) {
+    let refused = match rendering(&job, &graph, &target, config) {
         Ok(render) => {
             return Ok(Rendered {
+                config: render.config.clone(),
                 render,
-                config,
                 target,
                 graph,
             });
@@ -243,14 +253,26 @@ fn instances_of(source: &dyn Source, target: &str) -> Option<Vec<String>> {
 /// One instance is the node the caller meant, read as if they had named it themselves.
 fn at_instance(job: &Job, instance: &str) -> Result<Rendered, CliError> {
     let (graph, target, config) = settle(job, Some(instance))?;
-    let render = render_with_slots(&graph, &target, config.clone(), job.cache, job.slots)
-        .map_err(CliError::Engine)?;
+    let render = rendering(job, &graph, &target, config).map_err(CliError::Engine)?;
     Ok(Rendered {
+        config: render.config.clone(),
         render,
-        config,
         target,
         graph,
     })
+}
+
+/// The horizon the caller named, or the one silence ends.
+fn rendering(
+    job: &Job,
+    graph: &Graph,
+    target: &str,
+    config: RenderConfig,
+) -> Result<Render, EngineError> {
+    match job.silent {
+        Some(silent) => render_until_silent(graph, target, config, silent, job.cache, job.slots),
+        None => render_with_slots(graph, target, config, job.cache, job.slots),
+    }
 }
 
 pub fn run(dir: &Path) -> Result<Rendered, CliError> {

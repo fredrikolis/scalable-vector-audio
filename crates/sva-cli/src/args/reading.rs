@@ -3,7 +3,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use sva_core::{
-    Asked, CliError, Shaping, WindowEdge, is_wav, representation_for, retired, window_edge,
+    Asked, CliError, DEFAULT_SILENT_MAX_SECS, Shaping, Silent, WindowEdge, is_wav,
+    representation_for, retired, silent_edge, window_edge,
 };
 use sva_engine::{DEFAULT_SAMPLE_RATE, MAX_PINNED_FRAME, Representation, pinned_frame};
 
@@ -15,6 +16,8 @@ use super::{
 struct Flags {
     from: Option<WindowEdge>,
     to: Option<WindowEdge>,
+    /// The bits `--to silent` measures silence at, where it was written.
+    silent: Option<u32>,
     shape: Shaping,
     asked: Vec<(String, Option<PathBuf>)>,
 }
@@ -24,6 +27,7 @@ impl Flags {
         Flags {
             from: None,
             to: None,
+            silent: None,
             shape: Shaping::default(),
             asked: Vec::new(),
         }
@@ -37,7 +41,14 @@ impl Flags {
     ) -> Result<bool, CliError> {
         match flag {
             "--from" => self.from = Some(window_edge(&value(it, "--from")?, "--from")?),
-            "--to" => self.to = Some(window_edge(&value(it, "--to")?, "--to")?),
+            "--to" => {
+                let raw = value(it, "--to")?;
+                // One end, the last written: a time or silence, never both.
+                match silent_edge(&raw) {
+                    Some(bits) => (self.silent, self.to) = (Some(bits?), None),
+                    None => (self.to, self.silent) = (Some(window_edge(&raw, "--to")?), None),
+                }
+            }
             "--frame" => {
                 self.shape.frame_secs = Some(positive(&value(it, "--frame")?, "--frame")?);
             }
@@ -118,11 +129,13 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
     let mut sample_rate: Option<u32> = None;
     let mut flop_budget: Option<u128> = None;
     let mut volatile: Vec<String> = Vec::new();
+    let mut max: Option<f64> = None;
     while let Some(flag) = it.next() {
         if flags.read(flag, &mut it)? {
             continue;
         }
         match flag.as_str() {
+            "--max" => max = Some(positive(&value(&mut it, "--max")?, "--max")?),
             "--no-cache" => cache = false,
             "--brief" => brief = true,
             "--skim" => skim = true,
@@ -158,6 +171,18 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
         )));
     }
     check_frame(&asked, sample_rate.unwrap_or(DEFAULT_SAMPLE_RATE))?;
+    let silent = match (flags.silent, max) {
+        (Some(bits), max) => Some(Silent {
+            bits,
+            max_secs: max.unwrap_or(DEFAULT_SILENT_MAX_SECS),
+        }),
+        (None, Some(_)) => {
+            return Err(CliError::Usage(format!(
+                "`--max` bounds how long `--to silent` looks; write it beside `--to silent`\n{USAGE}"
+            )));
+        }
+        (None, None) => None,
+    };
     Ok(Command::Render(Box::new(RenderArgs {
         target,
         node,
@@ -166,6 +191,7 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
         sample_rate,
         from: flags.from,
         to: flags.to,
+        silent,
         asked,
         brief,
         skim,
@@ -202,6 +228,11 @@ pub(super) fn analyze_args(rest: &[String]) -> Result<Command, CliError> {
                 )));
             }
         }
+    }
+    if flags.silent.is_some() {
+        return Err(CliError::Usage(format!(
+            "`--to silent` ends a render; a file's length is its own\n{USAGE}"
+        )));
     }
     let asked = flags.resolved(Some(&ANALYZE_REPRESENTATIONS))?;
     let analyses = flags.analyses();

@@ -109,6 +109,27 @@ pub enum WindowEdge {
     End,
 }
 
+/// The bits `--to silent` measures silence at where none are written: the profile's own.
+pub const DEFAULT_SILENT_BITS: u32 = sva_engine::PSYCHOACOUSTIC_V1.precision_bits as u32;
+
+/// The latest instant `--to silent` looks for silence by, where `--max` names none.
+pub const DEFAULT_SILENT_MAX_SECS: f64 = 60.0;
+
+/// `silent` or `silent:<bits>`, the end a render proves rather than names; `None` for any
+/// other end. A double holds 53 bits, so no finer silence is one it could show.
+pub fn silent_edge(raw: &str) -> Option<Result<u32, CliError>> {
+    if raw == "silent" {
+        return Some(Ok(DEFAULT_SILENT_BITS));
+    }
+    let bits = raw.strip_prefix("silent:")?;
+    Some(match bits.parse::<u32>() {
+        Ok(bits) if (1..=53).contains(&bits) => Ok(bits),
+        _ => Err(CliError::Usage(format!(
+            "--to silent takes whole bits from 1 to 53, as `silent:16`, got `{raw}`"
+        ))),
+    })
+}
+
 pub fn window_edge(raw: &str, flag: &str) -> Result<WindowEdge, CliError> {
     let refuse = || {
         CliError::Usage(format!(

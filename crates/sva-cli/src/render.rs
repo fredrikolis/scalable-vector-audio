@@ -34,6 +34,7 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
         target: args.target.as_deref(),
         from: args.from,
         until: args.to,
+        silent: args.silent,
         sample_rate: args.sample_rate,
         cache,
         reading: args.node.as_deref(),

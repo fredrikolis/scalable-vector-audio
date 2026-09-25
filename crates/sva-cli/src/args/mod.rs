@@ -72,6 +72,8 @@ pub struct RenderArgs {
     pub sample_rate: Option<u32>,
     pub from: Option<WindowEdge>,
     pub to: Option<WindowEdge>,
+    /// `--to silent`: the end is where silence is proven, not a time.
+    pub silent: Option<sva_core::Silent>,
     pub asked: Vec<Asked>,
     pub brief: bool,
     pub skim: bool,
@@ -475,6 +477,55 @@ mod tests {
             panic!("an analyze")
         };
         assert_eq!((args.from, args.to), window);
+    }
+
+    #[test]
+    fn to_silent_takes_bits_and_a_latest_time_and_nothing_else_does() {
+        let deep = rendered(&["render", "--as", "samples", "--to", "silent"]);
+        let bits = sva_core::DEFAULT_SILENT_BITS;
+        let max_secs = sva_core::DEFAULT_SILENT_MAX_SECS;
+        assert_eq!(deep.silent, Some(sva_core::Silent { bits, max_secs }));
+        assert_eq!(deep.to, None);
+        let timed = rendered(&["render", "--as", "samples", "--to", "silent", "--to", "3"]);
+        assert_eq!(
+            (timed.to, timed.silent),
+            (Some(WindowEdge::Secs(3.0)), None)
+        );
+        let later = rendered(&["render", "--as", "samples", "--to", "3", "--to", "silent"]);
+        assert_eq!((later.to, later.silent.map(|s| s.bits)), (None, Some(bits)));
+        let shallow = rendered(&[
+            "render",
+            "--as",
+            "samples",
+            "--to",
+            "silent:16",
+            "--max",
+            "8",
+        ]);
+        let max_secs = 8.0;
+        assert_eq!(
+            shallow.silent,
+            Some(sva_core::Silent { bits: 16, max_secs })
+        );
+        for refused in [
+            &["render", "--as", "samples", "--max", "8"][..],
+            &["render", "--as", "samples", "--to", "silent:0"],
+            &["render", "--as", "samples", "--to", "silent:54"],
+            &["render", "--as", "samples", "--to", "silently"],
+            &[
+                "analyze",
+                "/tmp/a.wav",
+                "--as",
+                "spectrum",
+                "--to",
+                "silent",
+            ],
+        ] {
+            assert!(
+                matches!(parse_args(&argv(refused)), Err(CliError::Usage(_))),
+                "{refused:?}"
+            );
+        }
     }
 
     #[test]

@@ -1,6 +1,9 @@
 // Concern: the `--help` page, each flag's default printed from its own constant | Non-concern: parsing those flags (args/), the JSON a subcommand answers (output.rs) | IO: () -> the page
 
-use sva_core::{DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE};
+use sva_core::{
+    DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, DEFAULT_SILENT_BITS,
+    DEFAULT_SILENT_MAX_SECS,
+};
 use sva_engine::{DEFAULT_FRAME_SECS, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1};
 
 /// Read off the constants the parser itself defaults to, so a printed default cannot drift
@@ -36,6 +39,13 @@ RENDER:
 
   `--from`/`--to` bound the window a collapse runs over. `--sample-rate <hz>` is
   the observation rate and is legal with every `--as`: no expression can read it.
+
+  `--to silent[:bits]` ends the render at its last sample at or over 2^-bits of
+  full scale, once a bound on every node proves no later sample reaches it.
+  Where silence is not proven by `--max <secs>` it refuses as
+  `engine.not_silent_by` with the bound there; a node that holds a level forever
+  refuses as `engine.never_silent`, and one no bound is derived for yet (a
+  physical solver, a filter whose coefficients move) as `engine.no_tail_bound`.
   `--no-cache` skips the disk store. `cache.stats` lists every lookup the render
   made of it, each a `hit` (with its `tier`) or computed, and stored or not.
 
@@ -187,6 +197,8 @@ DEFAULTS:
   --against <file.wav> the second signal `--as masking` reads against. No
                        default: that one analysis requires it.
   --from <time>        default 0s; `--to <time>` defaults to the node's extent.
+  --to silent[:bits]   bits default {DEFAULT_SILENT_BITS}, the profile's precision;
+                       `--max <secs>` defaults to {DEFAULT_SILENT_MAX_SECS}.
   --confirm            replaces a destination that already holds a file. Without
                        it a path already taken refuses as `conflict` and nothing
                        is written.
