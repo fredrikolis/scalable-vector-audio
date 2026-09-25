@@ -160,6 +160,22 @@ pub(crate) struct Settling {
     pub(crate) after: f64,
 }
 
+impl Settling {
+    /// `c sqrt(E) per_step^left after`, rounded up: the power by squaring, each product widened.
+    pub(crate) fn bound(&self, c: f64, upper: f64, left: u64) -> f64 {
+        let widen = |x: f64| x * (1.0 + 4.0 * f64::EPSILON);
+        let (mut power, mut base, mut rest) = (1.0f64, self.per_step, left);
+        while rest > 0 {
+            if rest & 1 == 1 {
+                power = widen(power * base);
+            }
+            base = widen(base * base);
+            rest >>= 1;
+        }
+        widen(widen(widen(c * widen(upper.sqrt())) * power) * self.after)
+    }
+}
+
 /// With `M = I - A/2 - K/4 + k/4`, `Kf = K + k`, `B = A + 2 rho` over `w`, the felted scheme is
 /// `M dv + Kf pbar + B vbar = 0`, `dp = vbar`; `F = E + eps (p'Mv + p'Bp/2)` falls by at least
 /// `eps Q(zbar)` a step, a contraction `q` of `sqrt(F)`.
@@ -369,6 +385,38 @@ mod tests {
                     (truth - joules).abs() <= upper - joules,
                     "n {n}: E {truth}, computed {joules}, bound {upper}"
                 );
+            }
+        }
+    }
+
+    /// `c sqrt(E) per^left after` in twice f64's precision, the power multiplied out.
+    fn exact_bound(settled: &Settling, c: f64, upper: f64, left: u64) -> f64 {
+        let t = Twofold::of;
+        let s = upper.sqrt();
+        let root = t(s).add(t(upper).sub(t(s).mul(t(s))).div(t(2.0 * s)));
+        let mut power = t(1.0);
+        for _ in 0..left {
+            power = power.mul(t(settled.per_step));
+        }
+        t(c).mul(root).mul(power).mul(t(settled.after)).value()
+    }
+
+    #[test]
+    fn a_settled_bound_is_over_its_exact_value_and_close_to_it() {
+        for (per_step, after) in [(1.0 + 3e-11, 1.0 + 7e-9), (1.0 + 1e-15, 1.1), (1.5, 1.0)] {
+            let settled = Settling { per_step, after };
+            for (c, upper) in [(968.3, 2.7e-9), (1.0, 1.0), (0.1, 1e-300)] {
+                for left in [0, 1, 2, 3, 7, 64, 1023, 1024, 1025, 12_345] {
+                    if per_step > 1.4 && left > 64 {
+                        continue;
+                    }
+                    let bound = settled.bound(c, upper, left);
+                    let truth = exact_bound(&settled, c, upper, left);
+                    assert!(
+                        bound >= truth && bound <= truth * (1.0 + 1e-10),
+                        "left {left}: {bound} against {truth}"
+                    );
+                }
             }
         }
     }

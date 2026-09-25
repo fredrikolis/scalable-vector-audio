@@ -91,14 +91,55 @@ fn a_free_string_never_gains_energy_and_its_energy_bounds_every_later_sample() {
     }
 }
 
-#[test]
-fn a_unison_on_its_bridge_has_no_tail_bound() {
-    let p = ChaigneAskenfeltParams {
+/// Three strings on a massive bridge, each tuned and struck a little differently.
+fn unison(f0: f64, release: f64) -> ChaigneAskenfeltParams {
+    ChaigneAskenfeltParams {
         unison_count: 3.0,
-        ..ChaigneAskenfeltParams::at(261.63)
-    };
-    let refused = tail(&Params::ChaigneAskenfelt(p.clone()), RATE, STEP, 100, 0.0).unwrap_err();
-    assert!(refused.contains("unison"), "{refused}");
+        detune: 1.0,
+        bridge_coupling: 97.2 * (f0 / 262.0).powf(0.677),
+        bridge_mass: 1.0,
+        string_cents: [-0.2, 0.0, 0.25],
+        string_hammer_k_ratio: [1.0, 0.8, 0.6],
+        release,
+        ..note(f0, 4.5, 0.12)
+    }
+}
+
+/// Held, a low unison's bound is still near its peak by the end; felted, it falls far under.
+#[test]
+fn a_unison_tail_bound_holds_every_later_sample_held_or_felted() {
+    for f0 in [65.406, 261.63, 2093.0] {
+        for (release, within) in [(f64::INFINITY, 6.0), (0.3, -20.0)] {
+            let fallen = dominates(&unison(f0, release), 1.5);
+            assert!(fallen < within, "f0 {f0}: the bound fell only {fallen} dB");
+        }
+    }
+}
+
+#[test]
+fn a_unison_never_gains_energy_and_its_energy_bounds_every_later_sample() {
+    for f0 in [65.406, 261.63, 2093.0] {
+        for release in [f64::INFINITY, 0.05] {
+            let p = unison(f0, release);
+            let mut site = ChaigneAskenfeltSite::new(&p, f64::from(RATE)).expect("a grid");
+            while !site.let_go() {
+                site.step().expect("a sample");
+            }
+            let gain = site.energy_gain().expect("a proven gain");
+            let mut held = site.energy();
+            for k in 0..RATE as usize / 2 {
+                let sample = site.step().expect("a sample").abs();
+                assert!(
+                    sample <= gain * held.sqrt(),
+                    "f0 {f0} step {k}: {sample} over c sqrt(E) = {}",
+                    gain * held.sqrt()
+                );
+                let now = site.energy();
+                assert!(now <= held, "f0 {f0} step {k}: E rose {held} -> {now}");
+                held = now;
+            }
+        }
+    }
 }
 
 #[test]

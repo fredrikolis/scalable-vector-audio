@@ -14,7 +14,7 @@ use crate::physics::stiff_string::{
     StringGrid, Wire, dispersive_grid, grid_tension, point_weights, read_at, spread, stencil_update,
 };
 use crate::physics::string_tail::{Felt, energy, energy_gain, press};
-use crate::physics::unison_tail::{unison_energy, unison_stable};
+use crate::physics::unison_tail::{unison_energy, unison_gain, unison_stable};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChaigneAskenfeltParams {
@@ -309,7 +309,7 @@ impl ChaigneAskenfeltSite {
     pub fn energy_gain(&self) -> Option<f64> {
         match self.strings.as_slice() {
             [grid] => Some(energy_gain(grid, self.tensions[0] / grid.dx, self.dt)),
-            _ => None,
+            _ => unison_gain(self),
         }
     }
 }

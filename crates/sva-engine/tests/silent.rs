@@ -184,13 +184,21 @@ fn a_loud_felted_string_follows_its_bound_down_past_the_floor() {
 }
 
 #[test]
-fn a_unison_on_its_bridge_refuses_rather_than_truncates() {
-    let files = [("body", "chaigne_askenfelt(261.63, unison_count=3)\n")];
+fn a_felted_unison_on_its_bridge_ends_where_its_energy_proves_every_later_sample_silent() {
+    rings_down(
+        "chaigne_askenfelt(261.63, unison_count=3, bridge_mass=1, bridge_coupling=100, \
+         release=0.1)\n",
+    );
+}
+
+#[test]
+fn a_solver_with_no_derived_bound_refuses_rather_than_truncates() {
+    let files = [("body", "chaigne_doutaut(440)\n")];
     let refused = until_silent(&files, "body", DEEP)
         .err()
-        .expect("no unison bound is derived");
+        .expect("no bar bound is derived");
     assert_eq!(refused.code(), "engine.no_tail_bound", "{refused}");
-    assert!(refused.to_string().contains("unison"), "{refused}");
+    assert!(refused.to_string().contains("chaigne_doutaut"), "{refused}");
 }
 
 #[test]

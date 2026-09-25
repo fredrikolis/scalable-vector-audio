@@ -37,6 +37,7 @@ fn composition() -> Graph {
             ("string", "chaigne_askenfelt(f0, release=release)\n"),
             ("damped", "@string(t, f0=523.25, release=0.05)\n"),
             ("held", "sin(2*pi*220*t)\n"),
+            ("bar", "chaigne_doutaut(440)\n"),
         ],
     )
 }
@@ -216,7 +217,7 @@ fn a_stream_whose_silence_is_never_proven_refuses_at_its_opening() {
     };
     for (target, code) in [
         ("held", "engine.never_silent"),
-        ("note", "engine.no_tail_bound"),
+        ("bar", "engine.no_tail_bound"),
     ] {
         let refused = Stream::open(&g, target, &[], config)
             .err()

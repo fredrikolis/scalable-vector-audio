@@ -34,6 +34,10 @@ impl Ball {
         (self.c - self.r).next_down()
     }
 
+    pub(crate) fn hi(self) -> f64 {
+        (self.c + self.r).next_up()
+    }
+
     pub(crate) fn add(self, b: Ball) -> Ball {
         let c = self.c + b.c;
         Ball {
@@ -146,7 +150,7 @@ mod tests {
 
     fn within(out: Ball, truth: Twofold) -> bool {
         let t = truth.value();
-        t >= out.lo() && -t >= out.neg().lo()
+        t >= out.lo() && t <= out.hi()
     }
 
     #[test]
