@@ -6,6 +6,7 @@ pub mod image;
 pub mod merge;
 pub mod product;
 pub mod spread;
+pub mod sup;
 
 use crate::closed_form::{ModalBank, Series, Var};
 use atom::SpectralAtom;

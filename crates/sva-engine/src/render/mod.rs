@@ -3,6 +3,7 @@
 mod answer;
 mod pointwise;
 mod sampled;
+mod silent;
 mod slots;
 mod volatile;
 
@@ -58,6 +59,7 @@ impl RenderConfig {
 }
 
 pub use answer::{answer, answer_buffer, ledger_over, sketch_atom};
+pub use silent::{Silent, render_until_silent};
 
 pub struct Render {
     pub root: NodeId,
@@ -128,6 +130,32 @@ pub fn render_with_slots(
     cache: Option<&dyn crate::cache::Cache>,
     slots: Option<&Slots>,
 ) -> Result<Render, EngineError> {
+    run(prepared(graph, target)?, config, cache, slots, None)
+}
+
+/// A composition resolved and typed under one target, before any horizon is chosen.
+pub(crate) struct Prepared<'g> {
+    pub(crate) instances: instantiate::Instances<'g>,
+    pub(crate) order: schedule::Order,
+    pub(crate) tys: Typing,
+    pub(crate) root: NodeId,
+    pub(crate) target: String,
+}
+
+impl Prepared<'_> {
+    /// The root's content address, and whether a reading asks it for an alias score.
+    pub(crate) fn identity(&self, asks: &[Ask]) -> Result<(sva_formula::Hash, bool), EngineError> {
+        let scored = asks.iter().any(|ask| {
+            matches!(
+                ask.representation,
+                crate::query::Representation::Alias { .. }
+            ) && self.tys.resolve(&ask.node).is_ok_and(|id| id == self.root)
+        });
+        Ok((refs::identity(&self.tys, self.root)?, scored))
+    }
+}
+
+pub(crate) fn prepared<'g>(graph: &'g Graph, target: &str) -> Result<Prepared<'g>, EngineError> {
     let instances = instantiate::instantiate(graph, target)?;
     let held = instances.instance_of(target)?;
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&held))?;
@@ -135,7 +163,38 @@ pub fn render_with_slots(
     let root = tys
         .id(&held)
         .ok_or_else(|| EngineError::UnknownNode(held.clone()))?;
-    let schedule = schedule::plan(&tys, &order, root, &config.asks);
+    Ok(Prepared {
+        instances,
+        order,
+        tys,
+        root,
+        target: target.to_string(),
+    })
+}
+
+/// The root's value already held, where `known` carries it: only what another reading
+/// names is materialized beside it.
+pub(crate) fn run(
+    prepared: Prepared,
+    config: RenderConfig,
+    cache: Option<&dyn crate::cache::Cache>,
+    slots: Option<&Slots>,
+    known: Option<(Buffer, Label)>,
+) -> Result<Render, EngineError> {
+    let Prepared {
+        instances,
+        order,
+        tys,
+        root,
+        target,
+    } = prepared;
+    let mut schedule = schedule::plan(&tys, &order, root, &config.asks);
+    if known.is_some() {
+        match only_the_root(&tys, root, &config.asks) {
+            true => schedule.materialize.clear(),
+            false => schedule.materialize.retain(|id| *id != root),
+        }
+    }
 
     let bindings = tys
         .paths()
@@ -154,7 +213,11 @@ pub fn render_with_slots(
         bindings,
         cache_stats: None,
     };
-    let volatile = volatile::mark(&instances, &held.tys, &held.config, target)?;
+    if let Some((buffer, label)) = known {
+        held.buffers.insert(root, buffer);
+        held.labels.insert(root, label);
+    }
+    let volatile = volatile::mark(&instances, &held.tys, &held.config, &target)?;
     affordable(&held)?;
     let recording = cache.map(|c| Recording::over(c, slots));
     for id in held.schedule.materialize.clone() {
@@ -169,6 +232,17 @@ pub fn render_with_slots(
     compose_read(&mut held);
     stamp(&mut held);
     Ok(held)
+}
+
+/// Whether every reading is one of the root's own samples, so a held root answers them all.
+fn only_the_root(tys: &Typing, root: NodeId, asks: &[Ask]) -> bool {
+    asks.iter().all(|ask| {
+        tys.resolve(&ask.node).is_ok_and(|id| id == root)
+            && !matches!(
+                ask.representation,
+                crate::query::Representation::Ledger { .. }
+            )
+    })
 }
 
 /// A reading that materializes nothing is never refused for cost: asking what a render

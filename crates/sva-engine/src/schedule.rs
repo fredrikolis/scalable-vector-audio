@@ -282,7 +282,7 @@ fn attributed(typing: &Typing, id: NodeId, depth: usize, wanted: &mut BTreeSet<N
 
 /// A node reading its own output is one program, whatever its width: a component lowered on
 /// its own would read the loop at that component's width instead of the node's.
-fn holds_self(typing: &Typing, id: NodeId, seen: &mut BTreeSet<NodeId>) -> bool {
+pub(crate) fn holds_self(typing: &Typing, id: NodeId, seen: &mut BTreeSet<NodeId>) -> bool {
     if !seen.insert(id) {
         return false;
     }
@@ -328,7 +328,11 @@ pub(crate) fn materialized_operands(typing: &Typing, id: NodeId) -> Vec<NodeId> 
 }
 
 /// Operands before the node, so a run never reads a buffer it has not filled.
-fn dependencies_first(typing: &Typing, id: NodeId, seen: &mut BTreeSet<NodeId>) -> Vec<NodeId> {
+pub(crate) fn dependencies_first(
+    typing: &Typing,
+    id: NodeId,
+    seen: &mut BTreeSet<NodeId>,
+) -> Vec<NodeId> {
     if !seen.insert(id) {
         return Vec::new();
     }

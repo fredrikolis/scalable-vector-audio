@@ -205,7 +205,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 68] = [
+pub static REGISTRY: [(&str, &str); 71] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -441,5 +441,17 @@ pub static REGISTRY: [(&str, &str); 68] = [
     (
         "engine.release_not_causal",
         "a sample before key-up that would depend on release",
+    ),
+    (
+        "engine.never_silent",
+        "a render until silent of a node that holds a level forever",
+    ),
+    (
+        "engine.not_silent_by",
+        "a render until silent whose bound is not under the floor by the latest time",
+    ),
+    (
+        "engine.no_tail_bound",
+        "a render until silent through a node class no tail bound is derived for",
     ),
 ];

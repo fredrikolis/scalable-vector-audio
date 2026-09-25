@@ -209,7 +209,7 @@ fn renamed(traces: &[FilterTrace], node: &str) -> Vec<FilterTrace> {
 
 const ADDRESS_ROTATE: u32 = 17;
 
-fn mixed(seed: Hash, parts: &[u64]) -> Hash {
+pub(crate) fn mixed(seed: Hash, parts: &[u64]) -> Hash {
     let mut lanes = sva_formula::Lanes::<ADDRESS_ROTATE>::from(seed);
     for part in parts {
         lanes.word(*part);
