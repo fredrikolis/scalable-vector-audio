@@ -49,8 +49,11 @@ RENDER:
   `--as arguments` renders nothing: for every instance under the target it
   prints each builtin call's named arguments as the numbers the call was lowered
   with, a solver's whole parameter set with `written: false` on each default it
-  filled in, and each `min`/`max` of numbers with the operand it `chosen`. `at`
-  spans are bytes of the instance's own body, as `sva-cli outline` counts them.
+  filled in, and the operand each `min`/`max` `chosen` where a call folds one to a
+  number: in named arguments and a solver's, modal bank's or `noise`'s
+  positionals. One inside a filter's or cast's positional or `rand`'s key or
+  seed is not listed. `at` spans are bytes of the instance's
+  own body, as `sva-cli outline` counts them.
 
 ANALYZE:
   sva-cli analyze <file.wav> [--as <representation>[=<destination>]]...

@@ -433,3 +433,21 @@ fn a_reciprocal_power_is_the_quotient_bit_for_bit() {
         assert_eq!(plane("cut_powered"), plane("cut_divided"), "{x}");
     }
 }
+
+/// A `min` in `noise`'s seed is folded where the seed is, so the reading notes it.
+#[test]
+fn a_choice_inside_a_noise_seed_is_noted() {
+    let written = "noise(min(3, 7), period=1)\n";
+    let g = graph_of("noise-seed", &[("body", written)]);
+    let typing = types(&g, "body").expect("noise types");
+    let held = typing.arguments("body").expect("the call is noted");
+    let [chosen] = held.chosen.as_slice() else {
+        panic!("one choice: {held:?}")
+    };
+    assert_eq!(
+        (&written[chosen.at.start..chosen.at.end], chosen.chosen),
+        ("min", 0)
+    );
+    assert_eq!(held.calls[0].arguments[0].name, "seed");
+    assert_eq!(held.calls[0].arguments[0].value, 3.0);
+}

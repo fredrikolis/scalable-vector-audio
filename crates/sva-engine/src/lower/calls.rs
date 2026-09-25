@@ -48,20 +48,14 @@ impl<'g> Lowering<'_, 'g> {
             }
             return self.solver(name, &numbers, &view, span, chosen, var);
         }
-        self.note_call(name, span, written_named(&named), chosen);
-        if let Some(cast) = Cast::from_name(name, &view) {
-            return self.cast(cast, args, span, cx, var);
-        }
-        if let Some(shape) = Shape::from_name(name) {
-            return self.filter(shape, args, span, cx, var);
-        }
         if name == "noise" {
-            let Some(numbers) = positional_values(self, args, cx, &mut Vec::new()) else {
+            let Some(numbers) = positional_values(self, args, cx, &mut chosen) else {
                 return Err(EngineError::BadArity(name.to_string()));
             };
             let [seed, ..] = numbers.as_slice() else {
                 return Err(EngineError::BadArity(name.to_string()));
             };
+            self.note_call(name, span, positional_named(name, &numbers, &named), chosen);
             return Ok(Piece::ClosedForm(Body::Series(Box::new(
                 sva_formula::noise(
                     *seed as u64,
@@ -69,6 +63,13 @@ impl<'g> Lowering<'_, 'g> {
                     named_or(&view, "color", 0.0),
                 ),
             ))));
+        }
+        self.note_call(name, span, written_named(&named), chosen);
+        if let Some(cast) = Cast::from_name(name, &view) {
+            return self.cast(cast, args, span, cx, var);
+        }
+        if let Some(shape) = Shape::from_name(name) {
+            return self.filter(shape, args, span, cx, var);
         }
         let positional: Vec<&Expr> = args
             .iter()

@@ -27,7 +27,8 @@ pub struct Argument {
     pub written: bool,
 }
 
-/// A `min` or `max` of numbers, which operand it answered with.
+/// A `min` or `max` a call folded to a number; one in a filter's, cast's or `rand`'s
+/// positional is not listed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Chosen {
     pub name: String,
