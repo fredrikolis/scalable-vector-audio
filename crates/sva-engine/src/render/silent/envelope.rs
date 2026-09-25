@@ -212,9 +212,16 @@ impl<'a> Bounds<'a> {
                 0.0,
             ))),
             Value::SelfAt(_) => Ok(Err(self.unknown(id, "a loop read outside its loop"))),
-            Value::Solver(params) => Ok(Err(
-                self.unknown(id, &format!("the {} solver", params.name()))
-            )),
+            Value::Solver(params) => {
+                match sva_samples::tail(&params, self.config.rate, STEP, self.grid.points) {
+                    Ok(at) => Ok(Ok(Envelope {
+                        before: at.first().copied().unwrap_or(0.0),
+                        at,
+                        floor: 0.0,
+                    })),
+                    Err(class) => Ok(Err(self.unknown(id, &class))),
+                }
+            }
             Value::Filter {
                 shape,
                 x,

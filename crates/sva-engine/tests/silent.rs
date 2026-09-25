@@ -131,17 +131,46 @@ fn a_slow_decay_is_not_silent_by_the_latest_time_asked() {
     assert!(refused.to_string().contains("-4.3 dBFS"), "{refused}");
 }
 
+/// A damped high string, so the ring-down fits a short render.
+const STRING: &str = "chaigne_askenfelt(1046.5, damp_dc=20)\n";
+
 #[test]
-fn a_solver_with_no_derived_bound_refuses_rather_than_truncates() {
-    let files = [("body", "chaigne_askenfelt(261.63)\n")];
+fn a_struck_string_ends_where_its_modes_prove_every_later_sample_silent() {
+    let loud = Silent {
+        bits: 16,
+        max_secs: 10.0,
+    };
+    let render =
+        until_silent(&[("body", STRING)], "body", loud).expect("a single string rings down");
+    let samples = heard(&render);
+    let end = samples.len();
+    assert!(samples[end - 1].abs() >= loud.threshold());
+    let g = graph_of("body", &[("body", STRING)]);
+    let longer = sva_engine::render(
+        &g,
+        "body",
+        RenderConfig::seconds(RATE, secs(&samples) + 1.0),
+        None,
+    )
+    .expect("a fixed render");
+    let longer = heard(&longer);
+    assert_eq!(
+        &longer[..end],
+        &samples[..],
+        "the silent render is the fixed one's prefix"
+    );
+    let after = longer[end..].iter().fold(0.0f64, |a, s| a.max(s.abs()));
+    assert!(after < loud.threshold(), "{after} heard after the end");
+}
+
+#[test]
+fn a_unison_on_its_bridge_refuses_rather_than_truncates() {
+    let files = [("body", "chaigne_askenfelt(261.63, unison_count=3)\n")];
     let refused = until_silent(&files, "body", DEEP)
         .err()
-        .expect("no solver bound is derived");
+        .expect("no unison bound is derived");
     assert_eq!(refused.code(), "engine.no_tail_bound", "{refused}");
-    assert!(
-        refused.to_string().contains("chaigne_askenfelt"),
-        "{refused}"
-    );
+    assert!(refused.to_string().contains("unison"), "{refused}");
 }
 
 #[test]
