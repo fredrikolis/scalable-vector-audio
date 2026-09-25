@@ -11,6 +11,8 @@ pub mod rhaouti_chaigne_joly;
 pub(crate) mod stiff_string;
 pub(crate) mod string_tail;
 pub mod tonehole;
+#[cfg(test)]
+mod twofold;
 pub mod willemsen_bilbao_serafin;
 
 use std::any::Any;
