@@ -60,11 +60,13 @@ fn stepped(held: &Render, id: NodeId) -> Result<(Buffer, Label), EngineError> {
     ))
 }
 
-/// One node's program, the slots it reads through, and the node behind each slot.
+/// One node's program, the slots it reads through, the node behind each slot and behind each
+/// call site.
 pub(super) struct Program {
     pub renderer: NodeRenderer,
     pub reads: Vec<NodeId>,
     pub layout: Layout,
+    pub site_nodes: Vec<NodeId>,
 }
 
 pub(super) fn program(held: &Render, id: NodeId) -> Result<Program, EngineError> {
@@ -81,9 +83,10 @@ pub(super) fn program_reading(
         held,
         reads: Vec::new(),
         sites: Vec::new(),
+        site_nodes: Vec::new(),
     };
     let renderer = build.of(id)?;
-    let (reads, sites) = (build.reads, build.sites);
+    let (reads, sites, site_nodes) = (build.reads, build.sites, build.site_nodes);
     let layout = Layout {
         width: held.tys.ty(id).width as usize,
         read_widths: reads.iter().map(|r| width_of(*r)).collect(),
@@ -93,6 +96,7 @@ pub(super) fn program_reading(
         renderer,
         reads,
         layout,
+        site_nodes,
     })
 }
 
@@ -133,6 +137,7 @@ struct Build<'a> {
     held: &'a Render,
     reads: Vec<NodeId>,
     sites: Vec<Site>,
+    site_nodes: Vec<NodeId>,
 }
 
 impl Build<'_> {
@@ -168,7 +173,7 @@ impl Build<'_> {
                 None => Err(varying(self.held, id)),
             },
             Value::Solver(params) => {
-                let site = self.site(Site::Physics(params));
+                let site = self.site(Site::Physics(params), id);
                 Ok(NodeRenderer::Physics { site })
             }
             Value::Filter {
@@ -178,7 +183,7 @@ impl Build<'_> {
                 q,
                 gain,
             } => {
-                let site = self.site(Site::Filter(shape));
+                let site = self.site(Site::Filter(shape), id);
                 Ok(NodeRenderer::Filter {
                     site,
                     x: Box::new(self.of(x)?),
@@ -209,8 +214,9 @@ impl Build<'_> {
         NodeRenderer::Buffer { id, shift }
     }
 
-    fn site(&mut self, site: Site) -> SiteId {
+    fn site(&mut self, site: Site, id: NodeId) -> SiteId {
         self.sites.push(site);
+        self.site_nodes.push(id);
         SiteId((self.sites.len() - 1) as u32)
     }
 

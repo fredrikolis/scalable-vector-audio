@@ -5,12 +5,14 @@ mod floor;
 mod range;
 mod ringing;
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sva_ast::Graph;
 use sva_formula::{Hash, NodeId};
 use sva_samples::{Buffer, Horizon, Label};
 
+pub(crate) use envelope::Live;
 use envelope::{Bounds, Envelope, Grid, STEP, Unbounded};
 
 use super::{Prepared, Render, RenderConfig, materialize, prepared, run};
@@ -109,7 +111,7 @@ pub(super) fn proven_at(
     let mut level = threshold;
     loop {
         let mut bounds = Bounds::new(&held.tys, grid.clone(), config, &rendered, level);
-        let envelope = bounded(held, &mut bounds, silent)?;
+        let envelope = bounded(&held.tys, held.root, &mut bounds, silent)?;
         if let Some(j) = envelope.at.iter().position(|v| *v < threshold) {
             return Ok(j * STEP);
         }
@@ -122,14 +124,50 @@ pub(super) fn proven_at(
     }
 }
 
+/// A bound on every sample of `root` from `now` on, from the states `live` holds there;
+/// `heard` keeps each node rendered alone over a crop's window, which no block changes.
+pub(crate) fn bound_from(
+    tys: &crate::typing::Typing,
+    root: NodeId,
+    config: &RenderConfig,
+    silent: Silent,
+    live: &dyn Live,
+    now: usize,
+    heard: &RefCell<BTreeMap<(NodeId, u64), Buffer>>,
+) -> Result<f64, EngineError> {
+    let grid = Grid {
+        start: now as f64 / f64::from(config.rate),
+        rate: f64::from(config.rate),
+        points: 1,
+    };
+    let rendered = |id: NodeId, end: f64| {
+        if let Some(buffer) = heard.borrow().get(&(id, end.to_bits())) {
+            return Ok(buffer.clone());
+        }
+        let buffer = heard_alone(tys, id, config, end)?;
+        heard
+            .borrow_mut()
+            .insert((id, end.to_bits()), buffer.clone());
+        Ok(buffer)
+    };
+    let mut bounds = Bounds::new(tys, grid, config, &rendered, silent.threshold());
+    bounds.live = Some(live);
+    Ok(bounded(tys, root, &mut bounds, silent)?.at[0])
+}
+
 /// The root's envelope, or the refusal no bound or a level held forever makes.
-fn bounded(held: &Prepared, bounds: &mut Bounds, silent: Silent) -> Result<Envelope, EngineError> {
-    let root = held.root;
+fn bounded(
+    tys: &crate::typing::Typing,
+    root: NodeId,
+    bounds: &mut Bounds,
+    silent: Silent,
+) -> Result<Envelope, EngineError> {
     let envelope = match bounds.of(root)? {
         Ok(envelope) => envelope,
         Err(Unbounded { node, class }) => {
             return Err(refusal(
-                held,
+                tys,
+                root,
                 "engine.no_tail_bound",
                 format!(
                     "`{node}` is {class}, and no bound on its tail is derived yet, so silence \
@@ -142,7 +180,8 @@ fn bounded(held: &Prepared, bounds: &mut Bounds, silent: Silent) -> Result<Envel
     let threshold = silent.threshold();
     if envelope.floor >= threshold {
         return Err(refusal(
-            held,
+            tys,
+            root,
             "engine.never_silent",
             format!(
                 "it returns to {} forever, at or above the {}-bit floor of {}.",
@@ -158,8 +197,18 @@ fn bounded(held: &Prepared, bounds: &mut Bounds, silent: Silent) -> Result<Envel
 
 fn not_by(held: &Prepared, envelope: &Envelope, silent: Silent) -> EngineError {
     let last = envelope.at.last().copied().unwrap_or(f64::INFINITY);
+    not_silent_by(&held.tys, held.root, last, silent)
+}
+
+pub(crate) fn not_silent_by(
+    tys: &crate::typing::Typing,
+    root: NodeId,
+    last: f64,
+    silent: Silent,
+) -> EngineError {
     refusal(
-        held,
+        tys,
+        root,
         "engine.not_silent_by",
         format!(
             "its bound at {}s is {}, not under the {}-bit floor of {}, so silence is not \
@@ -180,11 +229,17 @@ fn dbfs(v: f64) -> String {
     }
 }
 
-fn refusal(held: &Prepared, code: &str, message: String, help: &str) -> EngineError {
+fn refusal(
+    tys: &crate::typing::Typing,
+    root: NodeId,
+    code: &str,
+    message: String,
+    help: &str,
+) -> EngineError {
     EngineError::refused(Diagnostic {
         code: code.to_string(),
         message,
-        location: Located::at(held.tys.name(held.root), None),
+        location: Located::at(tys.name(root), None),
         help: help.to_string(),
     })
 }

@@ -38,6 +38,7 @@ fn composition() -> Graph {
             ("damped", "@string(t, f0=523.25, release=0.05)\n"),
             ("held", "sin(2*pi*220*t)\n"),
             ("bar", "chaigne_doutaut(440)\n"),
+            ("slow", "sin(2*pi*220*t)*exp(0 - 0.5*t)\n"),
         ],
     )
 }
@@ -224,4 +225,32 @@ fn a_stream_whose_silence_is_never_proven_refuses_at_its_opening() {
             .expect("no proof");
         assert_eq!(refused.code(), code, "{target}: {refused}");
     }
+}
+
+/// Silence proven from the state held at each block's end; a stream not proven by `max_secs`
+/// takes no block past it.
+#[test]
+fn a_stream_its_state_does_not_prove_silent_by_max_secs_refuses_there() {
+    let g = composition();
+    let silent = Silent {
+        bits: 24,
+        max_secs: 0.1,
+    };
+    let config = StreamConfig {
+        rate: RATE,
+        block: 256,
+        silent: Some(silent),
+    };
+    let mut stream = Stream::open(&g, "slow", &[], config).expect("a decay opens");
+    let limit = (silent.max_secs * f64::from(RATE)).ceil() as usize;
+    let refused = loop {
+        let at = stream.position();
+        match stream.next_block() {
+            Ok(Some(_)) => assert!(at < limit, "a block from {at}, past {limit}"),
+            Ok(None) => panic!("a slow decay proven silent by {}", stream.position()),
+            Err(e) => break e,
+        }
+    };
+    assert_eq!(refused.code(), "engine.not_silent_by", "{refused}");
+    assert!(stream.position() >= limit && stream.end().is_none());
 }

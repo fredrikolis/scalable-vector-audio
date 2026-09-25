@@ -755,10 +755,20 @@ fn a_stream_until_silent_ends_where_the_silent_render_proves_it() {
             None,
         )
         .unwrap_or_else(|_| unreachable!("a decay falls silent"));
-    let end = stream.end().unwrap_or_else(|| unreachable!("a proven end"));
-    let heard = blocks(&mut stream, 1 + end as usize / BLOCK);
-    assert_eq!(heard.len() as f64, end);
+    assert_eq!(stream.end(), None, "no block has proven silence yet");
     let mut out = vec![0.0f32; BLOCK];
+    let mut heard = Vec::new();
+    loop {
+        let took = stream
+            .next(&mut out)
+            .unwrap_or_else(|_| unreachable!("a block"));
+        if took == 0 {
+            break;
+        }
+        heard.extend_from_slice(&out[..took]);
+    }
+    let end = stream.end().unwrap_or_else(|| unreachable!("a proven end"));
+    assert_eq!(heard.len() as f64, end);
     assert_eq!(stream.next(&mut out).ok(), Some(0), "nothing after silence");
     let whole = held
         .render(

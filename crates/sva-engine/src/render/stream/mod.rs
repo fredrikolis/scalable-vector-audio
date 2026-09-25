@@ -1,14 +1,16 @@
 // Concern: renders a target block after block, each node carrying its state across blocks | Non-concern: one node's rows or machine, a whole-horizon render | IO: (&Graph, target, bindings) -> blocks
 
+mod live;
 mod node;
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use sva_ast::Graph;
 use sva_samples::Tape;
 use sva_samples::physics::chaigne_askenfelt::landing_step;
 
-use super::silent::{Silent, proven_at};
+use super::silent::{Silent, bound_from, not_silent_by};
 use super::{Render, RenderConfig, prepared};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::RELEASE;
@@ -36,6 +38,10 @@ pub struct Stream {
     nodes: Vec<Streamed>,
     root: usize,
     at: usize,
+    /// Silence at the threshold, to be proven by `limit`, and the last bound found.
+    silent: Option<(Silent, usize)>,
+    bound: f64,
+    heard: RefCell<BTreeMap<(sva_formula::NodeId, u64), sva_samples::Buffer>>,
     end: Option<usize>,
 }
 
@@ -75,7 +81,9 @@ impl Stream {
         bindings: &[(String, f64)],
         config: StreamConfig,
     ) -> Result<Stream, EngineError> {
-        Stream::opened_at(graph, target, bindings, config, 0)
+        let mut stream = Stream::opened_at(graph, target, bindings, config, 0)?;
+        stream.settle()?;
+        Ok(stream)
     }
 
     /// Silence is proven by `max_secs` past `from`.
@@ -91,16 +99,12 @@ impl Stream {
         }
         let wrapped = bound(graph, target, bindings)?;
         let held = prepared(&wrapped, STREAMED)?;
-        // No row a stream takes reads a horizon; only the silence proof reads this one.
-        let silent = config.silent.map(|silent| Silent {
-            max_secs: from as f64 / f64::from(config.rate) + silent.max_secs,
-            ..silent
-        });
-        let render_config = RenderConfig::seconds(config.rate, silent.map_or(1.0, |s| s.max_secs));
-        let end = match silent {
-            Some(silent) => Some(proven_at(&held, &render_config, silent)?.max(1)),
-            None => None,
-        };
+        let rate = f64::from(config.rate);
+        let silent = config
+            .silent
+            .map(|silent| (silent, from + (silent.max_secs * rate).ceil() as usize));
+        // No row a stream takes reads a horizon.
+        let render_config = RenderConfig::seconds(config.rate, 1.0);
         let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
         let shell = Render {
             root: held.root,
@@ -129,12 +133,49 @@ impl Stream {
             nodes,
             root,
             at: 0,
-            end,
+            silent,
+            bound: f64::INFINITY,
+            heard: RefCell::new(BTreeMap::new()),
+            end: None,
         })
+    }
+
+    /// Ends the stream here where every later sample is proven under the threshold from the
+    /// states it holds now.
+    fn settle(&mut self) -> Result<(), EngineError> {
+        let (Some((silent, _)), None) = (self.silent, self.end) else {
+            return Ok(());
+        };
+        let live = live::View::of(&self.nodes, self.at);
+        let (tys, root) = (&self.shell.tys, self.shell.root);
+        let config = &self.shell.config;
+        self.bound = bound_from(tys, root, config, silent, &live, self.at, &self.heard)?;
+        if self.bound < silent.threshold() {
+            self.end = Some(self.at.max(1));
+        }
+        Ok(())
+    }
+
+    /// No block past the limit is taken while silence is unproven.
+    fn in_time(&self) -> Result<(), EngineError> {
+        match (self.silent, self.end) {
+            (Some((silent, limit)), None) if self.at >= limit => {
+                let max_secs = limit as f64 / f64::from(self.config.rate);
+                let (tys, root) = (&self.shell.tys, self.shell.root);
+                Err(not_silent_by(
+                    tys,
+                    root,
+                    self.bound,
+                    Silent { max_secs, ..silent },
+                ))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// The next block, cut where silence was proven; `None` from there on.
     pub fn next_block(&mut self) -> Result<Option<Block<'_>>, EngineError> {
+        self.in_time()?;
         let from = self.at;
         let to = match self.end {
             Some(end) if from >= end => return Ok(None),
@@ -146,6 +187,7 @@ impl Stream {
             rest[0].run(&self.shell, done, from, to)?;
         }
         self.at = to;
+        self.settle()?;
         Ok(Some(Block {
             tape: &self.nodes[self.root].tape,
             start: from,
@@ -156,6 +198,7 @@ impl Stream {
         self.at
     }
 
+    /// Where silence ends the stream, once a block has proven it.
     pub fn end(&self) -> Option<usize> {
         self.end
     }
@@ -208,6 +251,7 @@ impl Stream {
             node.resume(&resumed.shell, held, checkpoint.at)?;
         }
         resumed.at = checkpoint.at;
+        resumed.settle()?;
         Ok(resumed)
     }
 }

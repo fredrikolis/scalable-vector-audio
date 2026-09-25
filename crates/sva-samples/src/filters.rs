@@ -208,6 +208,13 @@ impl FilterSite {
         self.clamped = clamped;
     }
 
+    /// Each lane's coefficients and its past, `(x1, x2, y1, y2)`.
+    pub fn lanes(&self) -> impl Iterator<Item = (&Coeffs, [f64; 4])> {
+        self.lanes
+            .iter()
+            .map(|lane| (&lane.coeffs, lane.state.held()))
+    }
+
     /// A stream reads no trace, so each block drops the last one's and keeps the room.
     pub fn forget_frames(&mut self) {
         for lane in &mut self.lanes {

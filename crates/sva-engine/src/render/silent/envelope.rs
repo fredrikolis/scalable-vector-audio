@@ -122,6 +122,15 @@ impl Envelope {
     }
 }
 
+/// The state a stream holds at its grid's start: each solver and filter call site as it
+/// stands, and each node's samples before it.
+pub(crate) trait Live {
+    fn solver(&self, id: NodeId) -> Option<&dyn sva_samples::Solver>;
+    fn filter(&self, id: NodeId) -> Option<&sva_samples::FilterSite>;
+    /// The largest magnitude `id` wrote from `back` samples before the grid's start up to it.
+    fn history(&self, id: NodeId, back: i64) -> Option<f64>;
+}
+
 /// Where a render stands, and how a node no bound reaches is rendered over the window a
 /// crop gives it.
 pub(super) struct Bounds<'a> {
@@ -133,6 +142,8 @@ pub(super) struct Bounds<'a> {
     pub(super) level: f64,
     /// A solver's bound was held flat at `level`, so a lower one could fall further.
     pub(super) held_flat: bool,
+    /// Bounds taken from a stream's state at the grid's start rather than from rest.
+    pub(super) live: Option<&'a dyn Live>,
     held: BTreeMap<NodeId, Result<Envelope, Unbounded>>,
     open: BTreeSet<NodeId>,
 }
@@ -154,6 +165,7 @@ impl<'a> Bounds<'a> {
             rendered,
             level,
             held_flat: false,
+            live: None,
             held: BTreeMap::new(),
             open: BTreeSet::new(),
         }
@@ -212,7 +224,13 @@ impl<'a> Bounds<'a> {
                 let Ok(steps) = at.steps_at(self.config.rate) else {
                     return Ok(Err(self.unknown(id, "a read between two samples")));
                 };
-                Ok(self.of(source)?.map(|e| self.moved(&e.held(), steps)))
+                let e = match self.of(source)? {
+                    Ok(e) => e.held(),
+                    Err(e) => return Ok(Err(e)),
+                };
+                Ok(self
+                    .moved(source, &e, steps)
+                    .ok_or_else(|| self.unknown(id, "a read of a past the stream no longer holds")))
             }
             Value::Grid(count) => Ok(Ok(Envelope::constant(
                 &self.grid,
@@ -222,7 +240,17 @@ impl<'a> Bounds<'a> {
             Value::SelfAt(_) => Ok(Err(self.unknown(id, "a loop read outside its loop"))),
             Value::Solver(params) => {
                 let (rate, points) = (self.config.rate, self.grid.points);
-                match sva_samples::tail(&params, rate, STEP, points, self.level) {
+                let tail = match self.live.map(|live| live.solver(id)) {
+                    Some(Some(now)) => sva_samples::tail_from(now, STEP, points, self.level)
+                        .unwrap_or_else(|| Err(format!("the {} solver", params.name()))),
+                    Some(None) => {
+                        return Ok(Err(
+                            self.unknown(id, "a solver the stream holds no state for")
+                        ));
+                    }
+                    None => sva_samples::tail(&params, rate, STEP, points, self.level),
+                };
+                match tail {
                     Ok(sva_samples::Tail { at, held }) => {
                         self.held_flat |= held;
                         Ok(Ok(Envelope {
@@ -268,7 +296,13 @@ impl<'a> Bounds<'a> {
                     Ok(e) => e,
                     Err(e) => return Ok(Err(e)),
                 };
-                Ok(Ok(self.filtered(&input, &ringing, &recursion, &coeffs)))
+                let Some(live) = self.live else {
+                    return Ok(Ok(self.filtered(&input, &ringing, &recursion, &coeffs)));
+                };
+                let from = live.filter(id).and_then(|site| {
+                    self.filtered_from(&input, site, &ringing, &recursion, &coeffs)
+                });
+                Ok(from.ok_or_else(|| self.unknown(id, "a filter the stream holds no state for")))
             }
             Value::Op { name, args } => match holds_self(tys, id) {
                 true => self.looped(id),
@@ -281,17 +315,23 @@ impl<'a> Bounds<'a> {
         Audible::of(&self.config.profile, self.config.rate)
     }
 
-    fn moved(&self, e: &Envelope, steps: i64) -> Envelope {
-        Envelope {
-            at: (0..self.grid.points)
-                .map(|j| match self.grid.index_of((j * STEP) as i64 + steps) {
-                    Some(i) => e.at[i],
-                    None => e.before,
-                })
-                .collect(),
-            before: e.before,
-            floor: e.floor,
+    /// Read `steps` later: a read landing before the grid's start takes the source's own past
+    /// where a stream holds it.
+    fn moved(&self, source: NodeId, e: &Envelope, steps: i64) -> Option<Envelope> {
+        let mut at = Vec::with_capacity(self.grid.points);
+        for j in 0..self.grid.points {
+            let sample = (j * STEP) as i64 + steps;
+            at.push(match (self.grid.index_of(sample), self.live) {
+                (Some(i), _) => e.at[i],
+                (None, None) => e.before,
+                (None, Some(live)) => live.history(source, sample)?.max(e.at[0]),
+            });
         }
+        Some(Envelope {
+            before: e.before.max(at.first().copied().unwrap_or(0.0)),
+            at,
+            floor: e.floor,
+        })
     }
 
     /// Each atom's own supremum from every instant, summed.
@@ -455,6 +495,9 @@ impl<'a> Bounds<'a> {
         let (Some(l), Some(r)) = (edge(1), edge(2)) else {
             return Ok(Err(self.unknown(id, "a crop whose window moves")));
         };
+        if self.live.is_some() && self.grid.secs(0) >= r {
+            return Ok(Ok(Envelope::constant(&self.grid, 0.0, 0.0)));
+        }
         match self.of(args[0])? {
             Ok(e) => Ok(Ok(self.cropped(&e, l, r))),
             Err(_) if r.is_finite() => Ok(Ok(self.heard(id, r)?)),
@@ -523,6 +566,38 @@ impl<'a> Bounds<'a> {
         }
     }
 
+    /// From a stream's filter as it stands: the input from now on meets the whole response,
+    /// and the past, held as `(x1, x2, y1, y2)`, rings out by the recursion alone:
+    /// `z0 = b1 x1 + b2 x2 - a1 y1 - a2 y2`, `z1 = b2 x1 - a1 z0 - a2 y1`, then
+    /// `z(m) = r(m-1) z1 - a2 r(m-2) z0`. Only the grid's first instant is bounded.
+    fn filtered_from(
+        &self,
+        x: &Envelope,
+        site: &sva_samples::FilterSite,
+        ringing: &Ringing,
+        recursion: &Ringing,
+        c: &Coeffs,
+    ) -> Option<Envelope> {
+        let mut past = 0.0f64;
+        for (lane, [x1, x2, y1, y2]) in site.lanes() {
+            let same =
+                [lane.b0, lane.b1, lane.b2, lane.a1, lane.a2] == [c.b0, c.b1, c.b2, c.a1, c.a2];
+            same.then_some(())?;
+            let z0 = c.b1 * x1 + c.b2 * x2 - c.a1 * y1 - c.a2 * y2;
+            let z1 = c.b2 * x1 - c.a1 * z0 - c.a2 * y1;
+            let rung = recursion.from(1) * z1.abs() + c.a2.abs() * recursion.from(0) * z0.abs();
+            let spread = x1.abs() + x2.abs() + y1.abs() + y2.abs();
+            past =
+                past.max(z0.abs().max(z1.abs()).max(rung) * (1.0 + OP * 8.0) + OP * 8.0 * spread);
+        }
+        let feed = c.b0.abs() + c.b1.abs() + c.b2.abs();
+        let back = c.a1.abs() + c.a2.abs();
+        let now = x.at[0];
+        let out = ringing.sum * now + past;
+        let slack = recursion.sum * OP * (feed * now + back * out) * 2.0;
+        Some(Envelope::constant(&self.grid, out + slack, 0.0))
+    }
+
     /// `|y(n)| <= |F(n)| + sum g_i |y(n - D_i)|` with `sum g_i < 1`, iterated on the grid.
     /// One tap is unrolled across a whole step, so a short delay decays per delay rather
     /// than per step.
@@ -540,6 +615,18 @@ impl<'a> Bounds<'a> {
             .take()
             .unwrap_or_else(|| Envelope::constant(&self.grid, 0.0, 0.0));
         let points = self.grid.points;
+        if let Some(live) = self.live {
+            let longest = form.taps.iter().map(|(_, d)| *d).max().unwrap_or(0);
+            let Some(past) = live.history(id, -(longest as i64)) else {
+                return Ok(Err(
+                    self.unknown(id, "a loop whose past the stream no longer holds")
+                ));
+            };
+            let now = free.at[0];
+            let largest = (now + gain * past).max(now / (1.0 - gain));
+            let slack = OP * OPS_PER_STEP * (1.0 + gain) * largest / (1.0 - gain);
+            return Ok(Ok(Envelope::constant(&self.grid, largest + slack, 0.0)));
+        }
         let largest = free.before / (1.0 - gain);
         let slack = OP * OPS_PER_STEP * (1.0 + gain) * largest / (1.0 - gain);
         let mut at = vec![0.0f64; points];

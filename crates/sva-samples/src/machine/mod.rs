@@ -219,6 +219,21 @@ impl Machine {
         Ok(())
     }
 
+    /// Call site `site`'s solver as it stands now, where that site is one.
+    pub fn solver(&self, site: usize) -> Option<&dyn Solver> {
+        match self.states.get(site)? {
+            State::Physics(solver) => Some(solver.as_ref()),
+            State::Filter(_) => None,
+        }
+    }
+
+    pub fn filter(&self, site: usize) -> Option<&FilterSite> {
+        match self.states.get(site)? {
+            State::Filter(filter) => Some(filter),
+            State::Physics(_) => None,
+        }
+    }
+
     pub fn state(&self) -> MachineState {
         MachineState {
             sites: self.program.sites.clone(),

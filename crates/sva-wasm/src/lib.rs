@@ -261,8 +261,8 @@ impl Composition {
     }
 
     /// A stream of `target` (`master` unset) at `rate`, `block` samples a block, each key of
-    /// `bindings` a named argument on the target. `until: "silent"` ends it where every later
-    /// sample is provably under `2^-bits`, by `max_secs`; unset, it runs on.
+    /// `bindings` a named argument on the target. `until: "silent"` ends it at the first block
+    /// whose end proves every later sample under `2^-bits`, throwing past `max_secs`.
     #[allow(clippy::too_many_arguments)]
     pub fn stream(
         &self,

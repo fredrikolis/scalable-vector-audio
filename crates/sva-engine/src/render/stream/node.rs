@@ -19,6 +19,8 @@ pub(super) enum Kind {
         machine: Machine,
         /// Each slot's node, as an index into the stream's nodes.
         reads: Vec<usize>,
+        /// Each call site's node.
+        sites: Vec<NodeId>,
     },
 }
 
@@ -123,7 +125,11 @@ fn machine(
         .map_err(|e| sampled::refused(shell, id, &e))?;
     Ok(Built {
         width: machine.width(),
-        kind: Kind::Machine { machine, reads },
+        kind: Kind::Machine {
+            machine,
+            reads,
+            sites: program.site_nodes,
+        },
         reach,
         own,
     })
@@ -214,7 +220,7 @@ impl Streamed {
                 }
                 Ok(())
             }
-            Kind::Machine { machine, reads } => {
+            Kind::Machine { machine, reads, .. } => {
                 let windows: Vec<Window> = reads.iter().map(|&r| done[r].tape.window()).collect();
                 machine
                     .run_to(to, &windows, &mut self.tape)

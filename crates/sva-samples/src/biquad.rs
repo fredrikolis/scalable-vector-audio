@@ -21,6 +21,10 @@ pub struct State {
 }
 
 impl State {
+    pub fn held(&self) -> [f64; 4] {
+        [self.x1, self.x2, self.y1, self.y2]
+    }
+
     #[inline]
     pub fn step(&mut self, c: &Coeffs, x: f64) -> f64 {
         let y = c.b0 * x + c.b1 * self.x1 + c.b2 * self.x2 - c.a1 * self.y1 - c.a2 * self.y2;
