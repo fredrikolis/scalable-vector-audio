@@ -134,9 +134,8 @@ impl<'g> Lowering<'_, 'g> {
         match name {
             "crop" => {
                 arity(3)?;
-                let (l, r) = self.window(&bodies[1], &bodies[2], var, name, span)?;
-                let (rise, fall) = (read("rise", 0.0), read("fall", 0.0));
-                self.shoulders(rise, fall, r.value() - l.value(), span)?;
+                let (rise, fall) = shoulders_of(named);
+                let (l, r) = self.cropped(&bodies[1], &bodies[2], (rise, fall), var, span)?;
                 let of = self.part(bodies[0].clone(), Some(span));
                 Ok(Piece::ClosedForm(Body::Crop {
                     of,
@@ -196,10 +195,9 @@ impl<'g> Lowering<'_, 'g> {
         span: ByteSpan,
         var: Var,
     ) -> Result<Piece, EngineError> {
-        let (rise, fall) = (named_or(named, "rise", 0.0), named_or(named, "fall", 0.0));
+        let (rise, fall) = shoulders_of(named);
         if let [_, Piece::ClosedForm(l), Piece::ClosedForm(r)] = pieces.as_slice() {
-            let (l, r) = self.window(l, r, var, "crop", span)?;
-            self.shoulders(rise, fall, r.value() - l.value(), span)?;
+            self.cropped(l, r, (rise, fall), var, span)?;
         }
         if rise > 0.0 || fall > 0.0 {
             for shoulder in [rise, fall] {
@@ -240,6 +238,20 @@ impl<'g> Lowering<'_, 'g> {
             self.edge(l, var, name, "start", span)?,
             self.edge(r, var, name, "end", span)?,
         ))
+    }
+
+    /// A crop's window and shoulders, for either representation of its operand.
+    fn cropped(
+        &mut self,
+        l: &Body,
+        r: &Body,
+        (rise, fall): (f64, f64),
+        var: Var,
+        span: ByteSpan,
+    ) -> Result<(Edge, Edge), EngineError> {
+        let (l, r) = self.window(l, r, var, "crop", span)?;
+        self.shoulders(rise, fall, r.value() - l.value(), span)?;
+        Ok((l, r))
     }
 
     /// A shoulder opens inside the window it belongs to. Zero is a hard edge, a negative one
@@ -500,6 +512,10 @@ fn power(base: &Body, exponent: &Body, var: Var, origin: Origin) -> Option<Body>
 /// Whether a real exponent names a polynomial power an atom's u16 order holds.
 fn whole(n: f64) -> bool {
     n.fract() == 0.0 && n.abs() <= f64::from(u16::MAX)
+}
+
+fn shoulders_of(named: &[(&str, f64)]) -> (f64, f64) {
+    (named_or(named, "rise", 0.0), named_or(named, "fall", 0.0))
 }
 
 /// A named argument's number, or what the builtin takes when the call left it out.
