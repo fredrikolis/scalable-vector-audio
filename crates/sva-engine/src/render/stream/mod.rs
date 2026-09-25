@@ -12,6 +12,7 @@ use sva_samples::physics::chaigne_askenfelt::landing_step;
 use super::silent::{Kept, Silent, bound_from, not_silent_by};
 use super::{Render, RenderConfig, prepared};
 use crate::error::{Diagnostic, EngineError, Located};
+use crate::flops::Work;
 use crate::instantiate::RELEASE;
 use crate::schedule;
 use node::Streamed;
@@ -42,6 +43,7 @@ pub struct Stream {
     bound: Option<f64>,
     kept: Kept,
     end: Option<usize>,
+    work: Work,
 }
 
 /// The samples one `next` wrote, `[start, start + len)` of the grid.
@@ -116,6 +118,7 @@ impl Stream {
             schedule,
             bindings: BTreeMap::new(),
             cache_stats: None,
+            proofs: 0,
         };
         let nodes = node::built(&shell, config.block)?;
         let kept = Kept::new(shell.tys.clone(), shell.config.clone());
@@ -136,6 +139,10 @@ impl Stream {
             bound: None,
             kept,
             end: None,
+            work: Work {
+                waves: Some(0),
+                ..Work::default()
+            },
         })
     }
 
@@ -145,6 +152,7 @@ impl Stream {
             return Ok(());
         };
         let live = live::View::of(&self.nodes, self.at);
+        self.work.proofs += 1;
         let bound = bound_from(&self.kept, self.shell.root, silent, &live, self.at)?;
         self.bound = Some(bound);
         if bound < silent.threshold() {
@@ -182,8 +190,12 @@ impl Stream {
         for at in 0..self.nodes.len() {
             let (done, rest) = self.nodes.split_at_mut(at);
             rest[0].run(&self.shell, done, from, to)?;
+            let (priced, waves) = rest[0].work(from, to);
+            self.work.priced_flops += priced;
+            self.work.waves = self.work.waves.zip(waves).map(|(held, more)| held + more);
         }
         self.at = to;
+        self.work.samples += (to - from) as u64;
         self.settle()?;
         Ok(Some(Block {
             tape: &self.nodes[self.root].tape,
@@ -193,6 +205,11 @@ impl Stream {
 
     pub fn position(&self) -> usize {
         self.at
+    }
+
+    /// Since this stream opened, or since the checkpoint it resumed from.
+    pub fn work(&self) -> Work {
+        self.work
     }
 
     /// Where silence ends the stream, once proven.

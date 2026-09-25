@@ -27,6 +27,8 @@ pub(super) enum Kind {
 pub(super) struct Streamed {
     pub(super) id: NodeId,
     pub(super) kind: Kind,
+    /// A sample's price where no row prices it.
+    per_sample: u128,
     pub(super) width: usize,
     /// How many samples before a block's start any reader, itself included, reaches.
     pub(super) keep: usize,
@@ -49,9 +51,14 @@ pub(super) fn built(shell: &Render, block: usize) -> Result<Vec<Streamed>, Engin
             read.keep = read.keep.max(back);
         }
         index.insert(id, nodes.len());
+        let per_sample = match kind {
+            Kind::Rows(_) => 0,
+            Kind::Point(_) | Kind::Machine { .. } => crate::flops::per_sample(shell, id),
+        };
         nodes.push(Streamed {
             id,
             kind,
+            per_sample,
             width,
             keep: own,
             tape: Tape::new(width, 0),
@@ -226,6 +233,21 @@ impl Streamed {
                     .run_to(to, &windows, &mut self.tape)
                     .map_err(|e| sampled::refused(shell, id, &e))
             }
+        }
+    }
+}
+
+impl Streamed {
+    /// `(priced flops, waves)` over `[from, to)`: a pointwise tree's waves go uncounted.
+    pub(super) fn work(&self, from: usize, to: usize) -> (u128, Option<u128>) {
+        let n = (to - from) as u128;
+        match &self.kind {
+            Kind::Rows(rows) => {
+                let (priced, waves) = rows.work(from, to);
+                (priced, Some(waves))
+            }
+            Kind::Point(_) => (self.per_sample * n, None),
+            Kind::Machine { .. } => (self.per_sample * n, Some(0)),
         }
     }
 }

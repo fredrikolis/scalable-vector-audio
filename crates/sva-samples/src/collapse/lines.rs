@@ -164,6 +164,7 @@ pub fn grouped(lane: &Lane) -> Option<Vec<(SpectralAtom, Vec<Line>)>> {
 pub struct Direct {
     level: f64,
     runs: Vec<Run>,
+    lines: usize,
 }
 
 impl Direct {
@@ -175,12 +176,17 @@ impl Direct {
         Some(Direct {
             level: dc.iter().map(|l| l.amp.re).sum(),
             runs: Run::of(&moving),
+            lines: kept.len(),
         })
     }
 
     pub fn at(&self, t: f64) -> f64 {
         let moving: f64 = self.runs.iter().map(|r| super::run::at(r, t).re).sum();
         self.level + moving
+    }
+
+    pub fn lines_priced_and_turned(&self) -> (usize, usize) {
+        (self.lines, self.runs.iter().map(Run::len).sum())
     }
 
     /// How far `at` sits from the exact sum at any instant.

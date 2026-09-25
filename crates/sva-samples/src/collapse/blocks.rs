@@ -1,4 +1,4 @@
-// Concern: reads a closed form onto any span of the grid by rows no horizon chooses | Non-concern: the rows a whole render fits to its horizon (plan.rs) | IO: (form, rate) -> Rows; (Tape, to) -> samples
+// Concern: reads a closed form onto any span of the grid by rows no horizon chooses, priced | Non-concern: rows a whole render fits to its horizon | IO: (form, rate) -> Rows; (Tape, to) -> samples, work
 
 use sva_formula::{ClosedForm, SpectralSum, Var, normalize_closed_form};
 
@@ -69,6 +69,14 @@ impl Rows {
         self.width
     }
 
+    /// What writing `[from, to)` of every component takes, as `(priced flops, waves)`.
+    pub fn work(&self, from: usize, to: usize) -> (u128, u128) {
+        (0..self.width).fold((0, 0), |held, c| {
+            let (priced, waves) = worked(&self.row, c, from, to);
+            (held.0 + priced, held.1 + waves)
+        })
+    }
+
     /// Appends `[tape.end(), to)` of every component, counted from the grid's start.
     pub fn extend(&self, to: usize, tape: &mut Tape) -> Result<(), CollapseError> {
         let step = 1.0 / f64::from(self.rate);
@@ -78,6 +86,40 @@ impl Rows {
             }
         }
         Ok(())
+    }
+}
+
+/// `(priced flops, waves)` one component's row takes over `[from, to)`: a line, a node walked
+/// or an atom inside its spans, a sample each, as a whole render prices them.
+fn worked(row: &Row, c: usize, from: usize, to: usize) -> (u128, u128) {
+    let n = (to - from) as u128;
+    let times = |(priced, waves): (usize, usize), n: u128| (priced as u128 * n, waves as u128 * n);
+    match row {
+        Row::Lines(lanes) => lanes[c]
+            .as_ref()
+            .map_or((0, 0), |d| times(d.lines_priced_and_turned(), n)),
+        Row::Sweep { sum, spans } => {
+            let inside = spans[c].as_ref().map_or(n, |spans| {
+                let held = spans
+                    .iter()
+                    .map(|(a, b)| to.min(*b).saturating_sub(from.max(*a)));
+                held.sum::<usize>() as u128
+            });
+            let atoms = sum.lanes[c].atoms.len();
+            times((atoms, atoms), inside)
+        }
+        Row::Point { written, .. } => times(plan::point_work(&written.body, c), n),
+        Row::Added(parts) => {
+            parts
+                .iter()
+                .fold((0, 0), |held, (part, width)| match lane(*width, c) {
+                    Some(lane) => {
+                        let (priced, waves) = worked(part, lane, from, to);
+                        (held.0 + priced, held.1 + waves)
+                    }
+                    None => held,
+                })
+        }
     }
 }
 
@@ -184,15 +226,17 @@ fn value(row: &Row, c: usize, i: usize, rate: u32, step: f64) -> Result<f64, Col
         Row::Added(parts) => {
             let mut sum = 0.0;
             for (part, held) in parts {
-                let lane = match held {
-                    1 => 0,
-                    _ => c,
-                };
-                if lane < *held {
+                if let Some(lane) = lane(*held, c) {
                     sum += value(part, lane, i, rate, step)?;
                 }
             }
             sum
         }
     })
+}
+
+/// One component broadcasts.
+fn lane(width: usize, c: usize) -> Option<usize> {
+    let lane = if width == 1 { 0 } else { c };
+    (lane < width).then_some(lane)
 }

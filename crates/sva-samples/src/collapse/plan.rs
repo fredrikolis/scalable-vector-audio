@@ -191,30 +191,31 @@ fn point_plan(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Plan, C
 /// What one instant's evaluation walks over every component: a join walks that component's branch.
 pub fn point_nodes(f: &Body) -> usize {
     let width = point::width_of(f, &point::NoRefs).max(1);
-    (0..width).map(|c| nodes_at(f, c)).sum()
+    (0..width).map(|c| point_work(f, c).0).sum()
 }
 
-fn nodes_at(f: &Body, component: usize) -> usize {
-    let branch = |part: &Part, c: usize| nodes_at(&part.body, c);
+/// One component's `(nodes, waves)` at one instant: a run is priced by its Horner steps and
+/// turns its lines; every other node is one.
+pub fn point_work(f: &Body, component: usize) -> (usize, usize) {
+    let add = |a: (usize, usize), b: (usize, usize)| (a.0 + b.0, a.1 + b.1);
+    let branch = |part: &Part, c: usize| add((1, 0), point_work(&part.body, c));
     match f {
+        Body::Run(run) => (super::run::steps(run), run.len()),
         Body::Join(parts) => {
             let widths: Vec<usize> = parts
                 .iter()
                 .map(|p| point::width_of(&p.body, &point::NoRefs))
                 .collect();
             match point::lane_of(&widths, component) {
-                Some((at, inner)) => 1 + branch(&parts[at], inner),
-                None => 1,
+                Some((at, inner)) => branch(&parts[at], inner),
+                None => (1, 0),
             }
         }
-        Body::Channel(of, k) => 1 + branch(of, usize::from(*k)),
-        Body::Run(run) => super::run::steps(run),
-        other => {
-            1 + sva_formula::closed_form::children(other)
-                .iter()
-                .map(|part| branch(part, component))
-                .sum::<usize>()
-        }
+        Body::Channel(of, k) => branch(of, usize::from(*k)),
+        other => sva_formula::closed_form::children(other)
+            .iter()
+            .map(|part| point_work(&part.body, component))
+            .fold((1, 0), add),
     }
 }
 

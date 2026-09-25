@@ -1,4 +1,4 @@
-// Concern: counts what a render costs in operations, per node, from the schedule alone | Non-concern: running any of it (render/), the row a closed form takes (sva-samples) | IO: (&Render) -> Tree
+// Concern: counts what a render or a stream costs in operations, per node, from the schedule alone | Non-concern: running any of it (render/) | IO: (&Render) -> Tree, per-sample price, Work
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -253,6 +253,10 @@ fn costed_under(render: &Render, id: NodeId, paid: &mut Carried) -> (u128, &'sta
     let Ok(len) = render.config.horizon.len(render.config.rate) else {
         return (0, "no horizon");
     };
+    costed_at(render, id, len, paid)
+}
+
+fn costed_at(render: &Render, id: NodeId, len: usize, paid: &mut Carried) -> (u128, &'static str) {
     match render.tys.ty(id).held {
         Held::Frames => (frames_flops(render, id, len), "short-time transform"),
         Held::Sampled => (ops_of(render, id) as u128 * len as u128, "sampled program"),
@@ -299,10 +303,30 @@ fn pointwise_flops(render: &Render, id: NodeId, len: usize, paid: &mut Carried) 
     schedule::read_operands(&render.tys, id).into_iter().fold(
         own as u128 * len as u128,
         |sum, read| match paid.opens(read) {
-            true => sum + costed_under(render, read, paid).0,
+            true => sum + costed_at(render, read, len, paid).0,
             false => sum,
         },
     )
+}
+
+/// One streamed sample of a node no row takes, priced as a whole render prices one sample of
+/// it: a sampled program's operations, or a pointwise tree and the forms it reads.
+pub(crate) fn per_sample(render: &Render, id: NodeId) -> u128 {
+    match render.tys.ty(id).held {
+        Held::Sampled => ops_of(render, id) as u128,
+        _ => pointwise_flops(render, id, 1, &mut Carried::of(id)),
+    }
+}
+
+/// What a stream or a render did, counted exactly and alike on every machine: the samples
+/// written, the silence proofs run, the price of the work, and the lines and atoms summed
+/// where they are counted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Work {
+    pub samples: u64,
+    pub proofs: u64,
+    pub priced_flops: u128,
+    pub waves: Option<u128>,
 }
 
 /// Two references, because the render takes two: the label's, and the reading's own.

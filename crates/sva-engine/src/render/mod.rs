@@ -75,9 +75,22 @@ pub struct Render {
     pub schedule: Schedule,
     pub bindings: BTreeMap<NodeId, Vec<Binding>>,
     pub cache_stats: Option<CacheStats>,
+    /// Silence proofs run over the whole grid.
+    pub proofs: u64,
 }
 
 impl Render {
+    /// Priced by its schedule, whether run or answered from a store.
+    pub fn work(&self) -> crate::flops::Work {
+        let samples = self.config.horizon.len(self.config.rate).unwrap_or(0);
+        crate::flops::Work {
+            samples: samples as u64,
+            proofs: self.proofs,
+            priced_flops: crate::flops::total(self),
+            waves: None,
+        }
+    }
+
     pub fn buffer(&self, node: NodeId) -> Option<&Buffer> {
         self.buffers.get(&node)
     }
@@ -214,6 +227,7 @@ pub(crate) fn run(
         schedule,
         bindings,
         cache_stats: None,
+        proofs: 0,
     };
     if let Some((buffer, label)) = known {
         held.buffers.insert(root, buffer);

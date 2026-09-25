@@ -31,7 +31,7 @@ pub use cache::{
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
-pub use flops::{Row as FlopRow, Tree as FlopTree};
+pub use flops::{Row as FlopRow, Tree as FlopTree, Work};
 pub use loops::{Delay, Shift};
 pub use meaning::{Meaning, meaning};
 pub use offset::Offset;

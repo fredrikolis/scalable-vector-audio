@@ -61,8 +61,9 @@ pub fn render_until_silent(
         return Ok(counted(render, recording));
     }
     let began = Cost::begun();
-    let proven = proven_at(&held, &config, silent)?;
+    let (proven, proofs) = proven_at(&held, &config, silent)?;
     let mut render = run(held, ended(config, proven.max(1)), cache, slots, None)?;
+    render.proofs = proofs;
     let heard = render.buffers.get(&render.root).map_or(0, |b| {
         (0..b.len())
             .rev()
@@ -93,12 +94,13 @@ fn counted(mut render: Render, recording: Option<Recording>) -> Render {
     render
 }
 
-/// The first sample from which the root's bound stays under the threshold.
+/// The first sample from which the root's bound stays under the threshold, and the proofs
+/// over the whole grid it took.
 pub(super) fn proven_at(
     held: &Prepared,
     config: &RenderConfig,
     silent: Silent,
-) -> Result<usize, EngineError> {
+) -> Result<(usize, u64), EngineError> {
     let rate = f64::from(config.rate);
     let start = config.horizon.start_secs;
     let samples = ((silent.max_secs - start) * rate).ceil().max(0.0) as usize;
@@ -111,11 +113,13 @@ pub(super) fn proven_at(
     let threshold = silent.threshold();
     let mut level = threshold;
     let forms = Forms::new(Cow::Borrowed(&held.tys), Cow::Borrowed(config));
+    let mut proofs = 0;
     loop {
+        proofs += 1;
         let mut bounds = Bounds::new(&forms, grid.clone(), &rendered, level);
         let envelope = bounded(&held.tys, held.root, &mut bounds, silent)?;
         if let Some(j) = envelope.at.iter().position(|v| *v < threshold) {
-            return Ok(j * STEP);
+            return Ok((j * STEP, proofs));
         }
         let last = envelope.at.last().copied().unwrap_or(f64::INFINITY);
         if !bounds.held_flat || !last.is_finite() {
@@ -322,6 +326,7 @@ fn heard_alone(
         },
         bindings: BTreeMap::new(),
         cache_stats: None,
+        proofs: 0,
     };
     for member in dependencies_first(tys, id, &mut BTreeSet::new()) {
         materialize(&mut held, member, None)?;
