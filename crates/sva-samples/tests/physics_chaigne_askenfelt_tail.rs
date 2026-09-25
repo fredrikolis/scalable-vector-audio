@@ -72,7 +72,7 @@ fn a_free_string_never_gains_energy_and_its_energy_bounds_every_later_sample() {
             site.step().expect("a sample");
         }
         let gain = site.energy_gain().expect("one string");
-        let mut held = site.energy().expect("one string");
+        let mut held = site.energy();
         let slack = 1.0 + 1e-10;
         for k in 0..RATE as usize {
             let sample = site.step().expect("a sample").abs();
@@ -81,7 +81,7 @@ fn a_free_string_never_gains_energy_and_its_energy_bounds_every_later_sample() {
                 "f0 {f0} step {k}: {sample} over c sqrt(E) = {}",
                 gain * held.sqrt()
             );
-            let now = site.energy().expect("one string");
+            let now = site.energy();
             assert!(
                 now <= held * slack,
                 "f0 {f0} step {k}: E rose {held} -> {now}"
@@ -99,8 +99,6 @@ fn a_unison_on_its_bridge_has_no_tail_bound() {
     };
     let refused = tail(&Params::ChaigneAskenfelt(p.clone()), RATE, STEP, 100, 0.0).unwrap_err();
     assert!(refused.contains("unison"), "{refused}");
-    let site = ChaigneAskenfeltSite::new(&p, f64::from(RATE)).expect("a grid");
-    assert!(site.energy().is_none());
 }
 
 #[test]
@@ -172,10 +170,10 @@ fn a_felted_string_never_gains_energy_once_pressed_and_its_bound_holds() {
         for _ in 0..=landing {
             site.step().expect("a sample");
         }
-        let mut held = site.energy().expect("one string");
+        let mut held = site.energy();
         for k in 0..RATE as usize / 2 {
             site.step().expect("a sample");
-            let now = site.energy().expect("one string");
+            let now = site.energy();
             assert!(
                 now <= held * (1.0 + 1e-10),
                 "f0 {f0} step {k}: E rose {held} -> {now}"

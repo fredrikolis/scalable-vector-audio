@@ -4,9 +4,8 @@ use crate::physics::Tail;
 use crate::physics::chaigne_askenfelt::{ChaigneAskenfeltParams, ChaigneAskenfeltSite};
 use crate::physics::string_tail::{Ringdown, Unringing, energy, energy_gain, settling};
 
-const UNISON: &str = "a chaigne_askenfelt unison on its bridge, whose coupling holds no exact \
-    discrete energy: the bridge takes the strings' tension but not the bending and \
-    frequency-dependent loss their ghost points exert on it";
+const UNISON: &str = "a chaigne_askenfelt unison on its bridge, whose energy is exact but whose \
+    settling under rounding is not derived yet";
 
 fn unringing(why: Unringing) -> String {
     match why {

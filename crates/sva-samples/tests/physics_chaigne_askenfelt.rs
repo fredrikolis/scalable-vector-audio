@@ -176,7 +176,7 @@ fn a_call_naming_no_unison_mechanics_renders_its_frozen_samples() {
                 (h ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
             })
         });
-    assert_eq!(hash, 0xdde4_9120_eca8_40d4, "a published unison changed");
+    assert_eq!(hash, 0xb623_90c3_8829_fe06, "a published unison changed");
 }
 
 /// The 5-95 percentile spread of a partial's level about its own straight-line decay, over

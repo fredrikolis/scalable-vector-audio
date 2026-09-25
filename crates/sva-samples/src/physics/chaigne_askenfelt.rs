@@ -13,6 +13,7 @@ use crate::physics::stiff_string::{
     StringGrid, Wire, dispersive_grid, grid_tension, point_weights, read_at, spread, stencil_update,
 };
 use crate::physics::string_tail::{Felt, energy, energy_gain, press};
+use crate::physics::unison_tail::unison_energy;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChaigneAskenfeltParams {
@@ -158,10 +159,10 @@ pub struct ChaigneAskenfeltSite {
     strike: Vec<Vec<f64>>,
     hammer: Hammer,
     detached: Vec<bool>,
-    bridge_now: f64,
-    bridge_prev: f64,
+    pub(crate) bridge_now: f64,
+    pub(crate) bridge_prev: f64,
     bridge_coupling: f64,
-    bridge_mass: f64,
+    pub(crate) bridge_mass: f64,
     pub(crate) dt: f64,
     pub(crate) felt: Vec<Vec<Felt>>,
     pub(crate) landing: Option<(u64, f64)>,
@@ -261,12 +262,17 @@ impl ChaigneAskenfeltSite {
         self.detached.iter().all(|d| *d)
     }
 
-    /// The single string's discrete energy, in joules; a unison's bridge coupling holds none.
-    pub fn energy(&self) -> Option<f64> {
+    /// The discrete energy in joules: the strings', and a unison's bridge's.
+    pub fn energy(&self) -> f64 {
         match self.strings.as_slice() {
-            [grid] => Some(energy(grid, self.dt, self.springs(0)).0),
-            _ => None,
+            [grid] => energy(grid, self.dt, self.springs(0)).0,
+            _ => unison_energy(self).0,
         }
+    }
+
+    /// The bridge's dashpot `R_B`, `bridge_coupling sqrt(T rho)` of the first string.
+    pub(crate) fn bridge_r(&self) -> f64 {
+        self.bridge_coupling * (self.tensions[0] * self.strings[0].rho).sqrt()
     }
 
     pub(crate) fn springs(&self, i: usize) -> &[Felt] {
@@ -276,7 +282,7 @@ impl ChaigneAskenfeltSite {
         }
     }
 
-    fn pressing(&self) -> Option<f64> {
+    pub(crate) fn pressing(&self) -> Option<f64> {
         let (at, ramp) = self.landing?;
         (self.steps >= at).then(|| match ramp > 0.0 {
             true => ((self.steps - at) as f64 / ramp).min(1.0),
@@ -369,7 +375,8 @@ impl ChaigneAskenfeltSite {
         let pressing = self.pressing();
 
         let (bridge_now, bridge_prev) = (self.bridge_now, self.bridge_prev);
-        // Bridge `M a + R_B v = net string force`, implicit in its next position like the strings.
+        let dt2 = self.dt * self.dt;
+        // `M a + R_B v = net string force`: tension implicit in p+, bending and b-loss at p^n.
         let mut k_eff = 0.0;
         let mut rhs_sum = 0.0;
         let mut sample = 0.0;
@@ -385,14 +392,16 @@ impl ChaigneAskenfeltSite {
                 press(grid, &self.felt[i], share);
             }
             grid.y_next[0] = 0.0;
+            let w = grid.rho * grid.dx / dt2;
+            let (y, yp) = (&grid.y_now, &grid.y_prev);
             k_eff += tension / grid.dx;
-            rhs_sum += tension * grid.y_now[n - 1] / grid.dx;
+            rhs_sum += tension * y[n - 1] / grid.dx
+                + w * grid.stiff_sq * (2.0 * y[n - 1] - y[n - 2] - bridge_now)
+                + w * grid.damp_b * ((y[n - 1] - yp[n - 1]) - (bridge_now - bridge_prev));
             sample += tension * (grid.y_now[n] - grid.y_now[n - 1]) / grid.dx;
         }
 
-        let z_string = (self.tensions[0] * self.strings[0].rho).sqrt();
-        let r_bridge = self.bridge_coupling * z_string;
-        let r_over_dt = r_bridge / self.dt;
+        let r_over_dt = self.bridge_r() / self.dt;
         let m_over_dt2 = self.bridge_mass / (self.dt * self.dt);
         let bridge_next =
             (rhs_sum + r_over_dt * bridge_now + m_over_dt2 * (2.0 * bridge_now - bridge_prev))

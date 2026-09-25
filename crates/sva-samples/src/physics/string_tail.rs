@@ -57,10 +57,10 @@ fn curvatures(y: &[f64], n: usize) -> impl Iterator<Item = f64> + '_ {
     (1..n).map(move |j| pinned(y, n, j + 1) - 2.0 * y[j] + pinned(y, n, j - 1))
 }
 
-fn pinned(y: &[f64], n: usize, j: usize) -> f64 {
+/// Node `j`, the agraffe pin at 0 read as zero; `y[n]` holds a rigid pin's zero or the bridge.
+fn pinned(y: &[f64], _n: usize, j: usize) -> f64 {
     match j {
         0 => 0.0,
-        j if j == n => 0.0,
         j => y[j],
     }
 }
@@ -77,8 +77,9 @@ pub(crate) fn press(grid: &mut StringGrid, felt: &[Felt], share: f64) {
     }
 }
 
-/// `E = w (v'(I - A/2)v + y'K y- + (y'ky + y-'ky-)/2)/2` joules, `k` the felt's springs,
-/// and a bound over its rounding: each sum errs by at most `gamma` of it taken over magnitudes.
+/// `E = w (v'(I - A/2)v + y'K y- + (y'ky + y-'ky-)/2 + lambda^2 v_n^2/2)/2` joules, `k` the
+/// felt's springs, `v_n` the bridge's step, and a bound over its rounding: each sum errs by at
+/// most `gamma` of it taken over magnitudes.
 pub(crate) fn energy(grid: &StringGrid, dt: f64, felt: &[Felt]) -> (f64, f64) {
     let (n, y, yp) = (grid.n, &grid.y_now, &grid.y_prev);
     let v: Vec<f64> = y.iter().zip(yp).map(|(a, b)| a - b).collect();
@@ -102,7 +103,8 @@ pub(crate) fn energy(grid: &StringGrid, dt: f64, felt: &[Felt]) -> (f64, f64) {
     let value = (1.0 - grid.damp_a / 2.0) * squares - grid.damp_b / 2.0 * bent
         + grid.courant_sq * tension
         + grid.stiff_sq * bending
-        + spring;
+        + spring
+        + grid.courant_sq / 2.0 * v[n] * v[n];
     let spread = (1.0 + grid.damp_a / 2.0) * size[1..n].iter().map(|x| x * x).sum::<f64>()
         + grid.damp_b / 2.0 * sums(&size, n).map(|x| x * x).sum::<f64>()
         + grid.courant_sq
@@ -115,7 +117,8 @@ pub(crate) fn energy(grid: &StringGrid, dt: f64, felt: &[Felt]) -> (f64, f64) {
                 .zip(bends(&yp_abs, n))
                 .map(|(a, b)| a * b)
                 .sum::<f64>()
-        + spring;
+        + spring
+        + grid.courant_sq / 2.0 * size[n] * size[n];
     let w = grid.rho * grid.dx / (dt * dt) / 2.0;
     let joules = w * value;
     let slack = w * spread * gamma(2.0 * n as f64 + 96.0);

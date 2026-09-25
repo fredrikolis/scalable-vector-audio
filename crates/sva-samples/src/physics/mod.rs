@@ -13,6 +13,7 @@ pub(crate) mod string_tail;
 pub mod tonehole;
 #[cfg(test)]
 mod twofold;
+mod unison_tail;
 pub mod willemsen_bilbao_serafin;
 
 use std::any::Any;
