@@ -6,8 +6,8 @@ use sva_ast::{Arg, ByteSpan, Expr, Graph};
 
 use crate::error::{BindingFault, EngineError};
 use crate::instantiate::{
-    Cx, Instances, MAX_INSTANCES, NO_PARAMS, SIGNAL_PARAM, Scope, ScopeId, Thunk, is_free_name,
-    is_reserved, resolve_ref_path,
+    Cx, Instances, MAX_INSTANCES, NO_PARAMS, RELEASE, SIGNAL_PARAM, Scope, ScopeId, Thunk,
+    is_free_name, is_reserved, resolve_ref_path,
 };
 use crate::vocabulary::{SERIES, is_builtin};
 
@@ -325,6 +325,9 @@ impl<'g> Builder<'g> {
             Expr::Lit(_) => Ok(()),
             Expr::Var(name) => {
                 if is_free_name(name) || self.indices.iter().any(|k| k == name) {
+                    return Ok(());
+                }
+                if name == RELEASE && self.out.binds(scope, name).is_none() {
                     return Ok(());
                 }
                 if self.out.binds(scope, name).is_some() {

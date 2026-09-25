@@ -212,6 +212,8 @@ pub(crate) fn sole<T>(target: &str, mut held: Vec<(String, T)>) -> Result<T, Eng
     }
 }
 
+pub const RELEASE: &str = "release";
+
 /// A name the language answers, so no binding reaches it.
 pub(crate) fn is_free_name(name: &str) -> bool {
     matches!(name, "t" | "f" | "i" | "pi" | "inf") || note::frequency(name).is_some()

@@ -1,5 +1,6 @@
-// Concern: gives every node across the graph one Ty and the value it lowered to | Non-concern: the per-term judgment (sva-formula), lowering one (lower/) | IO: (Instances, Order) -> Ty per node
+// Concern: gives every node one Ty, the value it lowered to, and how it reads release | Non-concern: the per-term judgment (sva-formula), lowering (lower/) | IO: (Instances, Order) -> Ty per node
 
+use crate::release::Use;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sva_formula::filter::Shape;
@@ -61,9 +62,20 @@ pub struct Typing {
     origins: Vec<Located>,
     pending: BTreeSet<NodeId>,
     indices: u32,
+    release: BTreeMap<String, Use>,
 }
 
 impl Typing {
+    /// How a lowered node reads `release`; one still lowering in the same loop reads it
+    /// at most causally, which is all a past read of it needs.
+    pub(crate) fn release_use(&self, path: &str) -> Use {
+        self.release.get(path).copied().unwrap_or(Use::Causal)
+    }
+
+    pub(crate) fn note_release(&mut self, path: &str, reads: Use) {
+        self.release.insert(path.to_string(), reads);
+    }
+
     pub(crate) fn next_index(&mut self) -> sva_formula::IndexId {
         self.indices += 1;
         sva_formula::IndexId(self.indices)

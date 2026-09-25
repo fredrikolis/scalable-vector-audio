@@ -132,6 +132,9 @@ struct Build<'a> {
 impl Build<'_> {
     fn of(&mut self, id: NodeId) -> Result<NodeRenderer, EngineError> {
         match self.held.tys.value(id).clone() {
+            Value::ClosedForm(form) if crate::lower::never(&form.body) => {
+                Ok(NodeRenderer::Const(f64::INFINITY))
+            }
             Value::ClosedForm(form) => match crate::lower::constant_value(&form.body, form.var) {
                 Some(v) => Ok(NodeRenderer::Const(v)),
                 None => Err(uncollapsed(self.held, id)),

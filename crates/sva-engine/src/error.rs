@@ -205,7 +205,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 67] = [
+pub static REGISTRY: [(&str, &str); 68] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -437,5 +437,9 @@ pub static REGISTRY: [(&str, &str); 67] = [
     (
         "engine.alias_needs_a_closed_form",
         "an alias score asked of samples with no closed form behind them",
+    ),
+    (
+        "engine.release_not_causal",
+        "a sample before key-up that would depend on release",
     ),
 ];

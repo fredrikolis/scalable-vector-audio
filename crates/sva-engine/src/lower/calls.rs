@@ -291,6 +291,9 @@ impl<'g> Lowering<'_, 'g> {
         span: ByteSpan,
     ) -> Result<Edge, EngineError> {
         let folded = crate::refs::fold_constants(self.typing, body);
+        if super::never(&folded) {
+            return Ok(Edge::PosInf);
+        }
         match super::constant_value(&folded, var) {
             Some(x) => Ok(Edge::at(x)),
             None => Err(self.refused_at(

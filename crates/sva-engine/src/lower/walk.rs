@@ -4,7 +4,7 @@ use sva_ast::{Arg, BinOp, ByteSpan, Expr, Literal};
 use sva_formula::{Body, C64, Held, IndexId, NodeId, Ty, Var, note};
 
 use crate::error::EngineError;
-use crate::instantiate::{Cx, Node};
+use crate::instantiate::{Cx, Node, RELEASE};
 use crate::loops::{self, Shift, shift_of};
 use crate::lower::{Lowering, Piece, SelfMode, constant};
 use crate::offset::Offset;
@@ -13,6 +13,9 @@ use crate::typing::Value;
 
 impl Lowering<'_, '_> {
     pub(super) fn walk(&mut self, e: &Expr, cx: Cx, var: Var) -> Result<Piece, EngineError> {
+        if self.never.holds(e, cx) {
+            return Ok(Piece::ClosedForm(Body::Const(C64::ZERO)));
+        }
         let inst = self.inst;
         if let Some(r) = inst.follow(e, cx, |e2, cx2| self.walk(e2, cx2, var)) {
             return r;
@@ -140,6 +143,7 @@ impl Lowering<'_, '_> {
                 ));
             }
             "pi" => C64::real(std::f64::consts::PI),
+            RELEASE => C64::real(f64::INFINITY),
             "i" => C64::new(0.0, 1.0),
             "inf" => {
                 return Err(self.refused(

@@ -37,12 +37,12 @@ lowpass(vel*(sin(2*pi*f0*t) + 0.5*sin(2*pi*2*f0*t) + 0.3333*sin(2*pi*3*f0*t)), 3
     ),
     (
         "lib/env",
-        r"; Models: one exponential decay under a shouldered crop, the shape every note wears | Neglects: the timbre it multiplies, which voice/tone owns; written as one window and never as a `min`/`max` pair, which would leave no dual and no exact reading | IO: (t, attack, decay, release, len) -> a gain | Tags: envelope
+        r"; Models: one exponential decay under a shouldered crop, the shape every note wears | Neglects: the timbre it multiplies, which voice/tone owns; written as one window and never as a `min`/`max` pair, which would leave no dual and no exact reading | IO: (t, attack, decay, fade, len) -> a gain | Tags: envelope
 attack = 0.005s
 decay = 0.25s
-release = 0.05s
+fade = 0.05s
 len = 0.5s
-crop(exp(-t/decay), 0s, len, rise=attack, fall=release)
+crop(exp(-t/decay), 0s, len, rise=attack, fall=fade)
 ",
     ),
     (

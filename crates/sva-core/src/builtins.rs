@@ -72,6 +72,14 @@ pub const RESERVED: [(&str, &str); 5] = [
     ("self", "a bounded self-reference, call-only: self(t - 1sp)"),
 ];
 
+/// `(name, what it resolves to)` for a name a caller may bind and none has to.
+pub const DEFAULTED: [(&str, &str); 1] = [(
+    sva_engine::instantiate::RELEASE,
+    "the key-up time in seconds, bound like a parameter and never where no caller binds it; \
+     read only as a crop's end with no fall, as the start of a crop, in a product with such \
+     a crop, or through a past read",
+)];
+
 /// `(name, its call shape)`.
 pub const SPECIAL_FORMS: [(&str, &str); 5] = [
     (
@@ -123,6 +131,7 @@ pub struct Builtins {
     pub unit_suffixes: &'static [(&'static str, &'static str)],
     pub note_names: &'static str,
     pub reserved: &'static [(&'static str, &'static str)],
+    pub defaulted: &'static [(&'static str, &'static str)],
     pub special_forms: &'static [(&'static str, &'static str)],
     pub not_supported: &'static [&'static str],
 }
@@ -218,6 +227,7 @@ pub fn builtins() -> Builtins {
         unit_suffixes: &UNIT_SUFFIXES,
         note_names: NOTE_GRAMMAR,
         reserved: &RESERVED,
+        defaulted: &DEFAULTED,
         special_forms: &SPECIAL_FORMS,
         not_supported: &NOT_SUPPORTED,
     }
@@ -252,13 +262,15 @@ pub fn builtins_data(b: &Builtins) -> String {
         "{{\n  \"callables\": {callables},\n  \"casts\": {casts},\n  \
          \"rule_table\": {{ \"version\": {}, \"families\": {} }},\n  \
          \"refusals\": {},\n  \"unit_suffixes\": {},\n  \"note_names\": \"{}\",\n  \
-         \"reserved\": {},\n  \"special_forms\": {},\n  \"not_supported\": {}\n}}",
+         \"reserved\": {},\n  \"defaulted\": {},\n  \"special_forms\": {},\n  \
+         \"not_supported\": {}\n}}",
         b.table_version,
         pair_list(b.families, "name", "duals"),
         pair_list(b.refusals, "code", "when"),
         pair_list(b.unit_suffixes, "suffix", "meaning"),
         escape(b.note_names),
         pair_list(b.reserved, "name", "note"),
+        pair_list(b.defaulted, "name", "note"),
         pair_list(b.special_forms, "name", "shape"),
         strings(b.not_supported)
     )
@@ -427,6 +439,12 @@ mod tests {
             assert!(
                 sva_ast::parse_expr(name).is_ok(),
                 "`{name}` should parse as the special name this dump claims"
+            );
+        }
+        for (name, _) in DEFAULTED {
+            assert!(
+                !sva_engine::instantiate::is_reserved(name),
+                "`{name}` is listed as bindable but a parameter may not take it"
             );
         }
         assert!(
