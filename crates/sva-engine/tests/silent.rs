@@ -177,6 +177,13 @@ fn a_felted_string_ends_where_its_energy_proves_every_later_sample_silent() {
 }
 
 #[test]
+fn a_loud_felted_string_follows_its_bound_down_past_the_floor() {
+    let quiet = rings_down("chaigne_askenfelt(1046.5, damp_dc=20, release=0.1)\n");
+    let loud = rings_down("1000*chaigne_askenfelt(1046.5, damp_dc=20, release=0.1)\n");
+    assert!(loud > quiet, "loud at {loud}, quiet at {quiet}");
+}
+
+#[test]
 fn a_unison_on_its_bridge_refuses_rather_than_truncates() {
     let files = [("body", "chaigne_askenfelt(261.63, unison_count=3)\n")];
     let refused = until_silent(&files, "body", DEEP)

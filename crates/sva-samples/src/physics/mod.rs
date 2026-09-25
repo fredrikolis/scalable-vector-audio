@@ -89,10 +89,16 @@ pub fn site(p: &Params, rate: u32) -> Result<Box<dyn Solver>, SampleError> {
     })
 }
 
-/// `at[j]` bounds every sample from `j * step` on.
-pub fn tail(p: &Params, rate: u32, step: usize, points: usize) -> Result<Vec<f64>, String> {
+/// `at[j]` bounds every sample from `j * step` on; `held` if held under `level` early.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tail {
+    pub at: Vec<f64>,
+    pub held: bool,
+}
+
+pub fn tail(p: &Params, rate: u32, step: usize, points: usize, level: f64) -> Result<Tail, String> {
     match p {
-        Params::ChaigneAskenfelt(p) => chaigne_tail::tail(p, f64::from(rate), step, points),
+        Params::ChaigneAskenfelt(p) => chaigne_tail::tail(p, f64::from(rate), step, points, level),
         other => Err(format!("the {} solver", other.name())),
     }
 }

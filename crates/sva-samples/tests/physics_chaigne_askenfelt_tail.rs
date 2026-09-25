@@ -25,7 +25,15 @@ fn dominates(p: &ChaigneAskenfeltParams, secs: f64) -> f64 {
     let len = (secs * f64::from(RATE)) as usize;
     let heard = samples(p, len);
     let points = len / STEP + 1;
-    let at = tail(&Params::ChaigneAskenfelt(p.clone()), RATE, STEP, points).expect("a bound");
+    let at = tail(
+        &Params::ChaigneAskenfelt(p.clone()),
+        RATE,
+        STEP,
+        points,
+        0.0,
+    )
+    .expect("a bound")
+    .at;
     let mut later = 0.0f64;
     for k in (0..len).rev() {
         later = later.max(heard[k].abs());
@@ -89,7 +97,7 @@ fn a_unison_on_its_bridge_has_no_tail_bound() {
         unison_count: 3.0,
         ..ChaigneAskenfeltParams::at(261.63)
     };
-    let refused = tail(&Params::ChaigneAskenfelt(p.clone()), RATE, STEP, 100).unwrap_err();
+    let refused = tail(&Params::ChaigneAskenfelt(p.clone()), RATE, STEP, 100, 0.0).unwrap_err();
     assert!(refused.contains("unison"), "{refused}");
     let site = ChaigneAskenfeltSite::new(&p, f64::from(RATE)).expect("a grid");
     assert!(site.energy().is_none());
@@ -106,7 +114,7 @@ fn a_horizon_that_ends_before_the_hammer_lets_go_bounds_nothing() {
         contact += 1;
     }
     for points in [contact - 1, contact, contact + 1] {
-        let at = tail(&p, RATE, 1, points).expect("a bound or none");
+        let at = tail(&p, RATE, 1, points, 0.0).expect("a bound or none").at;
         let lets_go_inside = contact < points;
         assert_eq!(
             at.iter().all(|v| v.is_finite()),
@@ -114,7 +122,7 @@ fn a_horizon_that_ends_before_the_hammer_lets_go_bounds_nothing() {
             "{points} points"
         );
     }
-    assert!(tail(&p, RATE, 0, 10).is_err());
+    assert!(tail(&p, RATE, 0, 10, 0.0).is_err());
 }
 
 fn released(p: ChaigneAskenfeltParams, at: f64) -> ChaigneAskenfeltParams {
@@ -175,4 +183,47 @@ fn a_felted_string_never_gains_energy_once_pressed_and_its_bound_holds() {
             held = now;
         }
     }
+}
+
+#[test]
+fn a_felted_bound_under_its_level_is_held_there_for_every_later_instant() {
+    let p = released(note(261.63, 4.5, 0.125), 0.1);
+    let len = (1.5 * f64::from(RATE)) as usize;
+    let heard = samples(&p, len);
+    let points = len / STEP + 1;
+    let whole = Params::ChaigneAskenfelt(p);
+    let full = tail(&whole, RATE, STEP, points, 0.0).expect("a bound").at;
+    let level = full[points / 2];
+    let stepped = tail(&whole, RATE, STEP, points, level).expect("a bound");
+    assert!(stepped.held, "held under {level}");
+    let held = stepped.at;
+    let last = tail(
+        &whole,
+        RATE,
+        STEP,
+        points,
+        (full[points - 1] + full[points - 2]) / 2.0,
+    )
+    .expect("a bound");
+    assert!(
+        !last.held,
+        "under its level only at the last instant, nothing is held"
+    );
+    let under = held
+        .iter()
+        .position(|v| *v < level)
+        .expect("a bound under its level");
+    assert_eq!(
+        Some(under),
+        full.iter().position(|v| *v < level),
+        "held from {under}"
+    );
+    assert!(
+        held[under..].iter().all(|v| *v == held[under]),
+        "flat from {under}"
+    );
+    let later = heard[under * STEP..]
+        .iter()
+        .fold(0.0f64, |a, s| a.max(s.abs()));
+    assert!(held[under] >= later, "{} under {later}", held[under]);
 }

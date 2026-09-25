@@ -44,6 +44,7 @@ pub(super) struct Unbounded {
 /// from a little before an instant covers it, one taken from a little after may not.
 const SLOP: f64 = 1e-9;
 
+#[derive(Clone)]
 pub(super) struct Grid {
     pub(super) start: f64,
     pub(super) rate: f64,
@@ -128,6 +129,10 @@ pub(super) struct Bounds<'a> {
     pub(super) grid: Grid,
     pub(super) config: &'a RenderConfig,
     pub(super) rendered: &'a dyn Fn(NodeId, f64) -> Result<Buffer, EngineError>,
+    /// How low a solver's bound is stepped down before it is held flat.
+    pub(super) level: f64,
+    /// A solver's bound was held flat at `level`, so a lower one could fall further.
+    pub(super) held_flat: bool,
     held: BTreeMap<NodeId, Result<Envelope, Unbounded>>,
     open: BTreeSet<NodeId>,
 }
@@ -140,12 +145,15 @@ impl<'a> Bounds<'a> {
         grid: Grid,
         config: &'a RenderConfig,
         rendered: &'a dyn Fn(NodeId, f64) -> Result<Buffer, EngineError>,
+        level: f64,
     ) -> Bounds<'a> {
         Bounds {
             tys,
             grid,
             config,
             rendered,
+            level,
+            held_flat: false,
             held: BTreeMap::new(),
             open: BTreeSet::new(),
         }
@@ -213,12 +221,16 @@ impl<'a> Bounds<'a> {
             ))),
             Value::SelfAt(_) => Ok(Err(self.unknown(id, "a loop read outside its loop"))),
             Value::Solver(params) => {
-                match sva_samples::tail(&params, self.config.rate, STEP, self.grid.points) {
-                    Ok(at) => Ok(Ok(Envelope {
-                        before: at.first().copied().unwrap_or(0.0),
-                        at,
-                        floor: 0.0,
-                    })),
+                let (rate, points) = (self.config.rate, self.grid.points);
+                match sva_samples::tail(&params, rate, STEP, points, self.level) {
+                    Ok(sva_samples::Tail { at, held }) => {
+                        self.held_flat |= held;
+                        Ok(Ok(Envelope {
+                            before: at.first().copied().unwrap_or(0.0),
+                            at,
+                            floor: 0.0,
+                        }))
+                    }
                     Err(class) => Ok(Err(self.unknown(id, &class))),
                 }
             }

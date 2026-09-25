@@ -1,5 +1,6 @@
-// Concern: bounds every later sample of one chaigne_askenfelt call site | Non-concern: the bound's math (string_tail.rs), stepping the site | IO: (params, sr, step, points) -> a bound per instant
+// Concern: bounds every later sample of one chaigne_askenfelt call site | Non-concern: the bound's math (string_tail.rs), stepping the site | IO: (params, sr, step, points, level) -> a bound per instant
 
+use crate::physics::Tail;
 use crate::physics::chaigne_askenfelt::{ChaigneAskenfeltParams, ChaigneAskenfeltSite};
 use crate::physics::string_tail::{Ringdown, Unringing, energy, energy_gain, settling};
 
@@ -18,13 +19,14 @@ fn unringing(why: Unringing) -> String {
 
 /// Stepped until every anvil lets go and any felt has pressed, heard exactly until then. An
 /// unfelted string's modes bound every sample after; a felted one's energy bounds each grid
-/// instant's future.
+/// instant's future, stepped until one falls under `level` and held there.
 pub fn tail(
     params: &ChaigneAskenfeltParams,
     sr: f64,
     step: usize,
     points: usize,
-) -> Result<Vec<f64>, String> {
+    level: f64,
+) -> Result<Tail, String> {
     let mut site = ChaigneAskenfeltSite::new(params, sr).map_err(|e| e.to_string())?;
     if site.strings.len() > 1 {
         return Err(UNISON.to_string());
@@ -40,10 +42,14 @@ pub fn tail(
         heard.push(site.advance().abs());
     }
     if heard.len() >= points * step {
-        return Ok(vec![f64::INFINITY; points]);
+        return Ok(Tail {
+            at: vec![f64::INFINITY; points],
+            held: false,
+        });
     }
     let free = heard.len() / step;
     let mut at = vec![0.0f64; points];
+    let mut held = false;
     let gain = site.tensions[0] / site.strings[0].dx;
     match site.landing {
         None => {
@@ -54,10 +60,16 @@ pub fn tail(
             let settled = settling(&site.strings[0], &site.felt[0]).map_err(unringing)?;
             let c = energy_gain(&site.strings[0], gain, site.dt);
             let ramped = landing + ramp.ceil() as u64;
-            for slot in at.iter_mut().skip(free) {
+            for j in free..points {
                 let (_, upper) = energy(&site.strings[0], site.dt, site.springs(0));
                 let left = ramped.saturating_sub(site.steps) as f64;
-                *slot = c * upper.sqrt() * settled.per_step.powf(left) * settled.after;
+                let bound = c * upper.sqrt() * settled.per_step.powf(left) * settled.after;
+                if bound < level {
+                    held = j + 1 < points;
+                    at[j..].fill(bound);
+                    break;
+                }
+                at[j] = bound;
                 for _ in 0..step {
                     site.advance();
                 }
@@ -71,5 +83,5 @@ pub fn tail(
             at[k / step] = running;
         }
     }
-    Ok(at)
+    Ok(Tail { at, held })
 }

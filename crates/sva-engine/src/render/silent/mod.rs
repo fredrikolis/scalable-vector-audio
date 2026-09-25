@@ -101,7 +101,25 @@ fn proven_at(held: &Prepared, config: &RenderConfig, silent: Silent) -> Result<u
         points: samples / STEP + 1,
     };
     let rendered = |id: NodeId, end: f64| heard_alone(&held.tys, id, config, end);
-    let mut bounds = Bounds::new(&held.tys, grid, config, &rendered);
+    let threshold = silent.threshold();
+    let mut level = threshold;
+    loop {
+        let mut bounds = Bounds::new(&held.tys, grid.clone(), config, &rendered, level);
+        let envelope = bounded(held, &mut bounds, silent)?;
+        if let Some(j) = envelope.at.iter().position(|v| *v < threshold) {
+            return Ok(j * STEP);
+        }
+        let last = envelope.at.last().copied().unwrap_or(f64::INFINITY);
+        if !bounds.held_flat || !last.is_finite() {
+            return Err(not_by(held, &envelope, silent));
+        }
+        // Each round at least halves the level, so a held bound is stepped past, or none holds.
+        level *= threshold / last / 2.0;
+    }
+}
+
+/// The root's envelope, or the refusal no bound or a level held forever makes.
+fn bounded(held: &Prepared, bounds: &mut Bounds, silent: Silent) -> Result<Envelope, EngineError> {
     let root = held.root;
     let envelope = match bounds.of(root)? {
         Ok(envelope) => envelope,
@@ -131,10 +149,7 @@ fn proven_at(held: &Prepared, config: &RenderConfig, silent: Silent) -> Result<u
             "crop it, or give it a release",
         ));
     }
-    match envelope.at.iter().position(|v| *v < threshold) {
-        Some(j) => Ok(j * STEP),
-        None => Err(not_by(held, &envelope, silent)),
-    }
+    Ok(envelope)
 }
 
 fn not_by(held: &Prepared, envelope: &Envelope, silent: Silent) -> EngineError {
