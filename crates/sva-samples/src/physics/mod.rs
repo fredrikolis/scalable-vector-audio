@@ -1,4 +1,4 @@
-// Concern: names the six finite-difference models, opens one solver, and holds the ceiling and the drive each shared by two | Non-concern: a model's own grid (the siblings) | IO: (Params) -> a Solver
+// Concern: names the six finite-difference models, opens a solver or its tail bound, holds the ceiling and the drive two share | Non-concern: a model's own grid (the siblings) | IO: (Params) -> a Solver
 
 pub mod botteldooren;
 pub mod bound;
@@ -8,6 +8,7 @@ pub mod darabundit_scavone;
 pub mod hammer;
 pub mod rhaouti_chaigne_joly;
 pub(crate) mod stiff_string;
+pub(crate) mod string_tail;
 pub mod tonehole;
 pub mod willemsen_bilbao_serafin;
 
@@ -85,6 +86,14 @@ pub fn site(p: &Params, rate: u32) -> Result<Box<dyn Solver>, SampleError> {
             Box::new(BotteldoorenSite::new(p, sr))
         }
     })
+}
+
+/// `at[j]` bounds every sample from `j * step` on.
+pub fn tail(p: &Params, rate: u32, step: usize, points: usize) -> Result<Vec<f64>, String> {
+    match p {
+        Params::ChaigneAskenfelt(p) => chaigne_askenfelt::tail(p, f64::from(rate), step, points),
+        other => Err(format!("the {} solver", other.name())),
+    }
 }
 
 fn under_ceiling(model: &'static str, nodes: f64, ceiling: usize) -> Result<(), SampleError> {

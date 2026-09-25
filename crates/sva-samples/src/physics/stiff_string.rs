@@ -75,7 +75,7 @@ fn lossy_grid(
 }
 
 /// Pinned mode `m` is exactly `sin(m pi j/n)`.
-fn mode_s(m: usize, n: usize) -> f64 {
+pub(crate) fn mode_s(m: usize, n: usize) -> f64 {
     (m as f64 * std::f64::consts::PI / (2.0 * n as f64))
         .sin()
         .powi(2)

@@ -42,7 +42,7 @@ pub use measure::spectrum::{
     Band, MAX_PINNED_FRAME, Peak, Spectrum, db, magnitudes, pinned_frame, third_octave_edges,
 };
 pub use measure::stereo::{StereoFrame, StereoImage};
-pub use physics::{Params, Solver, site};
+pub use physics::{Params, Solver, site, tail};
 pub use profile::{PSYCHOACOUSTIC_V1, Profile};
 pub use sva_formula::Shape;
 

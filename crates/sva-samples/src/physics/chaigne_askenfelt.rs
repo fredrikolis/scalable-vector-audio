@@ -12,6 +12,7 @@ use crate::physics::hammer::Hammer;
 use crate::physics::stiff_string::{
     StringGrid, Wire, dispersive_grid, grid_tension, point_weights, read_at, spread, stencil_update,
 };
+use crate::physics::string_tail::{Ringdown, Unringing, energy, energy_gain};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChaigneAskenfeltParams {
@@ -186,6 +187,79 @@ impl ChaigneAskenfeltSite {
             _ => self.step_unison(),
         }
     }
+}
+
+impl ChaigneAskenfeltSite {
+    /// Every anvil has let go, so no later step is driven.
+    pub fn let_go(&self) -> bool {
+        self.detached.iter().all(|d| *d)
+    }
+
+    /// The single string's discrete energy, in joules; a unison's bridge coupling holds none.
+    pub fn energy(&self) -> Option<f64> {
+        match self.strings.as_slice() {
+            [grid] => Some(energy(grid, self.dt)),
+            _ => None,
+        }
+    }
+
+    /// `c` with `|sample| <= c sqrt(energy)` at every later step once nothing drives it.
+    pub fn energy_gain(&self) -> Option<f64> {
+        match self.strings.as_slice() {
+            [grid] => Some(energy_gain(grid, self.tensions[0] / grid.dx, self.dt)),
+            _ => None,
+        }
+    }
+}
+
+const UNISON: &str = "a chaigne_askenfelt unison on its bridge, whose coupling holds no exact \
+    discrete energy: the bridge takes the strings' tension but not the bending and \
+    frequency-dependent loss their ghost points exert on it";
+
+/// Stepped until every anvil lets go, heard exactly until then; the free string's modes
+/// bound every sample after.
+pub fn tail(
+    params: &ChaigneAskenfeltParams,
+    sr: f64,
+    step: usize,
+    points: usize,
+) -> Result<Vec<f64>, String> {
+    let mut site = ChaigneAskenfeltSite::new(params, sr).map_err(|e| e.to_string())?;
+    if site.strings.len() > 1 {
+        return Err(UNISON.to_string());
+    }
+    if step == 0 {
+        return Err("a tail bound on a grid with no step".to_string());
+    }
+    let mut heard = Vec::new();
+    while !(site.let_go() && heard.len() % step == 0) && heard.len() < points * step {
+        heard.push(site.advance().abs());
+    }
+    if heard.len() >= points * step {
+        return Ok(vec![f64::INFINITY; points]);
+    }
+    let grid = &site.strings[0];
+    let ring = Ringdown::of(grid, site.tensions[0] / grid.dx).map_err(|why| {
+        match why {
+            Unringing::Lossless => "a chaigne_askenfelt string with a mode that loses nothing",
+            Unringing::Critical => "a chaigne_askenfelt string with a mode near critical damping",
+            Unringing::Rounding => "a chaigne_askenfelt string whose rounding outpaces its decay",
+        }
+        .to_string()
+    })?;
+    let free = heard.len() / step;
+    let mut at = vec![0.0f64; points];
+    if free < points {
+        at[free..].copy_from_slice(&ring.along(0, step, points - free));
+    }
+    let mut running = at[free];
+    for k in (0..heard.len()).rev() {
+        running = running.max(heard[k]);
+        if k % step == 0 && k / step < points {
+            at[k / step] = running;
+        }
+    }
+    Ok(at)
 }
 
 impl Solver for ChaigneAskenfeltSite {
