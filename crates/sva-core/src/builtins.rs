@@ -378,6 +378,16 @@ mod tests {
             ("length", "m"),
             "the bore reads a length"
         );
+        let crop = b.callables.iter().find(|c| c.name == "crop").expect("crop");
+        let bounds: Vec<(&str, Option<&str>)> = crop.positional[1..]
+            .iter()
+            .map(|(name, m)| (*name, m.map(|m| m.unit)))
+            .collect();
+        assert_eq!(
+            bounds,
+            [("start", Some("s")), ("end", Some("s"))],
+            "a window's bounds"
+        );
         let lowpass = b
             .callables
             .iter()
