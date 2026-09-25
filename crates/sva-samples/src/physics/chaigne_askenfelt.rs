@@ -6,6 +6,7 @@
 use crate::error::SampleError;
 use crate::physics::Solver;
 
+use crate::physics::ball::Ball;
 use crate::physics::bound::Bound::*;
 use crate::physics::bound::all;
 use crate::physics::hammer::Hammer;
@@ -13,7 +14,7 @@ use crate::physics::stiff_string::{
     StringGrid, Wire, dispersive_grid, grid_tension, point_weights, read_at, spread, stencil_update,
 };
 use crate::physics::string_tail::{Felt, energy, energy_gain, press};
-use crate::physics::unison_tail::unison_energy;
+use crate::physics::unison_tail::{unison_energy, unison_stable};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChaigneAskenfeltParams {
@@ -219,7 +220,7 @@ impl ChaigneAskenfeltSite {
             Some(_) => strings.iter().map(|g| felt_on(g, params, dt)).collect(),
             None => vec![Vec::new(); strings.len()],
         };
-        Ok(ChaigneAskenfeltSite {
+        let site = ChaigneAskenfeltSite {
             felt,
             landing,
             steps: 0,
@@ -240,7 +241,13 @@ impl ChaigneAskenfeltSite {
             bridge_coupling: params.bridge_coupling,
             bridge_mass: params.bridge_mass,
             dt,
-        })
+        };
+        match site.strings.len() == 1 || unison_stable(&site) {
+            true => Ok(site),
+            false => Err(SampleError::BridgeUnstable {
+                model: "chaigne_askenfelt",
+            }),
+        }
     }
 }
 
@@ -273,6 +280,14 @@ impl ChaigneAskenfeltSite {
     /// The bridge's dashpot `R_B`, `bridge_coupling sqrt(T rho)` of the first string.
     pub(crate) fn bridge_r(&self) -> f64 {
         self.bridge_coupling * (self.tensions[0] * self.strings[0].rho).sqrt()
+    }
+
+    /// [`Self::bridge_r`] as the exact real its stored operands make.
+    pub(crate) fn bridge_r_enclosed(&self) -> Ball {
+        let z = Ball::exact(self.tensions[0])
+            .scale(self.strings[0].rho)
+            .sqrt();
+        z.expect("a positive tension").scale(self.bridge_coupling)
     }
 
     pub(crate) fn springs(&self, i: usize) -> &[Felt] {

@@ -120,6 +120,31 @@ fn a_string_whose_second_partial_passes_nyquist_refuses() {
     assert_eq!(refused.code(), "samples.string_past_rate", "{refused:?}");
 }
 
+/// A light bridge barely damped under stiff, lossy strings: each string alone is stable, but
+/// the bridge row leaves the unison's mass form indefinite.
+#[test]
+fn a_unison_its_bridge_leaves_unstable_refuses() {
+    let strings = ChaigneAskenfeltParams {
+        b: 1e-4,
+        damp_freq: 1e-4,
+        bridge_coupling: 0.1,
+        bridge_mass: 0.0,
+        ..ChaigneAskenfeltParams::at(55.0)
+    };
+    assert!(site(&Params::ChaigneAskenfelt(strings.clone()), 44_100).is_ok());
+    let unison = ChaigneAskenfeltParams {
+        unison_count: 3.0,
+        ..strings
+    };
+    let Err(refused) = site(&Params::ChaigneAskenfelt(unison), 44_100) else {
+        panic!("an unstable unison stepped");
+    };
+    assert_eq!(refused.code(), "samples.bridge_unstable", "{refused:?}");
+    for stable in [published_unison(), weinreich_unison()] {
+        assert!(site(&Params::ChaigneAskenfelt(stable), 44_100).is_ok());
+    }
+}
+
 #[test]
 fn an_undamped_run_stays_bounded() {
     fd::stays_bounded(

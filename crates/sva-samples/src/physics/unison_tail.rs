@@ -1,14 +1,16 @@
-// Concern: a unison's energy on its shared bridge | Non-concern: stepping the site (chaigne_askenfelt.rs), one pinned string (string_tail.rs) | IO: (&ChaigneAskenfeltSite) -> energy
+// Concern: a unison's energy on its shared bridge and its scheme's stability | Non-concern: stepping the site (chaigne_askenfelt.rs) | IO: (&ChaigneAskenfeltSite) -> energy, stable
 
-//! Times `k^2`, a unison steps as `P dv + K pbar + B vbar = 0`, `dp = vbar`, over every free
-//! node and the bridge, `P`, `K` and `B` symmetric. So `E = (v'Pv + pbar'K pbar)/(2k^2)`
-//! falls by exactly `vbar'B vbar/k^2` a step.
+//! Times `k^2`, a unison steps as `P dv + K pbar + B vbar = 0`, `dp = vbar`, `P`, `K`, `B`
+//! symmetric, so `E = (v'Pv + pbar'K pbar)/(2k^2)` falls by `vbar'B vbar/k^2` a step. Over
+//! `sqrt(m_i) u` in sine modes and `sqrt(d) p`, each is an arrow: modes down the diagonal,
+//! the bridge's row coupling them.
 
+use crate::physics::ball::Ball;
 use crate::physics::chaigne_askenfelt::ChaigneAskenfeltSite;
+use crate::physics::stiff_string::StringGrid;
 use crate::physics::string_tail::{energy, gamma};
 
-/// `(joules, a bound over their rounding)`: each string's energy with its end at the bridge,
-/// and the bridge's own `(M + k R/2) (dp/k)^2/2`.
+/// `(joules, a bound over their rounding)`, the bridge's own `(M + k R/2) (dp/k)^2/2` added.
 pub(crate) fn unison_energy(site: &ChaigneAskenfeltSite) -> (f64, f64) {
     let (mut joules, mut upper) = (0.0, 0.0);
     for (i, grid) in site.strings.iter().enumerate() {
@@ -29,13 +31,108 @@ pub(crate) fn unison_energy(site: &ChaigneAskenfeltSite) -> (f64, f64) {
     )
 }
 
+fn exact(x: f64) -> Ball {
+    Ball::exact(x)
+}
+
+/// `sin(m pi/n)`, `sin(2m pi/n)` and `alpha = 1 - sigma/2 - D/4`.
+struct Mode {
+    s1: Ball,
+    s2: Ball,
+    alpha: Ball,
+}
+
+fn modes(grid: &StringGrid) -> Vec<Mode> {
+    let n = exact(grid.n as f64);
+    let [l2, u2, a, b] = [grid.courant_sq, grid.stiff_sq, grid.damp_a, grid.damp_b];
+    let over = |x: Ball, by: Ball| x.div(by).expect("a grid of intervals");
+    (1..grid.n)
+        .map(|m| {
+            let turn = Ball::pi().scale(m as f64);
+            let s = over(turn, n.scale(2.0)).sin().square();
+            let d = s.scale(4.0 * l2).add(s.square().scale(16.0 * u2));
+            let sigma = s.scale(4.0 * b).add(exact(a));
+            Mode {
+                s1: over(turn, n).sin(),
+                s2: over(turn.scale(2.0), n).sin(),
+                alpha: exact(1.0).sub(sigma.scale(0.5)).sub(d.scale(0.25)),
+            }
+        })
+        .collect()
+}
+
+/// `[[diag(a), z], [z', corner]]`.
+struct Arrow {
+    diag: Vec<(Ball, Ball)>,
+    corner: Ball,
+}
+
+impl Arrow {
+    /// `corner - sum z^2/a` where every `a > 0`: positive exactly where the arrow is.
+    fn schur(&self) -> Option<Ball> {
+        let mut s = self.corner;
+        for &(a, z) in &self.diag {
+            (a.lo() > 0.0).then_some(())?;
+            s = s.sub(z.square().div(a)?);
+        }
+        Some(s)
+    }
+
+    fn proven_positive(&self) -> bool {
+        self.schur().is_some_and(|s| s.lo() > 0.0)
+    }
+}
+
+fn node_mass(grid: &StringGrid) -> Ball {
+    exact(grid.rho).scale(grid.dx)
+}
+
+/// `P` scaled by its bridge corner `d`; rows `n-1` and `n-2` meet the bridge at
+/// `(lambda^2 + 2mu^2)/4 + b/2` and `-mu^2/4` per unit node mass.
+fn mass_form(site: &ChaigneAskenfeltSite) -> Option<Arrow> {
+    let k = site.dt;
+    let mut corner = exact(site.bridge_mass).add(site.bridge_r_enclosed().scale(k / 2.0));
+    for grid in &site.strings {
+        let [l2, u2, b] = [grid.courant_sq, grid.stiff_sq, grid.damp_b];
+        let own = exact(l2 / 2.0)
+            .sub(exact(l2).add(exact(u2)).scale(0.25))
+            .sub(exact(b / 2.0));
+        corner = corner.add(node_mass(grid).mul(own));
+    }
+    (corner.lo() > 0.0).then_some(())?;
+    let scale = exact(corner.c);
+    let mut diag = Vec::new();
+    for grid in &site.strings {
+        let [l2, u2, b] = [grid.courant_sq, grid.stiff_sq, grid.damp_b];
+        let g = node_mass(grid)
+            .scale(2.0 / grid.n as f64)
+            .div(scale)?
+            .sqrt()?;
+        let one = exact(l2)
+            .add(exact(u2).scale(2.0))
+            .scale(0.25)
+            .add(exact(b / 2.0));
+        let two = exact(-u2 / 4.0);
+        for mode in modes(grid) {
+            diag.push((mode.alpha, g.mul(one.mul(mode.s1).add(two.mul(mode.s2)))));
+        }
+    }
+    Some(Arrow {
+        diag,
+        corner: corner.div(scale)?,
+    })
+}
+
+pub(crate) fn unison_stable(site: &ChaigneAskenfeltSite) -> bool {
+    mass_form(site).is_some_and(|p| p.proven_positive())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::physics::Solver;
     use crate::physics::chaigne_askenfelt::ChaigneAskenfeltParams;
 
-    /// `vbar'B vbar/k^2` joules for the step just taken from `older`.
     fn dissipated(site: &ChaigneAskenfeltSite, older: &[Vec<f64>], share: Option<f64>) -> f64 {
         let k = site.dt;
         let mut summed = 0.0;

@@ -27,6 +27,10 @@ pub enum SampleError {
     StringPastRate {
         model: &'static str,
     },
+    /// A unison whose bridge row leaves its scheme's mass form not provably positive.
+    BridgeUnstable {
+        model: &'static str,
+    },
     /// A contact whose force solve settled on no value at a sample.
     ContactUnsettled {
         model: &'static str,
@@ -153,6 +157,7 @@ impl SampleError {
             SampleError::ChannelOutOfRange { .. } => "samples.channel_out_of_range",
             SampleError::GridTooLarge { .. } => "samples.grid_too_large",
             SampleError::StringPastRate { .. } => "samples.string_past_rate",
+            SampleError::BridgeUnstable { .. } => "samples.bridge_unstable",
             SampleError::ContactUnsettled { .. } => "samples.contact_unsettled",
             SampleError::StateMismatch => "samples.state_mismatch",
         }
@@ -191,6 +196,12 @@ impl std::fmt::Display for SampleError {
                 f,
                 "`{model}` has no stable grid at this rate whose first two partials ring where \
                  asked. ask for a lower fundamental or `b`, or a higher --sample-rate"
+            ),
+            SampleError::BridgeUnstable { model } => write!(
+                f,
+                "`{model}`'s unison is not proven stable on its bridge at this rate: the mass \
+                 form its bridge row leaves is not provably positive. ask for a heavier bridge, \
+                 less frequency-dependent loss, or a higher --sample-rate"
             ),
             SampleError::ContactUnsettled { model, sample } => write!(
                 f,

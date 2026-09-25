@@ -1,5 +1,6 @@
 // Concern: names the six finite-difference models, opens a solver or its tail bound, holds the ceiling and the drive two share | Non-concern: a model's own grid (the siblings) | IO: (Params) -> a Solver
 
+mod ball;
 pub mod botteldooren;
 pub mod bound;
 pub mod chaigne_askenfelt;
