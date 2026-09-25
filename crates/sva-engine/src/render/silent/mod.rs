@@ -13,7 +13,7 @@ use sva_formula::{Hash, NodeId};
 use sva_samples::{Buffer, Horizon, Label};
 
 pub(crate) use envelope::Live;
-use envelope::{Bounds, Envelope, Grid, STEP, Unbounded};
+use envelope::{Bounds, Envelope, Forms, Grid, STEP, Unbounded};
 
 use super::{Prepared, Render, RenderConfig, materialize, prepared, run};
 use crate::cache::{Cache, Cost, Expected, Payload, Recording, Slots};
@@ -109,8 +109,9 @@ pub(super) fn proven_at(
     let rendered = |id: NodeId, end: f64| heard_alone(&held.tys, id, config, end);
     let threshold = silent.threshold();
     let mut level = threshold;
+    let forms = Forms::default();
     loop {
-        let mut bounds = Bounds::new(&held.tys, grid.clone(), config, &rendered, level);
+        let mut bounds = Bounds::new(&held.tys, grid.clone(), config, &rendered, level, &forms);
         let envelope = bounded(&held.tys, held.root, &mut bounds, silent)?;
         if let Some(j) = envelope.at.iter().position(|v| *v < threshold) {
             return Ok(j * STEP);
@@ -124,8 +125,15 @@ pub(super) fn proven_at(
     }
 }
 
-/// A bound on every sample of `root` from `now` on, from the states `live` holds there;
-/// `heard` keeps each node rendered alone over a crop's window, which no block changes.
+/// What no block changes, kept across a stream's proofs: each node rendered alone over a
+/// crop's window, and each closed form compiled.
+#[derive(Default)]
+pub(crate) struct Kept {
+    heard: RefCell<BTreeMap<(NodeId, u64), Buffer>>,
+    forms: Forms,
+}
+
+/// A bound on every sample of `root` from `now` on, from the states `live` holds there.
 pub(crate) fn bound_from(
     tys: &crate::typing::Typing,
     root: NodeId,
@@ -133,8 +141,9 @@ pub(crate) fn bound_from(
     silent: Silent,
     live: &dyn Live,
     now: usize,
-    heard: &RefCell<BTreeMap<(NodeId, u64), Buffer>>,
+    kept: &Kept,
 ) -> Result<f64, EngineError> {
+    let heard = &kept.heard;
     let grid = Grid {
         start: now as f64 / f64::from(config.rate),
         rate: f64::from(config.rate),
@@ -150,7 +159,14 @@ pub(crate) fn bound_from(
             .insert((id, end.to_bits()), buffer.clone());
         Ok(buffer)
     };
-    let mut bounds = Bounds::new(tys, grid, config, &rendered, silent.threshold());
+    let mut bounds = Bounds::new(
+        tys,
+        grid,
+        config,
+        &rendered,
+        silent.threshold(),
+        &kept.forms,
+    );
     bounds.live = Some(live);
     Ok(bounded(tys, root, &mut bounds, silent)?.at[0])
 }

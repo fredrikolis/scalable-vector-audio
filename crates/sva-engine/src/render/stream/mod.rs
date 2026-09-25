@@ -3,14 +3,13 @@
 mod live;
 mod node;
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use sva_ast::Graph;
 use sva_samples::Tape;
 use sva_samples::physics::chaigne_askenfelt::landing_step;
 
-use super::silent::{Silent, bound_from, not_silent_by};
+use super::silent::{Kept, Silent, bound_from, not_silent_by};
 use super::{Render, RenderConfig, prepared};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::RELEASE;
@@ -41,7 +40,7 @@ pub struct Stream {
     /// Silence at the threshold, to be proven by `limit`, and the last bound found.
     silent: Option<(Silent, usize)>,
     bound: f64,
-    heard: RefCell<BTreeMap<(sva_formula::NodeId, u64), sva_samples::Buffer>>,
+    kept: Kept,
     end: Option<usize>,
 }
 
@@ -134,7 +133,7 @@ impl Stream {
             at: 0,
             silent,
             bound: f64::INFINITY,
-            heard: RefCell::new(BTreeMap::new()),
+            kept: Kept::default(),
             end: None,
         })
     }
@@ -148,7 +147,7 @@ impl Stream {
         let live = live::View::of(&self.nodes, self.at);
         let (tys, root) = (&self.shell.tys, self.shell.root);
         let config = &self.shell.config;
-        self.bound = bound_from(tys, root, config, silent, &live, self.at, &self.heard)?;
+        self.bound = bound_from(tys, root, config, silent, &live, self.at, &self.kept)?;
         if self.bound < silent.threshold() {
             self.end = Some(self.at.max(1));
         }
@@ -197,7 +196,7 @@ impl Stream {
         self.at
     }
 
-    /// Where silence ends the stream, once a block has proven it.
+    /// Where silence ends the stream, once proven.
     pub fn end(&self) -> Option<usize> {
         self.end
     }

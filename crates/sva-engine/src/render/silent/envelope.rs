@@ -1,10 +1,12 @@
 // Concern: bounds each node's magnitude from every grid instant on, per node class | Non-concern: choosing the horizon from the bound | IO: (NodeId) -> Envelope, or the class no bound is derived for
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use sva_formula::spectral_sum::atom::SpectralAtom;
 use sva_formula::spectral_sum::sup::sup_from;
-use sva_formula::{Body, NodeId, Unary, Var};
+use sva_formula::{NodeId, Unary, Var};
 use sva_samples::biquad::{clamp_cutoff, clamp_q, design};
 use sva_samples::{Audible, Buffer, Coeffs, truncate_spectral_sum, truncate_written};
 
@@ -144,11 +146,22 @@ pub(super) struct Bounds<'a> {
     pub(super) held_flat: bool,
     /// Bounds taken from a stream's state at the grid's start rather than from rest.
     pub(super) live: Option<&'a dyn Live>,
+    forms: &'a Forms,
     held: BTreeMap<NodeId, Result<Envelope, Unbounded>>,
     open: BTreeSet<NodeId>,
 }
 
 type Found = Result<Envelope, Unbounded>;
+
+/// A closed form in `t` as a bound reads it, which no instant changes.
+pub(super) enum Form {
+    Atoms(Vec<SpectralAtom>),
+    Written(Range),
+    Unbounded(&'static str),
+}
+
+/// Each node's form, compiled once for every proof sharing it.
+pub(super) type Forms = RefCell<BTreeMap<NodeId, Option<Rc<Form>>>>;
 
 impl<'a> Bounds<'a> {
     pub(super) fn new(
@@ -157,6 +170,7 @@ impl<'a> Bounds<'a> {
         config: &'a RenderConfig,
         rendered: &'a dyn Fn(NodeId, f64) -> Result<Buffer, EngineError>,
         level: f64,
+        forms: &'a Forms,
     ) -> Bounds<'a> {
         Bounds {
             tys,
@@ -166,6 +180,7 @@ impl<'a> Bounds<'a> {
             level,
             held_flat: false,
             live: None,
+            forms,
             held: BTreeMap::new(),
             open: BTreeSet::new(),
         }
@@ -191,7 +206,16 @@ impl<'a> Bounds<'a> {
         }
     }
 
-    fn fresh(&mut self, id: NodeId) -> Result<Found, EngineError> {
+    fn form(&self, id: NodeId) -> Option<Rc<Form>> {
+        if let Some(form) = self.forms.borrow().get(&id) {
+            return form.clone();
+        }
+        let form = self.compiled(id).map(Rc::new);
+        self.forms.borrow_mut().insert(id, form.clone());
+        form
+    }
+
+    fn compiled(&self, id: NodeId) -> Option<Form> {
         let tys = self.tys;
         // A series no line reaches falls to the written form, as the collapse does.
         if tys.ty(id).is_closed_form()
@@ -208,15 +232,34 @@ impl<'a> Bounds<'a> {
                     lane.atoms.iter().copied().chain(modal)
                 })
                 .collect();
-            return Ok(self.atoms(id, &atoms));
+            return Some(Form::Atoms(atoms));
+        }
+        let Value::ClosedForm(form) = tys.value(id) else {
+            return None;
+        };
+        if form.var != Var::T {
+            return None;
+        }
+        let Ok(body) = truncate_written(&form.body, self.band()) else {
+            return Some(Form::Unbounded("a series with no term count"));
+        };
+        Some(match Range::of(&body) {
+            Ok(Range::Atoms(atoms)) => Form::Atoms(atoms),
+            Ok(range) => Form::Written(range),
+            Err(class) => Form::Unbounded(class),
+        })
+    }
+
+    fn fresh(&mut self, id: NodeId) -> Result<Found, EngineError> {
+        let tys = self.tys;
+        if let Some(form) = self.form(id) {
+            return match &*form {
+                Form::Atoms(atoms) => Ok(self.atoms(id, atoms)),
+                Form::Written(range) => self.written(id, range),
+                Form::Unbounded(class) => Ok(Err(self.unknown(id, class))),
+            };
         }
         match tys.value(id).clone() {
-            Value::ClosedForm(form) if form.var == Var::T => {
-                let Ok(body) = truncate_written(&form.body, self.band()) else {
-                    return Ok(Err(self.unknown(id, "a series with no term count")));
-                };
-                self.body(id, &body)
-            }
             Value::ClosedForm(_) => Ok(Err(self.unknown(id, "a closed form in f"))),
             Value::Cast(Cast::Sample, source) => Ok(self.of(source)?.map(Envelope::held)),
             Value::Cast(..) => Ok(Err(self.unknown(id, "a transform of the whole signal"))),
@@ -357,12 +400,7 @@ impl<'a> Bounds<'a> {
 
     /// A written closed form no atom sum reaches, bounded by interval arithmetic over every
     /// instant from each grid point on.
-    fn body(&mut self, id: NodeId, f: &Body) -> Result<Found, EngineError> {
-        let range = match Range::of(f) {
-            Ok(Range::Atoms(atoms)) => return Ok(self.atoms(id, &atoms)),
-            Ok(range) => range,
-            Err(class) => return Ok(Err(self.unknown(id, class))),
-        };
+    fn written(&mut self, id: NodeId, range: &Range) -> Result<Found, EngineError> {
         let mut nodes = Vec::new();
         range.nodes(&mut nodes);
         let mut held = BTreeMap::new();
