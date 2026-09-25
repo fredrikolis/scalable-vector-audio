@@ -247,7 +247,7 @@ fn a_series_forcing_term_still_closes_the_loop() {
 }
 
 /// The comb the series denotes is one line carrying every term, and the label says how much
-/// of the tail the profile's floor left behind.
+/// of the tail the profile's precision left behind.
 #[test]
 fn a_closed_loop_renders_its_comb_and_reports_its_tail() {
     let g = graph_of(
@@ -338,10 +338,13 @@ fn two_nested_loops_expand_under_indices_of_their_own() {
         .buffer(held.id("outer").expect("the root"))
         .expect("a rendered loop");
     let profile = sva_samples::PSYCHOACOUSTIC_V1;
-    let floor = 10f64.powf(profile.floor(profile.ceiling(44_100)) / 20.0);
-    let taken = |g: f64| (0..).find(|n| g.powi(*n) < floor).expect("a floor");
-    let want: f64 = (0..taken(0.5)).map(|j| 0.5f64.powi(j)).sum::<f64>()
-        * (0..taken(0.25)).map(|k| 0.25f64.powi(k)).sum::<f64>();
+    let taken = |first: f64, g: f64| {
+        (0..)
+            .find(|n| first * g.powi(*n) / (1.0 - g) <= profile.half_lsb())
+            .expect("a tail under the precision")
+    };
+    let want: f64 = (0..taken(1.0, 0.5)).map(|j| 0.5f64.powi(j)).sum::<f64>()
+        * (0..taken(2.0, 0.25)).map(|k| 0.25f64.powi(k)).sum::<f64>();
     assert!(
         (buffer.at(0, 0) - want).abs() < 1e-12,
         "two truncated geometrics multiply: {} against {want}",

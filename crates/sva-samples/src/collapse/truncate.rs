@@ -2,20 +2,24 @@
 
 use std::f64::consts::TAU;
 
-use sva_formula::affine::exact_constant;
+use sva_formula::affine::{Axis, axis, exact_constant};
 use sva_formula::closed_form::{Bound, Series, children, map_children};
-use sva_formula::series::{mentions_line, substitute};
+use sva_formula::series::{mentions_line, ratio, substitute};
 use sva_formula::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom};
 use sva_formula::table::series::{Shape, read};
-use sva_formula::{Body, C64, Lane, Part, SpectralSum, Var, lines};
+use sva_formula::{
+    Body, C64, Codomain, Env, Lane, NodeId, ParamId, Part, SpectralSum, Ty, Unary, Var, lines,
+};
 
 use crate::error::CollapseError;
 use crate::profile::Profile;
 
-/// What a series is truncated against: the observation's own ceiling and audibility floor.
+/// What a series is truncated against: the observation's own ceiling, the amplitude a
+/// dropped tail provably stays within, and the floor a tail no bound sums falls under.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Audible {
     ceiling: f64,
+    precision: f64,
     floor_db: f64,
 }
 
@@ -24,6 +28,7 @@ impl Audible {
         let ceiling = profile.ceiling(rate);
         Audible {
             ceiling,
+            precision: profile.half_lsb(),
             floor_db: profile.floor(ceiling),
         }
     }
@@ -33,7 +38,7 @@ impl Audible {
 /// becomes a formula the sample loop walks, which is what this caps.
 const MAX_EXPANDED_TERMS: usize = 1 << 13;
 
-/// FORMAT 6.2 truncates a series once, at collapse: every term the ceiling and the floor
+/// FORMAT 6.2 truncates a series once, at collapse: every term the ceiling and the precision
 /// leave becomes an ordinary atom before the first sample is read.
 pub fn spectral_sum(n: &SpectralSum, band: Audible) -> Result<SpectralSum, CollapseError> {
     if n.lanes.iter().all(|l| l.series.is_empty()) {
@@ -119,7 +124,7 @@ fn expanded(s: &Series, band: Audible) -> Result<Body, CollapseError> {
 
 fn enumerated(s: &Series, band: Audible) -> Vec<sva_formula::Line> {
     match read(&s.term.body) {
-        Some(Shape::Lines(_)) => lines(s, band.ceiling, band.floor_db).taken,
+        Some(Shape::Lines(_)) => lines(s, band.ceiling, band.floor_db, band.precision).taken,
         _ => Vec::new(),
     }
 }
@@ -203,61 +208,115 @@ fn price(f: &Body, band: Audible) -> Option<(usize, usize)> {
     Some((depth, terms.max(1)))
 }
 
+/// A geometric magnitude bound stops where its whole tail rounds away; any other stand-in at
+/// the profile's floor.
 fn counted(s: &Series, band: Audible) -> Option<usize> {
     let hi = match s.hi {
         Bound::Finite(n) => return usize::try_from((n - s.lo + 1).max(0)).ok(),
         Bound::Infinite => MAX_EXPANDED_TERMS,
     };
-    let coefficient = coefficient(&s.term.body)?;
+    let bound = bound(&s.term.body, band)?;
+    let ratio = match bound.exact {
+        true => ratio(&bound.body, s.index).filter(|r| *r < 1.0),
+        false => None,
+    };
     let floor = 10f64.powf(band.floor_db / 20.0);
     let mut peak = 0.0f64;
     for i in 0..hi {
-        let at = substitute(&coefficient, s.index, (s.lo + i as i64) as f64);
+        let at = substitute(&bound.body, s.index, (s.lo + i as i64) as f64);
         let held = exact_constant(&at)?.abs();
         peak = peak.max(held);
-        if peak > 0.0 && held < peak * floor {
+        let gone = match ratio {
+            Some(r) => held / (1.0 - r) <= band.precision,
+            None => peak > 0.0 && held < peak * floor,
+        };
+        if gone {
             return Some(i.max(1));
         }
     }
     None
 }
 
-/// A turning factor stands for the bound it turns inside; one with no bound leaves the
-/// count undecided. A node, a series and a warp turn too: the index reaches each only as a
-/// shift.
-fn coefficient(f: &Body) -> Option<Body> {
-    let one = || Some(Body::Const(C64::ONE));
+/// A term's coefficient in the index. `exact` where it bounds the term's magnitude; elsewhere
+/// it only stands in, a turning factor or a name read as one.
+struct Bounded {
+    body: Body,
+    exact: bool,
+}
+
+fn bound(f: &Body, band: Audible) -> Option<Bounded> {
+    let held = |body: Body, exact: bool| Some(Bounded { body, exact });
+    let under = |p: &Part| bound(&p.body, band).map(|b| (Part::new(p.origin, b.body), b.exact));
+    let all = |parts: &[Part], wrap: &dyn Fn(Part) -> Part| {
+        let mut exact = true;
+        let mut kept = Vec::with_capacity(parts.len());
+        for p in parts {
+            let (part, known) = under(p)?;
+            exact &= known;
+            kept.push(wrap(part));
+        }
+        Some((kept, exact))
+    };
     match f {
-        Body::Line | Body::Node(_) | Body::Series(_) => one(),
-        Body::Mul(parts) | Body::Add(parts) => {
-            let mut kept = Vec::with_capacity(parts.len());
-            for p in parts {
-                kept.push(Part::new(p.origin, coefficient(&p.body)?));
-            }
-            Some(match f {
-                Body::Mul(_) => Body::Mul(kept),
-                _ => Body::Add(kept),
-            })
+        Body::Series(s) => match total(s, band) {
+            Some(sum) => held(Body::Const(C64::real(sum)), true),
+            None => held(Body::Const(C64::ONE), false),
+        },
+        Body::Line | Body::Node(_) => held(Body::Const(C64::ONE), false),
+        Body::Mul(parts) => {
+            let (kept, exact) = all(parts, &|p| p)?;
+            held(Body::Mul(kept), exact)
         }
-        Body::Div(a, b) => Some(Body::Div(
-            Part::new(a.origin, coefficient(&a.body)?),
-            Part::new(b.origin, coefficient(&b.body)?),
-        )),
-        Body::Apply(
-            sva_formula::Unary::Sin
-            | sva_formula::Unary::Cos
-            | sva_formula::Unary::Tanh
-            | sva_formula::Unary::Sat,
-            _,
-        ) => one(),
+        Body::Add(parts) => {
+            let (kept, exact) = all(parts, &|p| Part::bare(Body::Apply(Unary::Abs, p)))?;
+            held(Body::Add(kept), exact)
+        }
+        Body::Div(a, b) if !mentions_line(&b.body) => {
+            let (num, exact) = under(a)?;
+            held(Body::Div(num, b.clone()), exact)
+        }
+        Body::Div(a, b) => {
+            let ((num, _), (den, _)) = (under(a)?, under(b)?);
+            held(Body::Div(num, den), false)
+        }
+        Body::Apply(Unary::Sin | Unary::Cos | Unary::Tanh | Unary::Sat, arg) => {
+            held(Body::Const(C64::ONE), real(&arg.body))
+        }
         Body::Crop { of, .. } | Body::Shift { of, .. } | Body::Warp { of, .. } => {
-            coefficient(&of.body)
+            bound(&of.body, band)
         }
-        Body::Pow(base, n) => Some(Body::Pow(
-            Part::new(base.origin, coefficient(&base.body)?),
-            *n,
-        )),
-        other if !mentions_line(other) => Some(other.clone()),
+        Body::Pow(base, n) => {
+            let (part, exact) = under(base)?;
+            held(Body::Pow(part, *n), exact && *n >= 0)
+        }
+        other if !mentions_line(other) => held(other.clone(), true),
         _ => None,
+    }
+}
+
+/// A geometric series sums to its first bound over `1 - ratio`; any other to what it keeps.
+fn total(s: &Series, band: Audible) -> Option<f64> {
+    let bound = bound(&s.term.body, band).filter(|b| b.exact)?.body;
+    let at = |i: i64| Some(exact_constant(&substitute(&bound, s.index, i as f64))?.abs());
+    if let (Bound::Infinite, Some(r)) = (s.hi, ratio(&bound, s.index).filter(|r| *r < 1.0)) {
+        return Some(at(s.lo)? / (1.0 - r));
+    }
+    let kept = i64::try_from(counted(s, band).filter(|n| *n <= MAX_EXPANDED_TERMS)?).ok()?;
+    (s.lo..s.lo + kept).try_fold(0.0, |held, i| Some(held + at(i)?))
+}
+
+fn real(f: &Body) -> bool {
+    axis(f, &Unread) == Axis::Real
+}
+
+struct Unread;
+
+impl Env for Unread {
+    fn node(&self, _: NodeId) -> Ty {
+        Ty::form(Var::T, false, Codomain::Complex)
+    }
+
+    fn param(&self, _: ParamId) -> Ty {
+        Ty::form(Var::T, false, Codomain::Complex)
     }
 }

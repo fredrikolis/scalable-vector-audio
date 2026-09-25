@@ -230,7 +230,7 @@ fn line_plan(
     let mut grids: Vec<f64> = Vec::new();
     let mut tail: Option<f64> = None;
     for lane in &sum.lanes {
-        match lines::of_lane(lane, ceiling, profile.floor(ceiling)) {
+        match lines::of_lane(lane, ceiling, profile.floor(ceiling), profile.half_lsb()) {
             Some(found) => {
                 if let Some(left) = found.tail_db {
                     tail = Some(tail.map_or(left, |held: f64| held.max(left)));

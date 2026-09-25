@@ -134,7 +134,7 @@ fn a_joined_pair_point_samples_each_component_it_names() {
 }
 
 /// A series has a value at an instant once it is truncated, and FORMAT 6.2 truncates it
-/// once: the terms its own coefficient keeps above the profile's floor.
+/// once: the terms before its tail rounds away under the profile's precision.
 #[test]
 fn a_neumann_series_under_a_product_renders() {
     let g = graph_of(
@@ -149,7 +149,10 @@ fn a_neumann_series_under_a_product_renders() {
         .expect("a series under a product");
     let root = held.id("node").expect("the root");
     let buffer = held.buffer(root).expect("a point-sampled law");
-    let taken = 5;
+    let precision = sva_samples::PSYCHOACOUSTIC_V1.half_lsb();
+    let taken = (0..)
+        .find(|k| 0.5f64.powi(*k) / 0.5 <= precision)
+        .expect("a tail under the precision");
     for i in (0..buffer.len()).step_by(37) {
         let t = i as f64 / 44_100.0;
         let want: f64 = (0..taken)

@@ -104,6 +104,30 @@ pub fn mentions_line(f: &Body) -> bool {
     reaches(f, &|x| matches!(x, Body::Line))
 }
 
+/// A bound on `|c(k+1)| / |c(k)|` holding at every index.
+pub fn ratio(f: &Body, k: IndexId) -> Option<f64> {
+    if !mentions(f, k) {
+        return Some(1.0);
+    }
+    match f {
+        Body::Mul(parts) => parts
+            .iter()
+            .try_fold(1.0, |held, p| Some(held * ratio(&p.body, k)?)),
+        Body::Add(parts) => parts.iter().try_fold(0.0f64, |held, p| match &*p.body {
+            Body::Apply(Unary::Abs, _) => Some(held.max(ratio(&p.body, k)?)),
+            _ => None,
+        }),
+        Body::Div(num, den) if !mentions(&den.body, k) => ratio(&num.body, k),
+        Body::Apply(Unary::Abs, arg) => ratio(&arg.body, k),
+        Body::Apply(Unary::Exp, arg) => {
+            let (slope, _) = affine_in(&arg.body, Reading::Index(k))?;
+            Some(slope.exact()?.re.exp())
+        }
+        Body::Pow(base, n) if *n >= 0 => Some(ratio(&base.body, k)?.powi(*n)),
+        _ => None,
+    }
+}
+
 pub fn mentions(f: &Body, k: IndexId) -> bool {
     reaches(f, &|x| matches!(x, Body::Index(i) if *i == k))
 }
@@ -129,8 +153,9 @@ pub struct Lines {
 pub const AUDIBLE_CEILING_HZ: f64 = 20_000.0;
 
 /// Stops at the ceiling where the frequency closed form leaves the band. Where it never does, every
-/// term piles onto one line, and the coefficient falling below the floor stops it.
-pub fn lines(s: &Series, ceiling: f64, floor_db: f64) -> Lines {
+/// term piles onto one line: a geometric weight stops it where the whole tail it bounds is at
+/// most `precision`, and any other where the loudest line falls under the floor.
+pub fn lines(s: &Series, ceiling: f64, floor_db: f64, precision: f64) -> Lines {
     let ceiling = ceiling.min(AUDIBLE_CEILING_HZ);
     let Some(shape) = read(&s.term.body) else {
         return Lines {
@@ -152,7 +177,13 @@ pub fn lines(s: &Series, ceiling: f64, floor_db: f64) -> Lines {
         (Bound::Infinite, Some(last)) => last,
         (Bound::Infinite, None) => s.lo.saturating_add(MAX_TERMS),
     };
-    let floor = band.is_none().then(|| 10f64.powf(floor_db / 20.0));
+    let ratio = voices
+        .iter()
+        .try_fold(0.0f64, |held, (_, weight)| {
+            Some(held.max(ratio(weight, s.index)?))
+        })
+        .filter(|r| *r < 1.0);
+    let floor = 10f64.powf(floor_db / 20.0);
 
     let mut taken = Vec::new();
     let mut dropped = Vec::new();
@@ -172,11 +203,12 @@ pub fn lines(s: &Series, ceiling: f64, floor_db: f64) -> Lines {
         if k == s.lo {
             first = loudest;
         }
-        if let Some(floor) = floor
-            && k > s.lo
-            && first > 0.0
-            && loudest < first * floor
-        {
+        let bound: f64 = here.iter().map(|l| l.amp.abs()).sum();
+        let gone = match ratio {
+            Some(r) => here.len() == voices.len() && bound / (1.0 - r) <= precision,
+            None => first > 0.0 && loudest < first * floor,
+        };
+        if band.is_none() && k > s.lo && gone {
             dropped.extend(here);
             break;
         }
@@ -234,7 +266,7 @@ pub struct Enumerated {
 
 /// A crop of a series is the series of cropped terms: the window lifts off, goes back on
 /// each. `None` where no line closed form reads under it. A delta's `hz` is an instant, not a pitch.
-pub fn line_atoms(s: &Series, ceiling: f64, floor_db: f64) -> Option<Enumerated> {
+pub fn line_atoms(s: &Series, ceiling: f64, floor_db: f64, precision: f64) -> Option<Enumerated> {
     let (body, window) = crate::spectral_sum::image::crop_peeled(&s.term.body);
     let bare = Series {
         term: Part::new(s.term.origin, body),
@@ -244,7 +276,7 @@ pub fn line_atoms(s: &Series, ceiling: f64, floor_db: f64) -> Option<Enumerated>
         Shape::Deltas(_) => true,
         Shape::Lines(_) => false,
     };
-    let found = lines(&bare, ceiling, floor_db);
+    let found = lines(&bare, ceiling, floor_db, precision);
     let atoms = found
         .taken
         .into_iter()

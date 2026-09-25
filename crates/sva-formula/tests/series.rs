@@ -9,7 +9,7 @@ use sva_formula::{
 };
 
 fn enumerate(s: &Series, ceiling: f64) -> sva_formula::Lines {
-    lines(s, ceiling, -20.0)
+    lines(s, ceiling, -20.0, 2f64.powi(-24))
 }
 
 fn series_of(f: &Body) -> Series {

@@ -116,8 +116,8 @@ fn noise_through_a_bandpass_is_a_pair_with_shaped_lines() {
     let [series] = lane.series.as_slice() else {
         panic!("one series, not {} of them", lane.series.len());
     };
-    let shaped = sva_formula::lines(series, 20_000.0, -200.0);
-    let flat = sva_formula::lines(&sva_formula::noise(11, 1.0, 0.0), 20_000.0, -200.0);
+    let shaped = sva_formula::lines(series, 20_000.0, -200.0, 0.0);
+    let flat = sva_formula::lines(&sva_formula::noise(11, 1.0, 0.0), 20_000.0, -200.0, 0.0);
     assert!(shaped.taken.len() > 100, "{} lines", shaped.taken.len());
 
     for (a, b) in shaped.taken.iter().zip(&flat.taken) {

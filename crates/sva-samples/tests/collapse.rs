@@ -18,6 +18,15 @@ fn render(
     collapse::render(form, rate, horizon, profile, AliasScore::Asked)
 }
 
+/// The terms a geometric series keeps, from a first term bound and a ratio: up to the first
+/// whose whole tail stays within half the profile's least significant bit.
+fn kept(first: f64, g: f64) -> i32 {
+    (0..)
+        .find(|n| first * g.powi(*n) / (1.0 - g) <= PSYCHOACOUSTIC_V1.half_lsb())
+        .expect("a tail under the precision")
+        .max(1)
+}
+
 fn part(body: Body) -> Part {
     Part::bare(body)
 }
@@ -440,10 +449,10 @@ fn a_two_lane_law_reports_one_dropped_line_at_one_channels_level() {
     assert_eq!(*terms, Some(1), "one kept frequency, carried by both lanes");
 }
 
-/// A series reaching an instant is truncated once, against the profile's own floor at the
-/// observation's rate: the terms its coefficient keeps, and no more.
+/// A series reaching an instant is truncated once, against the profile's own precision: the
+/// terms before its tail rounds away, and no more.
 #[test]
-fn a_series_under_a_nonlinearity_takes_the_terms_the_floor_leaves() {
+fn a_series_under_a_nonlinearity_takes_the_terms_the_precision_leaves() {
     let k = IndexId(1);
     let falling = Body::Apply(
         Unary::Exp,
@@ -470,7 +479,7 @@ fn a_series_under_a_nonlinearity_takes_the_terms_the_floor_leaves() {
     )
     .expect("a series has a value once it is truncated");
     assert_eq!(label.source, Source::Measured);
-    let taken: f64 = (0..4).map(|n| 0.5f64.powi(n)).sum();
+    let taken: f64 = (0..kept(1.0, 0.5)).map(|n| 0.5f64.powi(n)).sum();
     for i in 0..buffer.len() {
         let t = i as f64 / f64::from(RATE);
         let want = taken * (TAU * 220.0 * t).cos() * t.tanh();
@@ -510,7 +519,7 @@ fn a_series_no_coefficient_bounds_refuses_at_a_point() {
 }
 
 /// A series no line enumeration reads is summed term by term, as many terms as its own
-/// coefficient keeps above the floor.
+/// coefficient keeps before its tail rounds away.
 #[test]
 fn a_series_no_line_reads_is_counted_off_its_coefficient() {
     let k = IndexId(1);
@@ -538,7 +547,7 @@ fn a_series_no_line_reads_is_counted_off_its_coefficient() {
         &PSYCHOACOUSTIC_V1,
     )
     .expect("a falling coefficient counts the terms");
-    let counted = (0..).find(|n| 0.9f64.powi(*n) < 0.1).expect("a floor");
+    let counted = kept(1.0, 0.9);
     let taken: f64 = (0..counted).map(|n| 0.9f64.powi(n)).sum();
     for i in 0..buffer.len() {
         let t = i as f64 / f64::from(RATE);
@@ -585,7 +594,7 @@ fn a_series_of_warped_terms_takes_the_point_row() {
     .expect("a warped series is point-sampled, not refused");
     assert_eq!(label.source, Source::Measured);
     assert_eq!(label.rule(), Rule::PointSampled);
-    let counted = (0..).find(|n| 0.5f64.powi(*n) < 0.1).expect("a floor");
+    let counted = kept(1.0, 0.5);
     for i in 0..buffer.len() {
         let t = i as f64 / f64::from(RATE);
         let want: f64 = (0..counted)
@@ -597,6 +606,41 @@ fn a_series_of_warped_terms_takes_the_point_row() {
             buffer.at(0, i)
         );
     }
+}
+
+/// A node's magnitude is not in the term, so a series reading one keeps the profile's floor.
+#[test]
+fn a_series_reading_a_node_keeps_the_floor() {
+    let k = IndexId(1);
+    let turning = Body::Apply(
+        Unary::Cos,
+        part(Body::Mul(vec![
+            part(Body::Node(sva_formula::NodeId(0))),
+            part(Body::Line),
+        ])),
+    );
+    let series = Body::Series(Box::new(Series {
+        index: k,
+        lo: 0,
+        hi: Bound::Infinite,
+        term: part(Body::Mul(vec![
+            part(Body::Apply(
+                Unary::Exp,
+                part(Body::Mul(vec![
+                    part(Body::Index(k)),
+                    part(constant(0.5f64.ln())),
+                ])),
+            )),
+            part(turning),
+        ])),
+    }));
+    let band = sva_samples::Audible::of(&PSYCHOACOUSTIC_V1, RATE);
+    let Body::Add(terms) = sva_samples::truncate_written(&series, band).expect("a count") else {
+        panic!("a truncated series is a sum");
+    };
+    let floor = 10f64.powf(PSYCHOACOUSTIC_V1.floor(PSYCHOACOUSTIC_V1.ceiling(RATE)) / 20.0);
+    let counted = (0..).find(|n| 0.5f64.powi(*n) < floor).expect("a floor");
+    assert_eq!(terms.len(), counted as usize);
 }
 
 /// Series inside series expand as their counts multiply. Where that product is past what
@@ -638,11 +682,13 @@ fn nested_series_beyond_the_bound_refuse_naming_the_count() {
         panic!("the refusal prices the nesting, not {refused:?}");
     };
     assert_eq!(depth, 5, "five series deep");
-    let per = (0..).find(|n| 0.82f64.powi(*n) < 0.1).expect("a floor");
+    let whole = 1.0 / (1.0 - 0.82f64);
+    let levels: usize = (0..5)
+        .map(|level| kept(whole.powi(level), 0.82) as usize)
+        .product();
     assert_eq!(
-        terms,
-        (per as usize).pow(5),
-        "one level's terms, multiplied five deep"
+        terms, levels,
+        "each level's terms under the sum it holds, multiplied five deep"
     );
     assert!(terms > bound, "{terms} is past the bound {bound}");
     assert!(
@@ -692,7 +738,7 @@ fn a_cropped_neumann_series_has_a_spectral_sum() {
         &PSYCHOACOUSTIC_V1,
     )
     .expect("a cropped series collapses");
-    let counted = (0..).find(|n| 0.5f64.powi(*n) < 0.1).expect("a floor");
+    let counted = kept(1.0, 0.5);
     let taken: f64 = (0..counted).map(|n| 0.5f64.powi(n)).sum();
     for i in 0..buffer.len() {
         let t = i as f64 / f64::from(RATE);
@@ -936,7 +982,12 @@ fn noise_alone_places_through_one_transform() {
     );
     assert!(*placed > 1_000, "{placed} lines under the ceiling");
 
-    let placed = sva_formula::lines(&sva_formula::noise(1, 0.4, 0.0), 4_096.0, -20.0);
+    let placed = sva_formula::lines(
+        &sva_formula::noise(1, 0.4, 0.0),
+        4_096.0,
+        -20.0,
+        PSYCHOACOUSTIC_V1.half_lsb(),
+    );
     for i in [0usize, 137, 4_001] {
         let t = i as f64 / f64::from(RATE);
         let direct: f64 = placed
@@ -1200,7 +1251,7 @@ fn a_nested_series_past_the_bound_refuses_or_labels() {
     let horizon = Horizon::secs(0.0, 0.01);
     let run = |body: Body| render(&form(Var::T, body), RATE, horizon, &PSYCHOACOUSTIC_V1);
 
-    let per = (0..).find(|n| 0.82f64.powi(*n) < 0.1).expect("a floor") as usize;
+    let per = kept(0.82, 0.82) as usize;
     let refused =
         run(nested(4_000)).expect_err("a written bound times a nesting is past the bound");
     assert_eq!(refused.code(), "collapse.series_nesting");

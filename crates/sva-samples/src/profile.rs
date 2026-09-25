@@ -10,6 +10,7 @@ pub struct Profile {
     pub band_db: f64,
     /// The operation count a render pays without the caller saying so.
     pub flop_budget: u128,
+    pub precision_bits: i32,
 }
 
 pub const PSYCHOACOUSTIC_V1: Profile = Profile {
@@ -20,6 +21,7 @@ pub const PSYCHOACOUSTIC_V1: Profile = Profile {
     ceiling_hz: 20_000.0,
     band_db: 1.0,
     flop_budget: 10_000_000_000,
+    precision_bits: 24,
 };
 
 pub fn named(name: &str) -> Option<Profile> {
@@ -29,6 +31,10 @@ pub fn named(name: &str) -> Option<Profile> {
 impl Profile {
     pub fn ceiling(&self, rate: u32) -> f64 {
         self.ceiling_hz.min(f64::from(rate) / 2.0)
+    }
+
+    pub fn half_lsb(&self) -> f64 {
+        2f64.powi(-self.precision_bits)
     }
 
     pub fn floor(&self, hz: f64) -> f64 {

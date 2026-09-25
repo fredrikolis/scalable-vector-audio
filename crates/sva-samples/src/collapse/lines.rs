@@ -16,7 +16,7 @@ pub struct Found {
     pub tail_db: Option<f64>,
 }
 
-pub fn of_lane(lane: &Lane, ceiling: f64, floor_db: f64) -> Option<Found> {
+pub fn of_lane(lane: &Lane, ceiling: f64, floor_db: f64, precision: f64) -> Option<Found> {
     let mut out = Vec::new();
     let mut grids = Vec::new();
     let mut tail: Option<f64> = None;
@@ -29,7 +29,7 @@ pub fn of_lane(lane: &Lane, ceiling: f64, floor_db: f64) -> Option<Found> {
         }
     }
     for series in &lane.series {
-        let enumerated = series_lines(series, ceiling, floor_db);
+        let enumerated = series_lines(series, ceiling, floor_db, precision);
         if enumerated.taken.is_empty() && enumerated.dropped.is_empty() {
             return None;
         }

@@ -86,7 +86,7 @@ pub struct Answer {
     pub source: Source,
     pub profile: &'static str,
     pub rate: Option<u32>,
-    /// FORMAT 14.1: a series answers the terms above the floor, the tail beside them.
+    /// FORMAT 14.1: a series answers the terms it keeps, the tail beside them.
     pub dropped: Vec<sva_formula::Line>,
     pub tail_db: Option<f64>,
 }

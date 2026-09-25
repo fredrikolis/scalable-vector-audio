@@ -182,6 +182,7 @@ fn exact(
             node,
             sum,
             render.config.profile.floor(AUDIBLE_CEILING_HZ),
+            render.config.profile.half_lsb(),
         )
     };
     let (value, listed) = match representation {
@@ -250,8 +251,8 @@ fn exact(
     Ok((value, listed, source))
 }
 
-/// Every atom the spectral sum stands for, beside the terms its series left below the floor
-/// or above the ceiling: `atoms` alone holds only the terms already written out.
+/// Every atom the spectral sum stands for, beside the terms its series truncated away or left
+/// above the ceiling: `atoms` alone holds only the terms already written out.
 struct Listed {
     atoms: Vec<SpectralAtom>,
     dropped: Vec<Line>,
@@ -281,12 +282,13 @@ fn listed(
     node: sva_formula::NodeId,
     sum: &SpectralSum,
     floor_db: f64,
+    precision: f64,
 ) -> Result<Listed, EngineError> {
     let mut held = Listed::NONE;
     for lane in &sum.lanes {
         held.atoms.extend(lane.clone().expanded().atoms);
         for series in &lane.series {
-            let Some(found) = line_atoms(series, AUDIBLE_CEILING_HZ, floor_db) else {
+            let Some(found) = line_atoms(series, AUDIBLE_CEILING_HZ, floor_db, precision) else {
                 return Err(unenumerable(render, node));
             };
             held.atoms.extend(found.atoms);

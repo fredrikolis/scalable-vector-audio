@@ -30,17 +30,22 @@ fn echoes(t: f64, l: f64, r: f64, g: f64, d: f64, terms: i32) -> f64 {
         .sum()
 }
 
-fn assert_agree(held: &[f64], want: &[f64], what: &str) {
+fn assert_within(held: &[f64], want: &[f64], by: f64, what: &str) {
     assert_eq!(held.len(), want.len(), "{what}: one length");
     for (i, (a, b)) in held.iter().zip(want).enumerate() {
-        assert!((a - b).abs() < 1e-12, "{what}, sample {i}: {a} against {b}");
+        assert!((a - b).abs() <= by, "{what}, sample {i}: {a} against {b}");
     }
 }
 
-/// Each echo's window moves with its delay.
+fn assert_agree(held: &[f64], want: &[f64], what: &str) {
+    assert_within(held, want, 1e-12, what);
+}
+
+/// Each echo's window moves with its delay, and the echoes the series drops sum to less than
+/// half the output's least significant bit.
 #[test]
 fn a_cropped_burst_echoes_where_its_recurrence_does() {
-    let secs = 1.0;
+    let secs = 5.0;
     let series = rendered(
         &[(
             "echo",
@@ -57,9 +62,14 @@ fn a_cropped_burst_echoes_where_its_recurrence_does() {
         "echo",
         secs,
     );
-    assert_agree(&series, &sampled, "the series against the recurrence");
+    assert_within(
+        &series,
+        &sampled,
+        sva_samples::PSYCHOACOUSTIC_V1.half_lsb(),
+        "the series against the recurrence",
+    );
     let want: Vec<f64> = (0..series.len())
-        .map(|i| echoes(i as f64 / f64::from(RATE), 0.3, 0.35, 0.35, 0.25, 3))
+        .map(|i| echoes(i as f64 / f64::from(RATE), 0.3, 0.35, 0.35, 0.25, 17))
         .collect();
     assert_agree(&series, &want, "the series against its echoes");
 }
