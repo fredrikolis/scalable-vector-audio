@@ -58,6 +58,8 @@ fn composition() -> Graph {
                 "released",
                 "@voice(t, f0=1046.502, vel=0.8, release=0.05)\n",
             ),
+            ("tone", "0.3*saw(220)\n"),
+            ("clipped", "crop(0.3*saw(220), 0s, 0.1s)\n"),
         ],
     )
 }
@@ -164,7 +166,13 @@ fn a_streamed_synth_voice_is_the_whole_render_bit_for_bit_in_blocks_of_any_size(
 
 /// Past the proven end, a render twice as long hears nothing at the threshold.
 #[test]
-fn a_released_synth_voice_ends_before_any_sample_brute_force_hears() {
+fn a_released_voice_or_a_clipped_saw_ends_before_any_sample_brute_force_hears() {
+    for target in ["released", "clipped"] {
+        ends_before_brute_force_hears(target);
+    }
+}
+
+fn ends_before_brute_force_hears(target: &str) {
     let g = composition();
     let silent = Silent {
         bits: 24,
@@ -175,19 +183,19 @@ fn a_released_synth_voice_ends_before_any_sample_brute_force_hears() {
         block: 441,
         silent: Some(silent),
     };
-    let mut stream = Stream::open(&g, "released", &[], config).expect("a released voice");
+    let mut stream = Stream::open(&g, target, &[], config).expect("a stream opens");
     let mut heard = Vec::new();
     while let Some(block) = stream.next_block().expect("a block") {
         heard.extend_from_slice(block.plane(0));
     }
     let end = stream.end().expect("a proven end");
     assert_eq!(heard.len(), end);
-    let brute = whole(&g, "released", 2 * end);
-    assert_eq!(heard[..], brute[..end]);
+    let brute = whole(&g, target, 2 * end);
+    assert_eq!(heard[..], brute[..end], "{target}");
     let last = brute.iter().rposition(|v| v.abs() >= silent.threshold());
     assert!(
         last.is_some_and(|at| at < end),
-        "heard at {last:?}, past {end}"
+        "{target} heard at {last:?}, past {end}"
     );
 }
 
@@ -286,6 +294,7 @@ fn a_stream_whose_silence_is_never_proven_refuses_at_its_first_block() {
     };
     for (target, code) in [
         ("held", "engine.never_silent"),
+        ("tone", "engine.never_silent"),
         ("bar", "engine.no_tail_bound"),
     ] {
         let mut stream = Stream::open(&g, target, &[], config).expect("no proof at the opening");

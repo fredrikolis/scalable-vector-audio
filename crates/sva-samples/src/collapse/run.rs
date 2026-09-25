@@ -52,6 +52,17 @@ pub fn bound(run: &Run) -> f64 {
     err * (1.0 + 4.0 * (run.len() + 2) as f64 * U)
 }
 
+/// The largest magnitude the exact sum reaches, rounded up.
+pub fn reach(run: &Run) -> f64 {
+    let sum = |amps: &[C64]| amps.iter().map(|a| a.abs()).sum::<f64>();
+    let mirrored = match &run.mirror {
+        Mirror::None => 0.0,
+        Mirror::Conjugate => sum(&run.amps),
+        Mirror::Held(amps) => sum(amps),
+    };
+    (sum(&run.amps) + mirrored) * (1.0 + 2.0 * (run.len() + 1) as f64 * U)
+}
+
 const U: f64 = f64::EPSILON / 2.0;
 
 const STEP_ROTOR: f64 = 24.0 * U;

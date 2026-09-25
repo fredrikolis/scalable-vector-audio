@@ -1,4 +1,4 @@
-// Concern: places a line spectrum on the grid, transformed or summed | Non-concern: deciding which (collapse.rs) | IO: (&Lane, ceiling) -> Found, planes
+// Concern: places a line spectrum on the grid, transformed or summed | Non-concern: deciding which (collapse.rs) | IO: (&Lane, ceiling) -> Found, planes, bounds
 
 use std::f64::consts::TAU;
 
@@ -181,6 +181,14 @@ impl Direct {
     pub fn at(&self, t: f64) -> f64 {
         let moving: f64 = self.runs.iter().map(|r| super::run::at(r, t).re).sum();
         self.level + moving
+    }
+
+    /// How far `at` sits from the exact sum at any instant.
+    pub fn bound(&self) -> f64 {
+        let runs: f64 = self.runs.iter().map(super::run::bound).sum();
+        let reach: f64 = self.runs.iter().map(super::run::reach).sum::<f64>() + self.level.abs();
+        let adds = (self.runs.len() + 2) as f64 * f64::EPSILON;
+        (runs + adds * reach) * (1.0 + adds)
     }
 }
 

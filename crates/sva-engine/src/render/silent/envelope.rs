@@ -8,6 +8,7 @@ use sva_formula::spectral_sum::atom::SpectralAtom;
 use sva_formula::spectral_sum::sup::sup_from;
 use sva_formula::{NodeId, Unary, Var};
 use sva_samples::biquad::{clamp_cutoff, clamp_q, design};
+use sva_samples::collapse::plan::summed_bounds;
 use sva_samples::{Audible, Buffer, Coeffs, truncate_spectral_sum, truncate_written};
 
 use super::floor;
@@ -155,7 +156,8 @@ type Found = Result<Envelope, Unbounded>;
 
 /// A closed form in `t` as a bound reads it, which no instant changes.
 pub(super) enum Form {
-    Atoms(Vec<SpectralAtom>),
+    /// The atoms, and each direct sum over their lines as its bound and the factor it is under.
+    Atoms(Vec<SpectralAtom>, Vec<(Option<SpectralAtom>, f64)>),
     Written(Range),
     Unbounded(&'static str),
 }
@@ -219,9 +221,13 @@ impl<'a> Bounds<'a> {
         let tys = self.tys;
         // A series no line reaches falls to the written form, as the collapse does.
         if tys.ty(id).is_closed_form()
-            && let Ok(sum) = crate::refs::spectral_sum_of(tys, id, Var::T)
-            && let Ok(sum) = truncate_spectral_sum(&sum, self.band())
+            && let Ok(whole) = crate::refs::spectral_sum_of(tys, id, Var::T)
+            && let Ok(sum) = truncate_spectral_sum(&whole, self.band())
         {
+            let (profile, rate) = (&self.config.profile, self.config.rate);
+            let Ok(summed) = summed_bounds(&whole, profile, rate) else {
+                return Some(Form::Unbounded("a line sum with no rounding bound"));
+            };
             let atoms: Vec<SpectralAtom> = sum
                 .lanes
                 .iter()
@@ -232,7 +238,7 @@ impl<'a> Bounds<'a> {
                     lane.atoms.iter().copied().chain(modal)
                 })
                 .collect();
-            return Some(Form::Atoms(atoms));
+            return Some(Form::Atoms(atoms, summed));
         }
         let Value::ClosedForm(form) = tys.value(id) else {
             return None;
@@ -244,7 +250,7 @@ impl<'a> Bounds<'a> {
             return Some(Form::Unbounded("a series with no term count"));
         };
         Some(match Range::of(&body) {
-            Ok(Range::Atoms(atoms)) => Form::Atoms(atoms),
+            Ok(Range::Atoms(atoms)) => Form::Atoms(atoms, Vec::new()),
             Ok(range) => Form::Written(range),
             Err(class) => Form::Unbounded(class),
         })
@@ -254,7 +260,7 @@ impl<'a> Bounds<'a> {
         let tys = self.tys;
         if let Some(form) = self.form(id) {
             return match &*form {
-                Form::Atoms(atoms) => Ok(self.atoms(id, atoms)),
+                Form::Atoms(atoms, summed) => Ok(self.atoms(id, atoms, summed)),
                 Form::Written(range) => self.written(id, range),
                 Form::Unbounded(class) => Ok(Err(self.unknown(id, class))),
             };
@@ -377,8 +383,14 @@ impl<'a> Bounds<'a> {
         })
     }
 
-    /// Each atom's own supremum from every instant, summed.
-    fn atoms(&self, id: NodeId, atoms: &[SpectralAtom]) -> Found {
+    /// Each atom's own supremum from every instant, summed, and each direct sum's rounding
+    /// under its factor's supremum.
+    fn atoms(
+        &self,
+        id: NodeId,
+        atoms: &[SpectralAtom],
+        summed: &[(Option<SpectralAtom>, f64)],
+    ) -> Found {
         let mut at = vec![0.0; self.grid.points];
         let mut before = 0.0;
         for atom in atoms {
@@ -390,11 +402,26 @@ impl<'a> Bounds<'a> {
             }
             before += sup_from(atom, f64::NEG_INFINITY).unwrap_or(f64::INFINITY);
         }
+        let direct = |t: f64| {
+            summed.iter().try_fold(0.0, |held, (factor, err)| {
+                let under = factor.as_ref().map_or(Some(1.0), |f| sup_from(f, t))?;
+                Some(held + err * under)
+            })
+        };
         let rounded = 1.0 + OP * (atoms.len() as f64 + TRANSFORM_OPS);
+        let mut bounded = Vec::with_capacity(at.len());
+        for (j, v) in at.into_iter().enumerate() {
+            let Some(err) = direct(self.grid.secs(j)) else {
+                return Err(self.unknown(id, "a delta or a pole on the line"));
+            };
+            bounded.push(v * rounded + err);
+        }
+        let everywhere = direct(f64::NEG_INFINITY).unwrap_or(f64::INFINITY);
+        let floor = floor::of_atoms(atoms, self.grid.rate) * (2.0 - rounded) - everywhere;
         Ok(Envelope {
-            at: at.into_iter().map(|v| v * rounded).collect(),
-            before: before * rounded,
-            floor: floor::of_atoms(atoms, self.grid.rate) * (2.0 - rounded),
+            at: bounded,
+            before: before * rounded + everywhere,
+            floor: floor.max(0.0),
         })
     }
 

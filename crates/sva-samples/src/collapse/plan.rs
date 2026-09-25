@@ -1,4 +1,4 @@
-// Concern: which row of the collapse table a form takes, and what that row costs | Non-concern: running the row (collapse.rs) | IO: (&SpectralSum, rate, Horizon) -> Plan, flops
+// Concern: which row of the collapse table a form takes, what it costs and its direct sums' bounds | Non-concern: running the row | IO: (&SpectralSum, rate, Horizon) -> Plan, flops, bounds
 
 use sva_formula::closed_form::{Part, map_children};
 use sva_formula::spectral_sum::atom::SpectralAtom;
@@ -216,6 +216,27 @@ fn nodes_at(f: &Body, component: usize) -> usize {
                 .sum::<usize>()
         }
     }
+}
+
+/// Each direct sum a row may take over this form's lines, as its rounding bound and the
+/// factor it is read under: none on a line row, the group's own on a windowed one.
+pub fn summed_bounds(
+    sum: &SpectralSum,
+    profile: &Profile,
+    rate: u32,
+) -> Result<Vec<(Option<SpectralAtom>, f64)>, CollapseError> {
+    if sum.var == Var::F {
+        return Ok(Vec::new());
+    }
+    if let Some(found) = kept_lines(sum, profile, profile.ceiling(rate))? {
+        let direct = found.kept.iter().filter_map(|kept| lines::Direct::of(kept));
+        return Ok(direct.map(|d| (None, d.bound())).collect());
+    }
+    let truncated = truncate::spectral_sum(sum, Audible::of(profile, rate))?;
+    let groups = truncated.lanes.iter().filter_map(lines::grouped).flatten();
+    Ok(groups
+        .filter_map(|(factor, held)| Some((Some(factor), lines::Direct::of(&held)?.bound())))
+        .collect())
 }
 
 /// Rows one and two: every atom a line, none of them windowed.

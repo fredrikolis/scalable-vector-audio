@@ -3,10 +3,13 @@
 use sva_formula::spectral_sum::atom::SpectralAtom;
 use sva_formula::spectral_sum::sup::sup_from;
 use sva_formula::{Body, Fold, NodeId, Unary, Var};
+use sva_samples::collapse::run::{bound, reach};
 
 /// A written form compiled once, so every instant reads it without normalizing again.
 pub(super) enum Range {
     Atoms(Vec<SpectralAtom>),
+    /// A run's lines, the most they reach and its own rounding bound.
+    Run(Vec<SpectralAtom>, f64, f64),
     Real(f64),
     Line,
     Node(NodeId),
@@ -57,7 +60,15 @@ impl Span {
 impl Range {
     /// The constructor no bound is derived for, where one is reached.
     pub(super) fn of(f: &Body) -> Result<Range, &'static str> {
-        if let Ok(sum) = sva_formula::normalize(f, Var::T) {
+        if let Body::Run(run) = f
+            && let Ok(sum) = sva_formula::normalize(f, Var::T)
+        {
+            let atoms = sum.atoms().copied().collect();
+            return Ok(Range::Run(atoms, reach(run), bound(run)));
+        }
+        if holds_no_run(f)
+            && let Ok(sum) = sva_formula::normalize(f, Var::T)
+        {
             let atoms: Vec<SpectralAtom> = sum.atoms().copied().collect();
             match atoms.as_slice() {
                 [] => return Ok(Range::Real(0.0)),
@@ -109,7 +120,7 @@ impl Range {
             Range::Pow(a, _) | Range::Map(_, a) | Range::Crop(a, ..) | Range::Shift(a, _) => {
                 a.nodes(out)
             }
-            Range::Atoms(_) | Range::Real(_) | Range::Line => {}
+            Range::Atoms(_) | Range::Run(..) | Range::Real(_) | Range::Line => {}
         }
     }
 
@@ -130,7 +141,9 @@ impl Range {
             (gap - s.err).max(0.0)
         });
         let kept = match self {
-            Range::Atoms(atoms) => super::floor::of_atoms(atoms, reads.rate),
+            Range::Atoms(atoms) | Range::Run(atoms, ..) => {
+                super::floor::of_atoms(atoms, reads.rate)
+            }
             Range::Real(c) => c.abs(),
             Range::Line => f64::INFINITY,
             Range::Node(id) => (reads.floor)(*id),
@@ -185,6 +198,7 @@ impl Range {
                 let terms = atoms.len() as f64 + TRANSFORM_OPS;
                 Some(Span::new(-sum, sum, OP * terms * sum))
             }
+            Range::Run(_, reach, err) => Some(Span::new(-reach, *reach, *err)),
             Range::Real(c) => Some(Span::new(*c, *c, 0.0)),
             Range::Line => Some(Span::new(t, f64::INFINITY, 0.0)),
             Range::Node(id) => magnitude(node(*id, t)),
@@ -248,6 +262,14 @@ impl Range {
             }
         }
     }
+}
+
+/// A run is summed by its own evaluator, so its lines' atoms never stand for it.
+fn holds_no_run(f: &Body) -> bool {
+    !matches!(f, Body::Run(_))
+        && sva_formula::closed_form::children(f)
+            .iter()
+            .all(|p| holds_no_run(&p.body))
 }
 
 /// `1 / x` over a span that stays clear of zero by more than its own rounding.
