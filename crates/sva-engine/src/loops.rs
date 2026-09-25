@@ -1,7 +1,7 @@
 // Concern: classifies a self-reference, and folds the shift one reads at to a constant | Non-concern: running either kind (sva-samples), lowering the rest (lower/) | IO: (body, Cx) -> SelfKind, Shift
 
 use sva_ast::{Arg, BinOp, ByteSpan, Expr, Literal};
-use sva_formula::closed_form::map_children;
+use sva_formula::closed_form::{map_children, read_at};
 use sva_formula::{Body, C64, IndexId, Part, Series, Var};
 
 use crate::arguments::Chosen;
@@ -237,18 +237,16 @@ pub(crate) fn neumann(rest: &Body, gain: C64, delay: f64, index: IndexId) -> Bod
     }))
 }
 
-/// `t -> t - k*d` at every occurrence of the free variable.
+/// `t -> t - k*d`, windows and all.
 fn moved(f: &Body, index: IndexId, delay: f64) -> Body {
-    match f {
-        Body::Line => Body::Add(vec![
-            Part::bare(Body::Line),
-            Part::bare(Body::Mul(vec![
-                Part::bare(Body::Const(C64::real(-delay))),
-                Part::bare(Body::Index(index)),
-            ])),
-        ]),
-        other => map_children(other, |p| Part::new(p.origin, moved(&p.body, index, delay))),
-    }
+    let at = Body::Add(vec![
+        Part::bare(Body::Line),
+        Part::bare(Body::Mul(vec![
+            Part::bare(Body::Const(C64::real(-delay))),
+            Part::bare(Body::Index(index)),
+        ])),
+    ]);
+    read_at(f, &at)
 }
 
 /// A series term holds the body inline, so a node left inside it would normalize to nothing.

@@ -88,6 +88,11 @@ fn walk(f: &Body, origin: Origin, var: Var, env: &dyn Env) -> Result<Info, Refus
         Body::Delta { at, .. } => singular(at, var, env, true),
         Body::Pv(at) => singular(at, var, env, false),
         Body::Shift { of, .. } | Body::Deriv { of, .. } => walk(&of.body, of.origin, var, env),
+        Body::Warp { at, of }
+            if crate::affine::slide(&at.body).is_some_and(|by| by.axis() == Axis::Real) =>
+        {
+            walk(&of.body, of.origin, var, env)
+        }
         Body::Warp { at, of } => {
             walk(&at.body, at.origin, var, env)?;
             let mut info = walk(&of.body, of.origin, var, env)?;

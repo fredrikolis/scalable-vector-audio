@@ -321,8 +321,8 @@ pub fn map_children(f: &Body, mut g: impl FnMut(&Part) -> Part) -> Body {
     }
 }
 
-/// The whole of shifting a series. `1[l,r)(u - by)` reads the free variable too, so a
-/// window moves its own bounds.
+/// `1[l,r)(u - by)` reads the free variable too, so a window moves its own bounds; a warp
+/// moves only its time.
 pub fn shift_line(f: &Body, by: f64) -> Body {
     let walk = |p: &Part| Part::new(p.origin, shift_line(&p.body, by));
     match f {
@@ -343,7 +343,27 @@ pub fn shift_line(f: &Body, by: f64) -> Body {
             rise: *rise,
             fall: *fall,
         },
+        Body::Warp { at, of } => Body::Warp {
+            at: walk(at),
+            of: of.clone(),
+        },
         other => map_children(other, walk),
+    }
+}
+
+/// An edge holds no formula, so a window is warped whole.
+pub fn read_at(f: &Body, at: &Body) -> Body {
+    match f {
+        Body::Line => at.clone(),
+        Body::Crop { .. } => Body::Warp {
+            at: Part::bare(at.clone()),
+            of: Part::bare(f.clone()),
+        },
+        Body::Warp { at: inner, of } => Body::Warp {
+            at: Part::new(inner.origin, read_at(&inner.body, at)),
+            of: of.clone(),
+        },
+        other => map_children(other, |p| Part::new(p.origin, read_at(&p.body, at))),
     }
 }
 

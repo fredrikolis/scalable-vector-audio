@@ -1,5 +1,6 @@
 // Concern: lowers a Body to the canonical atom sum | Non-concern: the atom algebra (product.rs), typing (infer.rs) | IO: (&Body, Var) -> SpectralSum or Left
 
+use crate::affine::Coeff;
 use crate::closed_form::{Body, ClosedForm, Part, Series, Var};
 use crate::complex::C64;
 use crate::origin::Origin;
@@ -91,11 +92,14 @@ fn lower(f: &Body, origin: Origin, var: Var) -> Result<SpectralSum, Left> {
         Body::Delta { at, order } => delta(at, *order, var),
         Body::Pv(at) => principal_value(at, var),
         Body::Shift { by, of } => shift(lower_part(of, var)?, *by),
-        Body::Warp { at, .. } => Err(left(
-            at.origin,
-            Factor::Value,
-            LeftReason::NonAffineArgument,
-        )),
+        Body::Warp { at, of } => match crate::affine::slide(&at.body) {
+            Some(Coeff::Exact(by)) if by.is_real() => shift(lower_part(of, var)?, -by.re),
+            _ => Err(left(
+                at.origin,
+                Factor::Value,
+                LeftReason::NonAffineArgument,
+            )),
+        },
         Body::Deriv { order, of } => {
             let mut n = lower_part(of, var)?;
             for _ in 0..*order {

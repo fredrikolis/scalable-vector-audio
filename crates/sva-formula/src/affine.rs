@@ -202,6 +202,14 @@ pub fn affine_in(f: &Body, reading: Reading) -> Option<(Coeff, Coeff)> {
     }
 }
 
+/// The offset of a time spelled as the variable plus a constant, an index counting as one.
+pub fn slide(at: &Body) -> Option<Coeff> {
+    match affine(at)? {
+        (Coeff::Exact(slope), offset) if slope.re == 1.0 && slope.im == 0.0 => Some(offset),
+        _ => None,
+    }
+}
+
 pub fn exact_affine(f: &Body) -> Option<(C64, C64)> {
     let (a, b) = affine(f)?;
     Some((a.exact()?, b.exact()?))

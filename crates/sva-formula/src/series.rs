@@ -3,7 +3,9 @@
 use std::f64::consts::TAU;
 
 use crate::affine::{Axis, Reading, affine_in, axis, exact_constant};
-use crate::closed_form::{Body, Bound, IndexId, Part, Series, Unary, children, map_children};
+use crate::closed_form::{
+    Body, Bound, IndexId, Part, Series, Unary, children, map_children, read_at,
+};
 use crate::complex::C64;
 use crate::env::Env;
 use crate::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom};
@@ -41,6 +43,10 @@ pub fn growth(f: &Body, k: IndexId, env: &dyn Env) -> IndexGrowth {
         Body::Apply(Unary::Exp, arg) => exponential_in(arg, k, env),
         Body::Channel(of, _) | Body::Crop { of, .. } => growth(&of.body, k, env),
         Body::Shift { of, .. } | Body::Deriv { of, .. } => growth(&of.body, k, env),
+        Body::Warp { at, of } => match &*of.body {
+            Body::Crop { of: inner, .. } => growth(&read_at(&inner.body, &at.body), k, env),
+            other => growth(&read_at(other, &at.body), k, env),
+        },
         Body::Pv(at) | Body::Delta { at, .. } => growth(&at.body, k, env),
         Body::Series(inner) => growth(&inner.term.body, k, env),
         _ => IndexGrowth::Unbounded,

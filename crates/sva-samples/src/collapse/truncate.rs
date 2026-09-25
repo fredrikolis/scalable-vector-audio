@@ -223,7 +223,8 @@ fn counted(s: &Series, band: Audible) -> Option<usize> {
 }
 
 /// A turning factor stands for the bound it turns inside; one with no bound leaves the
-/// count undecided. A node and a series turn too: the index reaches either only as a shift.
+/// count undecided. A node, a series and a warp turn too: the index reaches each only as a
+/// shift.
 fn coefficient(f: &Body) -> Option<Body> {
     let one = || Some(Body::Const(C64::ONE));
     match f {
@@ -249,7 +250,9 @@ fn coefficient(f: &Body) -> Option<Body> {
             | sva_formula::Unary::Sat,
             _,
         ) => one(),
-        Body::Crop { of, .. } | Body::Shift { of, .. } => coefficient(&of.body),
+        Body::Crop { of, .. } | Body::Shift { of, .. } | Body::Warp { of, .. } => {
+            coefficient(&of.body)
+        }
         Body::Pow(base, n) => Some(Body::Pow(
             Part::new(base.origin, coefficient(&base.body)?),
             *n,
