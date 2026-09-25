@@ -5,7 +5,7 @@
 //! reaching for either compiles clean and traps only at RUNTIME. Hence one session for the
 //! whole surface. Run it with `wasm-pack test --node crates/sva-wasm`.
 
-use sva_wasm::{Composition, Rendering, builtins, outline};
+use sva_wasm::{Composition, Rendering, Stream, builtins, outline};
 use wasm_bindgen::JsValue;
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -643,4 +643,167 @@ fn a_silent_render_ends_where_its_last_echo_is_heard() {
         "{}",
         as_text(&refused)
     );
+}
+
+const BLOCK: usize = 256;
+
+fn opened(held: &Composition, target: &str, bindings: JsValue) -> Stream {
+    held.stream(
+        Some(target.to_string()),
+        Some(8000),
+        BLOCK,
+        bindings,
+        JsValue::UNDEFINED,
+        None,
+        None,
+    )
+    .unwrap_or_else(|e| unreachable!("`{target}` streams: {}", as_text(&field(&e, "refusal"))))
+}
+
+fn blocks(stream: &mut Stream, count: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; BLOCK];
+    let mut heard = Vec::with_capacity(count * BLOCK);
+    for _ in 0..count {
+        let took = stream
+            .next(&mut out)
+            .unwrap_or_else(|_| unreachable!("a block"));
+        heard.extend_from_slice(&out[..took]);
+    }
+    heard
+}
+
+fn refused_as(refused: Option<JsValue>, code: &str) {
+    let refused = refused.unwrap_or_else(|| unreachable!("`{code}` refuses"));
+    assert!(
+        as_text(&field(&refused, "refusal")).contains(code),
+        "{}",
+        as_text(&refused)
+    );
+}
+
+/// A sampled filter over a closed form: the stream's blocks are the render's samples, and a
+/// release bound at a checkpoint closes the envelope there.
+#[wasm_bindgen_test]
+fn a_stream_crosses_block_by_block_and_resumes_released_at_a_checkpoint() {
+    let mut held = page();
+    held.insert(
+        "filtered",
+        "lowpass(sample(@partials/one), cutoff=300, q=0.7)\n",
+    );
+    held.insert("gated", "crop(@filtered, 0s, release)\n");
+    let mut stream = opened(&held, "filtered", JsValue::UNDEFINED);
+    assert_eq!((stream.channels(), stream.sample_rate()), (1, 8000));
+    let heard = blocks(&mut stream, 8000 / BLOCK);
+    let whole = plane(&render(&held, "filtered"));
+    assert_eq!(heard[..], whole[..heard.len()]);
+
+    let mut gated = opened(&held, "gated", JsValue::UNDEFINED);
+    blocks(&mut gated, 3);
+    let checkpoint = gated.checkpoint();
+    assert_eq!(checkpoint.position(), (3 * BLOCK) as f64);
+    let key_up = js_sys::Object::new();
+    let at = (3 * BLOCK) as f64 / 8000.0;
+    js_sys::Reflect::set(&key_up, &"release".into(), &at.into())
+        .unwrap_or_else(|_| unreachable!("an object takes a key"));
+    let mut released = gated
+        .resume(&checkpoint, key_up.into(), JsValue::UNDEFINED, None, None)
+        .unwrap_or_else(|_| unreachable!("a release at the checkpoint"));
+    assert!(blocks(&mut released, 2).iter().all(|v| *v == 0.0));
+
+    let early = js_sys::Object::new();
+    js_sys::Reflect::set(&early, &"release".into(), &(at / 2.0).into())
+        .unwrap_or_else(|_| unreachable!("an object takes a key"));
+    let refused = gated.resume(&checkpoint, early.into(), JsValue::UNDEFINED, None, None);
+    refused_as(refused.err(), "engine.binding_not_causal");
+}
+
+/// Component `c` of a block starts at `c * block` in the array a page hands over.
+#[wasm_bindgen_test]
+fn a_wide_stream_lays_each_component_a_block_apart() {
+    let held = page();
+    let mut stream = opened(&held, "wide", JsValue::UNDEFINED);
+    assert_eq!(stream.channels(), 2);
+    let mut out = vec![0.0f32; 2 * BLOCK];
+    let took = stream
+        .next(&mut out)
+        .unwrap_or_else(|_| unreachable!("a block"));
+    let wide = render(&held, "wide");
+    for c in 0..2 {
+        let whole = wide
+            .samples(c, None, None)
+            .unwrap_or_else(|_| unreachable!("two components"));
+        assert_eq!(
+            out[c * BLOCK..c * BLOCK + took],
+            whole[..took],
+            "component {c}"
+        );
+    }
+}
+
+#[wasm_bindgen_test]
+fn a_stream_until_silent_ends_where_the_silent_render_proves_it() {
+    let mut held = Composition::new(None);
+    held.insert("master", "sin(2*pi*100*t)*exp(0 - 30*t)\n");
+    let mut stream = held
+        .stream(
+            None,
+            Some(8000),
+            BLOCK,
+            JsValue::UNDEFINED,
+            JsValue::from("silent"),
+            Some(16),
+            None,
+        )
+        .unwrap_or_else(|_| unreachable!("a decay falls silent"));
+    let end = stream.end().unwrap_or_else(|| unreachable!("a proven end"));
+    let heard = blocks(&mut stream, 1 + end as usize / BLOCK);
+    assert_eq!(heard.len() as f64, end);
+    let mut out = vec![0.0f32; BLOCK];
+    assert_eq!(stream.next(&mut out).ok(), Some(0), "nothing after silence");
+    let whole = held
+        .render(
+            None,
+            Some(8000),
+            JsValue::from("silent"),
+            None,
+            Some(16),
+            None,
+        )
+        .unwrap_or_else(|_| unreachable!("the same decay falls silent"));
+    let proven = plane(&whole);
+    assert_eq!(heard[..proven.len()], proven[..]);
+}
+
+#[wasm_bindgen_test]
+fn a_stream_refuses_what_it_cannot_take_at_the_boundary() {
+    let held = page();
+    let mut stream = opened(&held, "partials/one", JsValue::UNDEFINED);
+    let mut short = vec![0.0f32; BLOCK - 1];
+    refused_as(stream.next(&mut short).err(), "wasm.bad_argument");
+    let open = |bindings: JsValue, until: JsValue| {
+        held.stream(None, Some(8000), BLOCK, bindings, until, None, None)
+            .err()
+    };
+    refused_as(
+        open(JsValue::from(3), JsValue::UNDEFINED),
+        "wasm.bad_argument",
+    );
+    refused_as(
+        open(JsValue::UNDEFINED, JsValue::from(2.0)),
+        "wasm.bad_argument",
+    );
+    let worded = js_sys::Object::new();
+    js_sys::Reflect::set(&worded, &"release".into(), &"soon".into())
+        .unwrap_or_else(|_| unreachable!("an object takes a key"));
+    refused_as(open(worded.into(), JsValue::UNDEFINED), "wasm.bad_argument");
+    let empty = held.stream(
+        None,
+        Some(8000),
+        0,
+        JsValue::UNDEFINED,
+        JsValue::UNDEFINED,
+        None,
+        None,
+    );
+    refused_as(empty.err(), "engine.no_stream");
 }

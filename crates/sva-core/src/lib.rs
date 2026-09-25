@@ -1,4 +1,4 @@
-// Concern: the parse->tempo->render pipeline shared by both front ends | Non-concern: argv (sva-cli), JS bindings (sva-wasm) | IO: (a Source, a target) -> Rendered or CliError
+// Concern: the parse->tempo->render pipeline shared by both front ends | Non-concern: argv (sva-cli), JS bindings (sva-wasm) | IO: (a Source, a target) -> Rendered, a Stream or CliError
 
 mod answer;
 mod builtins;
@@ -31,10 +31,10 @@ use std::path::Path;
 use sva_ast::{Dir, Graph, Refusal, Source, SpanUnit};
 use sva_engine::{
     Ask, BindingFault, Cache, DEFAULT_SAMPLE_RATE, EngineError, PSYCHOACOUSTIC_V1, Render,
-    RenderConfig, render_until_silent, render_with_slots,
+    RenderConfig, StreamConfig, render_until_silent, render_with_slots,
 };
 
-pub use sva_engine::Silent;
+pub use sva_engine::{Checkpoint, Silent, Stream};
 
 pub use sva_engine::{Answer, Horizon, Label, Output, Representation};
 pub use sva_engine::{DiskCache, MemoryCache, Slots};
@@ -273,6 +273,17 @@ fn rendering(
         Some(silent) => render_until_silent(graph, target, config, silent, job.cache, job.slots),
         None => render_with_slots(graph, target, config, job.cache, job.slots),
     }
+}
+
+/// `job`'s target settled as a render of it is, each of `bindings` a named argument on it.
+pub fn stream(job: &Job, block: usize, bindings: &[(String, f64)]) -> Result<Stream, CliError> {
+    let (graph, target, config) = settle(job, job.target)?;
+    let config = StreamConfig {
+        rate: config.rate,
+        block,
+        silent: job.silent,
+    };
+    Stream::open(&graph, &target, bindings, config).map_err(CliError::Engine)
 }
 
 pub fn run(dir: &Path) -> Result<Rendered, CliError> {

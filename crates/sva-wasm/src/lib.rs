@@ -1,4 +1,4 @@
-// Concern: the JS surface — a composition a page fills node by node, and what one renders to | Non-concern: the pipeline (sva-core), the store (sva-engine) | IO: (path, text) -> samples or a reading
+// Concern: the JS surface — a composition a page fills node by node, and what it renders or streams to | Non-concern: the pipeline (sva-core), the store | IO: (path, text) -> samples, blocks, a reading
 
 //! A page holds no directory: nodes arrive one at a time, so a composition is BUILT rather
 //! than read. A refusal crosses as a thrown `Error`: `name` is the CLI's error code,
@@ -14,8 +14,8 @@ use sva_engine::{
     Buffer, Cache, CacheStats, Horizon, MemoryCache, PSYCHOACOUSTIC_V1, Pack, Representation,
     Slots, Tiered, answer_buffer, ledger_over,
 };
-use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
+use wasm_bindgen::{JsCast, JsValue};
 
 #[wasm_bindgen]
 extern "C" {
@@ -81,6 +81,46 @@ fn ending(
             "pass seconds, \"silent\", or nothing",
         )),
     }
+}
+
+fn stream_ending(
+    until: &JsValue,
+    bits: Option<u32>,
+    max_secs: Option<f64>,
+) -> Result<Option<Silent>, JsValue> {
+    match ending(until, bits, max_secs)? {
+        (None, silent) => Ok(silent),
+        (Some(_), _) => Err(refuse(
+            "a stream ends where silence is proven, or runs on; it has no stated end".into(),
+            "pass \"silent\" as `until`, or nothing",
+        )),
+    }
+}
+
+fn bindings_of(bindings: &JsValue) -> Result<Vec<(String, f64)>, JsValue> {
+    if bindings.is_undefined() || bindings.is_null() {
+        return Ok(Vec::new());
+    }
+    let object = bindings.dyn_ref::<js_sys::Object>().ok_or_else(|| {
+        refuse(
+            "`bindings` is not an object".into(),
+            "pass an object of numbers, such as { release: 1.5 }",
+        )
+    })?;
+    js_sys::Object::entries(object)
+        .iter()
+        .map(|entry| {
+            let pair = js_sys::Array::from(&entry);
+            let name = pair.get(0).as_string().unwrap_or_default();
+            match pair.get(1).as_f64() {
+                Some(value) => Ok((name, value)),
+                None => Err(refuse(
+                    format!("`{name}` is bound to something that is not a number"),
+                    "bind each name to a number",
+                )),
+            }
+        })
+        .collect()
 }
 
 /// Nothing in a browser pushes back when a store grows inside the tab's own address space.
@@ -217,6 +257,34 @@ impl Composition {
         });
         rendered
             .map(|inner| Rendering { inner })
+            .map_err(|e| thrown(&e))
+    }
+
+    /// A stream of `target` (`master` unset) at `rate`, `block` samples a block, each key of
+    /// `bindings` a named argument on the target. `until: "silent"` ends it where every later
+    /// sample is provably under `2^-bits`, by `max_secs`; unset, it runs on.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stream(
+        &self,
+        target: Option<String>,
+        rate: Option<u32>,
+        block: usize,
+        bindings: JsValue,
+        until: JsValue,
+        bits: Option<u32>,
+        max_secs: Option<f64>,
+    ) -> Result<Stream, JsValue> {
+        let silent = stream_ending(&until, bits, max_secs)?;
+        let bindings = bindings_of(&bindings)?;
+        let job = Job {
+            target: target.as_deref(),
+            sample_rate: rate,
+            reaching: true,
+            silent,
+            ..Job::over(&self.inner)
+        };
+        sva_core::stream(&job, block, &bindings)
+            .map(|inner| Stream { inner })
             .map_err(|e| thrown(&e))
     }
 
@@ -458,5 +526,100 @@ impl Rendering {
     fn buffer(&self) -> Option<&Buffer> {
         let id = self.inner.render.id(&self.inner.target)?;
         self.inner.render.buffer(id)
+    }
+}
+
+/// A target block by block, for a player that cannot know how long a note is held.
+#[wasm_bindgen]
+pub struct Stream {
+    inner: sva_core::Stream,
+}
+
+#[wasm_bindgen]
+impl Stream {
+    /// Writes the next block into `out`, component `c` from `c * block`, and returns the
+    /// samples each component took: `block`, fewer where silence ends inside it, `0` after.
+    pub fn next(&mut self, out: &mut [f32]) -> Result<usize, JsValue> {
+        let (width, block) = (self.inner.width(), self.inner.config().block);
+        if out.len() < width * block {
+            return Err(refuse(
+                format!(
+                    "`out` holds {} samples, and a block is {width} component(s) of {block}",
+                    out.len()
+                ),
+                "pass a Float32Array of channels * block samples",
+            ));
+        }
+        let engine = |e| thrown(&CliError::Engine(e));
+        let Some(held) = self.inner.next_block().map_err(engine)? else {
+            return Ok(0);
+        };
+        for c in 0..width {
+            for (slot, value) in out[c * block..].iter_mut().zip(held.plane(c)) {
+                *slot = *value as f32;
+            }
+        }
+        Ok(held.len())
+    }
+
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            inner: self.inner.checkpoint(),
+        }
+    }
+
+    /// `until` as `stream` takes it, `max_secs` counted from the checkpoint.
+    pub fn resume(
+        &self,
+        checkpoint: &Checkpoint,
+        bindings: JsValue,
+        until: JsValue,
+        bits: Option<u32>,
+        max_secs: Option<f64>,
+    ) -> Result<Stream, JsValue> {
+        let silent = stream_ending(&until, bits, max_secs)?;
+        let bindings = bindings_of(&bindings)?;
+        self.inner
+            .resume(&checkpoint.inner, &bindings, silent)
+            .map(|inner| Stream { inner })
+            .map_err(|e| thrown(&CliError::Engine(e)))
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn channels(&self) -> usize {
+        self.inner.width()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn sample_rate(&self) -> u32 {
+        self.inner.config().rate
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn block(&self) -> usize {
+        self.inner.config().block
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn position(&self) -> f64 {
+        self.inner.position() as f64
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn end(&self) -> Option<f64> {
+        self.inner.end().map(|end| end as f64)
+    }
+}
+
+#[wasm_bindgen]
+pub struct Checkpoint {
+    inner: sva_core::Checkpoint,
+}
+
+#[wasm_bindgen]
+impl Checkpoint {
+    #[wasm_bindgen(getter)]
+    pub fn position(&self) -> f64 {
+        self.inner.position() as f64
     }
 }
