@@ -57,9 +57,15 @@ impl C64 {
         self.re.hypot(self.im)
     }
 
+    /// A component alone on its axis inverts by one division, correctly rounded; only a
+    /// value off both axes takes the conjugate over the squared norm.
     pub fn inv(self) -> C64 {
         let d = self.norm_sqr();
-        C64::new(self.re / d, -self.im / d)
+        match (self.re == 0.0, self.im == 0.0) {
+            (false, true) => C64::new(1.0 / self.re, -self.im / d),
+            (true, false) => C64::new(self.re / d, -1.0 / self.im),
+            _ => C64::new(self.re / d, -self.im / d),
+        }
     }
 
     pub fn exp(self) -> C64 {
@@ -116,6 +122,12 @@ impl Mul for C64 {
 impl Div for C64 {
     type Output = C64;
     fn div(self, o: C64) -> C64 {
+        if o.im == 0.0 && o.re != 0.0 {
+            return C64::new(self.re / o.re, self.im / o.re);
+        }
+        if o.re == 0.0 && o.im != 0.0 {
+            return C64::new(self.im / o.im, -self.re / o.im);
+        }
         let d = o.norm_sqr();
         C64::new(
             (self.re * o.re + self.im * o.im) / d,

@@ -197,3 +197,22 @@ fn the_sort_key_is_total_over_minus_zero() {
     };
     assert_eq!(atom.sing, Singular::Delta { at: 0.0, order: 0 });
 }
+
+/// A real or an imaginary value inverts by one correctly rounded division.
+#[test]
+fn a_value_on_one_axis_inverts_correctly_rounded() {
+    use sva_formula::C64;
+    for x in [3.0, 7.0, 0.1, 261.63 / 262.0, 1e-3, -2.5, 1e300] {
+        assert_eq!(C64::real(x).inv().re.to_bits(), (1.0 / x).to_bits(), "{x}");
+        assert_eq!(
+            C64::new(0.0, x).inv().im.to_bits(),
+            (-1.0 / x).to_bits(),
+            "{x}i"
+        );
+        assert_eq!(
+            (C64::real(1.0) / C64::real(x)).re.to_bits(),
+            (1.0 / x).to_bits(),
+            "1/{x}"
+        );
+    }
+}

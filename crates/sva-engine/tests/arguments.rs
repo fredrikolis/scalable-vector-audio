@@ -195,8 +195,7 @@ fn plane_of(g: &sva_ast::Graph, node: &str) -> Vec<f64> {
 #[test]
 fn a_negative_whole_power_inside_a_solver_argument_is_the_number_it_names() {
     let x = 261.63_f64 / 262.0;
-    // `C64::inv` of a real `k`, the reciprocal every pole weight and quotient takes.
-    let inv = |k: f64| k / (k * k);
+    let inv = |k: f64| 1.0 / k;
     for (exponent, reciprocal) in [
         ("-1", inv(x)),
         ("-1.0", inv(x)),
@@ -403,4 +402,34 @@ fn a_whole_power_past_the_order_cap_is_no_polynomial() {
         panic!("a signal to the two billionth names no polynomial power");
     };
     assert_eq!(d.code, "type.non_integer_power", "{d:?}");
+}
+
+/// `pow(x, -1)` and `1/x` are one reciprocal, correctly rounded, in a law and in an argument.
+#[test]
+fn a_reciprocal_power_is_the_quotient_bit_for_bit() {
+    for x in ["3", "7", "0.1", "261.63/262", "0.001", "-2.5"] {
+        let g = graph_of(
+            "reciprocal",
+            &[
+                ("powered", &format!("sin(2*pi*300*t) * pow({x}, -1)\n")),
+                ("divided", &format!("sin(2*pi*300*t) * (1/({x}))\n")),
+                (
+                    "cut_powered",
+                    &format!("bandpass(sin(2*pi*300*t), cutoff=1000*pow({x}, -1)*{x}, q=1)\n"),
+                ),
+                (
+                    "cut_divided",
+                    &format!("bandpass(sin(2*pi*300*t), cutoff=1000*(1/({x}))*{x}, q=1)\n"),
+                ),
+            ],
+        );
+        let plane = |node: &str| {
+            let held = render(&g, node, RenderConfig::seconds(8_000, 0.01), None)
+                .unwrap_or_else(|e| panic!("{node}: {e}"));
+            let id = held.id(node).expect("the node");
+            held.buffer(id).expect("a buffer").plane(0).to_vec()
+        };
+        assert_eq!(plane("powered"), plane("divided"), "{x}");
+        assert_eq!(plane("cut_powered"), plane("cut_divided"), "{x}");
+    }
 }
