@@ -1,6 +1,7 @@
 // Concern: turns a closed form into samples by the rule its shape names | Non-concern: its spectral sum (sva-formula), reading the buffer (measure/) | IO: (&ClosedForm, rate) -> Buffer, Label
 
 mod atoms;
+mod blocks;
 mod inverse;
 mod lines;
 pub mod plan;
@@ -18,6 +19,7 @@ use crate::error::CollapseError;
 use crate::label::{Detail, Label, Rule, Source};
 use crate::profile::Profile;
 
+pub use blocks::Rows;
 pub use plan::transform_flops;
 
 use plan::Plan;

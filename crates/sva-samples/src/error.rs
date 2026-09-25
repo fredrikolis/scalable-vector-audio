@@ -53,6 +53,8 @@ pub enum CollapseError {
         bound: usize,
     },
     LeftAlgebra(&'static str),
+    /// A form in `f` reaches the grid by one transform over a whole horizon.
+    NoBlockRow,
 }
 
 impl CollapseError {
@@ -64,6 +66,7 @@ impl CollapseError {
             CollapseError::NotEvaluable(_) => "collapse.not_evaluable",
             CollapseError::NestedSeries { .. } => "collapse.series_nesting",
             CollapseError::LeftAlgebra(_) => "cast.left_algebra",
+            CollapseError::NoBlockRow => "collapse.no_block_row",
         }
     }
 }
@@ -92,6 +95,9 @@ impl CollapseError {
             }
             CollapseError::NotEvaluable(_) | CollapseError::LeftAlgebra(_) => {
                 "write the subterm inside sample(...) to leave A deliberately"
+            }
+            CollapseError::NoBlockRow => {
+                "render it to a stated end instead of streaming it, or write it in t"
             }
         }
     }
@@ -127,6 +133,11 @@ impl std::fmt::Display for CollapseError {
                  {bound} one expansion holds"
             ),
             CollapseError::LeftAlgebra(clause) => write!(f, "the closed form left A. {clause}"),
+            CollapseError::NoBlockRow => write!(
+                f,
+                "a closed form in f reaches the grid by one transform over a whole horizon, \
+                 so no block of it is read alone"
+            ),
         }
     }
 }

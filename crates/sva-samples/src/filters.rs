@@ -206,6 +206,13 @@ impl FilterSite {
         self.clamped = clamped;
     }
 
+    /// A stream reads no trace, so each block drops the last one's and keeps the room.
+    pub fn forget_frames(&mut self) {
+        for lane in &mut self.lanes {
+            lane.frames.clear();
+        }
+    }
+
     pub fn trace(&self, node: &str, site: usize, sr: f64) -> Vec<FilterTrace> {
         let wide = self.lanes.len() > 1;
         self.lanes

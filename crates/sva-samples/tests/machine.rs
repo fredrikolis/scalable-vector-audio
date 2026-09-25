@@ -3,6 +3,7 @@
 use sva_samples::biquad::{State, design};
 use sva_samples::machine::Ctx;
 use sva_samples::machine::ops::Layout;
+use sva_samples::machine::tape::Window;
 use sva_samples::{Buffer, NodeRenderer, Site, SiteId};
 
 const RATE: u32 = 8_000;
@@ -69,7 +70,7 @@ fn a_buffer_read_a_filter_and_a_self_recurrence_produce_the_expected_samples() {
                     rate: RATE,
                     origin_secs: 0.0,
                     len: i + 1,
-                    reads: &[&read],
+                    reads: &[Window::of(&read)],
                     self_planes: &history,
                     written: i,
                 },
@@ -161,7 +162,7 @@ fn a_mono_operand_widens_to_its_neighbours_components_without_crossing_them() {
                 rate: RATE,
                 origin_secs: 0.0,
                 len: LEN,
-                reads: &[&stereo],
+                reads: &[Window::of(&stereo)],
                 self_planes: &[],
                 written: 0,
             },

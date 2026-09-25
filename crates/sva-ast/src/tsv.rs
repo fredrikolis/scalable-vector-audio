@@ -6,7 +6,7 @@ use crate::parser::parse;
 
 /// `cells` pairs each cell with its row's FRACTION of the file's span; `row_count`/`bar_span`
 /// are lint's rows-per-bar inputs, not recoverable from `cells` alone.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Grid {
     pub cells: Vec<(f64, Expr)>,
     pub row_count: usize,

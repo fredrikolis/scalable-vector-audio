@@ -6,12 +6,20 @@ use super::Horizon;
 
 /// Where every atom is windowed, the lane is zero outside their union.
 pub(super) fn nonzero(lane: &Lane, horizon: Horizon, rate: u32, len: usize) -> Vec<(usize, usize)> {
+    windows(lane, horizon.start_secs, rate, len as f64).unwrap_or_else(|| vec![(0, len)])
+}
+
+pub(super) fn windows(
+    lane: &Lane,
+    start_secs: f64,
+    rate: u32,
+    cap: f64,
+) -> Option<Vec<(usize, usize)>> {
     if !lane.is_finite_sum() || lane.atoms.iter().any(|a| a.ind.is_none()) {
-        return vec![(0, len)];
+        return None;
     }
-    let edge = |secs: f64| {
-        (((secs - horizon.start_secs) * f64::from(rate)).ceil()).clamp(0.0, len as f64) as usize
-    };
+    let edge =
+        |secs: f64| (((secs - start_secs) * f64::from(rate)).ceil()).clamp(0.0, cap) as usize;
     let mut spans: Vec<(usize, usize)> = lane
         .atoms
         .iter()
@@ -29,5 +37,5 @@ pub(super) fn nonzero(lane: &Lane, horizon: Horizon, rate: u32, len: usize) -> V
             _ => merged.push((from, to)),
         }
     }
-    merged
+    Some(merged)
 }

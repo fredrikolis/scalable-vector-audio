@@ -134,7 +134,7 @@ fn of_term(
     }
 }
 
-fn addends(form: &ClosedForm) -> Option<Vec<ClosedForm>> {
+pub(super) fn addends(form: &ClosedForm) -> Option<Vec<ClosedForm>> {
     if let Body::Add(parts) = &form.body {
         return Some(
             parts
@@ -226,6 +226,40 @@ fn line_plan(
     len: usize,
     ceiling: f64,
 ) -> Result<Option<LinePlan>, CollapseError> {
+    let Some(found) = kept_lines(sum, profile, ceiling)? else {
+        return Ok(None);
+    };
+    let bins = lines::grid(&found.kept, &found.grids, rate, horizon.span(), len);
+    let split: Vec<(Vec<Line>, Vec<Line>)> = found
+        .kept
+        .iter()
+        .map(|k| match direct_is_cheaper(k.len(), bins, len) {
+            true => (Vec::new(), k.clone()),
+            false => lines::split(k, bins, rate),
+        })
+        .collect();
+    Ok(Some(LinePlan {
+        placed: split.iter().map(|(on, _)| on.clone()).collect(),
+        summed: split.into_iter().map(|(_, off)| off).collect(),
+        dropped: found.dropped,
+        bins,
+        tail_db: found.tail,
+    }))
+}
+
+/// Each lane's lines under the ceiling and over it, before any horizon places them.
+pub(super) struct Kept {
+    pub(super) kept: Vec<Vec<Line>>,
+    dropped: Vec<Vec<Line>>,
+    grids: Vec<f64>,
+    tail: Option<f64>,
+}
+
+pub(super) fn kept_lines(
+    sum: &SpectralSum,
+    profile: &Profile,
+    ceiling: f64,
+) -> Result<Option<Kept>, CollapseError> {
     let mut per_lane = Vec::with_capacity(sum.lanes.len());
     let mut grids: Vec<f64> = Vec::new();
     let mut tail: Option<f64> = None;
@@ -257,21 +291,11 @@ fn line_plan(
             .fold(f64::INFINITY, f64::min);
         return Err(CollapseError::EmptyBand { ceiling, lowest });
     }
-
-    let bins = lines::grid(&kept, &grids, rate, horizon.span(), len);
-    let split: Vec<(Vec<Line>, Vec<Line>)> = kept
-        .iter()
-        .map(|k| match direct_is_cheaper(k.len(), bins, len) {
-            true => (Vec::new(), k.clone()),
-            false => lines::split(k, bins, rate),
-        })
-        .collect();
-    Ok(Some(LinePlan {
-        placed: split.iter().map(|(on, _)| on.clone()).collect(),
-        summed: split.into_iter().map(|(_, off)| off).collect(),
+    Ok(Some(Kept {
+        kept,
         dropped,
-        bins,
-        tail_db: tail,
+        grids,
+        tail,
     }))
 }
 

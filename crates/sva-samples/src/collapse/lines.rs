@@ -170,14 +170,35 @@ pub fn at(kept: &[Line], t: f64) -> C64 {
     })
 }
 
-pub fn add_direct(plane: &mut [f64], kept: &[Line], start_secs: f64, rate: u32) {
-    if kept.is_empty() {
-        return;
+/// Kept lines summed at one instant: the constant lines folded to one level, the rest turned.
+pub struct Direct {
+    level: f64,
+    moving: Vec<Line>,
+}
+
+impl Direct {
+    pub fn of(kept: &[Line]) -> Option<Direct> {
+        if kept.is_empty() {
+            return None;
+        }
+        let (dc, moving): (Vec<Line>, Vec<Line>) = kept.iter().partition(|l| l.hz == 0.0);
+        Some(Direct {
+            level: dc.iter().map(|l| l.amp.re).sum(),
+            moving,
+        })
     }
-    let (dc, moving): (Vec<Line>, Vec<Line>) = kept.iter().partition(|l| l.hz == 0.0);
-    let level: f64 = dc.iter().map(|l| l.amp.re).sum();
+
+    pub fn at(&self, t: f64) -> f64 {
+        self.level + at(&self.moving, t).re
+    }
+}
+
+pub fn add_direct(plane: &mut [f64], kept: &[Line], start_secs: f64, rate: u32) {
+    let Some(direct) = Direct::of(kept) else {
+        return;
+    };
     for (i, held) in plane.iter_mut().enumerate() {
-        *held += level + at(&moving, start_secs + i as f64 / f64::from(rate)).re;
+        *held += direct.at(start_secs + i as f64 / f64::from(rate));
     }
 }
 

@@ -16,7 +16,7 @@ use crate::typing::Value;
 
 /// What one subterm answers with, decided once: normalizing a closed form at every instant of a
 /// horizon is the same answer as many times as there are samples.
-enum Point {
+pub(super) enum Point {
     SpectralSum(Box<SpectralSum>),
     Written {
         body: Box<Body>,
@@ -97,7 +97,22 @@ fn sweep(
         .collect()
 }
 
-fn value(held: &Render, tree: &Point, component: usize, t: f64) -> Result<C64, CollapseError> {
+/// Whether any subterm is another node's samples, which only a whole buffer holds here.
+pub(super) fn reads_samples(tree: &Point) -> bool {
+    match tree {
+        Point::Buffer(_) => true,
+        Point::SpectralSum(_) => false,
+        Point::Written { refs, .. } => refs.values().any(reads_samples),
+        Point::Operation { args, .. } => args.iter().any(reads_samples),
+    }
+}
+
+pub(super) fn value(
+    held: &Render,
+    tree: &Point,
+    component: usize,
+    t: f64,
+) -> Result<C64, CollapseError> {
     match tree {
         Point::SpectralSum(sum) => eval_spectral_sum_at(sum, component, t),
         Point::Written { body, refs } => eval_written_at(
@@ -211,7 +226,7 @@ fn power(x: C64, exponent: f64) -> Result<C64, CollapseError> {
     })
 }
 
-fn plan(held: &Render, id: NodeId) -> Result<Point, EngineError> {
+pub(super) fn plan(held: &Render, id: NodeId) -> Result<Point, EngineError> {
     if !held.tys.ty(id).is_closed_form() {
         return Ok(Point::Buffer(id));
     }
@@ -253,7 +268,7 @@ fn plan(held: &Render, id: NodeId) -> Result<Point, EngineError> {
     }
 }
 
-fn refused(held: &Render, id: NodeId, e: &CollapseError) -> EngineError {
+pub(super) fn refused(held: &Render, id: NodeId, e: &CollapseError) -> EngineError {
     EngineError::refused(Diagnostic {
         code: e.code().to_string(),
         message: e.to_string(),

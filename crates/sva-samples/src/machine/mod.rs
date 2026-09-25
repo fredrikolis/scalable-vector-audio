@@ -1,7 +1,8 @@
-// Concern: runs one node renderer a sample at a time into a buffer | Non-concern: the op array's own shape (ops.rs), the tree the engine hands over (renderer.rs) | IO: (NodeRenderer, Ctx) -> Buffer
+// Concern: runs one node renderer a sample at a time, whole or span after span | Non-concern: the op array's own shape (ops.rs), the tree the engine hands over | IO: (NodeRenderer, Ctx) -> Buffer
 
 pub mod ops;
 pub mod renderer;
+pub mod tape;
 
 use crate::buffer::Buffer;
 use crate::error::SampleError;
@@ -9,6 +10,7 @@ use crate::filters::FilterSite;
 use crate::physics::{Solver, site};
 use ops::{Layout, Op, lower};
 use renderer::{NodeRenderer, Site};
+use tape::{Tape, Window};
 
 pub use ops::Layout as MachineLayout;
 
@@ -27,7 +29,7 @@ pub struct Ctx<'a> {
     pub rate: u32,
     pub origin_secs: f64,
     pub len: usize,
-    pub reads: &'a [&'a Buffer],
+    pub reads: &'a [Window<'a>],
     pub self_planes: &'a [f64],
     pub written: usize,
 }
@@ -46,7 +48,20 @@ impl NodeRenderer {
 
     /// A loop reads what this run wrote; a caller's own `self_planes` replaces it.
     pub fn run(&self, layout: &Layout, ctx: &Ctx) -> Result<Buffer, SampleError> {
-        run(&self.compile(layout)?, ctx)
+        let mut machine = Machine::open(self, layout, ctx.rate, ctx.origin_secs)?;
+        let mut own = Tape::new(machine.width(), ctx.len);
+        let past = match ctx.self_planes.is_empty() {
+            true => Past::Own,
+            false => Past::Fixed {
+                planes: ctx.self_planes,
+                len: ctx.len,
+                written: ctx.written,
+            },
+        };
+        machine.steps(ctx.len, ctx.reads, &past, &mut own)?;
+        let mut out = Buffer::of_planes(ctx.rate, own.into_planes());
+        out.origin_secs = ctx.origin_secs;
+        Ok(out)
     }
 }
 
@@ -103,67 +118,117 @@ fn part(v: &[f64], c: usize) -> f64 {
     v[c % v.len()]
 }
 
-fn run(p: &Program, ctx: &Ctx) -> Result<Buffer, SampleError> {
-    let mut states = open(p, ctx.rate)?;
-    let mut out = Buffer::silence(ctx.rate, p.width, ctx.len);
-    out.origin_secs = ctx.origin_secs;
-    let mut stack = Stack::of(&p.widths);
-    let sr = f64::from(ctx.rate);
-    let mut own = vec![0.0; p.width * ctx.len];
-    for i in 0..ctx.len {
-        {
-            let held = Ctx {
-                rate: ctx.rate,
-                origin_secs: ctx.origin_secs,
-                len: ctx.len,
-                reads: ctx.reads,
-                self_planes: match ctx.self_planes.is_empty() {
-                    true => &own,
-                    false => ctx.self_planes,
-                },
-                written: match ctx.self_planes.is_empty() {
-                    true => i,
-                    false => ctx.written,
-                },
-            };
-            step(p, &held, &mut states, &mut stack, i, sr)?;
-        }
-        let top = &stack.values[*stack.pending.last().expect("a renderer leaves one value")];
-        for c in 0..p.width {
-            let value = part(top, c);
-            out.planes[c][i] = value;
-            own[c * ctx.len + i] = value;
-        }
+enum Past<'a> {
+    Own,
+    Fixed {
+        planes: &'a [f64],
+        len: usize,
+        written: usize,
+    },
+}
+
+/// One compiled node and every call site's state, run over any span of the grid in order.
+/// A span continues exactly where the last ended, so blocks write the samples one run would.
+pub struct Machine {
+    program: Program,
+    states: Vec<State>,
+    stack: Stack,
+    rate: u32,
+    origin_secs: f64,
+}
+
+impl Machine {
+    pub fn open(
+        renderer: &NodeRenderer,
+        layout: &Layout,
+        rate: u32,
+        origin_secs: f64,
+    ) -> Result<Machine, SampleError> {
+        let program = renderer.compile(layout)?;
+        let states = open(&program, rate)?;
+        let stack = Stack::of(&program.widths);
+        Ok(Machine {
+            program,
+            states,
+            stack,
+            rate,
+            origin_secs,
+        })
     }
-    Ok(out)
+
+    pub fn width(&self) -> usize {
+        self.program.width
+    }
+
+    pub fn run_to(
+        &mut self,
+        to: usize,
+        reads: &[Window],
+        own: &mut Tape,
+    ) -> Result<(), SampleError> {
+        for state in &mut self.states {
+            if let State::Filter(filter) = state {
+                filter.forget_frames();
+            }
+        }
+        self.steps(to, reads, &Past::Own, own)
+    }
+
+    fn steps(
+        &mut self,
+        to: usize,
+        reads: &[Window],
+        past: &Past,
+        own: &mut Tape,
+    ) -> Result<(), SampleError> {
+        let sr = f64::from(self.rate);
+        let p = &self.program;
+        for i in own.end()..to {
+            let t = self.origin_secs + i as f64 / sr;
+            let here = Here {
+                reads,
+                past,
+                own,
+                i,
+                t,
+                sr,
+            };
+            step(p, &here, &mut self.states, &mut self.stack)?;
+            let top = &self.stack.values[*self
+                .stack
+                .pending
+                .last()
+                .expect("a renderer leaves one value")];
+            for c in 0..p.width {
+                own.push(c, part(top, c));
+            }
+        }
+        Ok(())
+    }
+}
+
+struct Here<'a> {
+    reads: &'a [Window<'a>],
+    past: &'a Past<'a>,
+    own: &'a Tape,
+    i: usize,
+    t: f64,
+    sr: f64,
 }
 
 /// One sample of the whole renderer. Postfix order puts every operand's slot before the slot
 /// that consumes it, so `split_at_mut` hands out the reads and the one write at once.
 fn step(
     p: &Program,
-    ctx: &Ctx,
+    here: &Here,
     states: &mut [State],
     stack: &mut Stack,
-    i: usize,
-    sr: f64,
 ) -> Result<(), SampleError> {
-    let t = ctx.origin_secs + i as f64 / sr;
     stack.pending.clear();
     for (slot, op) in p.ops.iter().enumerate() {
         let at = stack.pending.len() - arity_of(op);
         let (done, rest) = stack.values.split_at_mut(slot);
-        fill(
-            op,
-            done,
-            &stack.pending[at..],
-            &mut rest[0],
-            ctx,
-            states,
-            i,
-            t,
-            sr,
-        )?;
+        fill(op, done, &stack.pending[at..], &mut rest[0], here, states)?;
         stack.pending.truncate(at);
         stack.pending.push(slot);
     }
@@ -180,40 +245,41 @@ fn arity_of(op: &Op) -> usize {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn fill(
     op: &Op,
     done: &[Vec<f64>],
     srcs: &[usize],
     result: &mut [f64],
-    ctx: &Ctx,
+    here: &Here,
     states: &mut [State],
-    i: usize,
-    t: f64,
-    sr: f64,
 ) -> Result<(), SampleError> {
+    let (i, t, sr) = (here.i, here.t, here.sr);
     let arg = |k: usize| done[srcs[k]].as_slice();
     match op {
         Op::Const(v) => result[0] = *v,
         Op::Time => result[0] = t,
         Op::Read { id, shift } => {
-            let buffer = ctx.reads[id.0 as usize];
+            let window = here.reads[id.0 as usize];
             let at = i as i64 + shift;
             for (c, slot) in result.iter_mut().enumerate() {
-                *slot = usize::try_from(at)
-                    .ok()
-                    .and_then(|k| buffer.plane(c).get(k).copied())
-                    .unwrap_or(0.0);
+                *slot = window.at(c, at);
             }
         }
         Op::SelfAt { steps } => {
             let at = i as i64 - i64::from(*steps);
             for (c, slot) in result.iter_mut().enumerate() {
-                *slot = usize::try_from(at)
-                    .ok()
-                    .filter(|k| *k < ctx.written)
-                    .and_then(|k| ctx.self_planes.get(c * ctx.len + k).copied())
-                    .unwrap_or(0.0);
+                *slot = match here.past {
+                    Past::Own => here.own.window().at(c, at),
+                    Past::Fixed {
+                        planes,
+                        len,
+                        written,
+                    } => usize::try_from(at)
+                        .ok()
+                        .filter(|k| k < written)
+                        .and_then(|k| planes.get(c * len + k).copied())
+                        .unwrap_or(0.0),
+                };
             }
         }
         Op::Add(_) | Op::Mul(_) => {

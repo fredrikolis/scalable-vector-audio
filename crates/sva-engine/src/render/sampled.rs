@@ -3,7 +3,7 @@
 use sva_formula::NodeId;
 use sva_samples::machine::ops::Layout;
 use sva_samples::{
-    Binary, BufId, Buffer, Ctx, Label, NodeRenderer, SampleError, Site, SiteId, Unary, stft,
+    Binary, BufId, Buffer, Ctx, Label, NodeRenderer, SampleError, Site, SiteId, Unary, Window, stft,
 };
 
 use crate::cast::Cast;
@@ -64,10 +64,19 @@ fn stepped(held: &Render, id: NodeId) -> Result<(Buffer, Label), EngineError> {
 pub(super) struct Program {
     pub renderer: NodeRenderer,
     pub reads: Vec<NodeId>,
-    layout: Layout,
+    pub layout: Layout,
 }
 
 pub(super) fn program(held: &Render, id: NodeId) -> Result<Program, EngineError> {
+    program_reading(held, id, &|r| held.buffers.get(&r).map_or(1, |b| b.width))
+}
+
+/// `width_of` answers how wide each node this one reads is held.
+pub(super) fn program_reading(
+    held: &Render,
+    id: NodeId,
+    width_of: &dyn Fn(NodeId) -> usize,
+) -> Result<Program, EngineError> {
     let mut build = Build {
         held,
         reads: Vec::new(),
@@ -77,10 +86,7 @@ pub(super) fn program(held: &Render, id: NodeId) -> Result<Program, EngineError>
     let (reads, sites) = (build.reads, build.sites);
     let layout = Layout {
         width: held.tys.ty(id).width as usize,
-        read_widths: reads
-            .iter()
-            .map(|r| held.buffers.get(r).map_or(1, |b| b.width))
-            .collect(),
+        read_widths: reads.iter().map(|r| width_of(*r)).collect(),
         sites,
     };
     Ok(Program {
@@ -104,10 +110,10 @@ impl Program {
             .horizon
             .len(held.config.rate)
             .map_err(|e| collapse_refused(held, id, &e.to_string(), e.code()))?;
-        let buffers: Vec<&Buffer> = self
+        let buffers: Vec<Window> = self
             .reads
             .iter()
-            .map(|r| held.buffers.get(r).expect("a read is materialized first"))
+            .map(|r| Window::of(held.buffers.get(r).expect("a read is materialized first")))
             .collect();
         let ctx = Ctx {
             rate: held.config.rate,

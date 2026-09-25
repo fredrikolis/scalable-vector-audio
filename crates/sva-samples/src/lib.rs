@@ -17,7 +17,7 @@ pub mod stft;
 pub use biquad::Coeffs;
 pub use buffer::Buffer;
 pub use collapse::{
-    ALIAS_OVERSAMPLE, AliasScore, Audible, Horizon, Refs, crop_gain, eval_spectral_sum_at,
+    ALIAS_OVERSAMPLE, AliasScore, Audible, Horizon, Refs, Rows, crop_gain, eval_spectral_sum_at,
     eval_written_at, lane_of, of_spectral_sum, of_spectral_sum_or_point, render, render_written,
     truncate_spectral_sum, truncate_written, unary,
 };
@@ -25,8 +25,9 @@ pub use error::{CollapseError, SampleError};
 pub use filters::{Automation, AutomationFrame, FilterSite, FilterTrace};
 pub use frames::Frames;
 pub use label::{Cost, Detail, Dropped, Label, Rule, Source};
-pub use machine::Ctx;
 pub use machine::renderer::{Binary, BufId, NodeRenderer, Site, SiteId, Unary};
+pub use machine::tape::{Tape, Window};
+pub use machine::{Ctx, Machine};
 pub use measure::Consumes;
 pub use measure::alias::{
     AUDIBLE_NMR_DB, Alias, AliasBand, PLAYBACK_DB_SPL, measure_alias, worst as worst_alias,

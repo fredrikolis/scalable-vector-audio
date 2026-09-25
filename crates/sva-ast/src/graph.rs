@@ -14,7 +14,7 @@ use crate::tsv::Grid;
 /// The one reserved folder name; its contents are ordinary nodes, so `@variables/bpm` refs.
 pub const VARIABLES: &str = "variables";
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Graph {
     root: String,
     nodes: BTreeMap<String, Expr>,
