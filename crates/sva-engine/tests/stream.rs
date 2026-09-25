@@ -39,6 +39,12 @@ fn composition() -> Graph {
             ("held", "sin(2*pi*220*t)\n"),
             ("bar", "chaigne_doutaut(440)\n"),
             ("slow", "sin(2*pi*220*t)*exp(0 - 0.5*t)\n"),
+            (
+                "keyed",
+                "lowpass(sample(@saw*(crop(1, 0s, release) + crop(exp(0 - (t - release)/0.01), \
+                 release, 60s))), cutoff=900, q=0.8)\n",
+            ),
+            ("keyed_up", "@keyed(t, release=0.05)\n"),
         ],
     )
 }
@@ -208,8 +214,10 @@ fn a_stream_until_silent_ends_where_the_bound_proves_it() {
     );
 }
 
+/// A stream proves nothing at its opening, where no block has left a state yet; its first
+/// block's end refuses what no state proves.
 #[test]
-fn a_stream_whose_silence_is_never_proven_refuses_at_its_opening() {
+fn a_stream_whose_silence_is_never_proven_refuses_at_its_first_block() {
     let g = composition();
     let config = StreamConfig {
         rate: RATE,
@@ -220,11 +228,54 @@ fn a_stream_whose_silence_is_never_proven_refuses_at_its_opening() {
         ("held", "engine.never_silent"),
         ("bar", "engine.no_tail_bound"),
     ] {
-        let refused = Stream::open(&g, target, &[], config)
-            .err()
-            .expect("no proof");
+        let mut stream = Stream::open(&g, target, &[], config).expect("no proof at the opening");
+        let refused = stream.next_block().err().expect("no proof");
         assert_eq!(refused.code(), code, "{target}: {refused}");
+        assert_eq!(stream.position(), config.block, "{target}");
     }
+}
+
+/// A filter's state exists once a block has run through it: a released filtered voice ends
+/// past its key-up where its bound proves it, every sample the whole render's; a held one
+/// runs to `max_secs` and refuses there.
+#[test]
+fn a_filtered_stream_until_silent_is_proven_from_its_blocks() {
+    let g = composition();
+    let config = StreamConfig {
+        rate: RATE,
+        block: 441,
+        silent: Some(SILENT),
+    };
+    let mut stream = Stream::open(&g, "keyed_up", &[], config).expect("a filter opens");
+    let mut heard = Vec::new();
+    while let Some(block) = stream.next_block().expect("a block") {
+        heard.extend_from_slice(block.plane(0));
+    }
+    assert_eq!(Some(heard.len()), stream.end());
+    assert!(
+        heard.len() > 2_205,
+        "an end before the key-up at {}",
+        heard.len()
+    );
+    let want = whole(&g, "keyed_up", heard.len());
+    sounds(&want);
+    assert_eq!(heard, want);
+    let held = StreamConfig {
+        silent: Some(Silent {
+            max_secs: 0.05,
+            ..SILENT
+        }),
+        ..config
+    };
+    let mut stream = Stream::open(&g, "sawed", &[], held).expect("a held filter opens");
+    let refused = loop {
+        match stream.next_block() {
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("a held saw proven silent"),
+            Err(e) => break e,
+        }
+    };
+    assert_eq!(refused.code(), "engine.not_silent_by", "{refused}");
 }
 
 /// Silence proven from the state held at each block's end; a stream not proven by `max_secs`

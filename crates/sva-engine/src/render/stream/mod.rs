@@ -75,15 +75,14 @@ impl Block<'_> {
 
 impl Stream {
     /// `bindings` are the named arguments `@target(t, name=value, ...)` is written with.
+    /// Proves no silence until a block has run.
     pub fn open(
         graph: &Graph,
         target: &str,
         bindings: &[(String, f64)],
         config: StreamConfig,
     ) -> Result<Stream, EngineError> {
-        let mut stream = Stream::opened_at(graph, target, bindings, config, 0)?;
-        stream.settle()?;
-        Ok(stream)
+        Stream::opened_at(graph, target, bindings, config, 0)
     }
 
     /// Silence is proven by `max_secs` past `from`.
