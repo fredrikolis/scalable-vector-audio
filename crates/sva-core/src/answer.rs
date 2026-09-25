@@ -6,7 +6,7 @@ use sva_engine::{
     Alias, AliasBand, Answer, Arguments, BandCrest, BandTrack, Bands, Binding, Buffer, CacheStats,
     Cost, Crest, Detail, EnvelopeFrame, FormantFrame, Horizon, Label, LedgerEntry, Loudness,
     LoudnessFrame, Outcome, Output, PayloadKind, Source, SpectralSum, Spectrum, StereoFrame,
-    StereoImage, Tier,
+    StereoImage, Tier, Work,
 };
 
 use crate::json::{NONE, capped, escape, list, num};
@@ -499,6 +499,15 @@ fn cache_json(cache: Option<&CacheReport>) -> String {
         ),
         None => NONE.to_string(),
     }
+}
+
+/// Whole counts every one; `waves` is null where a node's go uncounted.
+pub fn work_json(work: &Work) -> String {
+    let waves = work.waves.map_or(NONE.to_string(), |w| w.to_string());
+    format!(
+        "{{ \"samples\": {}, \"proofs\": {}, \"priced_flops\": {}, \"waves\": {waves} }}",
+        work.samples, work.proofs, work.priced_flops
+    )
 }
 
 /// `computed` counts every miss, `stored` the misses the store kept, `slotted` and `replaced`

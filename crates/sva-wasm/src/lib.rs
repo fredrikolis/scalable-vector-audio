@@ -8,7 +8,7 @@ mod opfs;
 
 use sva_core::{
     CliError, Diagnostic, Job, Rendered, Report, SAMPLE_LIMIT, Silent, WindowEdge, error_envelope,
-    execute, query_data, representation_for, retired, silence, stats_json, window_for,
+    execute, query_data, representation_for, retired, silence, stats_json, window_for, work_json,
 };
 use sva_engine::{
     Buffer, Cache, CacheStats, Horizon, MemoryCache, PSYCHOACOUSTIC_V1, Pack, Representation,
@@ -405,6 +405,10 @@ impl Rendering {
         ))
     }
 
+    pub fn work(&self) -> Result<JsValue, JsValue> {
+        parse(&work_json(&self.inner.render.work()))
+    }
+
     /// The object `sva-cli render --as <name>` puts under `data`, arrays capped as it caps.
     pub fn query(
         &self,
@@ -566,6 +570,11 @@ impl Stream {
         Checkpoint {
             inner: self.inner.checkpoint(),
         }
+    }
+
+    /// `{ samples, proofs, priced_flops, waves }` since it opened or resumed.
+    pub fn work(&self) -> Result<JsValue, JsValue> {
+        parse(&work_json(&self.inner.work()))
     }
 
     /// `until` as `stream` takes it, `max_secs` counted from the checkpoint.

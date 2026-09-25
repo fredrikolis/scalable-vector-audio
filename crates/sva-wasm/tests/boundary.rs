@@ -817,3 +817,27 @@ fn a_stream_refuses_what_it_cannot_take_at_the_boundary() {
     );
     refused_as(empty.err(), "engine.no_stream");
 }
+
+/// A sine is one line and its mirror, turned at every sample; a render prices its schedule.
+#[wasm_bindgen_test]
+fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
+    let held = page();
+    let mut stream = opened(&held, "partials/one", JsValue::UNDEFINED);
+    blocks(&mut stream, 4);
+    let work = stream
+        .work()
+        .unwrap_or_else(|_| unreachable!("a stream's work"));
+    let count = |of: &JsValue, name: &str| field(of, name).as_f64();
+    let samples = (4 * BLOCK) as f64;
+    assert_eq!(count(&work, "samples"), Some(samples));
+    assert_eq!(count(&work, "proofs"), Some(0.0));
+    assert_eq!(count(&work, "waves"), Some(2.0 * samples));
+    assert!(count(&work, "priced_flops").is_some_and(|f| f > 0.0));
+
+    let whole = render(&held, "partials/one")
+        .work()
+        .unwrap_or_else(|_| unreachable!("a render's work"));
+    assert_eq!(count(&whole, "samples"), Some(8000.0));
+    assert!(count(&whole, "priced_flops").is_some_and(|f| f > 0.0));
+    assert!(field(&whole, "waves").is_null());
+}
