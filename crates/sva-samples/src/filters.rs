@@ -120,6 +120,7 @@ fn nearest(frames: &[AutomationFrame], t_secs: f64) -> Option<AutomationFrame> {
         .copied()
 }
 
+#[derive(Clone)]
 struct Lane {
     state: crate::biquad::State,
     coeffs: Coeffs,
@@ -143,6 +144,7 @@ impl Lane {
 
 /// A call site, not a channel: one site carries as many lanes as its widest argument has
 /// components, so widening a signal never multiplies the call sites an author writes.
+#[derive(Clone)]
 pub struct FilterSite {
     shape: Shape,
     lanes: Vec<Lane>,

@@ -61,7 +61,7 @@ impl RenderConfig {
 
 pub use answer::{answer, answer_buffer, ledger_over, sketch_atom};
 pub use silent::{Silent, render_until_silent};
-pub use stream::{Block, STREAMED, Stream, StreamConfig};
+pub use stream::{Block, Checkpoint, STREAMED, Stream, StreamConfig};
 
 pub struct Render {
     pub root: NodeId,

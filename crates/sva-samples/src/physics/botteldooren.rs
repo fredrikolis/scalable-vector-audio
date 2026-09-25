@@ -131,6 +131,7 @@ pub fn max_axis_unrounded_nodes(f0: f64, aspect_y: f64, aspect_z: f64, sr: f64) 
     nx_u.max(ny_u).max(nz_u)
 }
 
+#[derive(Clone)]
 struct RoomGrid {
     p_now: Vec<f64>,
     p_prev: Vec<f64>,
@@ -177,6 +178,7 @@ const SOURCE_Z: f64 = 0.34;
 const SOURCE_WINDOW_RADIUS_CELLS: f64 = 2.0;
 const SOURCE_WINDOW_WEIGHT_FLOOR: f64 = 1e-3;
 
+#[derive(Clone)]
 struct SourcePatch {
     nodes: Vec<usize>,
     weights: Vec<f64>,
@@ -225,6 +227,7 @@ fn build_source_patch(
     SourcePatch { nodes, weights }
 }
 
+#[derive(Clone)]
 pub struct BotteldoorenSite {
     grid: RoomGrid,
     source_patch: SourcePatch,

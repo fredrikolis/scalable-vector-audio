@@ -1,5 +1,6 @@
 // Concern: the stiff-string FD grid both string models share, and its point coupling | Non-concern: what drives a string | IO: (Wire, f0, b, sr) -> StringGrid
 
+#[derive(Clone)]
 pub(crate) struct StringGrid {
     pub(crate) y_now: Vec<f64>,
     pub(crate) y_prev: Vec<f64>,

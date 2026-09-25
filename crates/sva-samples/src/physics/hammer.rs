@@ -2,6 +2,7 @@
 
 pub const SUBSTEPS: usize = 16;
 
+#[derive(Clone)]
 pub struct Hammer {
     pos: f64,
     prev: f64,

@@ -64,6 +64,7 @@ const MEMBRANE_TENSION_N_M: f64 = 3000.0;
 /// Gives `c = sqrt(T/sigma) = 100 m/s`; order of magnitude only.
 const MEMBRANE_AREAL_DENSITY_KG_M2: f64 = 0.3;
 /// Row-major `iy * (nx + 1) + ix`; the edges are the clamped boundary.
+#[derive(Clone)]
 struct MembraneGrid {
     u_now: Vec<f64>,
     u_prev: Vec<f64>,
@@ -89,6 +90,7 @@ const MALLET_WINDOW_QUARTIC_COEFF_M4: f64 = 1.0e7;
 const MALLET_WINDOW_WEIGHT_FLOOR: f64 = 1e-8;
 
 /// Weights (sum to 1, RCJ eq. 4) shared by the read average and force spread.
+#[derive(Clone)]
 struct ContactPatch {
     nodes: Vec<usize>,
     weights: Vec<f64>,
@@ -205,6 +207,7 @@ fn build_grid(params: &RhaoutiChaigneJolyParams, sr: f64) -> MembraneGrid {
     )
 }
 
+#[derive(Clone)]
 pub struct RhaoutiChaigneJolySite {
     grid: MembraneGrid,
     hammer: Hammer,

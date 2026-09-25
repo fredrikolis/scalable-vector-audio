@@ -32,6 +32,8 @@ pub enum SampleError {
         model: &'static str,
         sample: usize,
     },
+    /// State held for other call sites than the ones it is handed to.
+    StateMismatch,
 }
 
 /// What a collapse refuses, per FORMAT 16.3.
@@ -152,6 +154,7 @@ impl SampleError {
             SampleError::GridTooLarge { .. } => "samples.grid_too_large",
             SampleError::StringPastRate { .. } => "samples.string_past_rate",
             SampleError::ContactUnsettled { .. } => "samples.contact_unsettled",
+            SampleError::StateMismatch => "samples.state_mismatch",
         }
     }
 }
@@ -193,6 +196,11 @@ impl std::fmt::Display for SampleError {
                 f,
                 "`{model}`'s contact force settled on no value at sample {sample}. ask for a \
                  lower bow velocity or force, or a higher --sample-rate"
+            ),
+            SampleError::StateMismatch => write!(
+                f,
+                "the state held is for other call sites than these: a site that moved takes \
+                 only a chaigne_askenfelt string's motion, and only across a new release"
             ),
         }
     }

@@ -143,6 +143,7 @@ fn friction_force(v: f64, z: f64, r: f64, s0: f64, s1: f64, s2: f64) -> f64 {
     s0 * z + s1 * r + s2 * v
 }
 
+#[derive(Clone)]
 struct Coupling {
     coeff: f64,
     b_known: f64,
@@ -204,6 +205,7 @@ impl Coupling {
     }
 }
 
+#[derive(Clone)]
 pub struct WillemsenBilbaoSerafinSite {
     strings: Vec<StringGrid>,
     /// Read and spread alike.

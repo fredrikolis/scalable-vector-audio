@@ -65,9 +65,16 @@ impl NodeRenderer {
     }
 }
 
+#[derive(Clone)]
 enum State {
     Filter(FilterSite),
     Physics(Box<dyn Solver>),
+}
+
+impl Clone for Box<dyn Solver> {
+    fn clone(&self) -> Box<dyn Solver> {
+        self.boxed()
+    }
 }
 
 /// A filter site carries one lane per component of its widest argument, which the compiled
@@ -137,6 +144,12 @@ pub struct Machine {
     origin_secs: f64,
 }
 
+#[derive(Clone)]
+pub struct MachineState {
+    sites: Vec<Site>,
+    states: Vec<State>,
+}
+
 impl Machine {
     pub fn open(
         renderer: &NodeRenderer,
@@ -201,6 +214,40 @@ impl Machine {
                 .expect("a renderer leaves one value")];
             for c in 0..p.width {
                 own.push(c, part(top, c));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn state(&self) -> MachineState {
+        MachineState {
+            sites: self.program.sites.clone(),
+            states: self.states.clone(),
+        }
+    }
+
+    /// Takes `held`'s state site by site. A solver whose release alone moved keeps its own
+    /// parameters and takes only the motion; any other difference refuses.
+    pub fn carry(&mut self, held: &MachineState) -> Result<(), SampleError> {
+        if held.sites.len() != self.program.sites.len() {
+            return Err(SampleError::StateMismatch);
+        }
+        for (at, (mine, theirs)) in self.program.sites.iter().zip(&held.sites).enumerate() {
+            let taken = match (mine, theirs, &mut self.states[at], &held.states[at]) {
+                _ if mine == theirs => {
+                    self.states[at] = held.states[at].clone();
+                    true
+                }
+                (
+                    Site::Physics(a),
+                    Site::Physics(b),
+                    State::Physics(solver),
+                    State::Physics(motion),
+                ) if a.differs_in_release_alone(b) => solver.take_motion(motion.as_ref()),
+                _ => false,
+            };
+            if !taken {
+                return Err(SampleError::StateMismatch);
             }
         }
         Ok(())

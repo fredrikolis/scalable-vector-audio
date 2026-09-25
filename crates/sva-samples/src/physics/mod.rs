@@ -13,6 +13,8 @@ pub(crate) mod string_tail;
 pub mod tonehole;
 pub mod willemsen_bilbao_serafin;
 
+use std::any::Any;
+
 use crate::error::SampleError;
 
 use botteldooren::{BotteldoorenParams, BotteldoorenSite};
@@ -23,8 +25,28 @@ use rhaouti_chaigne_joly::{RhaoutiChaigneJolyParams, RhaoutiChaigneJolySite};
 use willemsen_bilbao_serafin::{WillemsenBilbaoSerafinParams, WillemsenBilbaoSerafinSite};
 
 /// One sample per call. The derivative half of the old pair died with the lanes.
-pub trait Solver {
+pub trait Solver: Held {
     fn step(&mut self) -> Result<f64, SampleError>;
+
+    /// `held`'s motion under this site's own parameters, where the two share one.
+    fn take_motion(&mut self, _held: &dyn Solver) -> bool {
+        false
+    }
+}
+
+pub trait Held {
+    fn boxed(&self) -> Box<dyn Solver>;
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl<T: Solver + Clone + 'static> Held for T {
+    fn boxed(&self) -> Box<dyn Solver> {
+        Box::new(self.clone())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -46,6 +68,20 @@ impl Params {
             Params::RhaoutiChaigneJoly(_) => "rhaouti_chaigne_joly",
             Params::ChaigneDoutaut(_) => "chaigne_doutaut",
             Params::Botteldooren(_) => "botteldooren",
+        }
+    }
+
+    pub fn differs_in_release_alone(&self, other: &Params) -> bool {
+        match (self, other) {
+            (Params::ChaigneAskenfelt(a), Params::ChaigneAskenfelt(b)) => {
+                a.release != b.release
+                    && *a
+                        == ChaigneAskenfeltParams {
+                            release: a.release,
+                            ..b.clone()
+                        }
+            }
+            _ => false,
         }
     }
 

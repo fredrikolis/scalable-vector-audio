@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use sva_formula::{Held, NodeId};
-use sva_samples::{Machine, NodeRenderer, Rows, Tape, Window};
+use sva_samples::{Machine, MachineState, NodeRenderer, Rows, Tape, Window};
 
 use super::super::pointwise::{self, Point};
 use super::super::{Render, collapse_refused, sampled};
@@ -220,6 +220,61 @@ impl Streamed {
                     .run_to(to, &windows, &mut self.tape)
                     .map_err(|e| sampled::refused(shell, id, &e))
             }
+        }
+    }
+}
+
+/// A sampled node's state and the samples its readers reach back to; a closed form holds none.
+#[derive(Clone)]
+pub(super) struct NodeState {
+    tape: Tape,
+    state: MachineState,
+}
+
+impl Streamed {
+    pub(super) fn held(&self) -> Option<NodeState> {
+        match &self.kind {
+            Kind::Machine { machine, .. } => Some(NodeState {
+                tape: self.tape.clone(),
+                state: machine.state(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Takes `held` at sample `at`; a closed form reads its own past again instead.
+    pub(super) fn resume(
+        &mut self,
+        shell: &Render,
+        held: &Option<NodeState>,
+        at: usize,
+    ) -> Result<(), EngineError> {
+        let from = at.saturating_sub(self.keep);
+        match (&mut self.kind, held) {
+            (Kind::Machine { machine, .. }, Some(held))
+                if held.tape.width() == self.width
+                    && held.tape.base() <= from
+                    && held.tape.end() == at =>
+            {
+                machine
+                    .carry(&held.state)
+                    .map_err(|e| sampled::refused(shell, self.id, &e))?;
+                self.tape = held.tape.clone();
+                Ok(())
+            }
+            (Kind::Rows(_) | Kind::Point(_), None) => {
+                self.tape = Tape::starting_at(self.width, self.tape.capacity(), from);
+                self.run(shell, &[], at, at)
+            }
+            _ => Err(EngineError::refused(Diagnostic {
+                code: "engine.checkpoint_mismatch".to_string(),
+                message: format!(
+                    "`{}` holds another kind of state than this checkpoint",
+                    shell.tys.name(self.id)
+                ),
+                location: Located::at(shell.tys.name(self.id), None),
+                help: "resume a checkpoint on the stream it was taken of".to_string(),
+            })),
         }
     }
 }

@@ -150,6 +150,7 @@ fn unison_frequencies(f0: f64, detune: f64, unison_count: usize, cents: &[f64]) 
 /// Bounds `valid()`, so the per-string force buffer can be a stack array.
 const MAX_UNISON: usize = 3;
 
+#[derive(Clone)]
 pub struct ChaigneAskenfeltSite {
     pub(crate) strings: Vec<StringGrid>,
     /// Per string, `rho (lambda dx/dt)^2`.
@@ -165,6 +166,10 @@ pub struct ChaigneAskenfeltSite {
     pub(crate) felt: Vec<Vec<Felt>>,
     pub(crate) landing: Option<(u64, f64)>,
     pub(crate) steps: u64,
+}
+
+pub fn landing_step(release: f64, sr: f64) -> Option<u64> {
+    release.is_finite().then(|| (release * sr).ceil() as u64)
 }
 
 /// Every node under the felt, or the nearest, sharing it evenly.
@@ -208,10 +213,7 @@ impl ChaigneAskenfeltSite {
             .iter()
             .map(|g| point_weights(g.n, params.strike_pos))
             .collect();
-        let landing = params
-            .release
-            .is_finite()
-            .then(|| ((params.release * sr).ceil() as u64, params.damper_ramp * sr));
+        let landing = landing_step(params.release, sr).map(|at| (at, params.damper_ramp * sr));
         let felt = match landing {
             Some(_) => strings.iter().map(|g| felt_on(g, params, dt)).collect(),
             None => vec![Vec::new(); strings.len()],
@@ -294,6 +296,27 @@ impl ChaigneAskenfeltSite {
 impl Solver for ChaigneAskenfeltSite {
     fn step(&mut self) -> Result<f64, SampleError> {
         Ok(self.advance())
+    }
+
+    /// Strings, hammer, bridge and step count move; the felt and its landing stay this site's.
+    fn take_motion(&mut self, held: &dyn Solver) -> bool {
+        let Some(held) = held.as_any().downcast_ref::<ChaigneAskenfeltSite>() else {
+            return false;
+        };
+        let alike = held.strings.len() == self.strings.len()
+            && held
+                .strings
+                .iter()
+                .zip(&self.strings)
+                .all(|(a, b)| a.n == b.n);
+        if alike {
+            self.strings = held.strings.clone();
+            self.hammer = held.hammer.clone();
+            self.detached = held.detached.clone();
+            (self.bridge_now, self.bridge_prev) = (held.bridge_now, held.bridge_prev);
+            self.steps = held.steps;
+        }
+        alike
     }
 }
 

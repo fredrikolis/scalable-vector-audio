@@ -64,6 +64,7 @@ const BETA1_L: f64 = 4.730040744862704;
 /// A free-bar anti-node for nearly every low partial, off the strike.
 const PICKUP_POS: f64 = 0.93;
 
+#[derive(Clone)]
 pub(crate) struct BarGrid {
     pub(crate) u_now: Vec<f64>,
     pub(crate) u_prev: Vec<f64>,
@@ -145,6 +146,7 @@ fn build_grid(params: &ChaigneDoutautParams, sr: f64) -> BarGrid {
     bar_grid(rho, kappa, length, params.damp_dc, params.damp_freq, sr)
 }
 
+#[derive(Clone)]
 pub struct ChaigneDoutautSite {
     bar: BarGrid,
     hammer: Hammer,

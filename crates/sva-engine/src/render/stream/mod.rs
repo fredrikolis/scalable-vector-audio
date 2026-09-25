@@ -6,9 +6,11 @@ use std::collections::BTreeMap;
 
 use sva_ast::Graph;
 use sva_samples::Tape;
+use sva_samples::physics::chaigne_askenfelt::landing_step;
 
 use super::{Render, RenderConfig, prepared};
 use crate::error::{Diagnostic, EngineError, Located};
+use crate::instantiate::RELEASE;
 use crate::schedule;
 use node::Streamed;
 
@@ -23,6 +25,9 @@ pub struct StreamConfig {
 /// A target rendered from the grid's first sample on, one block at a time: every block is the
 /// samples a whole render over the same rows writes there, bit for bit.
 pub struct Stream {
+    graph: Graph,
+    target: String,
+    bindings: Vec<(String, f64)>,
     config: StreamConfig,
     shell: Render,
     nodes: Vec<Streamed>,
@@ -93,6 +98,9 @@ impl Stream {
             .position(|n| n.id == shell.root)
             .ok_or_else(|| EngineError::UnknownNode(shell.tys.name(shell.root).to_string()))?;
         Ok(Stream {
+            graph: graph.clone(),
+            target: target.to_string(),
+            bindings: bindings.to_vec(),
             config,
             shell,
             nodes,
@@ -125,6 +133,104 @@ impl Stream {
     pub fn config(&self) -> StreamConfig {
         self.config
     }
+
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            at: self.at,
+            target: self.target.clone(),
+            bindings: self.bindings.clone(),
+            config: self.config,
+            nodes: self.nodes.iter().map(Streamed::held).collect(),
+        }
+    }
+
+    /// This stream's target from `checkpoint` on, `bindings` in force. A binding may move
+    /// only where no sample before the checkpoint can hear it: `release`, at or past it.
+    pub fn resume(
+        &self,
+        checkpoint: &Checkpoint,
+        bindings: &[(String, f64)],
+    ) -> Result<Stream, EngineError> {
+        if checkpoint.target != self.target || checkpoint.config != self.config {
+            return Err(mismatch(&self.target, "another stream"));
+        }
+        causal(checkpoint, bindings, self.config.rate, &self.target)?;
+        let mut resumed = Stream::open(&self.graph, &self.target, bindings, self.config)?;
+        if resumed.nodes.len() != checkpoint.nodes.len() {
+            return Err(mismatch(&self.target, "a graph of another shape"));
+        }
+        for (node, held) in resumed.nodes.iter_mut().zip(&checkpoint.nodes) {
+            node.resume(&resumed.shell, held, checkpoint.at)?;
+        }
+        resumed.at = checkpoint.at;
+        Ok(resumed)
+    }
+}
+
+/// Every node's state at a block's end, and what its stream was opened with.
+#[derive(Clone)]
+pub struct Checkpoint {
+    at: usize,
+    target: String,
+    bindings: Vec<(String, f64)>,
+    config: StreamConfig,
+    nodes: Vec<Option<node::NodeState>>,
+}
+
+impl Checkpoint {
+    pub fn position(&self) -> usize {
+        self.at
+    }
+}
+
+/// A moved `release` changes nothing before the step a felt released then lands on.
+fn causal(
+    checkpoint: &Checkpoint,
+    bindings: &[(String, f64)],
+    rate: u32,
+    target: &str,
+) -> Result<(), EngineError> {
+    let value =
+        |set: &[(String, f64)], name: &str| set.iter().find(|(n, _)| n == name).map(|(_, v)| *v);
+    let names = checkpoint.bindings.iter().chain(bindings).map(|(n, _)| n);
+    for name in names {
+        let (was, now) = (value(&checkpoint.bindings, name), value(bindings, name));
+        if was == now {
+            continue;
+        }
+        let lands = |v: Option<f64>| {
+            landing_step(v.unwrap_or(f64::INFINITY), f64::from(rate))
+                .is_none_or(|at| at >= checkpoint.at as u64)
+        };
+        if name != RELEASE || !lands(was) || !lands(now) {
+            return Err(EngineError::refused(Diagnostic {
+                code: "engine.binding_not_causal".to_string(),
+                message: format!(
+                    "`{name}` moves from {} to {} at sample {}, and a sample before it can \
+                     hear that",
+                    shown(was),
+                    shown(now),
+                    checkpoint.at
+                ),
+                location: Located::at(target, None),
+                help: "move only release, to a key-up at or past the checkpoint".to_string(),
+            }));
+        }
+    }
+    Ok(())
+}
+
+fn shown(value: Option<f64>) -> String {
+    value.map_or("unbound".to_string(), |v| v.to_string())
+}
+
+fn mismatch(target: &str, what: &str) -> EngineError {
+    EngineError::refused(Diagnostic {
+        code: "engine.checkpoint_mismatch".to_string(),
+        message: format!("this checkpoint was taken of {what}, not of this `{target}` stream"),
+        location: Located::at(target, None),
+        help: "resume a checkpoint on the stream it was taken of".to_string(),
+    })
 }
 
 /// The graph with `streamed` defined as the target called with `bindings`.

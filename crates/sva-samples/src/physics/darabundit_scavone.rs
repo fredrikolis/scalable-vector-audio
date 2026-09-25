@@ -171,6 +171,7 @@ impl LossNode {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct DuctGrid {
     psi: Vec<f64>,
     v: Vec<f64>,
@@ -263,6 +264,7 @@ fn build_grid(params: &BoreParams, sr: f64) -> DuctGrid {
     }
 }
 
+#[derive(Clone)]
 pub struct BoreSite {
     duct: DuctGrid,
     excite_index: usize,

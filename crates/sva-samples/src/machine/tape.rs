@@ -31,6 +31,10 @@ impl Tape {
         self.base
     }
 
+    pub fn capacity(&self) -> usize {
+        self.planes[0].capacity()
+    }
+
     pub fn end(&self) -> usize {
         self.base + self.planes[0].len()
     }

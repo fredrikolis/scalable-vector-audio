@@ -1,6 +1,7 @@
 // Concern: one tonehole's two-port branch and the radiation load it opens onto | Non-concern: the duct it shunts (darabundit_scavone.rs) | IO: (ToneholeSpec, dt, dz) -> a branch
 
 use super::darabundit_scavone::{C0_M_S, RHO0_KG_M3, ToneholeSpec};
+#[derive(Clone)]
 pub(super) struct RadCoeffs {
     pub(super) a_p: f64,
     pub(super) b_p: f64,
@@ -40,6 +41,7 @@ pub(super) fn radiation_coeffs(radius_out: f64, dt: f64, dz: f64) -> RadCoeffs {
 }
 
 /// One hole's fixed shunt (eq. 114a-120b); D&S §7.3's switching PHS is skipped.
+#[derive(Clone)]
 pub(super) enum ToneholeBranch {
     /// Series `L_i`-`C_c`-`R_c` (eq. 118's small-angle `cot`, §7.2.2).
     Closed {
