@@ -22,7 +22,7 @@ pub use output::{Diagnostic, Severity, diagnostics_json, error_envelope, success
 pub use query::{
     Asked, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, DEFAULT_SILENT_BITS,
     DEFAULT_SILENT_MAX_SECS, REPRESENTATIONS, RETIRED, Shaping, WindowEdge, is_wav,
-    representation_for, retired, silent_edge, window_edge, window_for,
+    representation_for, retired, silence, silent_edge, window_edge, window_for,
 };
 pub use tempo::refuse_unresolved_bars;
 

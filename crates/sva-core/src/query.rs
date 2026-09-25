@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use sva_engine::{DEFAULT_FRAME_SECS, Horizon, Representation};
+use sva_engine::{DEFAULT_FRAME_SECS, Horizon, Representation, Silent};
 
 use crate::cli_error::CliError;
 
@@ -115,19 +115,34 @@ pub const DEFAULT_SILENT_BITS: u32 = sva_engine::PSYCHOACOUSTIC_V1.precision_bit
 /// The latest instant `--to silent` looks for silence by, where `--max` names none.
 pub const DEFAULT_SILENT_MAX_SECS: f64 = 60.0;
 
-/// `silent` or `silent:<bits>`, the end a render proves rather than names; `None` for any
-/// other end. A double holds 53 bits, so no finer silence is one it could show.
-pub fn silent_edge(raw: &str) -> Option<Result<u32, CliError>> {
+/// `silent` or `silent:<bits>`; `None` for any other end.
+pub fn silent_edge(raw: &str) -> Option<Result<Option<u32>, CliError>> {
     if raw == "silent" {
-        return Some(Ok(DEFAULT_SILENT_BITS));
+        return Some(Ok(None));
     }
     let bits = raw.strip_prefix("silent:")?;
-    Some(match bits.parse::<u32>() {
-        Ok(bits) if (1..=53).contains(&bits) => Ok(bits),
-        _ => Err(CliError::Usage(format!(
-            "--to silent takes whole bits from 1 to 53, as `silent:16`, got `{raw}`"
-        ))),
-    })
+    Some(bits.parse::<u32>().map(Some).map_err(|_| {
+        CliError::Usage(format!(
+            "--to silent takes whole bits, as `silent:16`, got `{raw}`"
+        ))
+    }))
+}
+
+/// A double holds 53 bits, so no finer silence is one it could show.
+pub fn silence(bits: Option<u32>, max_secs: Option<f64>) -> Result<Silent, CliError> {
+    let bits = bits.unwrap_or(DEFAULT_SILENT_BITS);
+    if !(1..=53).contains(&bits) {
+        return Err(CliError::Usage(format!(
+            "silence takes whole bits from 1 to 53, got {bits}"
+        )));
+    }
+    let max_secs = max_secs.unwrap_or(DEFAULT_SILENT_MAX_SECS);
+    if !(max_secs.is_finite() && max_secs > 0.0) {
+        return Err(CliError::Usage(format!(
+            "silence is looked for until a time past zero, got {max_secs}"
+        )));
+    }
+    Ok(Silent { bits, max_secs })
 }
 
 pub fn window_edge(raw: &str, flag: &str) -> Result<WindowEdge, CliError> {

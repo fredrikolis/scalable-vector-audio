@@ -7,8 +7,8 @@
 mod opfs;
 
 use sva_core::{
-    CliError, Diagnostic, Job, Rendered, Report, SAMPLE_LIMIT, WindowEdge, error_envelope, execute,
-    query_data, representation_for, retired, stats_json, window_for,
+    CliError, Diagnostic, Job, Rendered, Report, SAMPLE_LIMIT, Silent, WindowEdge, error_envelope,
+    execute, query_data, representation_for, retired, silence, stats_json, window_for,
 };
 use sva_engine::{
     Buffer, Cache, CacheStats, Horizon, MemoryCache, PSYCHOACOUSTIC_V1, Pack, Representation,
@@ -54,6 +54,33 @@ fn thrown(refusal: &CliError) -> JsValue {
 fn refuse(message: String, help: &str) -> JsValue {
     let diagnostic = Diagnostic::new("wasm.bad_argument", message.clone()).helped(help);
     crossed("validation_error", &message, &[diagnostic])
+}
+
+fn ending(
+    until: &JsValue,
+    bits: Option<u32>,
+    max_secs: Option<f64>,
+) -> Result<(Option<f64>, Option<Silent>), JsValue> {
+    let shaped = bits.is_some() || max_secs.is_some();
+    if let Some("silent") = until.as_string().as_deref() {
+        return silence(bits, max_secs)
+            .map(|silent| (None, Some(silent)))
+            .map_err(|e| thrown(&e));
+    }
+    if shaped {
+        return Err(refuse(
+            "`bits` and `max_secs` shape a silent render, and `until` is not \"silent\"".into(),
+            "pass \"silent\" as `until`",
+        ));
+    }
+    match until.as_f64() {
+        Some(seconds) => Ok((Some(seconds), None)),
+        None if until.is_undefined() || until.is_null() => Ok((None, None)),
+        None => Err(refuse(
+            "`until` is a number of seconds or \"silent\"".into(),
+            "pass seconds, \"silent\", or nothing",
+        )),
+    }
 }
 
 /// Nothing in a browser pushes back when a store grows inside the tab's own address space.
@@ -162,19 +189,25 @@ impl Composition {
         self.inner.insert(path, text);
     }
 
-    /// Unset, `target` is `master`; `seconds` is the horizon and `rate` the observation rate.
-    /// What reads a `volatile` parameter is kept in a slot, never in either store.
+    /// Unset, `target` is `master`; `until` is the horizon in seconds, or `"silent"` to end
+    /// where every later sample is provably under `2^-bits` (default the profile's own), by
+    /// `max_secs` at the latest. `rate` is the observation rate. What reads a `volatile`
+    /// parameter is kept in a slot, never in either store.
     pub fn render(
         &self,
         target: Option<String>,
         rate: Option<u32>,
-        seconds: Option<f64>,
+        until: JsValue,
         volatile: Option<Vec<String>>,
+        bits: Option<u32>,
+        max_secs: Option<f64>,
     ) -> Result<Rendering, JsValue> {
         let volatile = volatile.unwrap_or_default();
+        let (seconds, silent) = ending(&until, bits, max_secs)?;
         let rendered = execute(Job {
             target: target.as_deref(),
             until: seconds.map(WindowEdge::Secs),
+            silent,
             sample_rate: rate,
             reaching: true,
             cache: Some(self.store.cache()),

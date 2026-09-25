@@ -37,12 +37,19 @@ fn page() -> Composition {
 }
 
 fn render(of: &Composition, target: &str) -> Rendering {
-    of.render(Some(target.to_string()), Some(8000), None, None)
-        .unwrap_or_else(|_| unreachable!("`{target}` renders"))
+    of.render(
+        Some(target.to_string()),
+        Some(8000),
+        JsValue::UNDEFINED,
+        None,
+        None,
+        None,
+    )
+    .unwrap_or_else(|_| unreachable!("`{target}` renders"))
 }
 
 fn of_default(held: &Composition) -> Rendering {
-    held.render(None, Some(8000), None, None)
+    held.render(None, Some(8000), JsValue::UNDEFINED, None, None, None)
         .unwrap_or_else(|_| unreachable!("`master` renders"))
 }
 
@@ -298,8 +305,15 @@ fn knob(cutoff: u32) -> String {
 }
 
 fn played(held: &Composition, cutoff: u32, volatile: Option<Vec<String>>) -> Rendering {
-    held.render(Some(knob(cutoff)), Some(8000), Some(0.05), volatile)
-        .unwrap_or_else(|_| unreachable!("the knob at {cutoff} renders"))
+    held.render(
+        Some(knob(cutoff)),
+        Some(8000),
+        JsValue::from(0.05),
+        volatile,
+        None,
+        None,
+    )
+    .unwrap_or_else(|_| unreachable!("the knob at {cutoff} renders"))
 }
 
 fn stats_of(of: &Rendering) -> JsValue {
@@ -386,8 +400,10 @@ fn a_volatile_knob_crosses_as_a_fourth_argument_and_keeps_to_its_slots() {
         .render(
             Some(knob(500)),
             Some(8000),
-            Some(0.05),
+            JsValue::from(0.05),
             Some(vec!["cutof".to_string()]),
+            None,
+            None,
         )
         .err()
         .unwrap_or_else(|| unreachable!("a name nothing binds refuses"));
@@ -443,7 +459,7 @@ fn a_refusal_crosses_as_data_and_the_module_keeps_working() {
     held.insert("master", "@nowhere*2\n");
 
     let refused = held
-        .render(None, Some(8000), None, None)
+        .render(None, Some(8000), JsValue::UNDEFINED, None, None, None)
         .err()
         .unwrap_or_else(|| unreachable!("a dangling ref refuses"));
 
@@ -587,4 +603,44 @@ fn builtins_cross_with_what_each_named_argument_means() {
     );
     assert_eq!(field(&b, "unit").as_string().as_deref(), Some("none"));
     assert_eq!(field(&b, "part").as_string().as_deref(), Some("string"));
+}
+
+/// Echo `k` of a 50 ms burst is `0.35^k` loud; the fifteenth is the last at or over
+/// `2^-24`, and it ends at `15*0.25 + 0.05 = 3.8` seconds.
+#[wasm_bindgen_test]
+fn a_silent_render_ends_where_its_last_echo_is_heard() {
+    let mut held = Composition::new(None);
+    held.insert(
+        "master",
+        "crop(sin(2*pi*440*t), 0s, 0.05s) + 0.35*self(t - 0.25s)\n",
+    );
+    let silent = held
+        .render(
+            None,
+            Some(8000),
+            JsValue::from("silent"),
+            None,
+            None,
+            Some(30.0),
+        )
+        .unwrap_or_else(|_| unreachable!("the echo falls silent"));
+    let secs = silent.duration_secs();
+    assert!((3.75..=3.8).contains(&secs), "{secs}");
+
+    let never = held.render(
+        Some("sin(2*pi*100*t)".to_string()),
+        Some(8000),
+        JsValue::from("silent"),
+        None,
+        Some(16),
+        None,
+    );
+    let refused = never
+        .err()
+        .unwrap_or_else(|| unreachable!("a held sine never falls silent"));
+    assert!(
+        as_text(&field(&refused, "refusal")).contains("engine.never_silent"),
+        "{}",
+        as_text(&refused)
+    );
 }

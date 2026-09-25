@@ -3,8 +3,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use sva_core::{
-    Asked, CliError, DEFAULT_SILENT_MAX_SECS, Shaping, Silent, WindowEdge, is_wav,
-    representation_for, retired, silent_edge, window_edge,
+    Asked, CliError, Shaping, WindowEdge, is_wav, representation_for, retired, silence,
+    silent_edge, window_edge,
 };
 use sva_engine::{DEFAULT_SAMPLE_RATE, MAX_PINNED_FRAME, Representation, pinned_frame};
 
@@ -16,8 +16,8 @@ use super::{
 struct Flags {
     from: Option<WindowEdge>,
     to: Option<WindowEdge>,
-    /// The bits `--to silent` measures silence at, where it was written.
-    silent: Option<u32>,
+    /// `--to silent`, and the bits it wrote, where it wrote any.
+    silent: Option<Option<u32>>,
     shape: Shaping,
     asked: Vec<(String, Option<PathBuf>)>,
 }
@@ -172,10 +172,7 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
     }
     check_frame(&asked, sample_rate.unwrap_or(DEFAULT_SAMPLE_RATE))?;
     let silent = match (flags.silent, max) {
-        (Some(bits), max) => Some(Silent {
-            bits,
-            max_secs: max.unwrap_or(DEFAULT_SILENT_MAX_SECS),
-        }),
+        (Some(bits), max) => Some(silence(bits, max)?),
         (None, Some(_)) => {
             return Err(CliError::Usage(format!(
                 "`--max` bounds how long `--to silent` looks; write it beside `--to silent`\n{USAGE}"
