@@ -4,7 +4,7 @@ mod fixtures;
 
 use fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{RenderConfig, Stream, StreamConfig, render};
+use sva_engine::{RenderConfig, Silent, Stream, StreamConfig, render, render_until_silent};
 
 const RATE: u32 = 44_100;
 const BLOCK: usize = 1_024;
@@ -32,6 +32,13 @@ fn composition(released: f64) -> Graph {
             ),
             ("released", &format!("@key(t, release={released})\n")),
             ("envelope", "sin(2*pi*220*t)*crop(1, 0s, release)\n"),
+            (
+                "fading",
+                "sin(2*pi*220*t)*(crop(1, 0s, release) + crop(exp(0 - (t - release)/0.01), \
+                 release, 60s))\n",
+            ),
+            ("string", "chaigne_askenfelt(523.25, release=release)\n"),
+            ("struck", &format!("@string(t, release={released})\n")),
         ],
     )
 }
@@ -40,6 +47,7 @@ fn config() -> StreamConfig {
     StreamConfig {
         rate: RATE,
         block: BLOCK,
+        silent: None,
     }
 }
 
@@ -50,12 +58,8 @@ fn opened(g: &Graph, target: &str) -> Stream {
 fn blocks(stream: &mut Stream, count: usize) -> Vec<f64> {
     let mut out = Vec::with_capacity(count * BLOCK);
     for _ in 0..count {
-        out.extend_from_slice(
-            stream
-                .next_block()
-                .unwrap_or_else(|e| panic!("{e}"))
-                .plane(0),
-        );
+        let block = stream.next_block().unwrap_or_else(|e| panic!("{e}"));
+        out.extend_from_slice(block.expect("a stream with no end").plane(0));
     }
     out
 }
@@ -80,7 +84,7 @@ fn a_note_released_at_a_checkpoint_is_the_whole_render_released_there() {
     let checkpoint = held.checkpoint();
     assert_eq!(checkpoint.position(), k);
     let mut released = held
-        .resume(&checkpoint, &[("release".into(), release)])
+        .resume(&checkpoint, &[("release".into(), release)], None)
         .unwrap_or_else(|e| panic!("{e}"));
     heard.extend(blocks(&mut released, 8));
 
@@ -99,7 +103,9 @@ fn a_checkpoint_resumed_with_the_same_bindings_is_the_stream_it_was_taken_of() {
     let mut stream = opened(&g, "key");
     blocks(&mut stream, 3);
     let checkpoint = stream.checkpoint();
-    let mut again = stream.resume(&checkpoint, &[]).expect("the same bindings");
+    let mut again = stream
+        .resume(&checkpoint, &[], None)
+        .expect("the same bindings");
     let (on, resumed) = (blocks(&mut stream, 14), blocks(&mut again, 14));
     assert!(on.iter().any(|v| *v != 0.0), "silence tests nothing");
     assert_eq!(resumed, on);
@@ -114,7 +120,7 @@ fn a_closed_form_released_at_a_checkpoint_closes_there() {
     let k = 4 * BLOCK;
     let release = k as f64 / f64::from(RATE);
     let mut released = stream
-        .resume(&stream.checkpoint(), &[("release".into(), release)])
+        .resume(&stream.checkpoint(), &[("release".into(), release)], None)
         .expect("a release at the checkpoint");
     heard.extend(blocks(&mut released, 2));
     assert!(heard[..k].iter().any(|v| *v != 0.0));
@@ -133,7 +139,7 @@ fn a_binding_a_sample_before_the_checkpoint_could_hear_refuses() {
         vec![("f0".to_string(), 440.0)],
     ] {
         let refused = stream
-            .resume(&checkpoint, &bindings)
+            .resume(&checkpoint, &bindings, None)
             .err()
             .expect("a binding that reaches back refuses");
         assert_eq!(refused.code(), "engine.binding_not_causal", "{refused}");
@@ -147,8 +153,80 @@ fn a_checkpoint_resumed_on_another_stream_refuses() {
     blocks(&mut key, 1);
     let envelope = opened(&g, "envelope");
     let refused = envelope
-        .resume(&key.checkpoint(), &[])
+        .resume(&key.checkpoint(), &[], None)
         .err()
         .expect("another target's checkpoint refuses");
     assert_eq!(refused.code(), "engine.checkpoint_mismatch", "{refused}");
+}
+
+/// Held, the string rings on unproven; released, its silence is proven and the stream ends.
+#[test]
+fn a_string_released_at_a_checkpoint_streams_until_its_silence_is_proven() {
+    let silent = Silent {
+        bits: 16,
+        max_secs: 10.0,
+    };
+    let k = 3 * BLOCK;
+    let release = k as f64 / f64::from(RATE);
+    let g = composition(release);
+    let mut held = opened(&g, "string");
+    let mut heard = blocks(&mut held, 3);
+    let mut released = held
+        .resume(
+            &held.checkpoint(),
+            &[("release".into(), release)],
+            Some(silent),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    while let Some(block) = released.next_block().expect("a block") {
+        heard.extend_from_slice(block.plane(0));
+    }
+    assert_eq!(Some(heard.len()), released.end());
+    let whole = render_until_silent(
+        &g,
+        "struck",
+        RenderConfig::seconds(RATE, silent.max_secs),
+        silent,
+        None,
+        None,
+    )
+    .expect("a silent render");
+    let want = whole.buffer(whole.root).expect("a buffer").plane(0);
+    assert!(want.len() > k, "silence before the release tests nothing");
+    assert_eq!(heard[..want.len()], *want);
+    assert!(
+        heard[want.len()..]
+            .iter()
+            .all(|v| v.abs() < silent.threshold())
+    );
+}
+
+/// `max_secs` counts from the checkpoint, so a note held past it still proves its release.
+#[test]
+fn a_release_held_past_max_secs_proves_its_silence_from_the_checkpoint() {
+    let silent = Silent {
+        bits: 16,
+        max_secs: 0.3,
+    };
+    let g = composition(1.0);
+    let mut held = opened(&g, "fading");
+    blocks(&mut held, 22);
+    let k = 22 * BLOCK;
+    assert!(k as f64 / f64::from(RATE) > silent.max_secs);
+    let release = k as f64 / f64::from(RATE);
+    let mut released = held
+        .resume(
+            &held.checkpoint(),
+            &[("release".into(), release)],
+            Some(silent),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    let end = released.end().expect("a proven end");
+    assert!(end > k && (end - k) as f64 / f64::from(RATE) <= silent.max_secs);
+    let mut tail = Vec::new();
+    while let Some(block) = released.next_block().expect("a block") {
+        tail.extend_from_slice(block.plane(0));
+    }
+    assert_eq!(k + tail.len(), end);
+    assert!(tail.iter().any(|v| v.abs() >= silent.threshold()));
 }

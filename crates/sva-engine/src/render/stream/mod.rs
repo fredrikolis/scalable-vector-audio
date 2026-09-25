@@ -8,6 +8,7 @@ use sva_ast::Graph;
 use sva_samples::Tape;
 use sva_samples::physics::chaigne_askenfelt::landing_step;
 
+use super::silent::{Silent, proven_at};
 use super::{Render, RenderConfig, prepared};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::RELEASE;
@@ -20,6 +21,8 @@ pub const STREAMED: &str = "streamed";
 pub struct StreamConfig {
     pub rate: u32,
     pub block: usize,
+    /// Ends the stream where the tail bound proves silence; `None` streams on forever.
+    pub silent: Option<Silent>,
 }
 
 /// A target rendered from the grid's first sample on, one block at a time: every block is the
@@ -33,6 +36,7 @@ pub struct Stream {
     nodes: Vec<Streamed>,
     root: usize,
     at: usize,
+    end: Option<usize>,
 }
 
 /// The samples one `next` wrote, `[start, start + len)` of the grid.
@@ -71,13 +75,32 @@ impl Stream {
         bindings: &[(String, f64)],
         config: StreamConfig,
     ) -> Result<Stream, EngineError> {
+        Stream::opened_at(graph, target, bindings, config, 0)
+    }
+
+    /// Silence is proven by `max_secs` past `from`.
+    fn opened_at(
+        graph: &Graph,
+        target: &str,
+        bindings: &[(String, f64)],
+        config: StreamConfig,
+        from: usize,
+    ) -> Result<Stream, EngineError> {
         if config.block == 0 {
             return Err(refusal(target, "a block of no samples".to_string()));
         }
         let wrapped = bound(graph, target, bindings)?;
         let held = prepared(&wrapped, STREAMED)?;
-        // No row a stream takes reads a horizon; the shell's is never consulted.
-        let render_config = RenderConfig::seconds(config.rate, 1.0);
+        // No row a stream takes reads a horizon; only the silence proof reads this one.
+        let silent = config.silent.map(|silent| Silent {
+            max_secs: from as f64 / f64::from(config.rate) + silent.max_secs,
+            ..silent
+        });
+        let render_config = RenderConfig::seconds(config.rate, silent.map_or(1.0, |s| s.max_secs));
+        let end = match silent {
+            Some(silent) => Some(proven_at(&held, &render_config, silent)?.max(1)),
+            None => None,
+        };
         let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
         let shell = Render {
             root: held.root,
@@ -106,24 +129,35 @@ impl Stream {
             nodes,
             root,
             at: 0,
+            end,
         })
     }
 
-    pub fn next_block(&mut self) -> Result<Block<'_>, EngineError> {
-        let (from, to) = (self.at, self.at + self.config.block);
+    /// The next block, cut where silence was proven; `None` from there on.
+    pub fn next_block(&mut self) -> Result<Option<Block<'_>>, EngineError> {
+        let from = self.at;
+        let to = match self.end {
+            Some(end) if from >= end => return Ok(None),
+            Some(end) => end.min(from + self.config.block),
+            None => from + self.config.block,
+        };
         for at in 0..self.nodes.len() {
             let (done, rest) = self.nodes.split_at_mut(at);
             rest[0].run(&self.shell, done, from, to)?;
         }
         self.at = to;
-        Ok(Block {
+        Ok(Some(Block {
             tape: &self.nodes[self.root].tape,
             start: from,
-        })
+        }))
     }
 
     pub fn position(&self) -> usize {
         self.at
+    }
+
+    pub fn end(&self) -> Option<usize> {
+        self.end
     }
 
     pub fn width(&self) -> usize {
@@ -139,23 +173,34 @@ impl Stream {
             at: self.at,
             target: self.target.clone(),
             bindings: self.bindings.clone(),
-            config: self.config,
+            rate: self.config.rate,
+            block: self.config.block,
             nodes: self.nodes.iter().map(Streamed::held).collect(),
         }
     }
 
-    /// This stream's target from `checkpoint` on, `bindings` in force. A binding may move
-    /// only where no sample before the checkpoint can hear it: `release`, at or past it.
+    /// This stream's target from `checkpoint` on, `bindings` in force, ending at `silent`
+    /// proven by `max_secs` past the checkpoint. A binding may move only where no sample
+    /// before the checkpoint can hear it: `release`, at or past it.
     pub fn resume(
         &self,
         checkpoint: &Checkpoint,
         bindings: &[(String, f64)],
+        silent: Option<Silent>,
     ) -> Result<Stream, EngineError> {
-        if checkpoint.target != self.target || checkpoint.config != self.config {
+        let (rate, block) = (self.config.rate, self.config.block);
+        if checkpoint.target != self.target || (checkpoint.rate, checkpoint.block) != (rate, block)
+        {
             return Err(mismatch(&self.target, "another stream"));
         }
-        causal(checkpoint, bindings, self.config.rate, &self.target)?;
-        let mut resumed = Stream::open(&self.graph, &self.target, bindings, self.config)?;
+        causal(checkpoint, bindings, rate, &self.target)?;
+        let config = StreamConfig {
+            rate,
+            block,
+            silent,
+        };
+        let mut resumed =
+            Stream::opened_at(&self.graph, &self.target, bindings, config, checkpoint.at)?;
         if resumed.nodes.len() != checkpoint.nodes.len() {
             return Err(mismatch(&self.target, "a graph of another shape"));
         }
@@ -173,7 +218,8 @@ pub struct Checkpoint {
     at: usize,
     target: String,
     bindings: Vec<(String, f64)>,
-    config: StreamConfig,
+    rate: u32,
+    block: usize,
     nodes: Vec<Option<node::NodeState>>,
 }
 

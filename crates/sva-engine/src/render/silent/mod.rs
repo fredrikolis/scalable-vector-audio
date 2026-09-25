@@ -91,7 +91,11 @@ fn counted(mut render: Render, recording: Option<Recording>) -> Render {
 }
 
 /// The first sample from which the root's bound stays under the threshold.
-fn proven_at(held: &Prepared, config: &RenderConfig, silent: Silent) -> Result<usize, EngineError> {
+pub(super) fn proven_at(
+    held: &Prepared,
+    config: &RenderConfig,
+    silent: Silent,
+) -> Result<usize, EngineError> {
     let rate = f64::from(config.rate);
     let start = config.horizon.start_secs;
     let samples = ((silent.max_secs - start) * rate).ceil().max(0.0) as usize;

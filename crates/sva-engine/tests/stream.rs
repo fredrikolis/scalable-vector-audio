@@ -4,7 +4,7 @@ mod fixtures;
 
 use fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{RenderConfig, Stream, StreamConfig, render};
+use sva_engine::{RenderConfig, Silent, Stream, StreamConfig, render, render_until_silent};
 
 const RATE: u32 = 44_100;
 
@@ -34,17 +34,24 @@ fn composition() -> Graph {
             ("sawed", "lowpass(sample(@saw), cutoff=900, q=0.8)\n"),
             ("spectrum", "exp(0 - pow(f/300, 2))\n"),
             ("ahead", "@note(t + 0.01s)\n"),
+            ("string", "chaigne_askenfelt(f0, release=release)\n"),
+            ("damped", "@string(t, f0=523.25, release=0.05)\n"),
+            ("held", "sin(2*pi*220*t)\n"),
         ],
     )
 }
 
 fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Vec<f64> {
-    let config = StreamConfig { rate: RATE, block };
+    let config = StreamConfig {
+        rate: RATE,
+        block,
+        silent: None,
+    };
     let mut stream = Stream::open(g, target, &[], config).unwrap_or_else(|e| panic!("{e}"));
     let mut out = Vec::with_capacity(samples + block);
     while out.len() < samples {
         let block = stream.next_block().unwrap_or_else(|e| panic!("{e}"));
-        out.extend_from_slice(block.plane(0));
+        out.extend_from_slice(block.expect("a stream with no end").plane(0));
     }
     out.truncate(samples);
     out
@@ -122,6 +129,7 @@ fn a_bound_name_reaches_the_target_as_a_named_argument() {
     let config = StreamConfig {
         rate: RATE,
         block: 2_000,
+        silent: None,
     };
     let mut stream = Stream::open(
         &g,
@@ -130,7 +138,7 @@ fn a_bound_name_reaches_the_target_as_a_named_argument() {
         config,
     )
     .expect("a bound stream");
-    let first = stream.next_block().expect("a block");
+    let first = stream.next_block().expect("a block").expect("no end");
     assert_eq!(first.plane(0), &whole(&g, "note", 2_000)[..]);
 }
 
@@ -140,6 +148,7 @@ fn a_node_no_block_reads_alone_refuses_the_stream() {
     let config = StreamConfig {
         rate: RATE,
         block: 256,
+        silent: None,
     };
     let refused = Stream::open(&g, "ahead", &[], config)
         .err()
@@ -155,4 +164,63 @@ fn a_node_no_block_reads_alone_refuses_the_stream() {
         .err()
         .expect("a value that is no number refuses");
     assert_eq!(refused.code(), "engine.no_stream", "{refused}");
+}
+
+const SILENT: Silent = Silent {
+    bits: 16,
+    max_secs: 10.0,
+};
+
+/// The whole render cuts after its last sample over the floor; the stream ends where the
+/// bound proved silence, and every sample between is under the floor.
+#[test]
+fn a_stream_until_silent_ends_where_the_bound_proves_it() {
+    let g = composition();
+    let config = StreamConfig {
+        rate: RATE,
+        block: 4_096,
+        silent: Some(SILENT),
+    };
+    let mut stream = Stream::open(&g, "damped", &[], config).expect("a proven end");
+    let mut heard = Vec::new();
+    while let Some(block) = stream.next_block().expect("a block") {
+        heard.extend_from_slice(block.plane(0));
+    }
+    assert_eq!(Some(heard.len()), stream.end());
+    let whole = render_until_silent(
+        &g,
+        "damped",
+        RenderConfig::seconds(RATE, SILENT.max_secs),
+        SILENT,
+        None,
+        None,
+    )
+    .expect("a silent render");
+    let want = whole.buffer(whole.root).expect("a buffer").plane(0);
+    sounds(want);
+    assert_eq!(heard[..want.len()], *want);
+    assert!(
+        heard[want.len()..]
+            .iter()
+            .all(|v| v.abs() < SILENT.threshold())
+    );
+}
+
+#[test]
+fn a_stream_whose_silence_is_never_proven_refuses_at_its_opening() {
+    let g = composition();
+    let config = StreamConfig {
+        rate: RATE,
+        block: 256,
+        silent: Some(SILENT),
+    };
+    for (target, code) in [
+        ("held", "engine.never_silent"),
+        ("note", "engine.no_tail_bound"),
+    ] {
+        let refused = Stream::open(&g, target, &[], config)
+            .err()
+            .expect("no proof");
+        assert_eq!(refused.code(), code, "{target}: {refused}");
+    }
 }
