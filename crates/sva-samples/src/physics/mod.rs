@@ -7,6 +7,7 @@ pub mod chaigne_doutaut;
 pub mod darabundit_scavone;
 pub mod hammer;
 pub mod rhaouti_chaigne_joly;
+pub(crate) mod stiff_string;
 pub mod tonehole;
 pub mod willemsen_bilbao_serafin;
 

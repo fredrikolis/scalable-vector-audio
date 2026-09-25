@@ -2,14 +2,14 @@
 
 //! Elasto-plastic friction: Dupont/Hayward/Armstrong/Altpeter, IEEE TAC 47(5) (2002). First
 //! bowed use: Serafin/Avanzini/Rocchesso, SMAC-03. Corrected eqs. (7)-(9)/FD coupling:
-//! Willemsen/Bilbao/Serafin, DAFx-19 pp. 40-46. Reuses `chaigne_askenfelt`'s FD string.
+//! Willemsen/Bilbao/Serafin, DAFx-19 pp. 40-46. Reuses `stiff_string`'s FD string.
 
 use crate::error::SampleError;
 use crate::physics::Solver;
 
 use crate::physics::bound::Bound::*;
 use crate::physics::bound::all;
-use crate::physics::chaigne_askenfelt::{
+use crate::physics::stiff_string::{
     StringGrid, Wire, dispersive_grid, grid_tension, point_weights, read_at, spread, stencil_update,
 };
 
