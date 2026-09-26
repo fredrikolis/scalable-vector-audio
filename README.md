@@ -15,34 +15,35 @@ producing a scalable vector).
 
 ### In the time domain
 
-```
-cos(2*pi*C4*t) + cos(2*pi*E4*t) + cos(2*pi*G4*t)
+```math
+\cos(2\pi C_4 t) + \cos(2\pi E_4 t) + \cos(2\pi G_4 t)
 ```
 
-`t` is seconds, the value is amplitude, and `C4` is a literal.
+$t$ is seconds, the value is amplitude, and $C_4$ is the literal `C4`, so a term is written `cos(2*pi*C4*t)`.
 
 ### In the frequency domain
 
-```
-0.5*delta(f - C4) + 0.5*delta(f + C4)
-  + 0.5*delta(f - E4) + 0.5*delta(f + E4)
-  + 0.5*delta(f - G4) + 0.5*delta(f + G4)
+```math
+\tfrac{1}{2}\delta(f - C_4) + \tfrac{1}{2}\delta(f + C_4) + \tfrac{1}{2}\delta(f - E_4) + \tfrac{1}{2}\delta(f + E_4) + \tfrac{1}{2}\delta(f - G_4) + \tfrac{1}{2}\delta(f + G_4)
 ```
 
-Each line is half the amplitude, paired with its conjugate at the negative frequency, which
-is what a cosine is. `ifourier` of that node is the cosine sum above, and `fourier` crosses a
-term from `t` to `f`. A node is a function of one variable: an expression holding both `t`
-and `f` refuses as `type.domain_mismatch`.
+Each $\delta$ is a spectral line at half the amplitude, paired with its conjugate at the negative
+frequency, which is what a cosine is, and $\delta$ is the builtin `delta`. `ifourier` of that
+node is the cosine sum above, and `fourier` crosses a term from `t` to `f`. A node is a function
+of one variable: an expression holding both `t` and `f` refuses as `type.domain_mismatch`.
 
 ## A note
 
+```math
+e^{-t/0.25}\, w(t)\, \sin(2\pi C_4 t)
+```
 ```
 crop(exp(-t/0.25s), 0s, 0.5s, rise=0.005s, fall=0.05s) * sin(2*pi*C4*t)
 ```
 
-`rise` and `fall` are raised-cosine fades inside the window, here 5 ms in and 50 ms out.
-`min` and `max` are builtins too, but neither has a finite atom sum, so a term under one
-reads only through `sample`.
+$w$ is the `crop` window, zero outside $0 \le t < 0.5$, and `rise` and `fall` are raised-cosine
+fades inside it, here 5 ms in and 50 ms out. `min` and `max` are builtins too, but neither has a
+finite atom sum, so a term under one reads only through `sample`.
 
 ## A composition is a directory of these
 
@@ -72,7 +73,8 @@ crop(exp(-t/0.25s), 0s, 0.5s, rise=0.005s, fall=0.05s) * sin(2*pi*f0*t)
 
 ## A master, with fx
 
-Replace `master` with one that sums the triad and feeds it back a sample later:
+Replace `master` with the triad fed back one sample $T$ later, over $0 \le t < 2$,
+$y(t) = \tfrac{1}{2}(\mathrm{chord}(t) + 0.3 y(t - T))$:
 
 ```
 ; Models: the triad through one short feedback delay | Neglects: a second bar, and any mix beside the gain | IO: (t) -> amplitude | Tags: master
