@@ -16,6 +16,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: gates
+          cache-bin: false
       - run: cargo test --workspace --locked
 
   release:
