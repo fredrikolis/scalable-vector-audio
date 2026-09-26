@@ -7,51 +7,46 @@
 [![npm sva-cli](https://img.shields.io/npm/v/@scalable-vector-audio/sva-cli?label=npm%20sva-cli)](https://www.npmjs.com/package/@scalable-vector-audio/sva-cli)
 [![npm sva-wasm](https://img.shields.io/npm/v/@scalable-vector-audio/sva-wasm?label=npm%20sva-wasm)](https://www.npmjs.com/package/@scalable-vector-audio/sva-wasm)
 
-Sounds written as equations. $`\sin(2\pi \cdot 440\,t)`$ is a 440 Hz tone, and a composition is a
-directory of such equations that refer to each other. A render samples them at any rate (thus
-producing a scalable vector).
+Sounds written as equations. $`\sin(2\pi \cdot 440\,t)`$ is a 440 Hz tone. Rendering samples an
+equation at any rate, so the sound is a scalable vector.
 
 ## The equation for a chord
 
 ### In the time domain
 
-$`\cos(2\pi C_4 t) + \cos(2\pi E_4 t) + \cos(2\pi G_4 t)`$
+$`\cos(2\pi\,\mathbf{C_4}\,t) + \cos(2\pi\,\mathbf{E_4}\,t) + \cos(2\pi\,\mathbf{G_4}\,t)`$
 
-$t$ is seconds, the value is amplitude, and $C_4$ is the literal `C4`, so a term is written `cos(2*pi*C4*t)`.
+$t$ is seconds, the value is amplitude, and $`\mathbf{C_4}`$ is the note C4.
 
 ### In the frequency domain
 
-$`\tfrac{1}{2}\delta(f - C_4) + \tfrac{1}{2}\delta(f + C_4) + \tfrac{1}{2}\delta(f - E_4) + \tfrac{1}{2}\delta(f + E_4) + \tfrac{1}{2}\delta(f - G_4) + \tfrac{1}{2}\delta(f + G_4)`$
+$`\tfrac{1}{2}\delta(f - \mathbf{C_4}) + \tfrac{1}{2}\delta(f + \mathbf{C_4}) + \tfrac{1}{2}\delta(f - \mathbf{E_4}) + \tfrac{1}{2}\delta(f + \mathbf{E_4}) + \tfrac{1}{2}\delta(f - \mathbf{G_4}) + \tfrac{1}{2}\delta(f + \mathbf{G_4})`$
 
 Each $\delta$ is a spectral line at half the amplitude, paired with its conjugate at the negative
 frequency, which is what a cosine is, and $\delta$ is the builtin `delta`. `ifourier` of that
 node is the cosine sum above, and `fourier` crosses a term from `t` to `f`. A node is a function
 of one variable: an expression holding both `t` and `f` refuses as `type.domain_mismatch`.
 
-## A note
+## Each equation is stored in a file
 
-$`e^{-t/0.25} w(t) \sin(2\pi C_4 t)`$
-
-```
-crop(exp(-t/0.25s), 0s, 0.5s, rise=0.005s, fall=0.05s) * sin(2*pi*C4*t)
-```
-
-$w$ is the `crop` window, zero outside $0 \le t < 0.5$, and `rise` and `fall` are raised-cosine
-fades inside it, here 5 ms in and 50 ms out. `min` and `max` are builtins too, but neither has a
-finite atom sum, so a term under one reads only through `sample`.
-
-## A composition is a directory of these
-
-A node file is one `;` comment stating what it models and neglects, then `name = value`
-defaults, then one expression. One file is a composition, `master`:
+A file holds one equation spelled in ASCII: one `;` comment stating what it models and
+neglects, then `name = value` defaults, then the expression. The 440 Hz tone from the opening,
+as a file:
 
 ```
 ; Models: one steady 440 Hz tone | Neglects: an envelope, a rate, and every other voice | IO: (t) -> amplitude | Tags: tone
 sin(2*pi*440*t)
 ```
 
-`@path(t, name=value)` substitutes another file's expression here and binds its defaults at
-the call. `voice`:
+## A composition is a directory of these files
+
+```
+my-composition/
+├── voice
+└── chord
+```
+
+`voice` might contain:
 
 ```
 ; Models: one voice, a tone under a decay | Neglects: the pitch it is played at, which its caller binds | IO: (t, f0) -> amplitude | Tags: voice
@@ -59,16 +54,18 @@ f0 = C4
 crop(exp(-t/0.25s), 0s, 0.5s, rise=0.005s, fall=0.05s) * sin(2*pi*f0*t)
 ```
 
-`chord`:
+`chord` might contain:
 
 ```
 ; Models: the triad, three voices at once | Neglects: rhythm, and every note after the first | IO: (t) -> amplitude | Tags: chord
 @voice(t, f0=C4) + @voice(t, f0=E4) + @voice(t, f0=G4)
 ```
 
+`@path(t, name=value)` substitutes another file's expression and binds its defaults at the call.
+
 ## A master, with fx
 
-Replace `master` with the triad fed back one sample $T$ later, over $0 \le t < 2$,
+A third file in `my-composition/`, `master`, masters `chord`: the triad fed back one sample $T$ later, over $0 \le t < 2$,
 $y(t) = \tfrac{1}{2}(\mathrm{chord}(t) + 0.3 y(t - T))$:
 
 ```
