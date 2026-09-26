@@ -40,5 +40,3 @@ use std::path::Path;
 pub fn parse_composition(dir: &Path) -> Result<Graph, Vec<Refusal>> {
     load(&Dir::at(dir))
 }
-
-pub const SOURCE_HASH: &str = env!("SVA_AST_SRC_HASH");

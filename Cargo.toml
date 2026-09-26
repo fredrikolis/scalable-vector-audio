@@ -2,7 +2,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/sva-fingerprint",
     "crates/sva-ast",
     "crates/sva-formula",
     "crates/sva-samples",
@@ -21,7 +20,6 @@ edition = "2024"
 
 # cargo publish needs a version on each path dep; keep it the one above.
 [workspace.dependencies]
-sva-fingerprint = { path = "crates/sva-fingerprint", version = "0.5.1" }
 sva-ast = { path = "crates/sva-ast", version = "0.5.1" }
 sva-formula = { path = "crates/sva-formula", version = "0.5.1" }
 sva-samples = { path = "crates/sva-samples", version = "0.5.1" }

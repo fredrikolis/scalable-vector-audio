@@ -258,9 +258,6 @@ dependencies = [
 [[package]]
 name = "sva-ast"
 version = "0.5.1"
-dependencies = [
- "sva-fingerprint",
-]
 
 [[package]]
 name = "sva-cli"
@@ -288,27 +285,18 @@ name = "sva-engine"
 version = "0.5.1"
 dependencies = [
  "sva-ast",
- "sva-fingerprint",
  "sva-formula",
  "sva-samples",
 ]
 
 [[package]]
-name = "sva-fingerprint"
-version = "0.5.1"
-
-[[package]]
 name = "sva-formula"
 version = "0.5.1"
-dependencies = [
- "sva-fingerprint",
-]
 
 [[package]]
 name = "sva-samples"
 version = "0.5.1"
 dependencies = [
- "sva-fingerprint",
  "sva-formula",
 ]
 

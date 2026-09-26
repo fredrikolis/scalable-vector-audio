@@ -9,6 +9,3 @@ repository.workspace = true
 
 [dependencies]
 sva-formula = { workspace = true }
-
-[build-dependencies]
-sva-fingerprint = { workspace = true }

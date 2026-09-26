@@ -8,13 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-sva-fingerprint = { workspace = true }
 sva-ast = { workspace = true }
 sva-formula = { workspace = true }
 sva-samples = { workspace = true }
 
 [dev-dependencies]
 sva-ast = { workspace = true }
-
-[build-dependencies]
-sva-fingerprint = { workspace = true }
