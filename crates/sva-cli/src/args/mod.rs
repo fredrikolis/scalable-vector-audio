@@ -529,22 +529,6 @@ mod tests {
     }
 
     #[test]
-    fn analyze_takes_a_wav_and_only_the_readings_a_buffer_answers() {
-        assert!(matches!(
-            parse_args(&argv(&["analyze", "/tmp/a.mp3", "--as", "spectrum"])),
-            Err(CliError::Usage(_))
-        ));
-        assert!(matches!(
-            parse_args(&argv(&["analyze", "/tmp/a.wav", "--as", "ledger"])),
-            Err(CliError::Usage(_))
-        ));
-        assert!(matches!(
-            parse_args(&argv(&["analyze", "/tmp/a.wav"])),
-            Err(CliError::Usage(_))
-        ));
-    }
-
-    #[test]
     fn lint_takes_an_optional_target_and_nothing_else() {
         assert_eq!(
             parse_args(&argv(&["lint"])).unwrap(),

@@ -1,6 +1,6 @@
 // Concern: one Hertzian felt hammer sub-stepped against its anvils | Non-concern: what an anvil is (each model's grid) | IO: (displacements) -> forces
 
-pub const SUBSTEPS: usize = 16;
+const SUBSTEPS: usize = 16;
 
 #[derive(Clone)]
 pub struct Hammer {

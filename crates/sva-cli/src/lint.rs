@@ -768,42 +768,108 @@ mod tests {
         );
     }
 
-    /// The run sits after `sin(t)`, not at line 1.
-    #[test]
-    fn a_comment_block_over_a_thousand_chars_is_flagged_in_both_modes() {
-        let trailing = format!(";{}", "x".repeat(1000)); // 1001 chars
-        let dir = dir_of(
-            "long-comment",
-            &[
-                (
-                    "long",
-                    &(doc("a fixture signal") + "sin(t)\n" + &trailing + "\n"),
-                ),
-                ("master", &(doc("a fixture signal") + "@long\n")),
-            ],
-        );
-        assert_refused(lint(&dir, None), LintCode::LongCommentBlock, "long");
-        assert_refused(
-            lint(&dir, Some("master")),
-            LintCode::LongCommentBlock,
-            "long",
-        );
-    }
+    type ThresholdCase = (&'static str, std::path::PathBuf, Box<dyn Fn()>);
 
     #[test]
-    fn a_comment_block_of_exactly_a_thousand_chars_sits_at_the_threshold_not_over_it() {
-        let trailing = format!(";{}", "x".repeat(999)); // 1000 chars
-        let dir = dir_of(
-            "boundary-comment",
-            &[(
-                "master",
-                &(doc("a fixture signal") + "sin(t)\n" + &trailing + "\n"),
-            )],
-        );
-        assert!(
-            lint(&dir, None).is_ok(),
-            "exactly 1000 chars is the threshold itself, not over it"
-        );
+    fn every_length_threshold_sits_at_its_boundary_and_trips_one_char_over() {
+        let cases: Vec<ThresholdCase> = vec![
+            (
+                "long-comment-block, 1000 chars",
+                dir_of(
+                    "boundary-comment",
+                    &[(
+                        "master",
+                        &(doc("a fixture signal")
+                            + "sin(t)\n"
+                            + &format!(";{}", "x".repeat(999))
+                            + "\n"),
+                    )],
+                ),
+                Box::new(|| {
+                    let trailing = format!(";{}", "x".repeat(1000));
+                    let dir = dir_of(
+                        "long-comment",
+                        &[
+                            (
+                                "long",
+                                &(doc("a fixture signal") + "sin(t)\n" + &trailing + "\n"),
+                            ),
+                            ("master", &(doc("a fixture signal") + "@long\n")),
+                        ],
+                    );
+                    assert_refused(lint(&dir, None), LintCode::LongCommentBlock, "long");
+                    assert_refused(
+                        lint(&dir, Some("master")),
+                        LintCode::LongCommentBlock,
+                        "long",
+                    );
+                }) as Box<dyn Fn()>,
+            ),
+            (
+                "long-expression-body, 10000 chars",
+                dir_of(
+                    "boundary-expression-body",
+                    &[(
+                        "drone",
+                        &(String::from(
+                            "; Models: a sustained drone | Neglects: envelope, detune | IO: t -> \
+                             amplitude | Tags: drone\n",
+                        ) + &"0".repeat(10_000)
+                            + "\n"),
+                    )],
+                ),
+                Box::new(|| {
+                    let body = "0".repeat(10_001);
+                    let dir = dir_of(
+                        "long-expression-body",
+                        &[
+                            (
+                                "drone",
+                                &(String::from(
+                                    "; Models: a sustained drone | Neglects: envelope, detune | \
+                                     IO: t -> amplitude | Tags: drone\n",
+                                ) + &body
+                                    + "\n"),
+                            ),
+                            (
+                                "master",
+                                &(String::from(WELL_FORMED_MASTER_COMMENT) + "@drone\n"),
+                            ),
+                        ],
+                    );
+                    assert_refused(lint(&dir, None), LintCode::LongExpressionBody, "drone");
+                    assert_refused(
+                        lint(&dir, Some("master")),
+                        LintCode::LongExpressionBody,
+                        "drone",
+                    );
+                }),
+            ),
+            (
+                "tag-shape, 24 chars",
+                dir_of(
+                    "tag-at-threshold",
+                    &[("master", &(doc_with_tags(&"a".repeat(24)) + "sin(t)\n"))],
+                ),
+                Box::new(|| {
+                    let dir = dir_of(
+                        "tag-too-long",
+                        &[("master", &(doc_with_tags(&"a".repeat(25)) + "sin(t)\n"))],
+                    );
+                    assert_eq!(
+                        advised(lint(&dir, None), "master"),
+                        vec![LintCode::TagShape]
+                    );
+                }),
+            ),
+        ];
+        for (label, at, over) in cases {
+            assert!(
+                lint(&at, None).is_ok(),
+                "{label}: exactly at the threshold, not over it"
+            );
+            over();
+        }
     }
 
     /// Line 1's own run is exempt from this budget, however long its one required line is.
@@ -969,54 +1035,6 @@ mod tests {
         assert!(
             lint(&dir, None).is_ok(),
             "a grid's own inline comment must not be mistaken for a second doc comment"
-        );
-    }
-
-    #[test]
-    fn an_expression_body_over_ten_thousand_chars_is_flagged_in_both_modes() {
-        let body = "0".repeat(10_001);
-        let dir = dir_of(
-            "long-expression-body",
-            &[
-                (
-                    "drone",
-                    &(String::from(
-                        "; Models: a sustained drone | Neglects: envelope, detune | IO: t -> \
-                         amplitude | Tags: drone\n",
-                    ) + &body
-                        + "\n"),
-                ),
-                (
-                    "master",
-                    &(String::from(WELL_FORMED_MASTER_COMMENT) + "@drone\n"),
-                ),
-            ],
-        );
-        assert_refused(lint(&dir, None), LintCode::LongExpressionBody, "drone");
-        assert_refused(
-            lint(&dir, Some("master")),
-            LintCode::LongExpressionBody,
-            "drone",
-        );
-    }
-
-    #[test]
-    fn an_expression_body_of_exactly_ten_thousand_chars_sits_at_the_threshold_not_over_it() {
-        let body = "0".repeat(10_000);
-        let dir = dir_of(
-            "boundary-expression-body",
-            &[(
-                "drone",
-                &(String::from(
-                    "; Models: a sustained drone | Neglects: envelope, detune | IO: t -> \
-                     amplitude | Tags: drone\n",
-                ) + &body
-                    + "\n"),
-            )],
-        );
-        assert!(
-            lint(&dir, None).is_ok(),
-            "exactly 10000 chars is the threshold itself, not over it"
         );
     }
 
@@ -1223,32 +1241,6 @@ mod tests {
         assert_eq!(
             advised(lint(&dir, None), "master"),
             vec![LintCode::TagShape]
-        );
-    }
-
-    #[test]
-    fn a_tag_over_twenty_four_characters_is_advised() {
-        let long_tag = "a".repeat(25);
-        let dir = dir_of(
-            "tag-too-long",
-            &[("master", &(doc_with_tags(&long_tag) + "sin(t)\n"))],
-        );
-        assert_eq!(
-            advised(lint(&dir, None), "master"),
-            vec![LintCode::TagShape]
-        );
-    }
-
-    #[test]
-    fn a_tag_of_exactly_twenty_four_characters_sits_at_the_threshold_not_over_it() {
-        let boundary_tag = "a".repeat(24);
-        let dir = dir_of(
-            "tag-at-threshold",
-            &[("master", &(doc_with_tags(&boundary_tag) + "sin(t)\n"))],
-        );
-        assert!(
-            lint(&dir, None).is_ok(),
-            "exactly 24 characters is the threshold itself, not over it"
         );
     }
 

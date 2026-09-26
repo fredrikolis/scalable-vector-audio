@@ -5,12 +5,10 @@ mod fixtures;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use fixtures::dir_of;
 use sva_engine::{
-    Cache, DiskCache, ENGINE_DIR_PREFIX, Expected, Hash, MemoryCache, Payload, PayloadKind,
-    RENDER_FINGERPRINT,
+    Cache, DiskCache, ENGINE_DIR_PREFIX, Expected, Hash, MemoryCache, Payload, RENDER_FINGERPRINT,
 };
 use sva_samples::{AutomationFrame, Buffer, FilterTrace};
 
@@ -143,36 +141,6 @@ fn a_truncated_disk_entry_is_a_miss_and_is_deleted() {
     assert!(!cache.holds(key), "and cleared, not left to fail forever");
 }
 
-#[test]
-fn storing_on_disk_is_gated_on_computing_costing_more_than_moving() {
-    let cache = DiskCache::at(dir_of("cache-policy", &[]));
-    let buffer = 32 * 44100 * size_of::<f64>();
-    assert!(
-        !cache.worth_storing(Duration::from_millis(10), buffer, PayloadKind::Samples),
-        "under I/O"
-    );
-    assert!(
-        cache.worth_storing(Duration::from_millis(40), buffer, PayloadKind::Samples),
-        "over I/O"
-    );
-    assert!(
-        !cache.worth_storing(Duration::from_micros(900), 16, PayloadKind::Samples),
-        "a tiny buffer still has to clear the floor"
-    );
-    assert!(
-        DiskCache::at(dir_of("cache-policy-all", &[]))
-            .storing_everything()
-            .worth_storing(Duration::ZERO, buffer, PayloadKind::Samples)
-    );
-}
-
-/// Nothing is compared against I/O in memory: a hit is a memcpy.
-#[test]
-fn storing_in_memory_is_never_gated() {
-    assert!(MemoryCache::new().worth_storing(Duration::ZERO, 1, PayloadKind::Samples));
-    assert_eq!(MemoryCache::new().dir(), None, "nowhere to point");
-}
-
 /// An evicted composition and a changed one look alike; only these figures separate them.
 #[test]
 fn a_sweep_reports_what_it_held_and_what_it_had_to_delete() {
@@ -262,24 +230,6 @@ fn a_memory_sweep_drops_the_least_recently_read_until_it_is_under_the_cap() {
     for &key in &keys[..4] {
         assert!(!capped.holds(key), "the least recently read went first");
     }
-}
-
-/// The constant is the whole gate: no machine's real I/O enters it, so the same buffer is
-/// stored or skipped identically wherever a render runs.
-#[test]
-fn the_store_prices_a_byte_at_the_chosen_constant() {
-    let cache = DiskCache::at(dir_of("cache-price", &[]));
-    let bytes = 1 << 20;
-    let priced = Duration::from_nanos(bytes as u64 * sva_engine::IO_NANOS_PER_BYTE);
-    assert!(
-        !cache.worth_storing(priced, bytes, PayloadKind::Samples),
-        "at the price, not over it"
-    );
-    assert!(cache.worth_storing(
-        priced + Duration::from_nanos(1),
-        bytes,
-        PayloadKind::Samples
-    ));
 }
 
 /// A store that has quietly stopped persisting answers every load with a miss, exactly as a

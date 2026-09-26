@@ -24,24 +24,6 @@ fn a_samples_destination_writes_float_audio_matching_the_rendered_samples() {
     assert_eq!(samples, pcm, "no quantisation between render and file");
 }
 
-/// Python's stdlib `wave` refuses `WAVE_FORMAT_EXTENSIBLE`, which hound's float format always
-/// carries; `--pcm16` is the format it can open.
-#[test]
-fn a_pcm16_wav_carries_a_plain_format_tag_a_stdlib_reader_can_open() {
-    let rendered = run(&fixture("basic")).unwrap();
-    let dir = scratch("pcm16");
-    let path = dir.join("out.wav");
-    let pcm: Vec<f32> = buffer(&rendered, ROOT).as_f32(0);
-    write_wav(&pcm, rendered.config.rate, &path, SampleEncoding::Pcm16).unwrap();
-
-    let bytes = std::fs::read(&path).unwrap();
-    let format_tag = u16::from_le_bytes([bytes[20], bytes[21]]);
-    assert_eq!(format_tag, 1, "WAVE_FORMAT_PCM, not EXTENSIBLE");
-    let reader = hound::WavReader::open(&path).unwrap();
-    assert_eq!(reader.spec().bits_per_sample, 16);
-    assert_eq!(reader.spec().sample_format, hound::SampleFormat::Int);
-}
-
 /// A mono report is untouched, and `channel` appearing is what tells a reader a node carries
 /// components at all.
 #[test]

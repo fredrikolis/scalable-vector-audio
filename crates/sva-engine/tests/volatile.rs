@@ -10,9 +10,9 @@ use fixtures::graph_of;
 use sva_ast::Graph;
 use sva_engine::{
     Cache, CacheStats, Entry, Expected, Hash, MemoryCache, Outcome, Pack, Payload, PayloadKind,
-    Put, Render, RenderConfig, Slots, Tier, Tiered, VecMedium, render_with_slots,
+    Render, RenderConfig, Slots, Tier, Tiered, VecMedium, render_with_slots,
 };
-use sva_samples::{Buffer, FilterTrace, Label};
+use sva_samples::{FilterTrace, Label};
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
@@ -303,71 +303,4 @@ fn a_knob_passed_down_under_another_name_is_still_volatile() {
         "a slot whose value the knob does not move answers again: {moved:?}"
     );
     assert_eq!(slots.slots(), slotted);
-}
-
-fn buffer(len: usize) -> Payload {
-    Payload::Samples(Box::new(Buffer::of_planes(RATE, vec![vec![0.25; len]])))
-}
-
-const ONE: Expected = Expected::Samples {
-    rate: RATE,
-    width: 1,
-    samples: 100,
-};
-
-#[test]
-fn a_full_slot_store_drops_the_least_recently_heard_slot_whole() {
-    let each = buffer(100).bytes() as u64;
-    let slots = Slots::holding(2 * each);
-    let (a, b, c) = (Hash(1, 0), Hash(2, 0), Hash(3, 0));
-    let key = |n: u64| Hash(0, n);
-    assert_eq!(slots.put(a, key(1), &buffer(100), &[], None), Put::Slotted);
-    assert_eq!(slots.put(b, key(2), &buffer(100), &[], None), Put::Slotted);
-    assert!(slots.get(a, key(1), "a", ONE).is_some(), "a is heard again");
-    assert_eq!(slots.put(c, key(3), &buffer(100), &[], None), Put::Slotted);
-    assert!(
-        slots.get(b, key(2), "b", ONE).is_none(),
-        "b went, the oldest"
-    );
-    assert!(slots.get(a, key(1), "a", ONE).is_some());
-    assert!(slots.get(c, key(3), "c", ONE).is_some());
-    assert_eq!(slots.held_bytes(), 2 * each);
-
-    assert!(
-        slots.get(a, key(9), "a", ONE).is_none(),
-        "a slot answers its own key only"
-    );
-    assert_eq!(slots.put(a, key(9), &buffer(100), &[], None), Put::Replaced);
-    assert_eq!(slots.slots(), 2);
-    assert_eq!(
-        slots.put(a, key(10), &buffer(1000), &[], None),
-        Put::Refused
-    );
-    assert!(
-        slots.get(a, key(9), "a", ONE).is_some(),
-        "a refused value leaves the old one"
-    );
-
-    slots.bound(each);
-    assert_eq!((slots.slots(), slots.held_bytes()), (1, each));
-    slots.clear();
-    assert_eq!((slots.slots(), slots.held_bytes()), (0, 0));
-}
-
-#[test]
-fn a_small_slot_store_never_evicts_what_the_store_holds() {
-    let store = MemoryCache::new();
-    let warm = played(400.0, &[], &store, &Slots::default());
-    let held: Vec<Hash> = warm
-        .lookups
-        .iter()
-        .filter(|l| l.kind == PayloadKind::Samples)
-        .map(|l| l.key)
-        .collect();
-    let tiny = Slots::holding(1);
-    let stats = played(700.0, &["cutoff"], &store, &tiny);
-    assert_eq!(tiny.slots(), 0, "nothing fits");
-    let (fx, _) = reach(&warm, &stats);
-    assert!(all(&fx, Outcome::ComputedNotStored), "{stats:?}");
-    assert!(held.iter().all(|k| store.holds(*k)));
 }

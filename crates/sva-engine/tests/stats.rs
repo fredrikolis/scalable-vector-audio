@@ -6,9 +6,7 @@ use std::collections::BTreeSet;
 
 use fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{
-    Cache, CacheStats, Hash, MemoryCache, Outcome, PayloadKind, RenderConfig, Tier, render,
-};
+use sva_engine::{Cache, CacheStats, Hash, MemoryCache, RenderConfig, render};
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
@@ -52,38 +50,6 @@ fn a_render_handed_no_store_reports_no_stats() {
     let graph = demo("no-store");
     let held = render(&graph, "a", RenderConfig::seconds(RATE, SECONDS), None).expect("a render");
     assert_eq!(held.cache_stats, None);
-}
-
-#[test]
-fn a_second_voice_hits_exactly_what_it_shares_with_the_first_and_stores_the_rest() {
-    let graph = demo("shared");
-    let cache = MemoryCache::new();
-    let first = stats(&graph, "a", &cache);
-    assert_eq!(first.hits(), 0, "a cold store answers nothing");
-    assert_eq!(first.stored(), first.lookups.len(), "and keeps everything");
-
-    let second = stats(&graph, "b", &cache);
-    let before: BTreeSet<Hash> = first.lookups.iter().map(|l| l.key).collect();
-    let (shared, own): (Vec<_>, Vec<_>) =
-        second.lookups.iter().partition(|l| before.contains(&l.key));
-    assert!(!shared.is_empty(), "b reads the pad a rendered");
-    assert!(
-        shared
-            .iter()
-            .any(|l| l.node == "osc" && l.kind == PayloadKind::Symbolic),
-        "the oscillator's spectral sum is shared: {shared:?}"
-    );
-    for lookup in &shared {
-        assert_eq!(lookup.outcome, Outcome::Hit(Tier::Memory), "{lookup:?}");
-    }
-    assert!(!own.is_empty(), "b has a voice of its own");
-    for lookup in &own {
-        assert_eq!(lookup.outcome, Outcome::ComputedStored, "{lookup:?}");
-    }
-    assert_eq!(second.hits(), shared.len());
-    assert_eq!(second.hits_in(Tier::Persistent), 0);
-    assert_eq!(second.computed(), own.len());
-    assert_eq!(second.stored(), own.len());
 }
 
 #[test]

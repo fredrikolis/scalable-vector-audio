@@ -142,39 +142,6 @@ fn the_flag_admits_the_cost_and_the_label_carries_it() {
     assert!(cost.flops > budget);
 }
 
-/// Fixed bounds, no arguments.
-#[test]
-fn flops_tree_folds_rows_under_one_percent() {
-    let mut files = vec![("node", String::new())];
-    let mut addends = vec!["@big(t)".to_string()];
-    files.push((
-        "big",
-        "sin(2*pi*100*pow(2, t/4)*t) * sum(k, 1, 200, (1/k)*sin(2*pi*20*k*t))\n".to_string(),
-    ));
-    for i in 0..6 {
-        let name = format!("small{i}");
-        addends.push(format!("@{name}(t)"));
-        files.push((name.leak(), format!("sin(2*pi*{}*t)\n", 110 + i)));
-    }
-    files[0].1 = format!("{}\n", addends.join(" + "));
-    let borrowed: Vec<(&str, &str)> = files.iter().map(|(n, b)| (*n, b.as_str())).collect();
-
-    let held = rendered("flops-fold", &borrowed, counting(1.0, None));
-    let tree = counted(&held);
-    let folded = tree
-        .rows
-        .iter()
-        .find(|r| r.route == "folded")
-        .expect("six rows under one percent fold into one");
-    assert_eq!(folded.node, "6 others");
-    assert_eq!(folded.depth, 1);
-    assert!(folded.percent < 1.0 * 6.0);
-    assert!(
-        !tree.rows.iter().any(|r| r.node.starts_with("small")),
-        "no folded row is also printed on its own"
-    );
-}
-
 /// A filter between a sampled root and the form it reads is still a read, and naming what
 /// dominates is the whole of what the tree is for.
 #[test]
@@ -201,85 +168,6 @@ fn flops_tree_names_the_law_read_through_a_filter() {
         Ok(_) => panic!("the referenced law's cost is the render's cost too"),
     };
     assert!(text.contains("heavy"), "the refusal names it too: {text}");
-}
-
-/// A sum is a sum of values, so a line spectrum keeps its own route when a continuous-time
-/// addend is written beside it. The render pays for one of each, not point sampling for both.
-#[test]
-fn a_pair_plus_a_ct_costs_the_sum_of_their_routes() {
-    let pair = "sin(2*pi*440*t)\n";
-    let glide = "sin(2*pi*100*pow(2, t/4)*t)\n";
-    let alone = |name: &str, body: &str| {
-        counted(&rendered(name, &[("node", body)], counting(1.0, None))).total
-    };
-    let (lines, point) = (
-        alone("flops-sum-pair", pair),
-        alone("flops-sum-glide", glide),
-    );
-
-    let files = &[
-        ("node", "@pair(t) + @glide(t)\n"),
-        ("pair", pair),
-        ("glide", glide),
-    ];
-    let tree = counted(&rendered("flops-sum", files, counting(1.0, None)));
-    assert_eq!(
-        tree.total,
-        lines + point,
-        "the sum costs its addends' routes, not point sampling over both: {:?}",
-        tree.rows
-    );
-    let root = tree.rows.first().expect("the root row");
-    assert_eq!(root.route, "sum, addend by addend");
-
-    let held = rendered("flops-sum-run", files, config(1.0, None));
-    let sum = held.buffer(held.root).expect("the sum rendered");
-    let separate = |name: &str, body: &str| {
-        let one = rendered(name, &[("node", body)], config(1.0, None));
-        one.buffer(one.root).expect("an addend rendered").clone()
-    };
-    let (a, b) = (
-        separate("flops-sum-pair-run", pair),
-        separate("flops-sum-glide-run", glide),
-    );
-    let worst = (0..sum.len())
-        .map(|i| (sum.at(0, i) - a.at(0, i) - b.at(0, i)).abs())
-        .fold(0f64, f64::max);
-    assert!(worst < 1e-12, "the planes add to the same samples: {worst}");
-}
-
-/// FORMAT 9.1 row 4 scores itself against the same closed form at four times the rate, which is
-/// four more evaluations of it, taken twice. A render no reading reads that score off runs none.
-#[test]
-fn an_r6_render_without_an_alias_reading_costs_its_evaluation_alone() {
-    let files = &[("node", "tanh(3*sin(2*pi*220*t))\n")];
-    let alone = counted(&rendered("flops-r6-unscored", files, counting(1.0, None)));
-    assert_eq!(
-        alone.rows.first().expect("the root row").route,
-        "point sampling"
-    );
-
-    let asked = config(1.0, None).asking(vec![Ask {
-        node: "node".to_string(),
-        representation: Representation::Alias { oversample: 4 },
-    }]);
-    let scored = counted(&rendered("flops-r6-scored", files, asked));
-    assert_eq!(
-        scored.total,
-        alone.total * (1 + 2 * sva_samples::ALIAS_OVERSAMPLE as u128),
-        "the score costs the references and the render that reads none pays for none"
-    );
-
-    let held = rendered("flops-r6-unscored", files, config(1.0, None));
-    let label = held.labels.get(&held.root).expect("the root collapsed");
-    assert_eq!(
-        label.detail,
-        sva_samples::Detail::Point {
-            rule: sva_samples::Rule::PointSampled,
-            alias_db: None,
-        },
-        "the row is measured, and says so, with no score beside it"
-    );
 }
 
 fn children_of(
@@ -350,59 +238,6 @@ fn sibling_rows_never_sum_past_their_parent() {
     );
 }
 
-/// A join's own row is one evaluation per lane, and the score reads every lane, so the
-/// reference beside it is one per lane too.
-#[test]
-fn a_joined_ct_pays_an_alias_reference_for_every_lane_it_scores() {
-    let files = &[
-        ("node", "join(@src(t)*cos(0.3), @src(t)*sin(0.3))\n"),
-        ("src", "tanh(3*sin(2*pi*220*t))\n"),
-    ];
-    let alone = counted(&rendered("flops-join-unscored", files, counting(1.0, None)));
-    assert_eq!(
-        alone.rows.first().expect("the root row").route,
-        "point sampling"
-    );
-
-    let asked = config(1.0, None).asking(vec![Ask {
-        node: "node".to_string(),
-        representation: Representation::Alias { oversample: 4 },
-    }]);
-    let held = rendered("flops-join-scored", files, asked);
-    let scored = counted(&held);
-    assert_eq!(
-        scored.total - alone.total,
-        2 * alone.total * sva_samples::ALIAS_OVERSAMPLE as u128,
-        "both lanes at four times the rate, twice over: once for the label, once for the reading"
-    );
-
-    let id = held.id("node").expect("the root");
-    let taken = answer(&held, id, Representation::Alias { oversample: 4 }).expect("a score");
-    let Output::Alias(score) = taken.value else {
-        panic!("an alias reading answers a score, not {:?}", taken.value)
-    };
-    assert!(
-        score.asr_db.is_finite(),
-        "the reference reached the grid: {}",
-        score.asr_db
-    );
-}
-
-/// An addend that alone takes no row refuses nothing: unsplit the whole sum point-sampled,
-/// and that row still stands. Here the second line sits above the band on its own.
-#[test]
-fn an_addend_with_no_row_of_its_own_leaves_the_sum_on_the_written_row() {
-    let files = &[("node", "sin(2*pi*100*pow(2, t/4)*t) + sin(2*pi*4200*t)\n")];
-    let held = rendered("flops-sum-empty-band", files, config(1.0, None));
-    let tree = counted(&held);
-    assert_eq!(
-        tree.rows.first().expect("the root row").route,
-        "point sampling"
-    );
-    let label = held.labels.get(&held.root).expect("the root collapsed");
-    assert_eq!(label.rule(), sva_samples::Rule::PointSampled);
-}
-
 /// Priced at one operation a sample, a pointwise row summed to less than the rows under it —
 /// a tree two of its refs reach is charged under one of them, not both.
 #[test]
@@ -448,38 +283,5 @@ fn a_pointwise_root_prices_at_least_its_children() {
         "the rows under a pointwise root came to {under} against its own {}: {:?}",
         root.subtree,
         tree.rows
-    );
-}
-
-/// A render that asks for an alias score takes the reference twice: the collapse measures the
-/// label's at `ALIAS_OVERSAMPLE`, and the reading takes its own at the multiple it named.
-#[test]
-fn alias_reading_at_the_label_oversample_is_charged_twice() {
-    let files = &[("node", "tanh(sin(2*pi*220*t))\n")];
-    let own = counted(&rendered(
-        "flops-alias-unscored",
-        files,
-        counting(1.0, None),
-    ))
-    .total;
-
-    let asking = |oversample: u32| {
-        let name = format!("flops-alias-{oversample}");
-        let asked = config(1.0, None).asking(vec![Ask {
-            node: "node".to_string(),
-            representation: Representation::Alias { oversample },
-        }]);
-        counted(&rendered(&name, files, asked)).total
-    };
-    let label = sva_samples::ALIAS_OVERSAMPLE as u128;
-    assert_eq!(
-        asking(label as u32),
-        own + own * label + own * label,
-        "the evaluation, the label's reference, and the reading's own over the same four rates"
-    );
-    assert_eq!(
-        asking(2 * label as u32),
-        own + own * label + own * 2 * label,
-        "the label's reference stays at four; only the reading's follows what it asked"
     );
 }

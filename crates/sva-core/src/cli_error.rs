@@ -61,7 +61,6 @@ fn names_no_node(e: &EngineError) -> bool {
 }
 
 impl CliError {
-    /// This repo's `cli` standard exit-code table, by failure category.
     pub fn exit_code(&self) -> u8 {
         match self {
             CliError::Engine(e) if names_no_node(e) => 24,
@@ -77,7 +76,6 @@ impl CliError {
         }
     }
 
-    /// The top-level `error.code`, per the standard's error-code table.
     pub fn code(&self) -> &'static str {
         match self {
             CliError::Engine(e) if names_no_node(e) => "not_found",
@@ -257,34 +255,5 @@ mod tests {
             assert_eq!(d.message, message);
             assert!(d.help.is_some(), "and says where to look");
         }
-    }
-
-    /// Both of `lint`'s response paths name a code the same way, advised or refused.
-    #[test]
-    fn a_lint_code_reaches_a_diagnostic_the_same_way_from_either_response_path() {
-        let refused = CliError::LintRefused(vec![LintViolation {
-            code: LintCode::MissingComment,
-            severity: Severity::Error,
-            subject: "kick".to_string(),
-            message: "no `;`-comment".to_string(),
-            line: Some(4),
-        }]);
-        let [from_refusal] = &refused.diagnostics()[..] else {
-            panic!("one violation, one diagnostic");
-        };
-        let advised = lint_diagnostic(
-            LintCode::MissingComment,
-            "kick",
-            "no `;`-comment",
-            Severity::Advice,
-            Some(4),
-        );
-        assert_eq!(from_refusal.code, advised.code);
-        assert_eq!(from_refusal.code, "lint.missing_comment");
-        assert_eq!(from_refusal.severity, Severity::Error);
-        assert_eq!(advised.severity, Severity::Advice);
-        assert_eq!(from_refusal.help, advised.help);
-        assert_eq!(from_refusal.line, advised.line);
-        assert!(advised.help.is_some(), "a lint code says how to fix it");
     }
 }

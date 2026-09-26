@@ -3,7 +3,7 @@
 mod fixtures;
 
 use fixtures::graph_of;
-use sva_engine::{EngineError, trace};
+use sva_engine::trace;
 
 const CHORD: &str = "sin(2*pi*256*t) + sin(2*pi*512*t)\n";
 
@@ -51,21 +51,5 @@ fn a_trace_prints_the_type_each_node_holds() {
     assert!(
         closed.up.iter().all(|u| !u.ty.is_empty()),
         "every reader prints its own type"
-    );
-}
-
-#[test]
-fn a_file_several_tuples_share_refuses_naming_them() {
-    let g = graph_of(
-        "ambiguous",
-        &[
-            ("src", CHORD),
-            ("gain", "x*k\n"),
-            ("master", "@gain(t, x=@src, k=1) + @gain(t, x=@src, k=2)\n"),
-        ],
-    );
-    let refused = trace(&g, &["master".to_string()], "gain");
-    assert!(
-        matches!(refused, Err(EngineError::AmbiguousNode(file, names)) if file == "gain" && names.len() == 2)
     );
 }

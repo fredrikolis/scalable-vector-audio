@@ -49,9 +49,14 @@ fn composition(released: f64) -> Graph {
             ("toned_up", &format!("@toned(t, release={released})\n")),
             (
                 "doubled",
-                "@note(t, release=release) + 0.5*@note(t - 0.3s, release=release)\n",
+                "@string(t, release=release) + 0.5*@string(t - 0.3s, release=release)\n",
             ),
             ("doubled_up", &format!("@doubled(t, release={released})\n")),
+            ("single_echo", "@echo(t, x=@string(t, release=release))\n"),
+            (
+                "single_echoed",
+                &format!("@single_echo(t, release={released})\n"),
+            ),
         ],
     )
 }
@@ -235,19 +240,25 @@ fn a_unison_released_at_a_checkpoint_streams_until_its_silence_is_proven() {
     streams_until_proven_silent("note", "played", 22 * BLOCK);
 }
 
+/// The tail an echo adds, not the string under it, is what this proves, so the cheap single
+/// string carries it.
 #[test]
 fn an_echo_over_a_released_note_streams_until_its_silence_is_proven() {
-    streams_until_proven_silent("key", "released", 22 * BLOCK);
+    streams_until_proven_silent("single_echo", "single_echoed", 3 * BLOCK);
 }
 
+/// Kept on the full unison note: a bare single string's default damping does not settle
+/// under this filter's resonance within `max_secs`, where the piano's tuned damping does.
 #[test]
 fn a_filtered_released_note_streams_until_its_silence_is_proven() {
     streams_until_proven_silent("toned", "toned_up", 22 * BLOCK);
 }
 
+/// Reading the released node twice at an offset, not the string under it, is what this
+/// proves, so the cheap single string carries it.
 #[test]
 fn a_released_note_read_again_later_streams_until_its_silence_is_proven() {
-    streams_until_proven_silent("doubled", "doubled_up", 22 * BLOCK);
+    streams_until_proven_silent("doubled", "doubled_up", 3 * BLOCK);
 }
 
 /// `max_secs` counts from the checkpoint, so a note held past it still proves its release.

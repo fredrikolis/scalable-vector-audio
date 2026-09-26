@@ -106,25 +106,6 @@ fn a_render_warmed_in_memory_is_byte_identical_to_one_warmed_on_disk() {
     );
 }
 
-/// A key is content, so the path a ref was written down does not reach it.
-#[test]
-fn two_spellings_of_one_ref_path_share_a_cache_entry() {
-    let dir = dir_of(
-        "spellings",
-        &[
-            ("chord", "sin(2*pi*256*t)\n"),
-            ("plain", "@chord*0.5\n"),
-            ("fx/walked", "@../chord*0.5\n"),
-            ("master", "@plain + @fx/walked\n"),
-        ],
-    );
-    let cache = store_all("spellings-store");
-    let held = all_of(&dir, "master", &["plain", "fx/walked"], Some(&cache));
-    let one = held.id("plain").expect("plain");
-    let two = held.id("fx/walked").expect("the walked spelling");
-    assert_eq!(held.buffer(one), held.buffer(two), "one value, one entry");
-}
-
 /// A hit carries the label the collapse wrote, so a reused node still says how exact it is.
 #[test]
 fn a_reused_node_still_reports_its_label() {
@@ -156,73 +137,48 @@ fn editing_one_file_re_renders_it_and_its_dependents_and_nothing_else() {
     assert_ne!(before["master"], after["master"]);
 }
 
+/// A cache key is content, not the path or spelling a node was written under: two spellings
+/// of one ref, a file renamed after it rendered, and a subtree duplicated verbatim all answer
+/// from one entry.
 #[test]
-fn renaming_a_file_invalidates_nothing() {
-    let dir = chain("renamed");
+fn a_cache_key_follows_content_not_the_path_or_spelling_it_was_written_under() {
+    let spellings = dir_of(
+        "spellings",
+        &[
+            ("chord", "sin(2*pi*256*t)\n"),
+            ("plain", "@chord*0.5\n"),
+            ("fx/walked", "@../chord*0.5\n"),
+            ("master", "@plain + @fx/walked\n"),
+        ],
+    );
+    let cache = store_all("spellings-store");
+    let held = all_of(&spellings, "master", &["plain", "fx/walked"], Some(&cache));
+    assert_eq!(
+        held.buffer(held.id("plain").expect("plain")),
+        held.buffer(held.id("fx/walked").expect("the walked spelling")),
+        "one value, one entry, however the ref was spelled"
+    );
+
+    let renamed = chain("renamed");
     let cache = store_all("renamed-store");
-    let before = samples(&all_of(&dir, "master", &["voiced", "master"], Some(&cache)));
-    fs::rename(dir.join("voiced"), dir.join("coloured")).expect("a rename");
-    write(&dir, "master", "@coloured + @chord*0.25\n");
+    let before = samples(&all_of(
+        &renamed,
+        "master",
+        &["voiced", "master"],
+        Some(&cache),
+    ));
+    fs::rename(renamed.join("voiced"), renamed.join("coloured")).expect("a rename");
+    write(&renamed, "master", "@coloured + @chord*0.25\n");
     let after = samples(&all_of(
-        &dir,
+        &renamed,
         "master",
         &["coloured", "master"],
         Some(&cache),
     ));
     assert_eq!(before["master"], after["master"], "one value, one key");
     assert_eq!(before["voiced"], after["coloured"]);
-}
 
-/// Addition commutes and subtraction does not, and the spectral sum is what says so.
-#[test]
-fn reordering_a_sum_invalidates_nothing_but_reordering_a_difference_does() {
-    let of = |name: &str, body: &str| {
-        let dir = dir_of(name, &[("master", body)]);
-        samples(&rendered(&dir, "master", None))["master"].clone()
-    };
-    let sum = of("sum", "sin(2*pi*256*t) + sin(2*pi*384*t)\n");
-    let swapped = of("sum-swapped", "sin(2*pi*384*t) + sin(2*pi*256*t)\n");
-    assert_eq!(sum, swapped);
-
-    let difference = of("difference", "sin(2*pi*256*t) - sin(2*pi*384*t)\n");
-    let reversed = of("difference-reversed", "sin(2*pi*384*t) - sin(2*pi*256*t)\n");
-    assert_ne!(difference, reversed);
-}
-
-/// Rate keys a collapse and nothing above it: the closed form behind two rates is one entry.
-#[test]
-fn a_different_sample_rate_shares_the_law_and_not_the_buffer() {
-    let dir = chain("rates");
-    let cache = store_all("rates-store");
-    let graph = sva_ast::parse_composition(&dir).expect("a composition");
-    let first = render(
-        &graph,
-        "master",
-        RenderConfig::seconds(RATE, SECONDS),
-        Some(&cache),
-    )
-    .expect("a render");
-    let held = entries(&cache);
-    let second = render(
-        &graph,
-        "master",
-        RenderConfig::seconds(RATE * 2, SECONDS),
-        Some(&cache),
-    )
-    .expect("a render at another rate");
-    assert!(entries(&cache) > held, "another rate is another buffer");
-    let one = first
-        .buffer(first.id("master").expect("the root"))
-        .expect("a buffer");
-    let two = second
-        .buffer(second.id("master").expect("the root"))
-        .expect("a buffer");
-    assert_eq!(two.len(), one.len() * 2);
-}
-
-#[test]
-fn structurally_identical_subtrees_share_one_entry() {
-    let dir = dir_of(
+    let identical = dir_of(
         "identical",
         &[
             ("left", "sin(2*pi*256*t)*0.5\n"),
@@ -231,11 +187,71 @@ fn structurally_identical_subtrees_share_one_entry() {
         ],
     );
     let cache = store_all("identical-store");
-    let held = all_of(&dir, "master", &["left", "right"], Some(&cache));
+    let held = all_of(&identical, "master", &["left", "right"], Some(&cache));
     assert_eq!(
         held.buffer(held.id("left").expect("left")),
         held.buffer(held.id("right").expect("right")),
         "one written value, one entry"
+    );
+}
+
+/// Subtraction does not commute, and the spectral sum is what says so: one order of a
+/// difference never shares an entry with the other.
+#[test]
+fn reordering_a_difference_never_shares_an_entry_with_its_reverse() {
+    let of = |name: &str, body: &str| {
+        let dir = dir_of(name, &[("master", body)]);
+        samples(&rendered(&dir, "master", None))["master"].clone()
+    };
+    let difference = of("difference", "sin(2*pi*256*t) - sin(2*pi*384*t)\n");
+    let reversed = of("difference-reversed", "sin(2*pi*384*t) - sin(2*pi*256*t)\n");
+    assert_ne!(difference, reversed);
+}
+
+/// Rate keys a buffer and nothing above it: the rate-free law behind two rates is one entry,
+/// so each rate gets its own buffer while sharing the sum that produced it.
+#[test]
+fn a_rate_change_keys_a_new_buffer_but_reuses_the_rate_free_law() {
+    let dir = chain("rates");
+    let graph = sva_ast::parse_composition(&dir).expect("a composition");
+    let cache = MemoryCache::new();
+    let first = render(
+        &graph,
+        "master",
+        RenderConfig::seconds(RATE, SECONDS),
+        Some(&cache),
+    )
+    .expect("a render");
+    let id = first.id("master").expect("the root");
+    let symbolic = first
+        .symbolic
+        .get(&id)
+        .expect("the root's spectral sum")
+        .clone();
+    cache.sweep();
+    let held_at_one_rate = cache.held_bytes();
+    assert!(held_at_one_rate > 0, "the first render kept its buffer");
+
+    let second = render(
+        &graph,
+        "master",
+        RenderConfig::seconds(RATE * 2, SECONDS),
+        Some(&cache),
+    )
+    .expect("a render at another rate");
+    let second_id = second.id("master").expect("the root");
+    assert_eq!(
+        second.symbolic[&second_id], symbolic,
+        "one spectral sum answers both rates"
+    );
+
+    let one = first.buffer(id).expect("a buffer");
+    let two = second.buffer(second_id).expect("a buffer");
+    assert_eq!(two.len(), one.len() * 2, "each rate keeps its own buffer");
+    cache.sweep();
+    assert!(
+        cache.held_bytes() > held_at_one_rate,
+        "the second rate's buffer is a new entry, not a reuse of the first"
     );
 }
 
@@ -283,42 +299,6 @@ fn a_loop_of_refs_refuses_rather_than_substituting_forever() {
         panic!("a loop of refs has no law");
     };
     assert_eq!(refused.code(), "engine.cyclic_substitution");
-}
-
-/// A spectral sum is rate-free, so the second rate finds the closed form already normalized.
-#[test]
-fn a_symbolic_result_is_reused_across_two_rates() {
-    let dir = chain("symbolic-rates");
-    let graph = sva_ast::parse_composition(&dir).expect("a composition");
-    let cache = MemoryCache::new();
-    let first = render(
-        &graph,
-        "master",
-        RenderConfig::seconds(RATE, SECONDS),
-        Some(&cache),
-    )
-    .expect("a render");
-    let id = first.id("master").expect("the root");
-    cache.sweep();
-    let held = cache.held_bytes();
-    let symbolic = first
-        .symbolic
-        .get(&id)
-        .expect("the root's spectral sum")
-        .clone();
-    let second = render(
-        &graph,
-        "master",
-        RenderConfig::seconds(RATE * 3, SECONDS),
-        Some(&cache),
-    )
-    .expect("a render at another rate");
-    assert_eq!(
-        second.symbolic[&second.id("master").expect("the root")],
-        symbolic,
-        "one spectral sum answers both rates"
-    );
-    assert!(held > 0, "the first render kept something");
 }
 
 /// The table version is already inside a term's own hash, so a bump moves every symbolic

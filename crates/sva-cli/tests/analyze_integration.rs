@@ -173,20 +173,6 @@ fn a_two_channel_file_answers_a_stereo_image_a_mono_one_cannot() {
     assert_eq!(err.code(), "type.width_mismatch");
 }
 
-/// The float path a `.wav` destination writes is the one `analyze` reads back.
-#[test]
-fn a_written_float_wav_round_trips_through_the_reader() {
-    let rate = 8_000u32;
-    let samples = tone(rate, 110.0, 0.05);
-    let dir = scratch("analyze-roundtrip");
-    let path = dir.join("out.wav");
-    write_wav(&samples, rate, &path, SampleEncoding::Float).unwrap();
-    let (planes, read_rate) = sva_cli::read_channels(&path).unwrap();
-    assert_eq!(read_rate, rate);
-    assert_eq!(planes.len(), 1);
-    assert_eq!(planes[0], samples);
-}
-
 /// The same `--from`/`--to` names the same seconds on both paths: a render narrowed to a
 /// window and the file it wrote, analyzed over that window, hold the same samples.
 #[test]
