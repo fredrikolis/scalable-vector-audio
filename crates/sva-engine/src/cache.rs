@@ -5,7 +5,7 @@ mod store;
 
 pub use stats::{CacheStats, Lookup, Outcome};
 pub(crate) use stats::{Lens, Recording};
-pub use store::{Cache, DEFAULT_CACHE_BYTES, PrunePolicy};
+pub use store::{Cache, CachePolicy, DEFAULT_CACHE_BYTES, PrunePolicy};
 pub use sva_formula::Hash;
 
 use sva_formula::SpectralSum;

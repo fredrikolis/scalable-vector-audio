@@ -44,12 +44,13 @@ fn render(of: &Composition, target: &str) -> Rendering {
         None,
         None,
         None,
+        None,
     )
     .unwrap_or_else(|_| unreachable!("`{target}` renders"))
 }
 
 fn of_default(held: &Composition) -> Rendering {
-    held.render(None, Some(8000), JsValue::UNDEFINED, None, None, None)
+    held.render(None, Some(8000), JsValue::UNDEFINED, None, None, None, None)
         .unwrap_or_else(|_| unreachable!("`master` renders"))
 }
 
@@ -317,6 +318,7 @@ fn played(held: &Composition, cutoff: u32, volatile: Option<Vec<String>>) -> Ren
         volatile,
         None,
         None,
+        None,
     )
     .unwrap_or_else(|_| unreachable!("the knob at {cutoff} renders"))
 }
@@ -369,6 +371,7 @@ fn a_volatile_knob_crosses_as_a_fourth_argument_and_keeps_one_value_per_node() {
             Some(vec!["cutof".to_string()]),
             None,
             None,
+            None,
         )
         .err()
         .unwrap_or_else(|| unreachable!("a name nothing binds refuses"));
@@ -389,6 +392,40 @@ fn the_cache_budget_is_the_pages_own_and_survives_a_clear() {
     held.clear_cache();
     assert_eq!(held.cache_max_bytes(), 1_024.0, "the ceiling is kept");
     assert_eq!((held.cache_bytes(), held.cache_entries()), (0.0, 0));
+}
+
+/// A cache policy crosses by name: the composition's default, and one render's own as the
+/// seventh argument.
+#[wasm_bindgen_test]
+fn a_cache_policy_crosses_by_name_and_per_render() {
+    let held = page();
+    assert_eq!(held.cache_policy(), "all");
+    held.set_cache_policy("none")
+        .unwrap_or_else(|_| unreachable!("none is a policy"));
+    render(&held, "master");
+    assert_eq!(held.cache_entries(), 0, "nothing was stored");
+    assert!(held.set_cache_policy("some").is_err());
+
+    let at = |policy: &str| {
+        held.render(
+            Some("master".to_string()),
+            Some(8000),
+            JsValue::UNDEFINED,
+            None,
+            None,
+            None,
+            Some(policy.to_string()),
+        )
+    };
+    let target = at("target").unwrap_or_else(|_| unreachable!("target is a policy"));
+    let stored = field(&stats_of(&target), "stored").as_f64();
+    assert!(stored > Some(0.0), "the target was stored");
+    assert_eq!(
+        stored,
+        Some(held.cache_entries() as f64),
+        "and nothing else"
+    );
+    assert!(at("most").is_err());
 }
 
 /// A prune policy crosses by name: the default one a render over the cap prunes by, and the
@@ -422,7 +459,7 @@ fn a_refusal_crosses_as_data_and_the_module_keeps_working() {
     held.insert("master", "@nowhere*2\n");
 
     let refused = held
-        .render(None, Some(8000), JsValue::UNDEFINED, None, None, None)
+        .render(None, Some(8000), JsValue::UNDEFINED, None, None, None, None)
         .err()
         .unwrap_or_else(|| unreachable!("a dangling ref refuses"));
 
@@ -585,6 +622,7 @@ fn a_silent_render_ends_where_its_last_echo_is_heard() {
             None,
             None,
             Some(30.0),
+            None,
         )
         .unwrap_or_else(|_| unreachable!("the echo falls silent"));
     let secs = silent.duration_secs();
@@ -596,6 +634,7 @@ fn a_silent_render_ends_where_its_last_echo_is_heard() {
         JsValue::from("silent"),
         None,
         Some(16),
+        None,
         None,
     );
     let refused = never
@@ -740,6 +779,7 @@ fn a_stream_until_silent_ends_where_the_silent_render_proves_it() {
             JsValue::from("silent"),
             None,
             Some(16),
+            None,
             None,
         )
         .unwrap_or_else(|_| unreachable!("the same decay falls silent"));

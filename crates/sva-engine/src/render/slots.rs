@@ -37,6 +37,15 @@ fn program(render: &Render, node: NodeId) -> Result<Option<Program>, EngineError
     }
 }
 
+pub(super) fn reads_held(render: &Render, node: NodeId) -> Result<bool, EngineError> {
+    Ok(program(render, node)?.is_none_or(|program| {
+        program
+            .reads
+            .iter()
+            .all(|read| render.buffers.contains_key(read))
+    }))
+}
+
 /// The ref one slot stands for: its source, or — where that source is a subterm written here,
 /// and so carries this node's name — the one ref it reads. A subterm summing several isolates
 /// none, and one this render never held has no row.

@@ -13,14 +13,9 @@ use crate::offset::Offset;
 use crate::render::Render;
 use crate::typing::Value;
 
-/// A sampled node is the dearest kind this engine runs, so it reads and writes the same
-/// store a collapse does: one key off the node's identity, the rate and the window it was
-/// stepped over.
-pub fn run(
-    held: &mut Render,
-    id: NodeId,
-    cache: Option<&crate::cache::Lens>,
-) -> Result<(), EngineError> {
+/// A sampled node is the dearest kind this engine runs, so it is keyed as a collapse is: off
+/// the node's identity, the rate and the window it was stepped over. Its length rides along.
+pub fn key(held: &Render, id: NodeId) -> Result<(sva_formula::Hash, usize), EngineError> {
     let samples = super::length(held, id)?;
     let key = crate::cache::buffer_key(
         crate::refs::identity(&held.tys, id)?,
@@ -30,11 +25,15 @@ pub fn run(
         held.tys.ty(id).width as usize,
         sva_samples::AliasScore::NotAsked,
     );
-    if let Some((hit, label)) = super::warm(held, id, key, samples, cache) {
-        held.buffers.insert(id, hit);
-        held.labels.insert(id, label);
-        return Ok(());
-    }
+    Ok((key, samples))
+}
+
+pub fn run(
+    held: &mut Render,
+    id: NodeId,
+    key: sva_formula::Hash,
+    cache: Option<&crate::cache::Lens>,
+) -> Result<(), EngineError> {
     let (buffer, label) = stepped(held, id)?;
     super::store(key, &buffer, &label, cache);
     held.buffers.insert(id, buffer);

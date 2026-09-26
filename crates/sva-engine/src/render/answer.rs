@@ -519,6 +519,15 @@ fn attributed(
     }
     let mut contributed_by = std::collections::BTreeMap::new();
     for (parent, child) in edges_under(render, node, depth)? {
+        if !render.tys.ty(parent).is_closed_form()
+            && !crate::render::slots::reads_held(render, parent)?
+        {
+            return Err(unmaterialized(
+                render,
+                node,
+                Representation::Ledger { depth },
+            ));
+        }
         if let Some(held) = contributed(render, parent, child)? {
             contributed_by.insert(render.tys.name(child).to_string(), held);
         }

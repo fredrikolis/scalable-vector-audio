@@ -10,6 +10,48 @@ use super::{Entry, Expected, Payload};
 
 pub const DEFAULT_CACHE_BYTES: u64 = 2 << 30;
 
+/// Which values a render stores; whatever is not stored is computed again when asked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CachePolicy {
+    #[default]
+    All,
+    /// The values two or more nodes read, and the render target.
+    Forks,
+    Target,
+    None,
+}
+
+impl CachePolicy {
+    pub const ALL: [CachePolicy; 4] = [
+        CachePolicy::All,
+        CachePolicy::Forks,
+        CachePolicy::Target,
+        CachePolicy::None,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CachePolicy::All => "all",
+            CachePolicy::Forks => "forks",
+            CachePolicy::Target => "target",
+            CachePolicy::None => "none",
+        }
+    }
+
+    pub fn named(name: &str) -> Option<CachePolicy> {
+        CachePolicy::ALL.into_iter().find(|p| p.name() == name)
+    }
+
+    pub(crate) fn stores(self, fork: bool, target: bool) -> bool {
+        match self {
+            CachePolicy::All => true,
+            CachePolicy::Forks => fork || target,
+            CachePolicy::Target => target,
+            CachePolicy::None => false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PrunePolicy {
     /// Every entry the newest render neither stored nor read.
@@ -70,6 +112,7 @@ struct State {
     slots: HashMap<Hash, Hash>,
     bytes: u64,
     max_bytes: u64,
+    policy: CachePolicy,
     prune: PrunePolicy,
     clock: u64,
     tree: u64,
@@ -192,6 +235,15 @@ impl Cache {
         let mut state = self.locked();
         state.max_bytes = max_bytes;
         state.bounded();
+    }
+
+    /// What a render stores where it names no policy of its own.
+    pub fn policy(&self) -> CachePolicy {
+        self.locked().policy
+    }
+
+    pub fn set_policy(&self, policy: CachePolicy) {
+        self.locked().policy = policy;
     }
 
     pub fn prune_policy(&self) -> PrunePolicy {

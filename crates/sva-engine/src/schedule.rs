@@ -185,6 +185,8 @@ impl Walk<'_> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Schedule {
     pub materialize: Vec<NodeId>,
+    /// What a reading holds for itself.
+    pub wanted: Vec<NodeId>,
     pub symbolic: Vec<NodeId>,
     /// The nodes a reading asked a closed form of, each named once however many asked
     /// and none of them already materialized.
@@ -255,6 +257,11 @@ pub fn plan(typing: &Typing, order: &Order, root: NodeId, asks: &[Ask]) -> Sched
         .collect();
     compose.retain(|id| !materialize.contains(id));
     Schedule {
+        wanted: materialize
+            .iter()
+            .copied()
+            .filter(|id| wanted.contains(id))
+            .collect(),
         materialize,
         symbolic,
         compose,

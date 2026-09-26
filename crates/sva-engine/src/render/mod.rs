@@ -18,7 +18,7 @@ use sva_samples::{
 
 use crate::bindings::Binding;
 use crate::cache::{
-    Cache, CacheStats, Expected, Lens, Payload, Recording, frames_key, symbolic_key,
+    Cache, CachePolicy, CacheStats, Expected, Lens, Payload, Recording, frames_key, symbolic_key,
 };
 use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
@@ -39,6 +39,8 @@ pub struct RenderConfig {
     pub flop_budget: u128,
     /// What reads one of these keeps one value in the store, its last.
     pub volatile: Vec<String>,
+    /// The store's own where `None`.
+    pub cache_policy: Option<CachePolicy>,
 }
 
 impl RenderConfig {
@@ -50,6 +52,7 @@ impl RenderConfig {
             asks: Vec::new(),
             flop_budget: PSYCHOACOUSTIC_V1.flop_budget,
             volatile: Vec::new(),
+            cache_policy: None,
         }
     }
 
@@ -134,7 +137,7 @@ pub fn render(
     config: RenderConfig,
     cache: Option<&Cache>,
 ) -> Result<Render, EngineError> {
-    let recording = cache.map(Recording::over);
+    let recording = cache.map(|c| Recording::over(c, config.cache_policy));
     let mut held = run(prepared(graph, target)?, config, recording.as_ref(), None)?;
     held.cache_stats = recording.map(Recording::finish);
     Ok(held)
@@ -225,11 +228,18 @@ pub(crate) fn run(
         held.buffers.insert(root, buffer);
         held.labels.insert(root, label);
     }
-    let volatile = volatile::mark(&instances, &held.tys, &held.config, &target)?;
+    let lenses = Lenses {
+        recording,
+        volatile: volatile::mark(&instances, &held.tys, &held.config, &target)?,
+        forks,
+        root,
+    };
     affordable(&held)?;
+    let needed = lenses.needed(&held);
     for id in held.schedule.materialize.clone() {
-        let lens = recording.map(|r| r.at(volatile.slot(id), forks.contains(&id)));
-        materialize(&mut held, id, lens.as_ref())?;
+        if needed.contains(&id) {
+            materialize(&mut held, id, &lenses)?;
+        }
     }
     compose_read(&mut held);
     stamp(&mut held);
@@ -297,11 +307,104 @@ fn compose_read(held: &mut Render) {
     }
 }
 
-fn materialize(held: &mut Render, id: NodeId, cache: Option<&Lens>) -> Result<(), EngineError> {
+pub(crate) struct Lenses<'r> {
+    recording: Option<&'r Recording<'r>>,
+    volatile: volatile::Volatile,
+    forks: std::collections::BTreeSet<NodeId>,
+    root: NodeId,
+}
+
+impl Lenses<'_> {
+    pub(crate) fn none() -> Lenses<'static> {
+        Lenses {
+            recording: None,
+            volatile: volatile::Volatile::default(),
+            forks: Default::default(),
+            root: NodeId(0),
+        }
+    }
+
+    fn at(&self, id: NodeId) -> Option<Lens<'_>> {
+        let fork = self.forks.contains(&id);
+        self.recording
+            .map(|r| r.at(self.volatile.slot(id), fork, id == self.root))
+    }
+
+    /// What a reading asks for, what the policy keeps, and what those read that the store
+    /// does not answer. A ledger holds them all.
+    fn needed(&self, held: &Render) -> std::collections::BTreeSet<NodeId> {
+        let materialize = &held.schedule.materialize;
+        let ledger = held.config.asks.iter().any(|ask| {
+            matches!(
+                ask.representation,
+                crate::query::Representation::Ledger { .. }
+            )
+        });
+        let kept = |id: &NodeId| {
+            ledger
+                || self
+                    .recording
+                    .is_none_or(|r| r.stores(self.forks.contains(id), *id == self.root))
+        };
+        let mut needed: std::collections::BTreeSet<NodeId> = materialize
+            .iter()
+            .copied()
+            .filter(|id| held.schedule.wanted.contains(id) || kept(id))
+            .collect();
+        for id in materialize.iter().rev() {
+            if !needed.contains(id) || self.answered(held, *id) {
+                continue;
+            }
+            needed.extend(reads(held, *id));
+        }
+        needed
+    }
+
+    fn answered(&self, held: &Render, id: NodeId) -> bool {
+        let (Some(recording), Held::Sampled) = (self.recording, held.tys.ty(id).held) else {
+            return false;
+        };
+        sampled::key(held, id).is_ok_and(|(key, _)| recording.holds(key))
+    }
+}
+
+/// What the schedule orders before `id`, and every buffer its program reads behind those.
+fn reads(held: &Render, id: NodeId) -> Vec<NodeId> {
+    let mut out = schedule::materialized_operands(&held.tys, id);
+    if matches!(held.tys.ty(id).held, Held::Sampled)
+        && let Ok(program) = sampled::program(held, id)
+    {
+        out.extend(program.reads);
+    }
+    out.retain(|read| *read != id);
+    out
+}
+
+/// A sampled node found in the store answers for everything under it, so what it reads is
+/// held here only where it missed.
+fn materialize(held: &mut Render, id: NodeId, lenses: &Lenses) -> Result<(), EngineError> {
+    if held.buffers.contains_key(&id) || held.frames.contains_key(&id) {
+        return Ok(());
+    }
+    let lens = lenses.at(id);
+    if matches!(held.tys.ty(id).held, Held::Sampled) {
+        let (key, samples) = sampled::key(held, id)?;
+        if let Some((hit, label)) = warm(held, id, key, samples, lens.as_ref()) {
+            held.buffers.insert(id, hit);
+            held.labels.insert(id, label);
+            return Ok(());
+        }
+        for read in reads(held, id) {
+            materialize(held, read, lenses)?;
+        }
+        return sampled::run(held, id, key, lens.as_ref());
+    }
+    for operand in schedule::materialized_operands(&held.tys, id) {
+        materialize(held, operand, lenses)?;
+    }
     match held.tys.ty(id).held {
-        Held::Frames => frames_of(held, id, cache),
-        Held::Sampled => sampled::run(held, id, cache),
-        _ => collapse_closed_form(held, id, cache),
+        Held::Frames => frames_of(held, id, lens.as_ref()),
+        _ => collapse_closed_form(held, id, lens.as_ref()),
     }
 }
 

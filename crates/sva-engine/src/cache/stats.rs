@@ -6,7 +6,7 @@ use sva_formula::Hash;
 use sva_samples::Label;
 
 use super::store::{Kept, Stamp};
-use super::{Cache, Entry, Expected, Payload, PayloadKind};
+use super::{Cache, CachePolicy, Entry, Expected, Payload, PayloadKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -69,15 +69,18 @@ impl CacheStats {
 /// One render's view of the store, so the render itself never says what it looked up.
 pub(crate) struct Recording<'a> {
     cache: &'a Cache,
+    policy: CachePolicy,
     tree: u64,
     evictions: u64,
     lookups: Mutex<Vec<Lookup>>,
 }
 
 impl<'a> Recording<'a> {
-    pub(crate) fn over(cache: &'a Cache) -> Recording<'a> {
+    /// `policy` where the render names one, the store's own where it names none.
+    pub(crate) fn over(cache: &'a Cache, policy: Option<CachePolicy>) -> Recording<'a> {
         Recording {
             cache,
+            policy: policy.unwrap_or_else(|| cache.policy()),
             tree: cache.begin_tree(),
             evictions: cache.evictions(),
             lookups: Mutex::new(Vec::new()),
@@ -98,13 +101,22 @@ impl<'a> Recording<'a> {
     }
 
     /// One node's view: `slot` where a volatile parameter reaches it, `fork` where two nodes
-    /// read it.
-    pub(crate) fn at(&self, slot: Option<Hash>, fork: bool) -> Lens<'_> {
+    /// read it, `target` where the render is of it.
+    pub(crate) fn at(&self, slot: Option<Hash>, fork: bool, target: bool) -> Lens<'_> {
         Lens {
             recording: self,
             slot,
             fork,
+            stores: self.stores(fork, target),
         }
+    }
+
+    pub(crate) fn stores(&self, fork: bool, target: bool) -> bool {
+        self.policy.stores(fork, target)
+    }
+
+    pub(crate) fn holds(&self, key: Hash) -> bool {
+        self.cache.holds(key)
     }
 
     fn held(&self) -> MutexGuard<'_, Vec<Lookup>> {
@@ -127,6 +139,7 @@ pub(crate) struct Lens<'a> {
     recording: &'a Recording<'a>,
     slot: Option<Hash>,
     fork: bool,
+    stores: bool,
 }
 
 impl Lens<'_> {
@@ -158,6 +171,9 @@ impl Lens<'_> {
     }
 
     pub(crate) fn store(&self, key: Hash, payload: &Payload, label: Option<&Label>) {
+        if !self.stores {
+            return;
+        }
         let stamp = self.stamp(payload.kind());
         match self.recording.cache.store(key, payload, label, stamp) {
             Kept::Held => self.recording.settle(key, Outcome::ComputedStored),

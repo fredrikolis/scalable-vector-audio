@@ -24,8 +24,8 @@ mod vocabulary;
 pub use arguments::{Argument, Arguments, Called, Chosen};
 pub use bindings::Binding;
 pub use cache::{
-    Cache, CacheStats, DEFAULT_CACHE_BYTES, Hash, Lookup, Outcome, PayloadKind, PrunePolicy,
-    buffer_key, symbolic_key,
+    Cache, CachePolicy, CacheStats, DEFAULT_CACHE_BYTES, Hash, Lookup, Outcome, PayloadKind,
+    PrunePolicy, buffer_key, symbolic_key,
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};

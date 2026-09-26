@@ -9,8 +9,8 @@ use sva_core::{
     execute, query_data, representation_for, retired, silence, stats_json, window_for, work_json,
 };
 use sva_engine::{
-    Buffer, Cache, CacheStats, Horizon, PSYCHOACOUSTIC_V1, PrunePolicy, Representation,
-    answer_buffer, ledger_over,
+    Buffer, Cache, CachePolicy, CacheStats, Horizon, PSYCHOACOUSTIC_V1, PrunePolicy,
+    Representation, answer_buffer, ledger_over,
 };
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
@@ -162,7 +162,8 @@ impl Composition {
     /// Unset, `target` is `master`; `until` is the horizon in seconds, or `"silent"` to end
     /// where every later sample is provably under `2^-bits` (default the profile's own), by
     /// `max_secs` at the latest. `rate` is the observation rate. What reads a `volatile`
-    /// parameter keeps one value in the store, its last.
+    /// parameter keeps one value in the store, its last. `cache` overrides `cache_policy`.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &self,
         target: Option<String>,
@@ -171,8 +172,10 @@ impl Composition {
         volatile: Option<Vec<String>>,
         bits: Option<u32>,
         max_secs: Option<f64>,
+        cache: Option<String>,
     ) -> Result<Rendering, JsValue> {
         let volatile = volatile.unwrap_or_default();
+        let cache_policy = cache.as_deref().map(cache_policy).transpose()?;
         let (seconds, silent) = ending(&until, bits, max_secs)?;
         let rendered = execute(Job {
             target: target.as_deref(),
@@ -181,6 +184,7 @@ impl Composition {
             sample_rate: rate,
             reaching: true,
             cache: Some(&self.store),
+            cache_policy,
             volatile: &volatile,
             ..Job::over(&self.inner)
         });
@@ -243,6 +247,16 @@ impl Composition {
     }
 
     #[wasm_bindgen(getter)]
+    pub fn cache_policy(&self) -> String {
+        self.store.policy().name().to_string()
+    }
+
+    pub fn set_cache_policy(&self, policy: &str) -> Result<(), JsValue> {
+        self.store.set_policy(cache_policy(policy)?);
+        Ok(())
+    }
+
+    #[wasm_bindgen(getter)]
     pub fn prune_policy(&self) -> String {
         self.store.prune_policy().name().to_string()
     }
@@ -262,6 +276,15 @@ impl Composition {
     pub fn clear_cache(&self) {
         self.store.clear();
     }
+}
+
+fn cache_policy(name: &str) -> Result<CachePolicy, JsValue> {
+    CachePolicy::named(name).ok_or_else(|| {
+        refuse(
+            format!("`{name}` names no cache policy"),
+            "pass \"all\", \"forks\", \"target\" or \"none\"",
+        )
+    })
 }
 
 fn prune_policy(name: &str) -> Result<PrunePolicy, JsValue> {

@@ -37,7 +37,7 @@ use sva_engine::{
 pub use sva_engine::{Checkpoint, Silent, Stream};
 
 pub use sva_engine::{Answer, Horizon, Label, Output, Representation};
-pub use sva_engine::{Cache, PrunePolicy};
+pub use sva_engine::{Cache, CachePolicy, PrunePolicy};
 
 pub const ROOT: &str = "master";
 pub const PROBE: &str = "probe";
@@ -87,6 +87,7 @@ pub struct Job<'a> {
     pub until: Option<WindowEdge>,
     pub sample_rate: Option<u32>,
     pub cache: Option<&'a Cache>,
+    pub cache_policy: Option<CachePolicy>,
     /// Only what the target reaches, so a node nothing reaches is never read or refused.
     pub reaching: bool,
     /// The instance every reading is taken of; the target itself where this is `None`.
@@ -108,6 +109,7 @@ impl<'a> Job<'a> {
             until: None,
             sample_rate: None,
             cache: None,
+            cache_policy: None,
             reaching: false,
             reading: None,
             representations: Vec::new(),
@@ -146,6 +148,7 @@ fn settle(job: &Job, asked: Option<&str>) -> Result<(Graph, String, RenderConfig
         config.flop_budget = budget;
     }
     config.volatile = job.volatile.to_vec();
+    config.cache_policy = job.cache_policy;
     let node = job.reading.unwrap_or(&target);
     config.asks = job
         .representations
@@ -423,5 +426,6 @@ pub fn config_for(
         asks: Vec::new(),
         flop_budget: PSYCHOACOUSTIC_V1.flop_budget,
         volatile: Vec::new(),
+        cache_policy: None,
     })
 }

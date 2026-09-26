@@ -7,7 +7,7 @@ mod ringing;
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use sva_ast::Graph;
 use sva_formula::{Hash, NodeId};
@@ -16,10 +16,10 @@ use sva_samples::{Buffer, Horizon, Label};
 pub(crate) use envelope::Live;
 use envelope::{Bounds, Envelope, Forms, Grid, STEP, Unbounded};
 
-use super::{Prepared, Render, RenderConfig, materialize, prepared, run};
+use super::{Lenses, Prepared, Render, RenderConfig, materialize, prepared, run};
 use crate::cache::{Cache, Expected, Lens, Payload, Recording};
 use crate::error::{Diagnostic, EngineError, Located};
-use crate::schedule::{Schedule, dependencies_first};
+use crate::schedule::Schedule;
 
 /// Silence at `bits` is every later sample under `2^-bits` of full scale, proven by `max_secs`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -49,11 +49,11 @@ pub fn render_until_silent(
     let key = silent_key(held.identity(&config.asks)?, &config, silent);
     // A volatile root keeps its one value under its buffer's key, and no silent entry beside it.
     let volatile = super::volatile::mark(&held.instances, &held.tys, &config, &held.target)?;
-    let recording = cache.map(Recording::over);
+    let recording = cache.map(|c| Recording::over(c, config.cache_policy));
     let lens = recording
         .as_ref()
         .filter(|_| volatile.slot(held.root).is_none())
-        .map(|r| r.at(None, false));
+        .map(|r| r.at(None, false, true));
     if let Some((buffer, label)) = recalled(lens.as_ref(), key, &held, rate, width) {
         let config = ended(config, buffer.len());
         let render = run(held, config, recording.as_ref(), Some((buffer, label)))?;
@@ -309,18 +309,12 @@ fn heard_alone(
             asks: Vec::new(),
             ..config.clone()
         },
-        schedule: Schedule {
-            materialize: Vec::new(),
-            symbolic: Vec::new(),
-            compose: Vec::new(),
-        },
+        schedule: Schedule::default(),
         bindings: BTreeMap::new(),
         cache_stats: None,
         proofs: 0,
     };
-    for member in dependencies_first(tys, id, &mut BTreeSet::new()) {
-        materialize(&mut held, member, None)?;
-    }
+    materialize(&mut held, id, &Lenses::none())?;
     held.buffers
         .remove(&id)
         .ok_or_else(|| EngineError::UnknownNode(tys.name(id).to_string()))
