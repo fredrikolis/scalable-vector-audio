@@ -1,22 +1,16 @@
-// Concern: declares what a store holds under a content hash and how a key is built | Non-concern: any one store's medium and budget (disk.rs, memory.rs) | IO: (Hash) -> a payload + traces
+// Concern: declares what a store holds under a content hash and how a key is built | Non-concern: a store's budget (memory.rs) | IO: (Hash) -> a payload + traces
 
-mod disk;
-mod entry_bytes;
 mod evict;
-mod label;
 mod memory;
 mod slots;
 mod stats;
 
-pub use disk::{DiskCache, ENGINE_DIR_PREFIX, IO_NANOS_PER_BYTE};
-pub use entry_bytes::{RawF64, SampleCodec};
 pub use memory::MemoryCache;
 pub use slots::{DEFAULT_SLOT_BYTES, Put, Slots};
 pub(crate) use stats::Recording;
 pub use stats::{CacheStats, Lookup, Outcome};
 pub use sva_formula::Hash;
 
-use std::path::Path;
 use std::time::Duration;
 
 use sva_formula::SpectralSum;
@@ -49,11 +43,10 @@ pub enum Expected {
     Symbolic,
 }
 
-/// Where a hit was answered from: this process's heap, a store that outlives it, or a slot.
+/// Where a hit was answered from: the store, or a slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tier {
     Memory,
-    Persistent,
     Volatile,
 }
 
@@ -230,13 +223,5 @@ pub trait Cache: Sync {
 
     fn evicted_bytes(&self) -> u64;
 
-    fn faults(&self) -> u64 {
-        0
-    }
-
     fn max_bytes(&self) -> u64;
-
-    fn dir(&self) -> Option<&Path> {
-        None
-    }
 }

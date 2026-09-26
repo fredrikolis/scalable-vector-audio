@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 
 use fixtures::dir_of;
 use sva_engine::{
-    Ask, Cache, DiskCache, Expected, MemoryCache, Payload, PayloadKind, Render, RenderConfig,
-    Representation, render, symbolic_key,
+    Ask, Cache, Expected, MemoryCache, Payload, PayloadKind, Render, RenderConfig, Representation,
+    render, symbolic_key,
 };
 use sva_formula::hash::hash_closed_form_under;
 use sva_formula::{ClosedForm, Origin, Var};
@@ -17,8 +17,8 @@ use sva_formula::{ClosedForm, Origin, Var};
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
 
-fn store_all(name: &str) -> DiskCache {
-    DiskCache::at(dir_of(name, &[])).storing_everything()
+fn store_all() -> MemoryCache {
+    MemoryCache::new()
 }
 
 fn rendered(dir: &Path, root: &str, cache: Option<&dyn Cache>) -> Render {
@@ -53,20 +53,6 @@ fn samples(r: &Render) -> BTreeMap<String, Vec<f64>> {
         .collect()
 }
 
-fn entries(cache: &DiskCache) -> usize {
-    let mut count = 0;
-    let mut work = vec![cache.dir().expect("a disk store").to_path_buf()];
-    while let Some(at) = work.pop() {
-        for entry in fs::read_dir(at).into_iter().flatten().flatten() {
-            match entry.file_type() {
-                Ok(kind) if kind.is_dir() => work.push(entry.path()),
-                _ => count += 1,
-            }
-        }
-    }
-    count
-}
-
 fn write(dir: &Path, rel: &str, text: &str) {
     fs::write(dir.join(rel), text).expect("a node file");
 }
@@ -86,31 +72,19 @@ fn chain(name: &str) -> PathBuf {
 #[test]
 fn a_warm_render_is_byte_identical_to_a_cold_one() {
     let dir = chain("warm-cold");
-    let cache = store_all("warm-cold-store");
+    let cache = store_all();
     let cold = samples(&rendered(&dir, "master", Some(&cache)));
-    assert!(entries(&cache) > 0, "the cold render filled the store");
+    cache.sweep();
+    assert!(cache.held_bytes() > 0, "the cold render filled the store");
     let warm = samples(&rendered(&dir, "master", Some(&cache)));
     assert_eq!(cold, warm);
-}
-
-#[test]
-fn a_render_warmed_in_memory_is_byte_identical_to_one_warmed_on_disk() {
-    let dir = chain("two-stores");
-    let disk = store_all("two-stores-disk");
-    let memory = MemoryCache::new();
-    rendered(&dir, "master", Some(&disk));
-    rendered(&dir, "master", Some(&memory));
-    assert_eq!(
-        samples(&rendered(&dir, "master", Some(&disk))),
-        samples(&rendered(&dir, "master", Some(&memory)))
-    );
 }
 
 /// A hit carries the label the collapse wrote, so a reused node still says how exact it is.
 #[test]
 fn a_reused_node_still_reports_its_label() {
     let dir = chain("labelled");
-    let cache = store_all("labelled-store");
+    let cache = store_all();
     let cold = rendered(&dir, "master", Some(&cache));
     let warm = rendered(&dir, "master", Some(&cache));
     let id = warm.id("master").expect("the root");
@@ -124,7 +98,7 @@ fn a_reused_node_still_reports_its_label() {
 #[test]
 fn editing_one_file_re_renders_it_and_its_dependents_and_nothing_else() {
     let dir = chain("edited");
-    let cache = store_all("edited-store");
+    let cache = store_all();
     let nodes = ["chord", "voiced", "master"];
     let before = samples(&all_of(&dir, "master", &nodes, Some(&cache)));
     write(&dir, "voiced", "@chord*0.75\n");
@@ -151,7 +125,7 @@ fn a_cache_key_follows_content_not_the_path_or_spelling_it_was_written_under() {
             ("master", "@plain + @fx/walked\n"),
         ],
     );
-    let cache = store_all("spellings-store");
+    let cache = store_all();
     let held = all_of(&spellings, "master", &["plain", "fx/walked"], Some(&cache));
     assert_eq!(
         held.buffer(held.id("plain").expect("plain")),
@@ -160,7 +134,7 @@ fn a_cache_key_follows_content_not_the_path_or_spelling_it_was_written_under() {
     );
 
     let renamed = chain("renamed");
-    let cache = store_all("renamed-store");
+    let cache = store_all();
     let before = samples(&all_of(
         &renamed,
         "master",
@@ -186,7 +160,7 @@ fn a_cache_key_follows_content_not_the_path_or_spelling_it_was_written_under() {
             ("master", "@left + @right\n"),
         ],
     );
-    let cache = store_all("identical-store");
+    let cache = store_all();
     let held = all_of(&identical, "master", &["left", "right"], Some(&cache));
     assert_eq!(
         held.buffer(held.id("left").expect("left")),
@@ -261,7 +235,7 @@ fn a_warm_cyclic_render_is_byte_identical_to_a_cold_one() {
         "cyclic",
         &[("master", "sin(2*pi*220*t) + 0.5*self(t - 0.01s)\n")],
     );
-    let cache = store_all("cyclic-store");
+    let cache = store_all();
     let cold = samples(&rendered(&dir, "master", Some(&cache)));
     let warm = samples(&rendered(&dir, "master", Some(&cache)));
     assert_eq!(cold, warm);
@@ -274,7 +248,7 @@ fn editing_a_loop_retires_it() {
         "loop-edit",
         &[("master", "sin(2*pi*220*t) + 0.5*self(t - 0.01s)\n")],
     );
-    let cache = store_all("loop-edit-store");
+    let cache = store_all();
     let before = samples(&rendered(&dir, "master", Some(&cache)));
     write(&dir, "master", "sin(2*pi*220*t) + 0.25*self(t - 0.01s)\n");
     let after = samples(&rendered(&dir, "master", Some(&cache)));
@@ -360,20 +334,6 @@ fn frames_are_held_under_the_window_they_were_read_through() {
     assert_ne!(cold, edited, "editing what was analysed retires the frames");
 }
 
-/// A spectral sum is a formula tree with no encoding on disk, so the disk store says so
-/// rather than accepting one and dropping it.
-#[test]
-fn a_disk_store_offers_no_room_for_a_spectral_sum() {
-    let cache = store_all("no-room");
-    for kind in [PayloadKind::Symbolic, PayloadKind::Frames] {
-        assert!(
-            !cache.worth_storing(std::time::Duration::from_secs(1), 8, kind),
-            "{kind:?} has no file"
-        );
-    }
-    assert!(cache.worth_storing(std::time::Duration::from_secs(1), 8, PayloadKind::Samples));
-}
-
 /// FORMAT 9.3: the label is part of the value a collapse produced, so it is stored with the
 /// buffer and answered on a hit. Warm and cold are one command answering one way.
 #[test]
@@ -390,30 +350,26 @@ fn a_warm_hit_carries_the_cold_label() {
             .clone()
     };
 
-    for cache in [
-        Box::new(store_all("warm-label-disk")) as Box<dyn Cache>,
-        Box::new(MemoryCache::holding(1 << 20)),
-    ] {
-        let cold = label_of(cache.as_ref());
-        assert_eq!(
-            cold.source,
-            sva_engine::Source::Exact,
-            "the cold run is exact"
-        );
-        let sva_engine::Detail::Lines { placed, summed, .. } = &cold.detail else {
-            panic!("a line spectrum states what it placed: {cold:?}");
-        };
-        assert!(placed + summed > 0, "the lines are counted");
+    let cache = MemoryCache::holding(1 << 20);
+    let cold = label_of(&cache);
+    assert_eq!(
+        cold.source,
+        sva_engine::Source::Exact,
+        "the cold run is exact"
+    );
+    let sva_engine::Detail::Lines { placed, summed, .. } = &cold.detail else {
+        panic!("a line spectrum states what it placed: {cold:?}");
+    };
+    assert!(placed + summed > 0, "the lines are counted");
 
-        let warm = label_of(cache.as_ref());
-        assert_eq!(
-            warm.detail, cold.detail,
-            "a hit answers the row the cold run took"
-        );
-        assert_eq!(warm.source, cold.source);
-        assert_eq!(warm.rate, cold.rate);
-        assert_eq!(warm.profile, cold.profile);
-    }
+    let warm = label_of(&cache);
+    assert_eq!(
+        warm.detail, cold.detail,
+        "a hit answers the row the cold run took"
+    );
+    assert_eq!(warm.source, cold.source);
+    assert_eq!(warm.rate, cold.rate);
+    assert_eq!(warm.profile, cold.profile);
 }
 
 /// A sampled node is the dearest kind the engine runs and the one a caller most wants back
@@ -428,7 +384,7 @@ fn a_sampled_node_is_stored_and_answered_from_the_store() {
             ("master", "@acc*0.5\n"),
         ],
     );
-    let cache = store_all("sampled-cache-store");
+    let cache = store_all();
     let cold = all_of(&dir, "master", &["acc"], Some(&cache));
     assert_eq!(
         cold.tys.ty(cold.id("acc").expect("acc types")).held,
@@ -446,10 +402,12 @@ fn a_sampled_node_is_stored_and_answered_from_the_store() {
     );
     assert!(cache.holds(key), "the sampled node is in the store");
 
-    let filled = entries(&cache);
+    cache.sweep();
+    let filled = cache.held_bytes();
     let warm = all_of(&dir, "master", &["acc"], Some(&cache));
     assert_eq!(samples(&cold), samples(&warm), "byte for byte");
-    assert_eq!(entries(&cache), filled, "and nothing was written twice");
+    cache.sweep();
+    assert_eq!(cache.held_bytes(), filled, "and nothing was written twice");
 }
 
 fn over(dir: &Path, root: &str, seconds: f64, cache: &dyn Cache) -> Render {
@@ -463,7 +421,6 @@ fn over(dir: &Path, root: &str, seconds: f64, cache: &dyn Cache) -> Render {
     .unwrap_or_else(|e| panic!("rendering `{root}` for {seconds}s: {e}"))
 }
 
-/// A disk store holds no spectral sum, so only the buffers are asked to hit.
 fn every_buffer_hit(r: &Render) -> bool {
     let stats = r.cache_stats.as_ref().expect("a render handed a store");
     stats
@@ -474,7 +431,7 @@ fn every_buffer_hit(r: &Render) -> bool {
 }
 
 #[test]
-fn two_horizons_of_one_node_are_two_entries_in_every_store() {
+fn two_horizons_of_one_node_are_two_entries() {
     let dir = dir_of(
         "horizons",
         &[
@@ -482,22 +439,19 @@ fn two_horizons_of_one_node_are_two_entries_in_every_store() {
             ("master", "@acc + @acc*0.25\n"),
         ],
     );
-    let disk = store_all("horizons-disk");
     let memory = MemoryCache::new();
-    for store in [&disk as &dyn Cache, &memory] {
-        let short = samples(&over(&dir, "master", SECONDS, store));
-        let long = samples(&over(&dir, "master", 2.0 * SECONDS, store));
-        let again_short = over(&dir, "master", SECONDS, store);
-        let again_long = over(&dir, "master", 2.0 * SECONDS, store);
-        assert!(
-            every_buffer_hit(&again_short),
-            "the short horizon stayed held"
-        );
-        assert!(every_buffer_hit(&again_long), "and so did the long one");
-        assert_eq!(samples(&again_short), short);
-        assert_eq!(samples(&again_long), long);
-        assert_eq!(store.faults(), 0, "no entry was read at the wrong length");
-    }
+    let store = &memory;
+    let short = samples(&over(&dir, "master", SECONDS, store));
+    let long = samples(&over(&dir, "master", 2.0 * SECONDS, store));
+    let again_short = over(&dir, "master", SECONDS, store);
+    let again_long = over(&dir, "master", 2.0 * SECONDS, store);
+    assert!(
+        every_buffer_hit(&again_short),
+        "the short horizon stayed held"
+    );
+    assert!(every_buffer_hit(&again_long), "and so did the long one");
+    assert_eq!(samples(&again_short), short);
+    assert_eq!(samples(&again_long), long);
 }
 
 #[test]

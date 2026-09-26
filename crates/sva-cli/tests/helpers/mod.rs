@@ -81,7 +81,6 @@ pub fn json_of(r: &Rendered, name: &str, representation: Representation) -> Stri
             profile: r.config.profile.name,
             label: r.label(),
             written: &[],
-            cache: None,
             answers: &answers,
             analyses: &[],
             limit: Some(SAMPLE_LIMIT),

@@ -8,7 +8,7 @@ use helpers::{entry, fixture, json_of, plane, put, scratch, secs};
 use sva_ast::Dir;
 use sva_cli::{CliError, error_envelope};
 use sva_core::{Job, PROBE, ROOT, execute, probe, run};
-use sva_engine::{Output, Representation, Source};
+use sva_engine::{MemoryCache, Output, PayloadKind, Representation, Source};
 
 #[test]
 fn basic_fixture_renders_with_bpm_meter_and_a_repeat_desugared() {
@@ -529,8 +529,8 @@ fn lines_reads_a_pair_written_in_either_variable() {
     assert_eq!(listed("cos(2*pi*185*t)"), vec![-185.0, 185.0]);
 }
 
-/// FORMAT 14: one render, many readings. Two readings off one buffer collapse it once, and
-/// the cache report names that one lookup rather than one per `--as`.
+/// FORMAT 14: one render, many readings. Two readings off one buffer collapse it once, so the
+/// render looks that one buffer up once rather than once per `--as`.
 #[test]
 fn two_readings_share_one_collapse() {
     let dir = scratch("two-readings");
@@ -540,80 +540,29 @@ fn two_readings_share_one_collapse() {
         "; Models: a stack | Neglects: an envelope | IO: (t) -> amplitude | Tags: test\n\
          sin(2*pi*100*t) + sin(2*pi*200*t)\n",
     );
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sva-cli"))
-        .current_dir(&dir)
-        .env("SVA_CACHE", scratch("two-readings-cache"))
-        .args(["render", "master", "--as", "loudness", "--as", "envelope"])
-        .output()
-        .expect("the binary runs");
-    let printed = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(out.status.code(), Some(0), "{printed}");
-    assert!(printed.contains("\"loudness\""), "{printed}");
-    assert!(printed.contains("\"envelope\""), "{printed}");
-
-    let lookups = printed
-        .split("\"lookups\": ")
-        .nth(1)
-        .and_then(|rest| rest.split(']').next())
-        .expect("the cache report lists every lookup");
+    let cache = MemoryCache::new();
+    let rendered = execute(Job {
+        representations: vec![
+            Representation::Loudness,
+            Representation::Envelope { frame_secs: None },
+        ],
+        cache: Some(&cache),
+        ..Job::over(&Dir::at(&dir))
+    })
+    .expect("the stack renders");
+    let stats = rendered
+        .render
+        .cache_stats
+        .expect("a render handed a store");
+    let buffers = stats
+        .lookups
+        .iter()
+        .filter(|l| l.kind == PayloadKind::Samples)
+        .count();
     assert_eq!(
-        lookups.matches("\"kind\": \"samples\"").count(),
-        1,
-        "two readings collapse the one node once: {lookups}"
+        buffers, 1,
+        "two readings collapse the one node once: {stats:?}"
     );
-}
-
-/// `--volatile` keeps what a moving knob reaches out of the store, and the audio is the same.
-#[test]
-fn a_volatile_knob_renders_the_same_audio_and_slots_what_it_reaches() {
-    let dir = scratch("volatile-knob");
-    put(
-        &dir,
-        "tone",
-        "; Models: a tone knob | Neglects: resonance | IO: (t, x, cutoff) -> amplitude | Tags: test\n\
-         lowpass(x, cutoff=cutoff, q=0.7)\n",
-    );
-    put(
-        &dir,
-        "note",
-        "; Models: a note | Neglects: an envelope | IO: (t) -> amplitude | Tags: test\n\
-         sample(sin(2*pi*220*t))*0.5\n",
-    );
-    let out = scratch("volatile-knob-out");
-    let cache = scratch("volatile-knob-cache");
-    let target = "@tone(t, x=@note, cutoff=700)";
-    let render = |wav: &str, extra: &[&str]| {
-        let written = out.join(wav);
-        let dest = format!("samples={}", written.display());
-        let run = std::process::Command::new(env!("CARGO_BIN_EXE_sva-cli"))
-            .current_dir(&dir)
-            .env("SVA_CACHE", &cache)
-            .args(["render", target, "--to", "0.05", "--as", &dest])
-            .args(extra)
-            .output()
-            .expect("the binary runs");
-        let printed = String::from_utf8_lossy(&run.stdout).to_string();
-        (run.status.code(), printed, std::fs::read(written).ok())
-    };
-    let (code, printed, volatile) = render("volatile.wav", &["--volatile", "cutoff"]);
-    assert_eq!(code, Some(0), "{printed}");
-    assert!(
-        printed.contains("\"outcome\": \"computed_slotted\""),
-        "{printed}"
-    );
-    assert!(printed.contains("\"volatile\": 0"), "{printed}");
-    let (code, printed, plain) = render("plain.wav", &[]);
-    assert_eq!(code, Some(0), "{printed}");
-    assert!(!printed.contains("computed_slotted"), "{printed}");
-    assert_eq!(
-        volatile.expect("a wav"),
-        plain.expect("a wav"),
-        "the same audio"
-    );
-
-    let (code, printed, _) = render("refused.wav", &["--volatile", "cutof"]);
-    assert_ne!(code, Some(0));
-    assert!(printed.contains("render.volatile_unbound"), "{printed}");
 }
 
 /// `trace` names one instance of a parameterized file `<path>(<name>=<value>)`. `render`
@@ -928,48 +877,6 @@ fn a_capped_reading_names_the_second_its_items_stop_before() {
             "{representation:?} resumes inside its own window, not at {resume}"
         );
     }
-}
-
-/// The bug this closes: the CLI never swept, so its store reported holding nothing and grew
-/// past `SVA_CACHE_MAX_BYTES`. A render sweeps once it has written, as sva-wasm's does.
-#[test]
-fn a_cached_render_sweeps_its_store_to_the_budget() {
-    let dir = scratch("sweep-budget");
-    put(
-        &dir,
-        "master",
-        "; Models: a tone | Neglects: an envelope | IO: (t) -> amplitude | Tags: test\n\
-         sin(2*pi*100*t)\n",
-    );
-    let cache = scratch("sweep-budget-cache");
-    let engine = cache.join(format!(
-        "{}{:016x}",
-        sva_engine::ENGINE_DIR_PREFIX,
-        sva_engine::RENDER_FINGERPRINT
-    ));
-    let stale = engine.join("00").join("old.rbc");
-    std::fs::create_dir_all(stale.parent().expect("a shard")).expect("a shard");
-    std::fs::write(&stale, vec![0u8; 4096]).expect("an old entry");
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sva-cli"))
-        .current_dir(&dir)
-        .env("SVA_CACHE", &cache)
-        .env("SVA_CACHE_MAX_BYTES", "1024")
-        .args(["render", "master", "--to", "0.05", "--as", "loudness"])
-        .output()
-        .expect("the binary runs");
-    let printed = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(out.status.code(), Some(0), "{printed}");
-    assert!(!stale.exists(), "an entry past the budget went: {printed}");
-    let field = |name: &str| -> u64 {
-        printed
-            .split(&format!("\"{name}\": "))
-            .nth(1)
-            .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
-            .and_then(|n| n.parse().ok())
-            .unwrap_or_else(|| panic!("the cache report states {name}: {printed}"))
-    };
-    assert!(field("evicted_bytes") >= 4096, "{printed}");
-    assert!(field("held_bytes") <= 1024, "{printed}");
 }
 
 /// The window a reading reports is the one silence ended, not the latest time asked.

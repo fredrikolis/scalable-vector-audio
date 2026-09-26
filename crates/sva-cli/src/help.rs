@@ -47,8 +47,6 @@ RENDER:
   refuses as `engine.never_silent`, and one no bound is derived for yet (a
   physical solver other than chaigne_askenfelt, one string or a unison, a filter
   whose coefficients move) as `engine.no_tail_bound`.
-  `--no-cache` skips the disk store. `cache.stats` lists every lookup the render
-  made of it, each a `hit` (with its `tier`) or computed, and stored or not.
 
   `--as ledger` prints one row per node under the target. A row's `share` is the
   part of its reader's own energy that row accounts for, so one reader's refs sum
@@ -203,7 +201,7 @@ DEFAULTS:
   --confirm            replaces a destination that already holds a file. Without
                        it a path already taken refuses as `conflict` and nothing
                        is written.
-  --no-cache, --brief, --skim and --pcm16 are all off unless written.
+  --brief, --skim and --pcm16 are all off unless written.
 
 EXIT CODES:
   0  success (error.code absent)

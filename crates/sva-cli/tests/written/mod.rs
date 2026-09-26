@@ -150,7 +150,6 @@ fn a_later_reading_refusing_writes_no_earlier_destination() {
         .current_dir(&dir)
         .args([
             "render",
-            "--no-cache",
             "--as",
             &format!("samples={}", path.display()),
             "--as",
@@ -217,7 +216,6 @@ fn a_destination_that_already_holds_a_file_refuses_until_the_caller_confirms() {
     let render = |extra: &[&str]| {
         let mut args = vec![
             "render".to_string(),
-            "--no-cache".to_string(),
             "--as".to_string(),
             format!("lines={}", fresh.display()),
             "--as".to_string(),

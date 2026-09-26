@@ -249,10 +249,9 @@ fn a_cache_held_across_renders_locks_and_answers_what_the_first_render_did() {
     assert_eq!(plane(&render(&held, "partials/one")), after);
 }
 
-/// The object `sva-cli render` puts under `data.cache.stats`, with the second of two
-/// identical renders answered wholly from the composition's own store.
+/// A render's cache stats, with the second of two identical renders answered wholly from the composition's own store.
 #[wasm_bindgen_test]
-fn stats_cross_as_the_cli_object_and_a_repeated_render_is_all_hits() {
+fn a_repeated_render_is_all_hits() {
     let held = page();
     let cold = render(&held, "master")
         .stats()
@@ -268,10 +267,6 @@ fn stats_cross_as_the_cli_object_and_a_repeated_render_is_all_hits() {
         Some(f64::from(lookups.length())),
         "every lookup a hit: {}",
         as_text(&warm)
-    );
-    assert_eq!(
-        field(&field(&warm, "hits"), "persistent").as_f64(),
-        Some(0.0)
     );
     assert_eq!(field(&field(&warm, "hits"), "volatile").as_f64(), Some(0.0));
     assert_eq!(field(&warm, "computed").as_f64(), Some(0.0));

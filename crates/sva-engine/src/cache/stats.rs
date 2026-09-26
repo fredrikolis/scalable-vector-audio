@@ -1,6 +1,5 @@
 // Concern: what one render asked its store, and what each lookup came to | Non-concern: deciding what to store (the store's own worth_storing) | IO: (loads, stores) -> CacheStats
 
-use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -202,15 +201,7 @@ impl Cache for Lens<'_> {
         self.recording.inner.evicted_bytes()
     }
 
-    fn faults(&self) -> u64 {
-        self.recording.inner.faults()
-    }
-
     fn max_bytes(&self) -> u64 {
         self.recording.inner.max_bytes()
-    }
-
-    fn dir(&self) -> Option<&Path> {
-        self.recording.inner.dir()
     }
 }

@@ -314,7 +314,7 @@ impl Rendering {
         Ok(held[buffer.span_of(over)].to_vec())
     }
 
-    /// The object `sva-cli render` puts under `data.cache.stats`.
+    /// Every lookup this render made of the composition's store, and what each came to.
     pub fn stats(&self) -> Result<JsValue, JsValue> {
         let none = CacheStats::default();
         parse(&stats_json(
@@ -379,7 +379,6 @@ impl Rendering {
             profile: self.inner.config.profile.name,
             label: self.inner.label().filter(|_| whole_horizon),
             written: &[],
-            cache: None,
             answers: &answers,
             analyses: &[],
             limit: Some(SAMPLE_LIMIT),

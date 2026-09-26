@@ -3,12 +3,10 @@
 use std::path::Path;
 
 use sva_core::{
-    Answer, Asked, CacheReport, CliError, Horizon, Job, Output, Report, SAMPLE_LIMIT, Slots, cwd,
-    execute, query_data, window_for,
+    Answer, Asked, CliError, Horizon, Job, Output, Report, SAMPLE_LIMIT, cwd, execute, query_data,
+    window_for,
 };
-use sva_engine::{
-    Buffer, Cache, DEFAULT_FRAME_SECS, DiskCache, PSYCHOACOUSTIC_V1, Representation, answer_buffer,
-};
+use sva_engine::{Buffer, DEFAULT_FRAME_SECS, PSYCHOACOUSTIC_V1, Representation, answer_buffer};
 
 use crate::args::{AnalyzeArgs, RenderArgs};
 use crate::destination::{Framing, refuse_inside, refuse_replacing, write, write_analysis};
@@ -26,9 +24,6 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
             refuse_replacing(dest, args.confirm)?;
         }
     }
-    let store = args.cache.then(DiskCache::discover).flatten();
-    let cache = store.as_ref().map(|c| c as &dyn Cache);
-    let slots = Slots::default();
     let source = sva_ast::Dir::at(&dir);
     let rendered = execute(Job {
         target: args.target.as_deref(),
@@ -36,14 +31,11 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
         until: args.to,
         silent: args.silent,
         sample_rate: args.sample_rate,
-        cache,
         reading: args.node.as_deref(),
         representations: args.asked.iter().map(|a| a.representation).collect(),
         // A named target pulls its own closure; nothing it never reads is parsed at all.
         reaching: args.target.is_some(),
         flop_budget: args.flop_budget,
-        volatile: &args.volatile,
-        slots: Some(&slots),
         ..Job::over(&source)
     })?;
 
@@ -71,20 +63,6 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
     }
     let (answers, written) = routed(&args.asked, taken, &framing)?;
 
-    let report = cache.map(|c| CacheReport {
-        dir: c
-            .dir()
-            .map_or_else(|| "memory".to_string(), |d| d.display().to_string()),
-        stats: rendered
-            .render
-            .cache_stats
-            .clone()
-            .expect("a render handed a store records every lookup it made"),
-        held_bytes: c.held_bytes(),
-        max_bytes: c.max_bytes(),
-        evicted_bytes: c.evicted_bytes(),
-        faults: c.faults(),
-    });
     Ok(success_envelope(
         &query_data(&Report {
             target: &rendered.target,
@@ -93,7 +71,6 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
             profile: rendered.config.profile.name,
             label: rendered.label(),
             written: &written,
-            cache: report.as_ref(),
             answers: &answers,
             analyses: &[],
             limit: Some(SAMPLE_LIMIT),
@@ -237,7 +214,6 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
             profile: PSYCHOACOUSTIC_V1.name,
             label: None,
             written: &written,
-            cache: None,
             answers: &answers,
             analyses: &analyses,
             limit: Some(SAMPLE_LIMIT),

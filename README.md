@@ -127,7 +127,6 @@ sva-cli render master --as samples=/tmp/song.wav --sample-rate 48000
 `flops` counts the render before running it, 1,896,300 operations here against the profile's
 1e10 budget; a render over that budget refuses, naming the node that dominates. The second
 line writes two seconds of 48 kHz float. `--as ledger` prints rms, peak and clipped per node.
-Renders are cached on disk by content; `--no-cache` skips the cache.
 
 Every reading says whether it is `exact` or `measured`, under which profile and at which
 rate. No expression can read that rate as a number: `1sp` is the one literal measured in it,

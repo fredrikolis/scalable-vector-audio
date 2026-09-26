@@ -1,4 +1,4 @@
-// Concern: the order and the depth every store sweeps by | Non-concern: either store's medium or its own cap (disk.rs, memory.rs) | IO: (entries, cap) -> bytes held, bytes dropped
+// Concern: the order and the depth a store sweeps by | Non-concern: the store itself or its cap (memory.rs) | IO: (entries, cap) -> bytes held, bytes dropped
 
 /// What a sweep leaves behind, for the store to report.
 pub(super) struct Swept {

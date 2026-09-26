@@ -14,16 +14,6 @@ use crate::json::{NONE, capped, escape, list, num};
 /// Past this a caller reading stdout wants a narrower `--from`/`--to`, not a wall of JSON.
 pub const SAMPLE_LIMIT: usize = 4096;
 
-/// The store at `dir`, and every lookup the render made of it.
-pub struct CacheReport {
-    pub dir: String,
-    pub stats: CacheStats,
-    pub held_bytes: u64,
-    pub max_bytes: u64,
-    pub evicted_bytes: u64,
-    pub faults: u64,
-}
-
 fn maybe(v: Option<f64>) -> String {
     v.map(num).unwrap_or_else(|| NONE.to_string())
 }
@@ -485,22 +475,6 @@ pub fn label_json(label: &Label) -> String {
     )
 }
 
-fn cache_json(cache: Option<&CacheReport>) -> String {
-    match cache {
-        Some(c) => format!(
-            "{{ \"dir\": \"{}\", \"held_bytes\": {}, \"max_bytes\": {}, \
-             \"evicted_bytes\": {}, \"faults\": {}, \"stats\": {} }}",
-            escape(&c.dir),
-            c.held_bytes,
-            c.max_bytes,
-            c.evicted_bytes,
-            c.faults,
-            stats_json(&c.stats)
-        ),
-        None => NONE.to_string(),
-    }
-}
-
 /// Whole counts every one; `waves` is null where a node's go uncounted.
 pub fn work_json(work: &Work) -> String {
     let waves = work.waves.map_or(NONE.to_string(), |w| w.to_string());
@@ -533,12 +507,11 @@ pub fn stats_json(stats: &CacheStats) -> String {
         )
     });
     format!(
-        "{{ \"nodes\": {}, \"hits\": {{ \"memory\": {}, \"persistent\": {}, \"volatile\": {} }}, \
+        "{{ \"nodes\": {}, \"hits\": {{ \"memory\": {}, \"volatile\": {} }}, \
          \"computed\": {}, \"stored\": {}, \"slotted\": {}, \"replaced\": {}, \
          \"lookups\": {lookups} }}",
         stats.nodes(),
         stats.hits_in(Tier::Memory),
-        stats.hits_in(Tier::Persistent),
         stats.hits_in(Tier::Volatile),
         stats.computed(),
         stats.stored(),
@@ -550,7 +523,6 @@ pub fn stats_json(stats: &CacheStats) -> String {
 fn tier_name(tier: Tier) -> &'static str {
     match tier {
         Tier::Memory => "memory",
-        Tier::Persistent => "persistent",
         Tier::Volatile => "volatile",
     }
 }
@@ -563,7 +535,6 @@ pub struct Report<'a> {
     pub profile: &'a str,
     pub label: Option<&'a Label>,
     pub written: &'a [(String, &'a Path)],
-    pub cache: Option<&'a CacheReport>,
     pub answers: &'a [(String, Answer)],
     /// Readings a crate outside this pipeline answered, each already a JSON value: this
     /// envelope only says which reading ran, under which profile, and at what rate.
@@ -613,12 +584,11 @@ pub fn query_data(report: &Report) -> String {
     format!(
         "{{\n  \"target\": \"{}\",\n  \"sample_rate\": {},\n  \"profile\": \"{}\",\n  \
          \"window\": {{ \"start_secs\": {}, \"end_secs\": {} }},\n  \"label\": {label},\n  \
-         \"written\": {written},\n  \"cache\": {}{tail}\n}}",
+         \"written\": {written}{tail}\n}}",
         escape(report.target),
         report.rate,
         escape(report.profile),
         num(report.horizon.start_secs),
-        num(report.horizon.end_secs),
-        cache_json(report.cache)
+        num(report.horizon.end_secs)
     )
 }

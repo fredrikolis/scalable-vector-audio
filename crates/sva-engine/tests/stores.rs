@@ -1,15 +1,6 @@
-// Concern: proves both stores answer one key with the bytes stored under it, and sweep to their budget | Non-concern: what a key stands for (cache.rs) | IO: (Hash) -> a buffer + traces
+// Concern: proves the store answers one key with the bytes stored under it, and sweep to their budget | Non-concern: what a key stands for (cache.rs) | IO: (Hash) -> a buffer + traces
 
-mod fixtures;
-
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-
-use fixtures::dir_of;
-use sva_engine::{
-    Cache, DiskCache, ENGINE_DIR_PREFIX, Expected, Hash, MemoryCache, Payload, RENDER_FINGERPRINT,
-};
+use sva_engine::{Cache, Expected, Hash, MemoryCache, Payload};
 use sva_samples::{AutomationFrame, Buffer, FilterTrace};
 
 const FOUR: Expected = Expected::Samples {
@@ -47,35 +38,12 @@ fn trace() -> FilterTrace {
     }
 }
 
-/// The store owns how it lays a key out on disk; a test that reconstructed the layout would
-/// freeze it. Exactly one entry is stored, so the only file under the directory is it.
-fn one_file_under(dir: &Path) -> PathBuf {
-    let mut found = Vec::new();
-    let mut work = vec![dir.to_path_buf()];
-    while let Some(at) = work.pop() {
-        for entry in fs::read_dir(at).into_iter().flatten().flatten() {
-            match entry.file_type() {
-                Ok(kind) if kind.is_dir() => work.push(entry.path()),
-                _ => found.push(entry.path()),
-            }
-        }
-    }
-    assert_eq!(found.len(), 1, "one entry was stored: {found:?}");
-    found.remove(0)
-}
-
 fn odd_values() -> Buffer {
     Buffer::mono(44100, vec![0.0, -0.5, f64::MIN_POSITIVE, 0.9999999])
 }
 
 fn stores() -> Vec<(&'static str, Box<dyn Cache>)> {
-    vec![
-        (
-            "disk",
-            Box::new(DiskCache::at(dir_of("cache-roundtrip", &[]))) as Box<dyn Cache>,
-        ),
-        ("memory", Box::new(MemoryCache::new())),
-    ]
+    vec![("memory", Box::new(MemoryCache::new()))]
 }
 
 #[test]
@@ -117,86 +85,6 @@ fn an_entry_that_does_not_answer_what_was_asked_is_a_miss_and_is_dropped() {
     }
 }
 
-/// A file the reader cannot parse is not a hit to fall back on: it goes, so the next render
-/// writes a whole one.
-#[test]
-fn a_truncated_disk_entry_is_a_miss_and_is_deleted() {
-    let dir = dir_of("cache-truncated", &[]);
-    let cache = DiskCache::at(&dir);
-    let key = Hash(7, 11);
-    cache.store(
-        key,
-        &holding(&Buffer::mono(8_000, vec![0.25; 4])),
-        &[],
-        None,
-    );
-    let file = one_file_under(&dir);
-    let bytes = fs::read(&file).expect("the entry");
-    fs::write(&file, &bytes[..bytes.len() - 3]).expect("a short write");
-
-    assert!(
-        cache.load(key, "n", read_at(8_000, 4)).is_none(),
-        "truncated"
-    );
-    assert!(!cache.holds(key), "and cleared, not left to fail forever");
-}
-
-/// An evicted composition and a changed one look alike; only these figures separate them.
-#[test]
-fn a_sweep_reports_what_it_held_and_what_it_had_to_delete() {
-    let dir = dir_of("cache-accounting", &[]);
-    let filled = |cache: &dyn Cache| {
-        for i in 0..8u64 {
-            cache.store(
-                Hash(i, i),
-                &holding(&Buffer::mono(8_000, vec![0.5; 256])),
-                &[],
-                None,
-            );
-        }
-    };
-    let whole = DiskCache::bounded(&dir, u64::MAX);
-    filled(&whole);
-    whole.sweep();
-    let held = whole.held_bytes();
-    assert!(held > 0);
-    assert_eq!(whole.evicted_bytes(), 0, "nothing to delete under the cap");
-
-    let capped = DiskCache::bounded(&dir, held / 2);
-    capped.sweep();
-    assert!(capped.held_bytes() <= capped.max_bytes());
-    assert!(capped.evicted_bytes() >= held - capped.held_bytes());
-    assert_eq!(capped.max_bytes(), held / 2);
-}
-
-#[test]
-fn a_disk_sweep_drops_the_least_recently_read_until_it_is_under_the_cap() {
-    let dir = dir_of("cache-sweep", &[]);
-    let keys: Vec<Hash> = (0..8).map(|i| Hash(i, 0)).collect();
-    let read = read_at(8_000, 256);
-    let cache = DiskCache::at(&dir);
-    for &key in &keys {
-        cache.store(
-            key,
-            &holding(&Buffer::mono(8_000, vec![0.5; 256])),
-            &[],
-            None,
-        );
-    }
-    for &key in &keys[4..] {
-        assert!(cache.load(key, "n", read).is_some());
-    }
-
-    let capped = DiskCache::bounded(&dir, 4 * 1100);
-    capped.sweep();
-    let survivors = keys
-        .iter()
-        .filter(|&&k| capped.load(k, "n", read).is_some())
-        .count();
-    assert!(survivors <= 4, "swept below the cap, kept {survivors}");
-    assert!(survivors > 0, "and did not empty itself");
-}
-
 #[test]
 fn a_memory_sweep_drops_the_least_recently_read_until_it_is_under_the_cap() {
     let keys: Vec<Hash> = (0..8).map(|i| Hash(i, 0)).collect();
@@ -230,113 +118,4 @@ fn a_memory_sweep_drops_the_least_recently_read_until_it_is_under_the_cap() {
     for &key in &keys[..4] {
         assert!(!capped.holds(key), "the least recently read went first");
     }
-}
-
-/// A store that has quietly stopped persisting answers every load with a miss, exactly as a
-/// cold one does. The fault count is what separates the two.
-#[test]
-fn a_damaged_entry_is_dropped_and_counted_rather_than_read_as_a_cold_miss() {
-    let dir = dir_of("cache-faults", &[]);
-    let cache = DiskCache::at(&dir);
-    let key = Hash(3, 5);
-    cache.store(
-        key,
-        &holding(&Buffer::mono(8_000, vec![0.25; 4])),
-        &[],
-        None,
-    );
-    assert_eq!(cache.faults(), 0, "a clean write faults nothing");
-
-    let file = one_file_under(&dir);
-    let bytes = fs::read(&file).expect("the entry");
-    fs::write(&file, &bytes[..bytes.len() - 3]).expect("a short write");
-
-    assert!(cache.load(key, "n", read_at(8_000, 4)).is_none(), "a miss");
-    assert_eq!(cache.faults(), 1, "and the reason is on the record");
-    assert!(!cache.holds(key), "the damaged entry is gone");
-
-    assert_eq!(MemoryCache::new().faults(), 0, "nothing on disk to damage");
-
-    cache.store(
-        key,
-        &holding(&Buffer::mono(8_000, vec![0.25; 4])),
-        &[],
-        None,
-    );
-    let file = one_file_under(&dir);
-    let shut = fs::Permissions::from_mode(0o000);
-    fs::set_permissions(&file, shut).expect("an unreadable entry");
-    assert!(cache.load(key, "n", read_at(8_000, 4)).is_none(), "a miss");
-    assert_eq!(
-        cache.faults(),
-        2,
-        "an entry that is there but unreadable counts"
-    );
-    let _ = fs::set_permissions(&file, fs::Permissions::from_mode(0o600));
-}
-
-/// Another codec's file is sound, so it is neither counted as damage nor deleted.
-#[test]
-fn a_disk_entry_another_codec_wrote_is_a_miss_and_is_kept() {
-    let dir = dir_of("cache-codec", &[]);
-    let key = Hash(3, 5);
-    DiskCache::at(&dir).store(key, &holding(&odd_values()), &[], None);
-
-    let other = DiskCache::at(&dir).coded(Box::new(fixtures::Relabelled));
-    assert!(other.load(key, "n", FOUR).is_none());
-    assert_eq!(other.faults(), 0);
-    assert!(other.holds(key), "left for the codec that wrote it");
-    assert!(DiskCache::at(&dir).load(key, "n", FOUR).is_some());
-}
-
-/// The bug this closes: a key names what a node says, not the engine that rendered it, so two
-/// engines sharing one directory served each other's buffers. Each keeps its own, and the
-/// directories no engine this one is can read go when it opens.
-#[test]
-fn a_disk_store_keeps_one_directory_per_engine_and_drops_the_others() {
-    let root = dir_of("cache-engines", &[]);
-    let current = format!("{ENGINE_DIR_PREFIX}{RENDER_FINGERPRINT:016x}");
-    let stale = format!("{ENGINE_DIR_PREFIX}{:016x}", RENDER_FINGERPRINT ^ 1);
-    for kept_or_not in [stale.as_str(), "ab", "notes", current.as_str()] {
-        fs::create_dir_all(root.join(kept_or_not)).expect("a directory");
-        fs::write(root.join(kept_or_not).join("x.rbc"), b"old").expect("a file");
-    }
-
-    let cache = DiskCache::under(&root);
-    assert_eq!(cache.dir(), Some(root.join(&current).as_path()));
-    assert_eq!(cache.faults(), 0, "every stale directory went");
-    assert!(!root.join(&stale).exists(), "another engine's buffers went");
-    assert!(
-        !root.join("ab").exists(),
-        "the shards every engine shared went"
-    );
-    assert!(root.join("notes").exists(), "what no engine wrote stays");
-    assert!(
-        root.join(&current).join("x.rbc").exists(),
-        "this engine's own directory stays whole"
-    );
-
-    let key = Hash(3, 5);
-    cache.store(key, &holding(&odd_values()), &[], None);
-    assert!(cache.holds(key));
-    assert!(
-        !DiskCache::at(&root).holds(key),
-        "the entry lives under this engine's directory, not the shared root"
-    );
-}
-
-/// A stale directory that will not go is counted, not passed over.
-#[test]
-fn a_stale_directory_that_will_not_go_is_a_fault() {
-    let root = dir_of("cache-engines-stuck", &[]);
-    let stale = root.join(format!(
-        "{ENGINE_DIR_PREFIX}{:016x}",
-        RENDER_FINGERPRINT ^ 1
-    ));
-    fs::create_dir_all(stale.join("ab")).expect("a directory");
-    fs::write(stale.join("ab").join("x.rbc"), b"old").expect("a file");
-    fs::set_permissions(&stale, fs::Permissions::from_mode(0o500)).expect("read-only");
-    let cache = DiskCache::under(&root);
-    fs::set_permissions(&stale, fs::Permissions::from_mode(0o700)).expect("writable again");
-    assert_eq!(cache.faults(), 1, "the stuck directory is reported");
 }

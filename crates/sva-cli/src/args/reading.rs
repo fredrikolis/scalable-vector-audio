@@ -123,12 +123,11 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
     let mut it = peeked;
 
     let mut flags = Flags::new();
-    let (mut cache, mut brief, mut skim, mut pcm16) = (true, false, false, false);
+    let (mut brief, mut skim, mut pcm16) = (false, false, false);
     let mut confirm = false;
     let mut node: Option<String> = None;
     let mut sample_rate: Option<u32> = None;
     let mut flop_budget: Option<u128> = None;
-    let mut volatile: Vec<String> = Vec::new();
     let mut max: Option<f64> = None;
     while let Some(flag) = it.next() {
         if flags.read(flag, &mut it)? {
@@ -136,13 +135,11 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
         }
         match flag.as_str() {
             "--max" => max = Some(positive(&value(&mut it, "--max")?, "--max")?),
-            "--no-cache" => cache = false,
             "--brief" => brief = true,
             "--skim" => skim = true,
             "--pcm16" => pcm16 = true,
             "--confirm" => confirm = true,
             "--node" => node = Some(value(&mut it, "--node")?),
-            "--volatile" => volatile.push(value(&mut it, "--volatile")?),
             "--sample-rate" => sample_rate = Some(hertz(&value(&mut it, "--sample-rate")?)?),
             "--flop-budget" => {
                 flop_budget = Some(operations(
@@ -184,7 +181,6 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
         target,
         node,
         dir,
-        cache,
         sample_rate,
         from: flags.from,
         to: flags.to,
@@ -195,12 +191,10 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
         pcm16,
         confirm,
         flop_budget,
-        volatile,
     })))
 }
 
-/// A file's rate is read off it, never chosen, so `analyze` has no `--sample-rate` and no
-/// cache: there is no graph to key one against.
+/// A file's rate is read off it, never chosen, so `analyze` has no `--sample-rate`.
 pub(super) fn analyze_args(rest: &[String]) -> Result<Command, CliError> {
     let mut it = rest.iter();
     let path = it

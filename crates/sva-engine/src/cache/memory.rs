@@ -1,4 +1,4 @@
-// Concern: keeps rendered buffers in this process's own heap under their content hash | Non-concern: what a store is for (cache.rs), outliving the process (disk.rs) | IO: (Hash) -> a buffer + traces
+// Concern: keeps rendered buffers in this process's own heap under their content hash | Non-concern: what a store is for (cache.rs) | IO: (Hash) -> a buffer + traces
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
