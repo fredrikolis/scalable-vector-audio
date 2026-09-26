@@ -3,9 +3,7 @@
 mod fixtures;
 
 use fixtures::graph_of;
-use sva_engine::{
-    Ask, Cache, MemoryCache, Output, RenderConfig, Representation, Source, answer, render,
-};
+use sva_engine::{Ask, Cache, Output, RenderConfig, Representation, Source, answer, render};
 
 const CHORD: &str = "sin(2*pi*256*t) + sin(2*pi*512*t) + sin(2*pi*768*t)\n";
 
@@ -81,12 +79,11 @@ fn the_render_root_collapses_when_the_caller_asks_for_audio() {
 #[test]
 fn a_warm_collapse_is_the_cold_one_byte_for_byte() {
     let g = graph_of("warm", &[("chord", CHORD)]);
-    let store = MemoryCache::new();
+    let store = Cache::new();
     let config = || RenderConfig::seconds(8_192, 0.5);
     let cold = render(&g, "chord", config(), Some(&store)).expect("a cold render");
     let cold_root = cold.id("chord").expect("the root");
     let cold_samples = cold.buffer(cold_root).expect("a buffer").clone();
-    assert!(store.held_bytes() == 0 || store.max_bytes() > 0);
 
     let warm = render(&g, "chord", config(), Some(&store)).expect("a warm render");
     let warm_root = warm.id("chord").expect("the root");

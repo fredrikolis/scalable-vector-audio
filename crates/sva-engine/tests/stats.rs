@@ -1,4 +1,4 @@
-// Concern: proves a render reports every lookup it made and what each came to | Non-concern: a store's medium or budget (stores.rs) | IO: (a composition, a store) -> CacheStats
+// Concern: proves a render reports every lookup it made and what each came to | Non-concern: the store's cap and prunes (stores.rs) | IO: (a composition, a store) -> CacheStats
 
 mod fixtures;
 
@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 
 use fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{Cache, CacheStats, Hash, MemoryCache, RenderConfig, render};
+use sva_engine::{Cache, CacheStats, Hash, RenderConfig, render};
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
@@ -25,7 +25,7 @@ fn demo(name: &str) -> Graph {
     )
 }
 
-fn stats(graph: &Graph, root: &str, cache: &dyn Cache) -> CacheStats {
+fn stats(graph: &Graph, root: &str, cache: &Cache) -> CacheStats {
     render(
         graph,
         root,
@@ -55,7 +55,7 @@ fn a_render_handed_no_store_reports_no_stats() {
 #[test]
 fn an_identical_second_render_is_all_hits() {
     let graph = demo("identical");
-    let cache = MemoryCache::new();
+    let cache = Cache::new();
     let cold = stats(&graph, "b", &cache);
     let warm = stats(&graph, "b", &cache);
     assert!(!warm.lookups.is_empty());

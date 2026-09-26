@@ -327,6 +327,25 @@ pub(crate) fn materialized_operands(typing: &Typing, id: NodeId) -> Vec<NodeId> 
     }
 }
 
+/// The held nodes two or more held nodes read: a value one reader alone needs is covered by
+/// that reader's own.
+pub(crate) fn forks(typing: &Typing, held: &[NodeId]) -> BTreeSet<NodeId> {
+    let mut readers: BTreeMap<NodeId, usize> = BTreeMap::new();
+    for id in held {
+        let mut read = materialized_operands(typing, *id);
+        read.sort_unstable();
+        read.dedup();
+        for operand in read {
+            *readers.entry(operand).or_default() += 1;
+        }
+    }
+    readers
+        .into_iter()
+        .filter(|(id, count)| *count >= 2 && held.contains(id))
+        .map(|(id, _)| id)
+        .collect()
+}
+
 /// Operands before the node, so a run never reads a buffer it has not filled.
 pub(crate) fn dependencies_first(
     typing: &Typing,

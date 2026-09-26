@@ -101,7 +101,6 @@ fn a_proof_is_counted_at_each_block_end_and_over_a_whole_grid_once() {
         RenderConfig::seconds(RATE, silent.max_secs),
         silent,
         None,
-        None,
     )
     .expect("a silent render");
     assert!(whole.work().proofs >= 1);

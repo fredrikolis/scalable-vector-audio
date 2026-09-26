@@ -2,15 +2,8 @@
 
 mod fixtures;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
-
 use fixtures::graph_of;
-use sva_engine::{
-    Cache, EngineError, Entry, Expected, Hash, Label, MemoryCache, Payload, PayloadKind, Render,
-    RenderConfig, Silent, render_until_silent,
-};
-use sva_samples::FilterTrace;
+use sva_engine::{Cache, EngineError, Render, RenderConfig, Silent, render_until_silent};
 
 const RATE: u32 = 44_100;
 
@@ -21,14 +14,7 @@ const DEEP: Silent = Silent {
 
 fn until_silent(files: &[(&str, &str)], root: &str, silent: Silent) -> Result<Render, EngineError> {
     let g = graph_of(root, files);
-    render_until_silent(
-        &g,
-        root,
-        RenderConfig::seconds(RATE, 1.0),
-        silent,
-        None,
-        None,
-    )
+    render_until_silent(&g, root, RenderConfig::seconds(RATE, 1.0), silent, None)
 }
 
 fn heard(render: &Render) -> Vec<f64> {
@@ -208,46 +194,6 @@ fn a_cropped_solver_is_bounded_by_the_window_it_is_heard_in() {
     assert!(secs(&heard(&render)) <= 0.2);
 }
 
-/// A store that counts the hits it answers, so a warm render is seen to be one.
-struct Counted {
-    inner: MemoryCache,
-    hits: AtomicUsize,
-}
-
-impl Cache for Counted {
-    fn load(&self, key: Hash, node: &str, expected: Expected) -> Option<Entry> {
-        let found = self.inner.load(key, node, expected);
-        if found.is_some() {
-            self.hits.fetch_add(1, Ordering::Relaxed);
-        }
-        found
-    }
-    fn peek(&self, key: Hash, node: &str, expected: Expected) -> Option<Entry> {
-        self.inner.peek(key, node, expected)
-    }
-    fn store(&self, key: Hash, payload: &Payload, traces: &[FilterTrace], label: Option<&Label>) {
-        self.inner.store(key, payload, traces, label);
-    }
-    fn holds(&self, key: Hash) -> bool {
-        self.inner.holds(key)
-    }
-    fn worth_storing(&self, cost: Duration, bytes: usize, kind: PayloadKind) -> bool {
-        self.inner.worth_storing(cost, bytes, kind)
-    }
-    fn sweep(&self) {
-        self.inner.sweep();
-    }
-    fn held_bytes(&self) -> u64 {
-        self.inner.held_bytes()
-    }
-    fn evicted_bytes(&self) -> u64 {
-        self.inner.evicted_bytes()
-    }
-    fn max_bytes(&self) -> u64 {
-        self.inner.max_bytes()
-    }
-}
-
 #[test]
 fn a_silent_render_is_remembered_by_its_bits_and_latest_time() {
     let g = graph_of(
@@ -257,25 +203,17 @@ fn a_silent_render_is_remembered_by_its_bits_and_latest_time() {
             "crop(sin(2*pi*440*t), 0s, 0.05s) + 0.35*self(t - 0.25s)\n",
         )],
     );
-    let cache = Counted {
-        inner: MemoryCache::holding(64 << 20),
-        hits: AtomicUsize::new(0),
-    };
+    let cache = Cache::holding(64 << 20);
     let config = RenderConfig::seconds(RATE, 1.0);
-    let cold =
-        render_until_silent(&g, "echo", config.clone(), DEEP, Some(&cache), None).expect("cold");
-    assert_eq!(cache.hits.load(Ordering::Relaxed), 0);
-    let warm =
-        render_until_silent(&g, "echo", config.clone(), DEEP, Some(&cache), None).expect("warm");
-    assert_eq!(
-        cache.hits.load(Ordering::Relaxed),
-        2,
-        "the length, then the samples"
-    );
+    let hits = |render: &Render| render.cache_stats.as_ref().expect("stats").hits();
+    let cold = render_until_silent(&g, "echo", config.clone(), DEEP, Some(&cache)).expect("cold");
+    assert_eq!(hits(&cold), 0);
+    let warm = render_until_silent(&g, "echo", config.clone(), DEEP, Some(&cache)).expect("warm");
+    assert_eq!(hits(&warm), 2, "the length, then the samples");
     assert_eq!(heard(&cold), heard(&warm));
     let shallow = Silent { bits: 16, ..DEEP };
     let other =
-        render_until_silent(&g, "echo", config, shallow, Some(&cache), None).expect("sixteen bits");
+        render_until_silent(&g, "echo", config, shallow, Some(&cache)).expect("sixteen bits");
     assert!(heard(&other).len() < heard(&warm).len());
 }
 

@@ -263,16 +263,24 @@ fn a_repeated_render_is_all_hits() {
     let lookups = items(&warm, "lookups");
     assert!(lookups.length() > 0, "{}", as_text(&warm));
     assert_eq!(
-        field(&field(&warm, "hits"), "memory").as_f64(),
+        field(&warm, "hits").as_f64(),
         Some(f64::from(lookups.length())),
         "every lookup a hit: {}",
         as_text(&warm)
     );
-    assert_eq!(field(&field(&warm, "hits"), "volatile").as_f64(), Some(0.0));
     assert_eq!(field(&warm, "computed").as_f64(), Some(0.0));
     assert_eq!(field(&warm, "stored").as_f64(), Some(0.0));
-    assert_eq!(field(&warm, "slotted").as_f64(), Some(0.0));
     assert_eq!(field(&warm, "replaced").as_f64(), Some(0.0));
+    assert_eq!(field(&warm, "evictions").as_f64(), Some(0.0));
+    assert_eq!(field(&warm, "bytes").as_f64(), Some(held.cache_bytes()));
+    assert_eq!(
+        field(&warm, "max_bytes").as_f64(),
+        Some(held.cache_max_bytes())
+    );
+    assert_eq!(
+        field(&warm, "entries").as_f64(),
+        Some(held.cache_entries() as f64)
+    );
     assert_eq!(
         field(&warm, "nodes").as_f64(),
         field(&cold, "nodes").as_f64()
@@ -282,17 +290,19 @@ fn a_repeated_render_is_all_hits() {
         assert!(field(&first, key).is_string(), "{key}: {}", as_text(&first));
     }
     assert_eq!(field(&first, "outcome").as_string().as_deref(), Some("hit"));
-    assert_eq!(field(&first, "tier").as_string().as_deref(), Some("memory"));
 
     let first_cold = items(&cold, "lookups").get(0);
     assert_eq!(
         field(&first_cold, "outcome").as_string().as_deref(),
         Some("computed_stored")
     );
-    assert!(
-        field(&first_cold, "tier").is_undefined(),
-        "a miss has no tier"
-    );
+}
+
+fn knobbed() -> Composition {
+    let mut held = Composition::new(None);
+    held.insert("note", "sample(sin(2*pi*220*t))*0.5\n");
+    held.insert("tone", "lowpass(x, cutoff=cutoff, q=0.7)\n");
+    held
 }
 
 fn knob(cutoff: u32) -> String {
@@ -315,49 +325,22 @@ fn stats_of(of: &Rendering) -> JsValue {
     of.stats().unwrap_or_else(|_| unreachable!("stats answer"))
 }
 
-/// The fourth argument names the parameters a player is moving: what reads one lands in a slot
-/// the composition owns, the memory store is left as it was, and the audio is the same.
+/// The fourth argument names the parameters a player is moving: what reads one keeps one
+/// value in the store, its last, however far the knob moves, and the audio is the same.
 #[wasm_bindgen_test]
-fn a_volatile_knob_crosses_as_a_fourth_argument_and_keeps_to_its_slots() {
-    let mut held = Composition::new(None);
-    held.insert("note", "sample(sin(2*pi*220*t))*0.5\n");
-    held.insert("tone", "lowpass(x, cutoff=cutoff, q=0.7)\n");
+fn a_volatile_knob_crosses_as_a_fourth_argument_and_keeps_one_value_per_node() {
+    let held = knobbed();
     let cutoff = || Some(vec!["cutoff".to_string()]);
-    let plain = plane(&played(&held, 500, None));
-    let bytes = held.cache_bytes();
-    assert_eq!(held.volatile_bytes(), 0.0);
-
-    let moved = played(&held, 900, cutoff());
-    let cold = stats_of(&moved);
-    assert!(
-        field(&cold, "slotted").as_f64() > Some(0.0),
-        "{}",
-        as_text(&cold)
-    );
-    assert_eq!(
-        field(&cold, "stored").as_f64(),
-        Some(0.0),
-        "{}",
-        as_text(&cold)
-    );
-    assert!(held.volatile_bytes() > 0.0);
-    assert_eq!(held.cache_bytes(), bytes, "the memory store is as it was");
+    played(&held, 900, cutoff());
+    let entries = held.cache_entries();
 
     let again = stats_of(&played(&held, 900, cutoff()));
-    assert!(field(&field(&again, "hits"), "volatile").as_f64() > Some(0.0));
-    let tiers: Vec<String> = items(&again, "lookups")
-        .iter()
-        .filter_map(|l| field(&l, "tier").as_string())
-        .collect();
-    assert!(tiers.iter().any(|t| t == "volatile"), "{}", as_text(&again));
-
-    let back = played(&held, 500, cutoff());
     assert_eq!(
-        plane(&back),
-        plain,
-        "a value the store holds is read from it"
+        field(&again, "computed").as_f64(),
+        Some(0.0),
+        "{}",
+        as_text(&again)
     );
-    assert_eq!(field(&stats_of(&back), "computed").as_f64(), Some(0.0));
 
     let next = played(&held, 1300, cutoff());
     let replaced = stats_of(&next);
@@ -371,25 +354,12 @@ fn a_volatile_knob_crosses_as_a_fourth_argument_and_keeps_to_its_slots() {
         "{}",
         as_text(&replaced)
     );
+    assert_eq!(held.cache_entries(), entries, "one value per node");
     assert_eq!(
         plane(&next),
-        plane(&played(&held, 1300, None)),
+        plane(&played(&knobbed(), 1300, None)),
         "the same audio as a plain render"
     );
-
-    let default = held.volatile_max_bytes();
-    assert!(default > 0.0);
-    held.set_volatile_max_bytes(0.0);
-    assert_eq!(
-        (held.volatile_max_bytes(), held.volatile_bytes()),
-        (0.0, 0.0)
-    );
-    held.set_volatile_max_bytes(default);
-    played(&held, 700, cutoff());
-    assert!(held.volatile_bytes() > 0.0);
-    held.clear_volatile();
-    assert_eq!(held.volatile_bytes(), 0.0);
-    held.clear_cache();
 
     let refused = held
         .render(
@@ -411,12 +381,37 @@ fn a_volatile_knob_crosses_as_a_fourth_argument_and_keeps_to_its_slots() {
 
 #[wasm_bindgen_test]
 fn the_cache_budget_is_the_pages_own_and_survives_a_clear() {
-    let mut held = page();
-    held.bound_cache(1_024.0);
+    let held = page();
+    render(&held, "master");
+    held.set_cache_max_bytes(1_024.0);
     assert_eq!(held.cache_max_bytes(), 1_024.0);
+    assert!(held.cache_bytes() <= 1_024.0, "a lower cap prunes at once");
     held.clear_cache();
     assert_eq!(held.cache_max_bytes(), 1_024.0, "the ceiling is kept");
-    assert_eq!(held.cache_bytes(), 0.0);
+    assert_eq!((held.cache_bytes(), held.cache_entries()), (0.0, 0));
+}
+
+/// A prune policy crosses by name: the default one a render over the cap prunes by, and the
+/// one a page passes to prune by now.
+#[wasm_bindgen_test]
+fn a_prune_policy_crosses_by_name() {
+    let held = page();
+    assert_eq!(held.prune_policy(), "oldest");
+    held.set_prune_policy("forks")
+        .unwrap_or_else(|_| unreachable!("forks is a policy"));
+    assert_eq!(held.prune_policy(), "forks");
+    assert!(held.set_prune_policy("newest").is_err());
+
+    render(&held, "partials/one");
+    render(&held, "master");
+    let before = held.cache_evictions();
+    held.prune("oldest")
+        .unwrap_or_else(|_| unreachable!("oldest is a policy"));
+    assert!(
+        held.cache_evictions() > before,
+        "the first render's values went"
+    );
+    assert!(held.prune("everything").is_err());
 }
 
 /// A located refusal is the contract everywhere else in this engine, so it has to cross as one:

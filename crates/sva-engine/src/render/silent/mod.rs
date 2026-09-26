@@ -17,7 +17,7 @@ pub(crate) use envelope::Live;
 use envelope::{Bounds, Envelope, Forms, Grid, STEP, Unbounded};
 
 use super::{Prepared, Render, RenderConfig, materialize, prepared, run};
-use crate::cache::{Cache, Cost, Expected, Payload, Recording, Slots};
+use crate::cache::{Cache, Expected, Lens, Payload, Recording};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::schedule::{Schedule, dependencies_first};
 
@@ -41,28 +41,26 @@ pub fn render_until_silent(
     target: &str,
     config: RenderConfig,
     silent: Silent,
-    cache: Option<&dyn Cache>,
-    slots: Option<&Slots>,
+    cache: Option<&Cache>,
 ) -> Result<Render, EngineError> {
     let held = prepared(graph, target)?;
     let rate = config.rate;
     let width = held.tys.ty(held.root).width as usize;
     let key = silent_key(held.identity(&config.asks)?, &config, silent);
-    // A volatile root is kept in its slot by the render itself, and nowhere else.
+    // A volatile root keeps its one value under its buffer's key, and no silent entry beside it.
     let volatile = super::volatile::mark(&held.instances, &held.tys, &config, &held.target)?;
-    let recording = cache
+    let recording = cache.map(Recording::over);
+    let lens = recording
+        .as_ref()
         .filter(|_| volatile.slot(held.root).is_none())
-        .map(|c| Recording::over(c, slots));
-    let lens = recording.as_ref().map(|r| r.at(None));
-    let store = lens.as_ref().map(|l| l as &dyn Cache);
-    if let Some((buffer, label)) = recalled(store, key, &held, rate, width) {
+        .map(|r| r.at(None, false));
+    if let Some((buffer, label)) = recalled(lens.as_ref(), key, &held, rate, width) {
         let config = ended(config, buffer.len());
-        let render = run(held, config, cache, slots, Some((buffer, label)))?;
-        return Ok(counted(render, recording));
+        let render = run(held, config, recording.as_ref(), Some((buffer, label)))?;
+        return Ok(finished(render, recording));
     }
-    let began = Cost::begun();
     let (proven, proofs) = proven_at(&held, &config, silent)?;
-    let mut render = run(held, ended(config, proven.max(1)), cache, slots, None)?;
+    let mut render = run(held, ended(config, proven.max(1)), recording.as_ref(), None)?;
     render.proofs = proofs;
     let heard = render.buffers.get(&render.root).map_or(0, |b| {
         (0..b.len())
@@ -71,26 +69,18 @@ pub fn render_until_silent(
             .map_or(0, |n| n + 1)
     });
     trimmed(&mut render, heard.max(1));
-    if let (Some(store), Some(buffer), Some(label)) = (
-        store,
+    if let (Some(lens), Some(buffer), Some(label)) = (
+        lens.as_ref(),
         render.buffers.get(&render.root),
         render.labels.get(&render.root),
     ) {
-        remember(store, key, buffer, label, began.elapsed());
+        remember(lens, key, buffer, label);
     }
-    Ok(counted(render, recording))
+    Ok(finished(render, recording))
 }
 
-/// The silent entry's own lookups, before every lookup the render made.
-fn counted(mut render: Render, recording: Option<Recording>) -> Render {
-    let Some(recording) = recording else {
-        return render;
-    };
-    let mut stats = recording.finish();
-    if let Some(made) = render.cache_stats.take() {
-        stats.lookups.extend(made.lookups);
-    }
-    render.cache_stats = Some(stats);
+fn finished(mut render: Render, recording: Option<Recording>) -> Render {
+    render.cache_stats = recording.map(Recording::finish);
     render
 }
 
@@ -361,7 +351,7 @@ fn samples_key(key: Hash, samples: usize) -> Hash {
 }
 
 fn recalled(
-    cache: Option<&dyn Cache>,
+    cache: Option<&Lens>,
     key: Hash,
     held: &Prepared,
     rate: u32,
@@ -391,18 +381,9 @@ fn recalled(
     Some((entry.payload.samples().cloned()?, entry.label?))
 }
 
-fn remember(
-    cache: &dyn Cache,
-    key: Hash,
-    buffer: &Buffer,
-    label: &Label,
-    cost: std::time::Duration,
-) {
+fn remember(cache: &Lens, key: Hash, buffer: &Buffer, label: &Label) {
     let payload = Payload::Samples(Box::new(buffer.clone()));
-    if !cache.worth_storing(cost, payload.bytes(), crate::cache::PayloadKind::Samples) {
-        return;
-    }
-    cache.store(samples_key(key, buffer.len()), &payload, &[], Some(label));
+    cache.store(samples_key(key, buffer.len()), &payload, Some(label));
     let length = Buffer::of_planes(buffer.rate, vec![vec![buffer.len() as f64]]);
-    cache.store(key, &Payload::Samples(Box::new(length)), &[], None);
+    cache.store(key, &Payload::Samples(Box::new(length)), None);
 }

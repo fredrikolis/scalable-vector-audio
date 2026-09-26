@@ -24,8 +24,8 @@ mod vocabulary;
 pub use arguments::{Argument, Arguments, Called, Chosen};
 pub use bindings::Binding;
 pub use cache::{
-    Cache, CacheStats, DEFAULT_SLOT_BYTES, Entry, Expected, Hash, Lookup, MemoryCache, Outcome,
-    Payload, PayloadKind, Put, Slots, Tier, buffer_key, symbolic_key,
+    Cache, CacheStats, DEFAULT_CACHE_BYTES, Hash, Lookup, Outcome, PayloadKind, PrunePolicy,
+    buffer_key, symbolic_key,
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
@@ -37,7 +37,7 @@ pub use query::{Answer, Ask, DEFAULT_FRAME_SECS, Output, Representation};
 pub use refs::{Read, identity, nodes_in, resolve, spectral_sum_of, symbolic_hash};
 pub use render::{
     Block, Checkpoint, Render, RenderConfig, STREAMED, Silent, Stream, StreamConfig, answer,
-    answer_buffer, ledger_over, render, render_until_silent, render_with_slots, sketch_atom,
+    answer_buffer, ledger_over, render, render_until_silent, sketch_atom,
 };
 pub use schedule::{Order, Schedule, schedule_from};
 pub use sva_formula::{C64, Codomain, Held, Line, NodeId, SpectralSum, Ty, Var};

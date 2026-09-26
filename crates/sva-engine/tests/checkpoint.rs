@@ -206,7 +206,6 @@ fn streams_until_proven_silent(target: &str, whole_target: &str, k: usize) -> us
         RenderConfig::seconds(RATE, silent.max_secs),
         silent,
         None,
-        None,
     )
     .expect("a silent render");
     let want = whole_silent

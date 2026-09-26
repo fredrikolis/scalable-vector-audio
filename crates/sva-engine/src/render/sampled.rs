@@ -19,7 +19,7 @@ use crate::typing::Value;
 pub fn run(
     held: &mut Render,
     id: NodeId,
-    cache: Option<&dyn crate::cache::Cache>,
+    cache: Option<&crate::cache::Lens>,
 ) -> Result<(), EngineError> {
     let samples = super::length(held, id)?;
     let key = crate::cache::buffer_key(
@@ -35,9 +35,8 @@ pub fn run(
         held.labels.insert(id, label);
         return Ok(());
     }
-    let began = crate::cache::Cost::begun();
     let (buffer, label) = stepped(held, id)?;
-    super::store(key, &buffer, &label, began.elapsed(), cache);
+    super::store(key, &buffer, &label, cache);
     held.buffers.insert(id, buffer);
     held.labels.insert(id, label);
     Ok(())

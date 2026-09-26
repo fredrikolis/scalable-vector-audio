@@ -30,14 +30,14 @@ use std::path::Path;
 
 use sva_ast::{Dir, Graph, Refusal, Source, SpanUnit};
 use sva_engine::{
-    Ask, BindingFault, Cache, DEFAULT_SAMPLE_RATE, EngineError, PSYCHOACOUSTIC_V1, Render,
-    RenderConfig, StreamConfig, render_until_silent, render_with_slots,
+    Ask, BindingFault, DEFAULT_SAMPLE_RATE, EngineError, PSYCHOACOUSTIC_V1, Render, RenderConfig,
+    StreamConfig, render, render_until_silent,
 };
 
 pub use sva_engine::{Checkpoint, Silent, Stream};
 
 pub use sva_engine::{Answer, Horizon, Label, Output, Representation};
-pub use sva_engine::{MemoryCache, Slots};
+pub use sva_engine::{Cache, PrunePolicy};
 
 pub const ROOT: &str = "master";
 pub const PROBE: &str = "probe";
@@ -86,7 +86,7 @@ pub struct Job<'a> {
     pub from: Option<WindowEdge>,
     pub until: Option<WindowEdge>,
     pub sample_rate: Option<u32>,
-    pub cache: Option<&'a dyn Cache>,
+    pub cache: Option<&'a Cache>,
     /// Only what the target reaches, so a node nothing reaches is never read or refused.
     pub reaching: bool,
     /// The instance every reading is taken of; the target itself where this is `None`.
@@ -95,7 +95,6 @@ pub struct Job<'a> {
     /// The operation count the caller acknowledges paying; the profile's own where `None`.
     pub flop_budget: Option<u128>,
     pub volatile: &'a [String],
-    pub slots: Option<&'a Slots>,
     /// Render until silence is proven, in place of `until`.
     pub silent: Option<Silent>,
 }
@@ -114,7 +113,6 @@ impl<'a> Job<'a> {
             representations: Vec::new(),
             flop_budget: None,
             volatile: &[],
-            slots: None,
             silent: None,
         }
     }
@@ -194,15 +192,6 @@ fn instance_read(graph: &Graph, text: &str) -> Option<sva_ast::Expr> {
 }
 
 pub fn execute(job: Job) -> Result<Rendered, CliError> {
-    let cache = job.cache;
-    let rendered = rendered(job);
-    if let Some(store) = cache {
-        store.sweep();
-    }
-    rendered
-}
-
-fn rendered(job: Job) -> Result<Rendered, CliError> {
     let (graph, target, config) = settle(&job, job.target)?;
     let refused = match rendering(&job, &graph, &target, config) {
         Ok(render) => {
@@ -270,8 +259,8 @@ fn rendering(
     config: RenderConfig,
 ) -> Result<Render, EngineError> {
     match job.silent {
-        Some(silent) => render_until_silent(graph, target, config, silent, job.cache, job.slots),
-        None => render_with_slots(graph, target, config, job.cache, job.slots),
+        Some(silent) => render_until_silent(graph, target, config, silent, job.cache),
+        None => render(graph, target, config, job.cache),
     }
 }
 

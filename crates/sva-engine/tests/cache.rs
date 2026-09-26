@@ -1,4 +1,4 @@
-// Concern: states what a cache key is made of, so a warm render answers a cold one | Non-concern: a store's medium or budget (stores.rs) | IO: (a composition, twice) -> the same bytes
+// Concern: states what a cache key is made of, so a warm render answers a cold one | Non-concern: the store's cap and prunes (stores.rs) | IO: (a composition, twice) -> the same bytes
 
 mod fixtures;
 
@@ -8,8 +8,7 @@ use std::path::{Path, PathBuf};
 
 use fixtures::dir_of;
 use sva_engine::{
-    Ask, Cache, Expected, MemoryCache, Payload, PayloadKind, Render, RenderConfig, Representation,
-    render, symbolic_key,
+    Ask, Cache, PayloadKind, Render, RenderConfig, Representation, render, symbolic_key,
 };
 use sva_formula::hash::hash_closed_form_under;
 use sva_formula::{ClosedForm, Origin, Var};
@@ -17,18 +16,18 @@ use sva_formula::{ClosedForm, Origin, Var};
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
 
-fn store_all() -> MemoryCache {
-    MemoryCache::new()
+fn store_all() -> Cache {
+    Cache::new()
 }
 
-fn rendered(dir: &Path, root: &str, cache: Option<&dyn Cache>) -> Render {
+fn rendered(dir: &Path, root: &str, cache: Option<&Cache>) -> Render {
     let graph = sva_ast::parse_composition(dir).expect("a composition that parses");
     render(&graph, root, RenderConfig::seconds(RATE, SECONDS), cache)
         .unwrap_or_else(|e| panic!("rendering `{root}`: {e}"))
 }
 
 /// Every node held as samples, which is what a reading that consumes buffers asks for.
-fn all_of(dir: &Path, root: &str, nodes: &[&str], cache: Option<&dyn Cache>) -> Render {
+fn all_of(dir: &Path, root: &str, nodes: &[&str], cache: Option<&Cache>) -> Render {
     let graph = sva_ast::parse_composition(dir).expect("a composition that parses");
     let asks = nodes
         .iter()
@@ -74,8 +73,7 @@ fn a_warm_render_is_byte_identical_to_a_cold_one() {
     let dir = chain("warm-cold");
     let cache = store_all();
     let cold = samples(&rendered(&dir, "master", Some(&cache)));
-    cache.sweep();
-    assert!(cache.held_bytes() > 0, "the cold render filled the store");
+    assert!(cache.bytes() > 0, "the cold render filled the store");
     let warm = samples(&rendered(&dir, "master", Some(&cache)));
     assert_eq!(cold, warm);
 }
@@ -188,7 +186,7 @@ fn reordering_a_difference_never_shares_an_entry_with_its_reverse() {
 fn a_rate_change_keys_a_new_buffer_but_reuses_the_rate_free_law() {
     let dir = chain("rates");
     let graph = sva_ast::parse_composition(&dir).expect("a composition");
-    let cache = MemoryCache::new();
+    let cache = Cache::new();
     let first = render(
         &graph,
         "master",
@@ -202,8 +200,7 @@ fn a_rate_change_keys_a_new_buffer_but_reuses_the_rate_free_law() {
         .get(&id)
         .expect("the root's spectral sum")
         .clone();
-    cache.sweep();
-    let held_at_one_rate = cache.held_bytes();
+    let held_at_one_rate = cache.bytes();
     assert!(held_at_one_rate > 0, "the first render kept its buffer");
 
     let second = render(
@@ -222,9 +219,8 @@ fn a_rate_change_keys_a_new_buffer_but_reuses_the_rate_free_law() {
     let one = first.buffer(id).expect("a buffer");
     let two = second.buffer(second_id).expect("a buffer");
     assert_eq!(two.len(), one.len() * 2, "each rate keeps its own buffer");
-    cache.sweep();
     assert!(
-        cache.held_bytes() > held_at_one_rate,
+        cache.bytes() > held_at_one_rate,
         "the second rate's buffer is a new entry, not a reuse of the first"
     );
 }
@@ -290,22 +286,6 @@ fn a_table_version_bump_retires_symbolic_entries() {
         sva_formula::TABLE_VERSION + 1,
     ));
     assert_ne!(now, later, "a bump is a new key for every law");
-
-    let cache = MemoryCache::new();
-    let payload = Payload::Symbolic(Box::new(
-        sva_formula::normalize_closed_form(&form).expect("a spectral sum"),
-    ));
-    assert!(cache.worth_storing(
-        std::time::Duration::from_millis(2),
-        payload.bytes(),
-        PayloadKind::Symbolic
-    ));
-    cache.store(now, &payload, &[], None);
-    assert!(cache.load(now, "n", Expected::Symbolic).is_some());
-    assert!(
-        cache.load(later, "n", Expected::Symbolic).is_none(),
-        "nothing answers the bumped key"
-    );
 }
 
 /// One analysis of one buffer is one entry, and the buffer's own content is in its key:
@@ -322,10 +302,9 @@ fn frames_are_held_under_the_window_they_were_read_through() {
             ),
         ],
     );
-    let cache = MemoryCache::new();
+    let cache = Cache::new();
     let cold = samples(&rendered(&dir, "master", Some(&cache)));
-    cache.sweep();
-    assert!(cache.held_bytes() > 0, "the analysis was kept");
+    assert!(cache.bytes() > 0, "the analysis was kept");
     let warm = samples(&rendered(&dir, "master", Some(&cache)));
     assert_eq!(cold, warm);
 
@@ -342,7 +321,7 @@ fn a_warm_hit_carries_the_cold_label() {
         "warm-label",
         &[("chord", "sin(2*pi*256*t) + sin(2*pi*384*t)\n")],
     );
-    let label_of = |cache: &dyn Cache| {
+    let label_of = |cache: &Cache| {
         let held = rendered(&dir, "chord", Some(cache));
         held.labels
             .get(&held.root)
@@ -350,7 +329,7 @@ fn a_warm_hit_carries_the_cold_label() {
             .clone()
     };
 
-    let cache = MemoryCache::holding(1 << 20);
+    let cache = Cache::holding(1 << 20);
     let cold = label_of(&cache);
     assert_eq!(
         cold.source,
@@ -402,15 +381,13 @@ fn a_sampled_node_is_stored_and_answered_from_the_store() {
     );
     assert!(cache.holds(key), "the sampled node is in the store");
 
-    cache.sweep();
-    let filled = cache.held_bytes();
+    let filled = cache.bytes();
     let warm = all_of(&dir, "master", &["acc"], Some(&cache));
     assert_eq!(samples(&cold), samples(&warm), "byte for byte");
-    cache.sweep();
-    assert_eq!(cache.held_bytes(), filled, "and nothing was written twice");
+    assert_eq!(cache.bytes(), filled, "and nothing was written twice");
 }
 
-fn over(dir: &Path, root: &str, seconds: f64, cache: &dyn Cache) -> Render {
+fn over(dir: &Path, root: &str, seconds: f64, cache: &Cache) -> Render {
     let graph = sva_ast::parse_composition(dir).expect("a composition that parses");
     render(
         &graph,
@@ -427,7 +404,7 @@ fn every_buffer_hit(r: &Render) -> bool {
         .lookups
         .iter()
         .filter(|l| l.kind == PayloadKind::Samples)
-        .all(|l| matches!(l.outcome, sva_engine::Outcome::Hit(_)))
+        .all(|l| matches!(l.outcome, sva_engine::Outcome::Hit))
 }
 
 #[test]
@@ -439,7 +416,7 @@ fn two_horizons_of_one_node_are_two_entries() {
             ("master", "@acc + @acc*0.25\n"),
         ],
     );
-    let memory = MemoryCache::new();
+    let memory = Cache::new();
     let store = &memory;
     let short = samples(&over(&dir, "master", SECONDS, store));
     let long = samples(&over(&dir, "master", 2.0 * SECONDS, store));
@@ -465,7 +442,7 @@ fn sat_drives_a_sampled_operand_as_it_drives_a_closed_form() {
             ("written", "sat(@x*5)\n"),
         ],
     );
-    let store = MemoryCache::new();
+    let store = Cache::new();
     let root = |node: &str| {
         let held = rendered(&dir, node, Some(&store));
         let id = held.id(node).expect("the root types");

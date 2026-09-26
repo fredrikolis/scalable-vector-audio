@@ -18,7 +18,7 @@ use sva_samples::{
 
 use crate::bindings::Binding;
 use crate::cache::{
-    CacheStats, Cost, Expected, Payload, PayloadKind, Recording, Slots, frames_key, symbolic_key,
+    Cache, CacheStats, Expected, Lens, Payload, Recording, frames_key, symbolic_key,
 };
 use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
@@ -37,7 +37,7 @@ pub struct RenderConfig {
     pub asks: Vec<Ask>,
     /// The operation count this render may pay; the profile's own until a caller raises it.
     pub flop_budget: u128,
-    /// What reads one of these is kept in a slot, never in a store.
+    /// What reads one of these keeps one value in the store, its last.
     pub volatile: Vec<String>,
 }
 
@@ -80,7 +80,6 @@ pub struct Render {
 }
 
 impl Render {
-    /// Priced by its schedule, whether run or answered from a store.
     pub fn work(&self) -> crate::flops::Work {
         let samples = self.config.horizon.len(self.config.rate).unwrap_or(0);
         crate::flops::Work {
@@ -127,25 +126,18 @@ impl Render {
     }
 }
 
+/// Nothing is materialized that no reading asked for: a closed form answered off its spectral sum
+/// allocates no buffer at all.
 pub fn render(
     graph: &Graph,
     target: &str,
     config: RenderConfig,
-    cache: Option<&dyn crate::cache::Cache>,
+    cache: Option<&Cache>,
 ) -> Result<Render, EngineError> {
-    render_with_slots(graph, target, config, cache, None)
-}
-
-/// Nothing is materialized that no reading asked for: a closed form answered off its spectral sum
-/// allocates no buffer at all.
-pub fn render_with_slots(
-    graph: &Graph,
-    target: &str,
-    config: RenderConfig,
-    cache: Option<&dyn crate::cache::Cache>,
-    slots: Option<&Slots>,
-) -> Result<Render, EngineError> {
-    run(prepared(graph, target)?, config, cache, slots, None)
+    let recording = cache.map(Recording::over);
+    let mut held = run(prepared(graph, target)?, config, recording.as_ref(), None)?;
+    held.cache_stats = recording.map(Recording::finish);
+    Ok(held)
 }
 
 /// A composition resolved and typed under one target, before any horizon is chosen.
@@ -192,8 +184,7 @@ pub(crate) fn prepared<'g>(graph: &'g Graph, target: &str) -> Result<Prepared<'g
 pub(crate) fn run(
     prepared: Prepared,
     config: RenderConfig,
-    cache: Option<&dyn crate::cache::Cache>,
-    slots: Option<&Slots>,
+    recording: Option<&Recording>,
     known: Option<(Buffer, Label)>,
 ) -> Result<Render, EngineError> {
     let Prepared {
@@ -204,6 +195,7 @@ pub(crate) fn run(
         target,
     } = prepared;
     let mut schedule = schedule::plan(&tys, &order, root, &config.asks);
+    let forks = schedule::forks(&tys, &schedule.materialize);
     if known.is_some() {
         match only_the_root(&tys, root, &config.asks) {
             true => schedule.materialize.clear(),
@@ -235,16 +227,10 @@ pub(crate) fn run(
     }
     let volatile = volatile::mark(&instances, &held.tys, &held.config, &target)?;
     affordable(&held)?;
-    let recording = cache.map(|c| Recording::over(c, slots));
     for id in held.schedule.materialize.clone() {
-        let lens = recording.as_ref().map(|r| r.at(volatile.slot(id)));
-        materialize(
-            &mut held,
-            id,
-            lens.as_ref().map(|l| l as &dyn crate::cache::Cache),
-        )?;
+        let lens = recording.map(|r| r.at(volatile.slot(id), forks.contains(&id)));
+        materialize(&mut held, id, lens.as_ref())?;
     }
-    held.cache_stats = recording.map(Recording::finish);
     compose_read(&mut held);
     stamp(&mut held);
     Ok(held)
@@ -311,11 +297,7 @@ fn compose_read(held: &mut Render) {
     }
 }
 
-fn materialize(
-    held: &mut Render,
-    id: NodeId,
-    cache: Option<&dyn crate::cache::Cache>,
-) -> Result<(), EngineError> {
+fn materialize(held: &mut Render, id: NodeId, cache: Option<&Lens>) -> Result<(), EngineError> {
     match held.tys.ty(id).held {
         Held::Frames => frames_of(held, id, cache),
         Held::Sampled => sampled::run(held, id, cache),
@@ -327,7 +309,7 @@ fn materialize(
 fn collapse_closed_form(
     held: &mut Render,
     id: NodeId,
-    cache: Option<&dyn crate::cache::Cache>,
+    cache: Option<&Lens>,
 ) -> Result<(), EngineError> {
     let var = held.tys.var(id);
     let written = match refs::resolve(&held.tys, id, 0, held.tys.ty(id).held) {
@@ -338,13 +320,9 @@ fn collapse_closed_form(
     let sum = remembered(held, id, symbolic, cache)
         .map(Ok)
         .unwrap_or_else(|| {
-            let began = Cost::begun();
             let found = refs::spectral_sum_of(&held.tys, id, var);
             if let (Ok(sum), Some(key), Some(cache)) = (&found, symbolic, cache) {
-                let payload = Payload::Symbolic(Box::new(sum.clone()));
-                if cache.worth_storing(began.elapsed(), payload.bytes(), PayloadKind::Symbolic) {
-                    cache.store(key, &payload, &[], None);
-                }
+                cache.store(key, &Payload::Symbolic(Box::new(sum.clone())), None);
             }
             found
         });
@@ -372,13 +350,12 @@ fn collapse_closed_form(
         held.labels.insert(id, label);
         return Ok(());
     }
-    let began = Cost::begun();
     let (buffer, label) = match (&sum, &written) {
         (Err(_), None) => pointwise::point_sample(held, id, score)?,
         _ => sampled_form(held, &sum, written.as_ref(), score)
             .map_err(|e| collapse_refused(held, id, &e))?,
     };
-    store(key, &buffer, &label, began.elapsed(), cache);
+    store(key, &buffer, &label, cache);
     held.buffers.insert(id, buffer);
     held.labels.insert(id, label);
     Ok(())
@@ -423,7 +400,7 @@ fn remembered(
     held: &Render,
     id: NodeId,
     key: Option<sva_formula::Hash>,
-    cache: Option<&dyn crate::cache::Cache>,
+    cache: Option<&Lens>,
 ) -> Option<SpectralSum> {
     let entry = cache?.load(key?, held.tys.name(id), Expected::Symbolic)?;
     entry.payload.symbolic().cloned()
@@ -436,7 +413,7 @@ fn warm(
     id: NodeId,
     key: sva_formula::Hash,
     samples: usize,
-    cache: Option<&dyn crate::cache::Cache>,
+    cache: Option<&Lens>,
 ) -> Option<(Buffer, Label)> {
     let expected = Expected::Samples {
         rate: held.config.rate,
@@ -447,25 +424,17 @@ fn warm(
     Some((entry.payload.samples().cloned()?, entry.label?))
 }
 
-fn store(
-    key: sva_formula::Hash,
-    buffer: &Buffer,
-    label: &Label,
-    cost: std::time::Duration,
-    cache: Option<&dyn crate::cache::Cache>,
-) {
-    let Some(cache) = cache else { return };
-    let payload = Payload::Samples(Box::new(buffer.clone()));
-    if cache.worth_storing(cost, payload.bytes(), PayloadKind::Samples) {
-        cache.store(key, &payload, &[], Some(label));
+fn store(key: sva_formula::Hash, buffer: &Buffer, label: &Label, cache: Option<&Lens>) {
+    if let Some(cache) = cache {
+        cache.store(
+            key,
+            &Payload::Samples(Box::new(buffer.clone())),
+            Some(label),
+        );
     }
 }
 
-fn frames_of(
-    held: &mut Render,
-    id: NodeId,
-    cache: Option<&dyn crate::cache::Cache>,
-) -> Result<(), EngineError> {
+fn frames_of(held: &mut Render, id: NodeId, cache: Option<&Lens>) -> Result<(), EngineError> {
     let Value::Cast(Cast::Stft { window, hop }, source) = *held.tys.value(id) else {
         return Err(not_frames(held, id));
     };
@@ -491,13 +460,9 @@ fn frames_of(
         held.frames.insert(id, *frames);
         return Ok(());
     }
-    let began = Cost::begun();
     let frames = stft::forward(buffer, window, hop).map_err(|e| sampled::refused(held, id, &e))?;
     if let Some(cache) = cache {
-        let payload = Payload::Frames(Box::new(frames.clone()));
-        if cache.worth_storing(began.elapsed(), payload.bytes(), PayloadKind::Frames) {
-            cache.store(key, &payload, &[], None);
-        }
+        cache.store(key, &Payload::Frames(Box::new(frames.clone())), None);
     }
     held.frames.insert(id, frames);
     Ok(())
@@ -512,7 +477,6 @@ fn not_frames(held: &Render, id: NodeId) -> EngineError {
     })
 }
 
-/// One instance's resolved parameters, as the composer wrote them at the call site.
 fn resolved(instances: &instantiate::Instances, path: &str) -> Option<Vec<Binding>> {
     Some(
         instances

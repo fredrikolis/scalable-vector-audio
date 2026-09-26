@@ -9,7 +9,7 @@ use sva_core::{
     execute, query_data, representation_for, retired, silence, stats_json, window_for, work_json,
 };
 use sva_engine::{
-    Buffer, Cache, CacheStats, Horizon, MemoryCache, PSYCHOACOUSTIC_V1, Representation, Slots,
+    Buffer, Cache, CacheStats, Horizon, PSYCHOACOUSTIC_V1, PrunePolicy, Representation,
     answer_buffer, ledger_over,
 };
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -138,8 +138,7 @@ pub fn outline(text: &str) -> Result<JsValue, JsValue> {
 #[wasm_bindgen]
 pub struct Composition {
     inner: sva_ast::Composition,
-    store: MemoryCache,
-    slots: Slots,
+    store: Cache,
 }
 
 #[wasm_bindgen]
@@ -152,8 +151,7 @@ impl Composition {
                 Some(name) => inner.named(name),
                 None => inner,
             },
-            store: MemoryCache::holding(DEFAULT_CACHE_BYTES),
-            slots: Slots::default(),
+            store: Cache::holding(DEFAULT_CACHE_BYTES),
         }
     }
 
@@ -164,7 +162,7 @@ impl Composition {
     /// Unset, `target` is `master`; `until` is the horizon in seconds, or `"silent"` to end
     /// where every later sample is provably under `2^-bits` (default the profile's own), by
     /// `max_secs` at the latest. `rate` is the observation rate. What reads a `volatile`
-    /// parameter is kept in a slot, never in the store.
+    /// parameter keeps one value in the store, its last.
     pub fn render(
         &self,
         target: Option<String>,
@@ -182,9 +180,8 @@ impl Composition {
             silent,
             sample_rate: rate,
             reaching: true,
-            cache: Some(&self.store as &dyn Cache),
+            cache: Some(&self.store),
             volatile: &volatile,
-            slots: Some(&self.slots),
             ..Job::over(&self.inner)
         });
         rendered
@@ -222,7 +219,7 @@ impl Composition {
 
     #[wasm_bindgen(getter)]
     pub fn cache_bytes(&self) -> f64 {
-        self.store.held_bytes() as f64
+        self.store.bytes() as f64
     }
 
     #[wasm_bindgen(getter)]
@@ -230,32 +227,50 @@ impl Composition {
         self.store.max_bytes() as f64
     }
 
-    pub fn bound_cache(&mut self, max_bytes: f64) {
-        self.store = MemoryCache::holding(max_bytes.max(0.0) as u64);
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn volatile_bytes(&self) -> f64 {
-        self.slots.held_bytes() as f64
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn volatile_max_bytes(&self) -> f64 {
-        self.slots.max_bytes() as f64
-    }
-
     #[wasm_bindgen(setter)]
-    pub fn set_volatile_max_bytes(&self, max_bytes: f64) {
-        self.slots.bound(max_bytes.max(0.0) as u64);
+    pub fn set_cache_max_bytes(&self, max_bytes: f64) {
+        self.store.set_max_bytes(max_bytes.max(0.0) as u64);
     }
 
-    pub fn clear_volatile(&self) {
-        self.slots.clear();
+    #[wasm_bindgen(getter)]
+    pub fn cache_entries(&self) -> usize {
+        self.store.entries()
     }
 
-    pub fn clear_cache(&mut self) {
-        self.store = MemoryCache::holding(self.store.max_bytes());
+    #[wasm_bindgen(getter)]
+    pub fn cache_evictions(&self) -> f64 {
+        self.store.evictions() as f64
     }
+
+    #[wasm_bindgen(getter)]
+    pub fn prune_policy(&self) -> String {
+        self.store.prune_policy().name().to_string()
+    }
+
+    pub fn set_prune_policy(&self, policy: &str) -> Result<(), JsValue> {
+        self.store.set_prune_policy(prune_policy(policy)?);
+        Ok(())
+    }
+
+    /// `"oldest"` evicts what the latest render neither stored nor read, `"forks"` every value
+    /// fewer than two nodes read.
+    pub fn prune(&self, policy: &str) -> Result<(), JsValue> {
+        self.store.prune(prune_policy(policy)?);
+        Ok(())
+    }
+
+    pub fn clear_cache(&self) {
+        self.store.clear();
+    }
+}
+
+fn prune_policy(name: &str) -> Result<PrunePolicy, JsValue> {
+    PrunePolicy::named(name).ok_or_else(|| {
+        refuse(
+            format!("`{name}` names no prune policy"),
+            "pass \"oldest\" or \"forks\"",
+        )
+    })
 }
 
 #[wasm_bindgen]

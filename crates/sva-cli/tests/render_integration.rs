@@ -8,7 +8,7 @@ use helpers::{entry, fixture, json_of, plane, put, scratch, secs};
 use sva_ast::Dir;
 use sva_cli::{CliError, error_envelope};
 use sva_core::{Job, PROBE, ROOT, execute, probe, run};
-use sva_engine::{MemoryCache, Output, PayloadKind, Representation, Source};
+use sva_engine::{Cache, Output, PayloadKind, Representation, Source};
 
 #[test]
 fn basic_fixture_renders_with_bpm_meter_and_a_repeat_desugared() {
@@ -540,7 +540,7 @@ fn two_readings_share_one_collapse() {
         "; Models: a stack | Neglects: an envelope | IO: (t) -> amplitude | Tags: test\n\
          sin(2*pi*100*t) + sin(2*pi*200*t)\n",
     );
-    let cache = MemoryCache::new();
+    let cache = Cache::new();
     let rendered = execute(Job {
         representations: vec![
             Representation::Loudness,

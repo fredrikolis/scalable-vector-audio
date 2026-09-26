@@ -269,7 +269,6 @@ fn a_stream_until_silent_ends_where_the_bound_proves_it() {
         RenderConfig::seconds(RATE, SILENT.max_secs),
         SILENT,
         None,
-        None,
     )
     .expect("a silent render");
     let want = whole.buffer(whole.root).expect("a buffer").plane(0);

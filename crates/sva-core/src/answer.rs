@@ -6,7 +6,7 @@ use sva_engine::{
     Alias, AliasBand, Answer, Arguments, BandCrest, BandTrack, Bands, Binding, Buffer, CacheStats,
     Cost, Crest, Detail, EnvelopeFrame, FormantFrame, Horizon, Label, LedgerEntry, Loudness,
     LoudnessFrame, Outcome, Output, PayloadKind, Source, SpectralSum, Spectrum, StereoFrame,
-    StereoImage, Tier, Work,
+    StereoImage, Work,
 };
 
 use crate::json::{NONE, capped, escape, list, num};
@@ -484,19 +484,18 @@ pub fn work_json(work: &Work) -> String {
     )
 }
 
-/// `computed` counts every miss, `stored` the misses the store kept, `slotted` and `replaced`
-/// the volatile misses a slot kept; a lookup's `tier` is written only on a hit.
+/// `computed` counts every miss, `stored` the misses the store kept and `replaced` the volatile
+/// misses kept in place of their last value; the store's figures are as the render left it.
 pub fn stats_json(stats: &CacheStats) -> String {
     let lookups = list(&stats.lookups, |l| {
-        let (outcome, tier) = match l.outcome {
-            Outcome::Hit(tier) => ("hit", format!(", \"tier\": \"{}\"", tier_name(tier))),
-            Outcome::ComputedStored => ("computed_stored", String::new()),
-            Outcome::ComputedNotStored => ("computed_not_stored", String::new()),
-            Outcome::ComputedSlotted => ("computed_slotted", String::new()),
-            Outcome::ComputedReplaced => ("computed_replaced", String::new()),
+        let outcome = match l.outcome {
+            Outcome::Hit => "hit",
+            Outcome::ComputedStored => "computed_stored",
+            Outcome::ComputedNotStored => "computed_not_stored",
+            Outcome::ComputedReplaced => "computed_replaced",
         };
         format!(
-            "{{ \"node\": \"{}\", \"key\": \"{}\", \"kind\": \"{}\", \"outcome\": \"{outcome}\"{tier} }}",
+            "{{ \"node\": \"{}\", \"key\": \"{}\", \"kind\": \"{}\", \"outcome\": \"{outcome}\" }}",
             escape(&l.node),
             l.key,
             match l.kind {
@@ -507,24 +506,19 @@ pub fn stats_json(stats: &CacheStats) -> String {
         )
     });
     format!(
-        "{{ \"nodes\": {}, \"hits\": {{ \"memory\": {}, \"volatile\": {} }}, \
-         \"computed\": {}, \"stored\": {}, \"slotted\": {}, \"replaced\": {}, \
+        "{{ \"nodes\": {}, \"hits\": {}, \"computed\": {}, \"stored\": {}, \"replaced\": {}, \
+         \"bytes\": {}, \"max_bytes\": {}, \"entries\": {}, \"evictions\": {}, \
          \"lookups\": {lookups} }}",
         stats.nodes(),
-        stats.hits_in(Tier::Memory),
-        stats.hits_in(Tier::Volatile),
+        stats.hits(),
         stats.computed(),
         stats.stored(),
-        stats.slotted(),
-        stats.replaced()
+        stats.replaced(),
+        stats.bytes,
+        stats.max_bytes,
+        stats.entries,
+        stats.evictions
     )
-}
-
-fn tier_name(tier: Tier) -> &'static str {
-    match tier {
-        Tier::Memory => "memory",
-        Tier::Volatile => "volatile",
-    }
 }
 
 /// What a render answered with, and where anything too big for the object went instead.

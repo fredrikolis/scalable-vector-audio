@@ -1,21 +1,19 @@
-// Concern: what one render asked its store, and what each lookup came to | Non-concern: deciding what to store (the store's own worth_storing) | IO: (loads, stores) -> CacheStats
+// Concern: what one render asked the store, what each lookup came to, and the store after it | Non-concern: what the store evicts (store.rs) | IO: (loads, stores) -> CacheStats
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
 
 use sva_formula::Hash;
-use sva_samples::{FilterTrace, Label};
+use sva_samples::Label;
 
-use super::{Cache, Entry, Expected, Payload, PayloadKind, Put, Slots, Tier};
+use super::store::{Kept, Stamp};
+use super::{Cache, Entry, Expected, Payload, PayloadKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    Hit(Tier),
+    Hit,
     ComputedStored,
     ComputedNotStored,
-    /// A volatile node's value, kept in a slot that held nothing.
-    ComputedSlotted,
-    /// A volatile node's value, kept in place of the slot's last one.
+    /// A volatile node's value, stored in place of its last one.
     ComputedReplaced,
 }
 
@@ -27,10 +25,15 @@ pub struct Lookup {
     pub outcome: Outcome,
 }
 
-/// Every lookup in the order the render made it.
+/// Every lookup in the order the render made it, and the store as the render left it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CacheStats {
     pub lookups: Vec<Lookup>,
+    pub bytes: u64,
+    pub max_bytes: u64,
+    pub entries: usize,
+    /// Entries this render's stores evicted.
+    pub evictions: u64,
 }
 
 impl CacheStats {
@@ -43,23 +46,15 @@ impl CacheStats {
     }
 
     pub fn hits(&self) -> usize {
-        self.count(|o| matches!(o, Outcome::Hit(_)))
-    }
-
-    pub fn hits_in(&self, tier: Tier) -> usize {
-        self.count(|o| o == Outcome::Hit(tier))
+        self.count(|o| o == Outcome::Hit)
     }
 
     pub fn computed(&self) -> usize {
-        self.count(|o| !matches!(o, Outcome::Hit(_)))
+        self.count(|o| o != Outcome::Hit)
     }
 
     pub fn stored(&self) -> usize {
         self.count(|o| o == Outcome::ComputedStored)
-    }
-
-    pub fn slotted(&self) -> usize {
-        self.count(|o| o == Outcome::ComputedSlotted)
     }
 
     pub fn replaced(&self) -> usize {
@@ -71,18 +66,20 @@ impl CacheStats {
     }
 }
 
-/// Wraps the stores a render was handed, so the render itself never says what it looked up.
+/// One render's view of the store, so the render itself never says what it looked up.
 pub(crate) struct Recording<'a> {
-    inner: &'a dyn Cache,
-    slots: Option<&'a Slots>,
+    cache: &'a Cache,
+    tree: u64,
+    evictions: u64,
     lookups: Mutex<Vec<Lookup>>,
 }
 
 impl<'a> Recording<'a> {
-    pub(crate) fn over(inner: &'a dyn Cache, slots: Option<&'a Slots>) -> Recording<'a> {
+    pub(crate) fn over(cache: &'a Cache) -> Recording<'a> {
         Recording {
-            inner,
-            slots,
+            cache,
+            tree: cache.begin_tree(),
+            evictions: cache.evictions(),
             lookups: Mutex::new(Vec::new()),
         }
     }
@@ -93,29 +90,25 @@ impl<'a> Recording<'a> {
                 .lookups
                 .into_inner()
                 .unwrap_or_else(PoisonError::into_inner),
+            bytes: self.cache.bytes(),
+            max_bytes: self.cache.max_bytes(),
+            entries: self.cache.entries(),
+            evictions: self.cache.evictions() - self.evictions,
         }
     }
 
-    /// One node's view of the stores: a volatile node reads through its slot and writes
-    /// nowhere else, every other node reads and writes the stores themselves.
-    pub(crate) fn at(&'a self, slot: Option<Hash>) -> Lens<'a> {
+    /// One node's view: `slot` where a volatile parameter reaches it, `fork` where two nodes
+    /// read it.
+    pub(crate) fn at(&self, slot: Option<Hash>, fork: bool) -> Lens<'_> {
         Lens {
             recording: self,
             slot,
+            fork,
         }
     }
 
     fn held(&self) -> MutexGuard<'_, Vec<Lookup>> {
         self.lookups.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn record(&self, key: Hash, node: &str, expected: Expected, found: Option<&Entry>) {
-        self.held().push(Lookup {
-            node: node.to_string(),
-            key,
-            kind: expected.kind(),
-            outcome: found.map_or(Outcome::ComputedNotStored, |e| Outcome::Hit(e.tier)),
-        });
     }
 
     fn settle(&self, key: Hash, outcome: Outcome) {
@@ -133,75 +126,43 @@ impl<'a> Recording<'a> {
 pub(crate) struct Lens<'a> {
     recording: &'a Recording<'a>,
     slot: Option<Hash>,
+    fork: bool,
 }
 
 impl Lens<'_> {
-    fn slotted(&self, kind: PayloadKind) -> Option<(&Slots, Hash)> {
-        let slot = super::mixed(self.slot?, &[kind as u64, 0x73_6c_6f_74]);
-        Some((self.recording.slots?, slot))
+    fn stamp(&self, kind: PayloadKind) -> Stamp {
+        Stamp {
+            tree: self.recording.tree,
+            fork: self.fork,
+            slot: self
+                .slot
+                .map(|slot| super::mixed(slot, &[kind as u64, 0x73_6c_6f_74])),
+        }
     }
-}
 
-impl Cache for Lens<'_> {
-    fn load(&self, key: Hash, node: &str, expected: Expected) -> Option<Entry> {
-        let inner = self.recording.inner;
-        let found = match self.slot {
-            None => inner.load(key, node, expected),
-            Some(_) => inner.peek(key, node, expected).or_else(|| {
-                let (slots, slot) = self.slotted(expected.kind())?;
-                slots.get(slot, key, node, expected)
-            }),
-        };
-        self.recording.record(key, node, expected, found.as_ref());
+    pub(crate) fn load(&self, key: Hash, node: &str, expected: Expected) -> Option<Entry> {
+        let found = self
+            .recording
+            .cache
+            .load(key, expected, self.stamp(expected.kind()));
+        self.recording.held().push(Lookup {
+            node: node.to_string(),
+            key,
+            kind: expected.kind(),
+            outcome: match found {
+                Some(_) => Outcome::Hit,
+                None => Outcome::ComputedNotStored,
+            },
+        });
         found
     }
 
-    fn peek(&self, key: Hash, node: &str, expected: Expected) -> Option<Entry> {
-        self.recording.inner.peek(key, node, expected)
-    }
-
-    fn store(&self, key: Hash, payload: &Payload, traces: &[FilterTrace], label: Option<&Label>) {
-        if self.slot.is_none() {
-            self.recording.settle(key, Outcome::ComputedStored);
-            return self.recording.inner.store(key, payload, traces, label);
+    pub(crate) fn store(&self, key: Hash, payload: &Payload, label: Option<&Label>) {
+        let stamp = self.stamp(payload.kind());
+        match self.recording.cache.store(key, payload, label, stamp) {
+            Kept::Held => self.recording.settle(key, Outcome::ComputedStored),
+            Kept::Replaced => self.recording.settle(key, Outcome::ComputedReplaced),
+            Kept::Refused => {}
         }
-        let Some((slots, slot)) = self.slotted(payload.kind()) else {
-            return;
-        };
-        match slots.put(slot, key, payload, traces, label) {
-            Put::Slotted => self.recording.settle(key, Outcome::ComputedSlotted),
-            Put::Replaced => self.recording.settle(key, Outcome::ComputedReplaced),
-            Put::Refused => {}
-        }
-    }
-
-    fn holds(&self, key: Hash) -> bool {
-        self.recording.inner.holds(key)
-    }
-
-    /// A slot keeps a volatile node's buffer or frames; its spectral sum is kept nowhere.
-    fn worth_storing(&self, cost: Duration, bytes: usize, kind: PayloadKind) -> bool {
-        match self.slot {
-            None => self.recording.inner.worth_storing(cost, bytes, kind),
-            Some(_) => kind != PayloadKind::Symbolic && self.recording.slots.is_some(),
-        }
-    }
-
-    fn sweep(&self) {
-        if self.slot.is_none() {
-            self.recording.inner.sweep();
-        }
-    }
-
-    fn held_bytes(&self) -> u64 {
-        self.recording.inner.held_bytes()
-    }
-
-    fn evicted_bytes(&self) -> u64 {
-        self.recording.inner.evicted_bytes()
-    }
-
-    fn max_bytes(&self) -> u64 {
-        self.recording.inner.max_bytes()
     }
 }

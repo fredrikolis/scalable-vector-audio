@@ -1,4 +1,4 @@
-// Concern: marks the nodes volatile parameters reach and names each one's slot | Non-concern: the slot store, what a node computes | IO: (Instances, Typing, names) -> a slot per volatile node
+// Concern: marks the nodes volatile parameters reach and names each one's slot | Non-concern: the store, what a node computes | IO: (Instances, Typing, names) -> a slot per volatile node
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -10,7 +10,7 @@ use crate::instantiate::{Cx, Instances, Node, ScopeId};
 use crate::render::RenderConfig;
 use crate::typing::{Typing, Value};
 
-/// The base of each volatile node's slot; a node absent here reads and writes the stores.
+/// The base of each volatile node's slot; a node absent here keeps every value it stores.
 #[derive(Default)]
 pub(super) struct Volatile {
     slots: BTreeMap<NodeId, Hash>,

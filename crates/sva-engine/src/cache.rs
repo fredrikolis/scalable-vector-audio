@@ -1,20 +1,15 @@
-// Concern: declares what a store holds under a content hash and how a key is built | Non-concern: a store's budget (memory.rs) | IO: (Hash) -> a payload + traces
+// Concern: declares what a store holds under a content hash and how a key is built | Non-concern: what the store keeps and evicts (store.rs) | IO: (Hash) -> a payload
 
-mod evict;
-mod memory;
-mod slots;
 mod stats;
+mod store;
 
-pub use memory::MemoryCache;
-pub use slots::{DEFAULT_SLOT_BYTES, Put, Slots};
-pub(crate) use stats::Recording;
 pub use stats::{CacheStats, Lookup, Outcome};
+pub(crate) use stats::{Lens, Recording};
+pub use store::{Cache, DEFAULT_CACHE_BYTES, PrunePolicy};
 pub use sva_formula::Hash;
 
-use std::time::Duration;
-
 use sva_formula::SpectralSum;
-use sva_samples::{Buffer, FilterTrace, Frames, Label};
+use sva_samples::{Buffer, Frames, Label};
 
 /// A spectral sum, one collapse of it, or one analysis of that collapse.
 #[derive(Clone, Debug, PartialEq)]
@@ -43,20 +38,11 @@ pub enum Expected {
     Symbolic,
 }
 
-/// Where a hit was answered from: the store, or a slot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tier {
-    Memory,
-    Volatile,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     pub payload: Payload,
-    pub traces: Vec<FilterTrace>,
     /// FORMAT 9.3: the label is part of the value, so a hit answers with the cold run's.
     pub label: Option<Label>,
-    pub tier: Tier,
 }
 
 impl Expected {
@@ -126,29 +112,6 @@ impl Payload {
     }
 }
 
-/// What a render spent on one value; `wasm32-unknown-unknown` has no clock, so none there.
-#[derive(Clone, Copy)]
-pub struct Cost {
-    #[cfg(not(target_arch = "wasm32"))]
-    began: std::time::Instant,
-}
-
-impl Cost {
-    pub fn begun() -> Cost {
-        Cost {
-            #[cfg(not(target_arch = "wasm32"))]
-            began: std::time::Instant::now(),
-        }
-    }
-
-    pub fn elapsed(self) -> Duration {
-        #[cfg(not(target_arch = "wasm32"))]
-        return self.began.elapsed();
-        #[cfg(target_arch = "wasm32")]
-        return Duration::ZERO;
-    }
-}
-
 /// A hash carries the table version, so a bump retires every symbolic entry.
 pub fn symbolic_key(src: Hash) -> Hash {
     mixed(src, &[0x73_79_6d_62_6f_6c_69_63])
@@ -185,16 +148,6 @@ pub fn buffer_key(
     )
 }
 
-fn renamed(traces: &[FilterTrace], node: &str) -> Vec<FilterTrace> {
-    traces
-        .iter()
-        .map(|t| FilterTrace {
-            node: node.to_string(),
-            ..t.clone()
-        })
-        .collect()
-}
-
 const ADDRESS_ROTATE: u32 = 17;
 
 pub(crate) fn mixed(seed: Hash, parts: &[u64]) -> Hash {
@@ -203,25 +156,4 @@ pub(crate) fn mixed(seed: Hash, parts: &[u64]) -> Hash {
         lanes.word(*part);
     }
     lanes.finish()
-}
-
-pub trait Cache: Sync {
-    fn load(&self, key: Hash, node: &str, expected: Expected) -> Option<Entry>;
-
-    /// `load` with no side effect: no recency, promotion, fault or removal.
-    fn peek(&self, key: Hash, node: &str, expected: Expected) -> Option<Entry>;
-
-    fn store(&self, key: Hash, payload: &Payload, traces: &[FilterTrace], label: Option<&Label>);
-
-    fn holds(&self, key: Hash) -> bool;
-
-    fn worth_storing(&self, cost: Duration, bytes: usize, kind: PayloadKind) -> bool;
-
-    fn sweep(&self);
-
-    fn held_bytes(&self) -> u64;
-
-    fn evicted_bytes(&self) -> u64;
-
-    fn max_bytes(&self) -> u64;
 }

@@ -4,7 +4,7 @@ use crate::helpers::{fixture, plane, put, scratch, secs};
 use sva_ast::Dir;
 use sva_cli::CliError;
 use sva_core::{Job, PROBE, execute, probe, run};
-use sva_engine::MemoryCache;
+use sva_engine::Cache;
 
 /// `bpm` reaches the samples only by rewriting a grid's row shifts, so a tempo change must
 /// re-render exactly the bar-timed nodes and leave the rest byte-identical.
@@ -17,7 +17,7 @@ fn a_bpm_change_re_renders_bar_resolved_timing_and_nothing_else() {
     put(&dir, "pattern-1b", "@kick*1.0\n@kick*0.5\n\n@kick*0.7\n");
     put(&dir, "master", "crop(@pattern-1b(t), 0s, 3s) + @tone*0.2\n");
 
-    let cache = MemoryCache::new();
+    let cache = Cache::new();
     let job = || {
         execute(Job {
             cache: Some(&cache),

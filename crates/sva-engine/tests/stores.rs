@@ -1,121 +1,149 @@
-// Concern: proves the store answers one key with the bytes stored under it, and sweep to their budget | Non-concern: what a key stands for (cache.rs) | IO: (Hash) -> a buffer + traces
+// Concern: proves the store never passes its cap and evicts what each prune policy names | Non-concern: what a key stands for (cache.rs) | IO: (a composition, a store) -> what it holds
 
-use sva_engine::{Cache, Expected, Hash, MemoryCache, Payload};
-use sva_samples::{AutomationFrame, Buffer, FilterTrace};
+mod fixtures;
 
-const FOUR: Expected = Expected::Samples {
-    rate: 44_100,
-    width: 1,
-    samples: 4,
-};
+use fixtures::graph_of;
+use sva_ast::Graph;
+use sva_engine::{Cache, CacheStats, Hash, PrunePolicy, RenderConfig, render};
 
-fn holding(buffer: &Buffer) -> Payload {
-    Payload::Samples(Box::new(buffer.clone()))
+const SECONDS: f64 = 0.05;
+const RATE: u32 = 8_000;
+
+/// Two sampled voices `a` and `b` each read, so each voice is a fork and nothing else is.
+fn forked(f: u32) -> Graph {
+    graph_of(
+        "forked",
+        &[
+            ("x", &format!("sample(sin(2*pi*{f}*t))*0.5\n")),
+            ("y", &format!("sample(sin(2*pi*{}*t))*0.5\n", f + 1)),
+            ("a", "@x*0.5 + @y*0.25\n"),
+            ("b", "@x*0.25 + @y*0.5\n"),
+            ("master", "@a + @b\n"),
+        ],
+    )
 }
 
-fn read_at(rate: u32, samples: usize) -> Expected {
-    Expected::Samples {
-        rate,
-        width: 1,
-        samples,
-    }
+fn stats(graph: &Graph, cache: &Cache) -> CacheStats {
+    render(
+        graph,
+        "master",
+        RenderConfig::seconds(RATE, SECONDS),
+        Some(cache),
+    )
+    .expect("a render")
+    .cache_stats
+    .expect("a render handed a store reports on it")
 }
 
-fn trace() -> FilterTrace {
-    FilterTrace {
-        node: "written-by".to_string(),
-        site: 2,
-        channel: None,
-        shape: "lowpass",
-        clamped: true,
-        trace_secs: 0.001,
-        frames: vec![AutomationFrame {
-            t_secs: 0.5,
-            cutoff: 812.5,
-            q: 3.2,
-            gain_db: -1.0,
-        }],
-    }
+fn keys_of(stats: &CacheStats, node: &str) -> Vec<Hash> {
+    let keys: Vec<Hash> = stats
+        .lookups
+        .iter()
+        .filter(|l| l.node == node)
+        .map(|l| l.key)
+        .collect();
+    assert!(!keys.is_empty(), "`{node}` was looked up: {stats:?}");
+    keys
 }
 
-fn odd_values() -> Buffer {
-    Buffer::mono(44100, vec![0.0, -0.5, f64::MIN_POSITIVE, 0.9999999])
+/// The node's own value: every subterm it holds is looked up before it, dependencies first.
+fn own_key(stats: &CacheStats, node: &str) -> Hash {
+    *keys_of(stats, node).last().expect("looked up")
 }
 
-fn stores() -> Vec<(&'static str, Box<dyn Cache>)> {
-    vec![("memory", Box::new(MemoryCache::new()))]
+fn held(cache: &Cache, keys: &[Hash]) -> bool {
+    keys.iter().all(|k| cache.holds(*k))
+}
+
+fn gone(cache: &Cache, keys: &[Hash]) -> bool {
+    keys.iter().all(|k| !cache.holds(*k))
+}
+
+fn within(cache: &Cache) {
+    assert!(
+        cache.bytes() <= cache.max_bytes(),
+        "{} over {}",
+        cache.bytes(),
+        cache.max_bytes()
+    );
 }
 
 #[test]
-fn a_stored_buffer_reads_back_bit_for_bit_under_the_readers_own_node_name() {
-    let key = Hash(7, 11);
-    for (name, cache) in stores() {
-        cache.store(key, &holding(&odd_values()), &[trace()], None);
-        assert!(cache.holds(key), "{name}");
-        let entry = cache.load(key, "asked-as", FOUR).expect("a hit");
-        assert_eq!(entry.payload, holding(&odd_values()), "{name}");
-        assert_eq!(
-            entry.traces[0].node, "asked-as",
-            "{name}: the reader names it"
-        );
-        assert_eq!(entry.traces[0].site, 2, "{name}");
-        assert_eq!(entry.traces[0].frames, trace().frames, "{name}");
+fn the_cap_holds_after_every_render_and_every_prune() {
+    for policy in PrunePolicy::ALL {
+        let cache = Cache::holding(20_000);
+        cache.set_prune_policy(policy);
+        let mut evicted = 0;
+        for f in (1..=8).map(|k| 100 * k) {
+            let after = stats(&forked(f), &cache);
+            within(&cache);
+            assert!(after.bytes <= after.max_bytes, "{policy:?}: {after:?}");
+            assert_eq!(after.entries, cache.entries());
+            evicted += after.evictions;
+        }
+        assert!(evicted > 0, "{policy:?}: eight renders overflow the cap");
+        assert_eq!(evicted, cache.evictions(), "every eviction is reported");
+        for prune in PrunePolicy::ALL {
+            cache.prune(prune);
+            within(&cache);
+        }
+        cache.set_max_bytes(4_000);
+        within(&cache);
     }
 }
 
-/// An entry that cannot answer its own key is garbage, truncated or merely mismatched:
-/// report a miss and drop it rather than keep failing.
 #[test]
-fn an_entry_that_does_not_answer_what_was_asked_is_a_miss_and_is_dropped() {
-    let key = Hash(7, 11);
-    for (name, cache) in stores() {
+fn a_prune_by_oldest_keeps_only_what_the_newest_render_touched() {
+    let cache = Cache::new();
+    let first = stats(&forked(110), &cache);
+    let second = stats(&forked(220), &cache);
+    cache.prune(PrunePolicy::Oldest);
+    for node in ["x", "y", "a", "b", "master"] {
         assert!(
-            cache.load(key, "n", FOUR).is_none(),
-            "{name}: nothing stored"
+            gone(&cache, &keys_of(&first, node)),
+            "`{node}` of the first"
         );
-        let mono = Buffer::mono(8000, vec![0.25; 4]);
-        for (rate, samples, why) in [(44_100, 5, "wrong length"), (48_000, 4, "wrong rate")] {
-            cache.store(key, &holding(&mono), &[], None);
-            assert!(
-                cache.load(key, "n", read_at(rate, samples)).is_none(),
-                "{name}: {why}"
-            );
-            assert!(!cache.holds(key), "{name}: {why}, and cleared");
-        }
+        assert!(
+            held(&cache, &keys_of(&second, node)),
+            "`{node}` of the second"
+        );
     }
 }
 
 #[test]
-fn a_memory_sweep_drops_the_least_recently_read_until_it_is_under_the_cap() {
-    let keys: Vec<Hash> = (0..8).map(|i| Hash(i, 0)).collect();
-    let read = read_at(8_000, 256);
-    let fill = |cache: &MemoryCache| {
-        for &key in &keys {
-            cache.store(
-                key,
-                &holding(&Buffer::mono(8_000, vec![0.5; 256])),
-                &[],
-                None,
-            );
-        }
-        for &key in &keys[4..] {
-            assert!(cache.load(key, "n", read).is_some());
-        }
-    };
-
-    let cache = MemoryCache::holding(u64::MAX);
-    fill(&cache);
-    cache.sweep();
-    let whole = cache.held_bytes();
-    assert_eq!(whole, 8 * 256 * 8);
-    assert_eq!(cache.evicted_bytes(), 0, "nothing to drop under the cap");
-
-    let capped = MemoryCache::holding(whole / 2);
-    fill(&capped);
-    capped.sweep();
-    assert!(capped.held_bytes() <= capped.max_bytes());
-    assert!(capped.evicted_bytes() >= whole - capped.held_bytes());
-    for &key in &keys[..4] {
-        assert!(!capped.holds(key), "the least recently read went first");
+fn a_prune_by_forks_keeps_only_the_values_two_nodes_read() {
+    let cache = Cache::new();
+    let rendered = stats(&forked(110), &cache);
+    cache.prune(PrunePolicy::Forks);
+    for node in ["a", "b", "master"] {
+        assert!(gone(&cache, &keys_of(&rendered, node)), "`{node}` went");
     }
+    assert!(held(
+        &cache,
+        &[own_key(&rendered, "x"), own_key(&rendered, "y")]
+    ));
+}
+
+/// Forks alone over the cap: the policy has nothing left to evict, so the oldest render's
+/// values go together, both forks, though one alone would have been enough.
+#[test]
+fn where_a_policy_frees_too_little_whole_trees_go_oldest_first() {
+    let cache = Cache::new();
+    cache.set_prune_policy(PrunePolicy::Forks);
+    let trees: Vec<CacheStats> = [110, 220, 330]
+        .into_iter()
+        .map(|f| stats(&forked(f), &cache))
+        .collect();
+    cache.prune(PrunePolicy::Forks);
+    let forks = |tree: &CacheStats| [own_key(tree, "x"), own_key(tree, "y")];
+    assert!(trees.iter().all(|tree| held(&cache, &forks(tree))));
+
+    cache.set_max_bytes(cache.bytes() - 1);
+    within(&cache);
+    assert!(
+        gone(&cache, &forks(&trees[0])),
+        "the oldest tree went whole"
+    );
+    assert!(held(&cache, &forks(&trees[1])));
+    assert!(held(&cache, &forks(&trees[2])));
 }
