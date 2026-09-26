@@ -5,20 +5,16 @@ mod entry_bytes;
 mod evict;
 mod label;
 mod memory;
-mod pack;
 mod slots;
 mod stats;
-mod tiered;
 
 pub use disk::{DiskCache, ENGINE_DIR_PREFIX, IO_NANOS_PER_BYTE};
 pub use entry_bytes::{RawF64, SampleCodec};
 pub use memory::MemoryCache;
-pub use pack::{FORMAT as PACK_FORMAT, Medium, Pack, VecMedium};
 pub use slots::{DEFAULT_SLOT_BYTES, Put, Slots};
 pub(crate) use stats::Recording;
 pub use stats::{CacheStats, Lookup, Outcome};
 pub use sva_formula::Hash;
-pub use tiered::Tiered;
 
 use std::path::Path;
 use std::time::Duration;
@@ -137,8 +133,7 @@ impl Payload {
     }
 }
 
-/// What a render spent on one value. `wasm32-unknown-unknown` has no clock at all, so a
-/// render there measures nothing.
+/// What a render spent on one value; `wasm32-unknown-unknown` has no clock, so none there.
 #[derive(Clone, Copy)]
 pub struct Cost {
     #[cfg(not(target_arch = "wasm32"))]

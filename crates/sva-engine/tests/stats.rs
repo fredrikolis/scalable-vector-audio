@@ -1,4 +1,4 @@
-// Concern: proves a render reports every lookup it made and what each came to | Non-concern: a store's medium or budget (stores.rs, pack.rs) | IO: (a composition, a store) -> CacheStats
+// Concern: proves a render reports every lookup it made and what each came to | Non-concern: a store's medium or budget (stores.rs) | IO: (a composition, a store) -> CacheStats
 
 mod fixtures;
 

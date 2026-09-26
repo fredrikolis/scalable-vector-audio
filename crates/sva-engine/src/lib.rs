@@ -25,9 +25,8 @@ pub use arguments::{Argument, Arguments, Called, Chosen};
 pub use bindings::Binding;
 pub use cache::{
     Cache, CacheStats, DEFAULT_SLOT_BYTES, DiskCache, ENGINE_DIR_PREFIX, Entry, Expected, Hash,
-    IO_NANOS_PER_BYTE, Lookup, Medium, MemoryCache, Outcome, PACK_FORMAT, Pack, Payload,
-    PayloadKind, Put, RawF64, SampleCodec, Slots, Tier, Tiered, VecMedium, buffer_key,
-    symbolic_key,
+    IO_NANOS_PER_BYTE, Lookup, MemoryCache, Outcome, Payload, PayloadKind, Put, RawF64,
+    SampleCodec, Slots, Tier, buffer_key, symbolic_key,
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};

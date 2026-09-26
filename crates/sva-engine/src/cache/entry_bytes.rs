@@ -1,4 +1,4 @@
-// Concern: the bytes one persisted entry is, its samples spelled by a codec | Non-concern: where the bytes live (disk.rs, pack.rs), the label encoding (label.rs) | IO: (Buffer, traces, label) <-> bytes
+// Concern: the bytes one persisted entry is, its samples spelled by a codec | Non-concern: where the bytes live (disk.rs), the label encoding (label.rs) | IO: (Buffer, traces, label) <-> bytes
 
 use sva_formula::filter::Shape;
 use sva_samples::{AutomationFrame, Buffer, FilterTrace, Label};

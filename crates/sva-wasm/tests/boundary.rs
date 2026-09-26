@@ -414,33 +414,6 @@ fn a_volatile_knob_crosses_as_a_fourth_argument_and_keeps_to_its_slots() {
     );
 }
 
-/// Node has no origin-private file system, so the factory resolves the memory-only
-/// composition it falls back to everywhere one cannot be opened, and says so.
-#[wasm_bindgen_test]
-async fn a_persistent_composition_without_a_file_system_is_memory_only() {
-    let mut held = Composition::open_persistent(None, "a-registry".to_string(), None)
-        .await
-        .unwrap_or_else(|_| unreachable!("a fallback, not a refusal"));
-    assert!(!held.is_persistent());
-    assert_eq!(held.persistent_bytes(), 0.0, "no pack holds anything");
-    assert_eq!(held.persistent_max_bytes(), 0.0);
-    assert!(
-        held.cache_max_bytes() > 0.0,
-        "the memory tier still has its budget"
-    );
-    held.insert("master", "sin(2*pi*100*t)\n");
-    assert_eq!(of_default(&held).channels(), 1, "and it renders");
-
-    for name in ["", "..", "a/b"] {
-        assert!(
-            Composition::open_persistent(None, name.to_string(), None)
-                .await
-                .is_err(),
-            "`{name}` names no one directory"
-        );
-    }
-}
-
 #[wasm_bindgen_test]
 fn the_cache_budget_is_the_pages_own_and_survives_a_clear() {
     let mut held = page();

@@ -9,8 +9,8 @@ use std::time::Duration;
 use fixtures::graph_of;
 use sva_ast::Graph;
 use sva_engine::{
-    Cache, CacheStats, Entry, Expected, Hash, MemoryCache, Outcome, Pack, Payload, PayloadKind,
-    Render, RenderConfig, Slots, Tier, Tiered, VecMedium, render_with_slots,
+    Cache, CacheStats, Entry, Expected, Hash, MemoryCache, Outcome, Payload, PayloadKind, Render,
+    RenderConfig, Slots, Tier, render_with_slots,
 };
 use sva_samples::{FilterTrace, Label};
 
@@ -195,45 +195,6 @@ fn a_cold_note_in_a_volatile_render_is_stored_as_ever() {
             .filter(|l| l.outcome == Outcome::ComputedStored)
             .all(|l| !l.node.starts_with(FX)),
         "{volatile:?}"
-    );
-}
-
-#[test]
-fn a_persistent_hit_in_a_volatile_render_is_not_promoted() {
-    let first = Tiered::new(
-        MemoryCache::new(),
-        Pack::open(VecMedium::default(), 1 << 30),
-    );
-    let warm = played(600.0, &[], &first, &Slots::default());
-    first.sweep();
-    let reopened = Tiered::new(
-        MemoryCache::new(),
-        Pack::open(VecMedium::holding(first.back.medium().bytes()), 1 << 30),
-    );
-    let stats = played(600.0, &["cutoff"], &reopened, &Slots::default());
-    let other = played(900.0, &[], &MemoryCache::new(), &Slots::default());
-    let fx: Vec<_> = stats
-        .lookups
-        .iter()
-        .filter(|l| l.kind == PayloadKind::Samples)
-        .filter(|l| !other.lookups.iter().any(|o| o.key == l.key))
-        .collect();
-    assert!(!fx.is_empty());
-    for lookup in fx {
-        assert_eq!(lookup.outcome, Outcome::Hit(Tier::Persistent), "{lookup:?}");
-        assert!(!reopened.front.holds(lookup.key), "peeked, never promoted");
-    }
-    let buffers = |s: &CacheStats| {
-        s.lookups
-            .iter()
-            .filter(|l| l.kind == PayloadKind::Samples)
-            .count()
-    };
-    assert_eq!(buffers(&stats), buffers(&warm));
-    assert_eq!(
-        stats.hits(),
-        buffers(&stats),
-        "a pack holds no spectral sum: {stats:?}"
     );
 }
 
