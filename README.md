@@ -7,7 +7,7 @@
 [![npm sva-cli](https://img.shields.io/npm/v/@scalable-vector-audio/sva-cli?label=npm%20sva-cli)](https://www.npmjs.com/package/@scalable-vector-audio/sva-cli)
 [![npm sva-wasm](https://img.shields.io/npm/v/@scalable-vector-audio/sva-wasm?label=npm%20sva-wasm)](https://www.npmjs.com/package/@scalable-vector-audio/sva-wasm)
 
-Sounds written as equations. `sin(2*pi*440*t)` is a 440 Hz tone, and a composition is a
+Sounds written as equations. $`\sin(2\pi \cdot 440\,t)`$ is a 440 Hz tone, and a composition is a
 directory of such equations that refer to each other. A render samples them at any rate (thus
 producing a scalable vector).
 
@@ -15,17 +15,13 @@ producing a scalable vector).
 
 ### In the time domain
 
-```math
-\cos(2\pi C_4 t) + \cos(2\pi E_4 t) + \cos(2\pi G_4 t)
-```
+$`\cos(2\pi C_4 t) + \cos(2\pi E_4 t) + \cos(2\pi G_4 t)`$
 
 $t$ is seconds, the value is amplitude, and $C_4$ is the literal `C4`, so a term is written `cos(2*pi*C4*t)`.
 
 ### In the frequency domain
 
-```math
-\tfrac{1}{2}\delta(f - C_4) + \tfrac{1}{2}\delta(f + C_4) + \tfrac{1}{2}\delta(f - E_4) + \tfrac{1}{2}\delta(f + E_4) + \tfrac{1}{2}\delta(f - G_4) + \tfrac{1}{2}\delta(f + G_4)
-```
+$`\tfrac{1}{2}\delta(f - C_4) + \tfrac{1}{2}\delta(f + C_4) + \tfrac{1}{2}\delta(f - E_4) + \tfrac{1}{2}\delta(f + E_4) + \tfrac{1}{2}\delta(f - G_4) + \tfrac{1}{2}\delta(f + G_4)`$
 
 Each $\delta$ is a spectral line at half the amplitude, paired with its conjugate at the negative
 frequency, which is what a cosine is, and $\delta$ is the builtin `delta`. `ifourier` of that
@@ -34,9 +30,8 @@ of one variable: an expression holding both `t` and `f` refuses as `type.domain_
 
 ## A note
 
-```math
-e^{-t/0.25}\, w(t)\, \sin(2\pi C_4 t)
-```
+$`e^{-t/0.25} w(t) \sin(2\pi C_4 t)`$
+
 ```
 crop(exp(-t/0.25s), 0s, 0.5s, rise=0.005s, fall=0.05s) * sin(2*pi*C4*t)
 ```
