@@ -3,7 +3,7 @@
 mod helpers;
 
 use helpers::scratch;
-use sva_cli::lint;
+use sva_cli::{Quiet, lint};
 
 fn doc(models: &str) -> String {
     format!(
@@ -27,7 +27,7 @@ fn a_refusing_lint_still_lists_its_advisories() {
     )
     .expect("a node nothing references");
 
-    let Err(refused) = lint(&dir, None) else {
+    let Err(refused) = lint(&dir, None, &Quiet::default()) else {
         panic!("a node with no `;`-comment refuses");
     };
     let answered = refused.diagnostics();
@@ -64,7 +64,7 @@ fn a_refusing_targeted_lint_still_lists_its_advisories() {
     )
     .expect("two call sites");
 
-    let Err(refused) = lint(&dir, Some("tone")) else {
+    let Err(refused) = lint(&dir, Some("tone"), &Quiet::default()) else {
         panic!("a node with no `;`-comment refuses, whatever else its file is");
     };
     let answered = refused.diagnostics();

@@ -27,7 +27,7 @@ pub use query::{
 };
 pub use settings::{Settings, wav_path};
 pub use target::{Edge, Target, target};
-pub use tempo::refuse_unresolved_bars;
+pub use tempo::{Tempo, refuse_unresolved_bars, resolved as tempo};
 pub use until::until;
 
 use std::path::Path;

@@ -3,6 +3,7 @@
 mod answer;
 pub(crate) mod extent;
 mod pointwise;
+mod quiet;
 mod reach;
 mod sampled;
 mod silent;
@@ -93,6 +94,7 @@ impl RenderConfig {
 }
 
 pub use answer::{answer, answer_buffer, sketch_atom};
+pub use quiet::{QuietTail, quiet_tails};
 pub use stream::{Block, Checkpoint, STREAMED, Stream, StreamConfig};
 pub use until::Until;
 

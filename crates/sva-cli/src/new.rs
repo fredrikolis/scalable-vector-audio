@@ -319,7 +319,7 @@ mod tests {
     fn the_scaffolded_composition_lints_clean_of_every_doc_comment_check() {
         let dir = tmp("lints-clean");
         let scaffolded = scaffold(&dir, "song1", None).unwrap();
-        let report = crate::lint::lint(&scaffolded.root, None);
+        let report = crate::lint::lint(&scaffolded.root, None, &crate::quiet::Quiet::default());
         assert!(
             report.is_ok(),
             "a freshly scaffolded composition must carry a well-formed doc comment on every \

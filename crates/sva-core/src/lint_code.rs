@@ -19,6 +19,7 @@ pub enum LintCode {
     LiteralSampleRate,
     KeyIsNotAPitch,
     WindowInsideRamp,
+    QuietTail,
 }
 
 impl LintCode {
@@ -38,6 +39,7 @@ impl LintCode {
         LintCode::LiteralSampleRate,
         LintCode::KeyIsNotAPitch,
         LintCode::WindowInsideRamp,
+        LintCode::QuietTail,
     ];
 
     pub fn code_str(self) -> &'static str {
@@ -57,6 +59,7 @@ impl LintCode {
             LintCode::LiteralSampleRate => "literal-sample-rate",
             LintCode::KeyIsNotAPitch => "key-is-not-a-pitch",
             LintCode::WindowInsideRamp => "window-inside-ramp",
+            LintCode::QuietTail => "quiet-tail",
         }
     }
 
@@ -103,6 +106,9 @@ impl LintCode {
             }
             LintCode::WindowInsideRamp => {
                 "widen the window past the ramp, or shorten the shoulder it sits inside"
+            }
+            LintCode::QuietTail => {
+                "wrap the node's expression in the crop the message spells, if its tail is not meant"
             }
         }
     }

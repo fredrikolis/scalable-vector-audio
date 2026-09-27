@@ -146,12 +146,12 @@ pub(crate) trait Live {
 }
 
 /// Where a render stands, and how a node no bound reaches is rendered over the window a
-/// crop gives it.
+/// crop gives it; with none, a solver and such a crop stay unbounded.
 pub(super) struct Bounds<'a> {
     pub(super) tys: &'a Typing,
     pub(super) grid: Grid,
     pub(super) config: &'a RenderConfig,
-    pub(super) rendered: &'a dyn Fn(NodeId, f64) -> Result<Buffer, EngineError>,
+    pub(super) rendered: Option<&'a dyn Fn(NodeId, f64) -> Result<Buffer, EngineError>>,
     /// How low a solver's bound is stepped down before it is held flat.
     pub(super) level: f64,
     /// A solver's bound was held flat at `level`, so a lower one could fall further.
@@ -195,7 +195,7 @@ impl<'a> Bounds<'a> {
     pub(super) fn new(
         forms: &'a Forms<'a>,
         grid: Grid,
-        rendered: &'a dyn Fn(NodeId, f64) -> Result<Buffer, EngineError>,
+        rendered: Option<&'a dyn Fn(NodeId, f64) -> Result<Buffer, EngineError>>,
         level: f64,
     ) -> Bounds<'a> {
         Bounds {
@@ -311,6 +311,9 @@ impl<'a> Bounds<'a> {
                 0.0,
             ))),
             Value::SelfAt(_) => Ok(Err(self.unknown(id, "a loop read outside its loop"))),
+            Value::Solver(_) if self.rendered.is_none() => {
+                Ok(Err(self.unknown(id, "a solver, whose bound steps it")))
+            }
             Value::Solver(params) => {
                 let (rate, points) = (self.config.rate, self.grid.points);
                 let tail = match self.live.map(|live| live.solver(id)) {
@@ -598,15 +601,14 @@ impl<'a> Bounds<'a> {
         if self.live.is_some() && self.grid.secs(0) >= r {
             return Ok(Ok(Envelope::constant(&self.grid, 0.0, 0.0)));
         }
-        match self.of(args[0])? {
-            Ok(e) => Ok(Ok(self.cropped(&e, l, r))),
-            Err(_) if r.is_finite() => Ok(Ok(self.heard(id, r)?)),
-            Err(e) => Ok(Err(e)),
+        match (self.of(args[0])?, self.rendered) {
+            (Ok(e), _) => Ok(Ok(self.cropped(&e, l, r))),
+            (Err(_), Some(rendered)) if r.is_finite() => Ok(Ok(self.heard(&rendered(id, r)?))),
+            (Err(e), _) => Ok(Err(e)),
         }
     }
 
-    fn heard(&self, id: NodeId, end: f64) -> Result<Envelope, EngineError> {
-        let buffer = (self.rendered)(id, end)?;
+    fn heard(&self, buffer: &Buffer) -> Envelope {
         let mut at = vec![0.0f64; self.grid.points];
         let len = buffer.len();
         let mut running = 0.0f64;
@@ -618,11 +620,11 @@ impl<'a> Bounds<'a> {
                 at[n / STEP] = running;
             }
         }
-        Ok(Envelope {
+        Envelope {
             before: running,
             at,
             floor: 0.0,
-        })
+        }
     }
 
     /// `|y| <= |h| * |x|`: the input from each grid instant on meets the whole response, and

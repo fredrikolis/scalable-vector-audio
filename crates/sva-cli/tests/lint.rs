@@ -3,7 +3,7 @@
 mod helpers;
 
 use helpers::scratch;
-use sva_cli::lint;
+use sva_cli::{Quiet, lint};
 use sva_core::LintCode;
 
 fn doc(models: &str) -> String {
@@ -54,7 +54,7 @@ fn a_lint_finding_names_its_line() {
     )
     .expect("a node file");
 
-    let Err(refused) = lint(&dir, None) else {
+    let Err(refused) = lint(&dir, None, &Quiet::default()) else {
         panic!("a comment block over the threshold refuses")
     };
     let found = refused.diagnostics();
@@ -80,7 +80,8 @@ fn a_rootless_composition_still_gets_structural_findings() {
             ("mixed", "@solver*sin(2*pi*3*t)\n"),
         ],
     );
-    let report = lint(&dir, None).expect("a whole-directory lint reports what it found");
+    let report =
+        lint(&dir, None, &Quiet::default()).expect("a whole-directory lint reports what it found");
     let text = refused(&report, "mixed");
     assert!(
         text.contains("samples"),
@@ -91,7 +92,7 @@ fn a_rootless_composition_still_gets_structural_findings() {
         "rootless-clean",
         &[("one", "sin(2*pi*300*t)\n"), ("two", "sin(2*pi*400*t)\n")],
     );
-    let report = lint(&clean, None).expect("two typed entry points lint clean");
+    let report = lint(&clean, None, &Quiet::default()).expect("two typed entry points lint clean");
     assert_eq!(report.nodes, 2);
     assert!(
         !report
@@ -114,7 +115,7 @@ fn a_later_entry_point_is_typed_too() {
             ("omega", "@solver*sin(2*pi*3*t)\n"),
         ],
     );
-    let report = lint(&dir, None).expect("a report, not a refusal");
+    let report = lint(&dir, None, &Quiet::default()).expect("a report, not a refusal");
     assert!(refused(&report, "omega").contains("samples"));
 }
 
@@ -129,7 +130,7 @@ fn an_orphan_beside_a_master_is_typed_too() {
             ("orphan", "@solver*sin(2*pi*3*t)\n"),
         ],
     );
-    let report = lint(&dir, None).expect("a master that types is not a refusal");
+    let report = lint(&dir, None, &Quiet::default()).expect("a master that types is not a refusal");
     assert!(refused(&report, "orphan").contains("samples"));
 }
 
@@ -138,7 +139,8 @@ fn an_orphan_beside_a_master_is_typed_too() {
 #[test]
 fn an_unbound_template_is_reported_not_refused() {
     let dir = composition("unbound-template", &[("voice", "sin(2*pi*f0*t)*v\n")]);
-    let report = lint(&dir, None).expect("one unbindable template is not a broken directory");
+    let report = lint(&dir, None, &Quiet::default())
+        .expect("one unbindable template is not a broken directory");
     assert!(refused(&report, "voice").contains("free"));
 }
 
@@ -153,7 +155,8 @@ fn a_literal_sample_rate_is_advised() {
             ("clean", "self(t - 1sp) + sample(sin(2*pi*220*t))*1sp\n"),
         ],
     );
-    let report = lint(&dir, None).expect("a literal rate is advice, never a refusal");
+    let report =
+        lint(&dir, None, &Quiet::default()).expect("a literal rate is advice, never a refusal");
     let advised: Vec<&str> = report
         .findings
         .iter()
@@ -178,7 +181,7 @@ fn a_file_beside_nodes_is_advised_not_refused() {
     std::fs::write(dir.join("take 1.wav"), "not a node\n").expect("a rendering");
     std::fs::write(dir.join(".hidden"), "nor is this\n").expect("a dotfile");
 
-    let report = lint(&dir, None).expect("a note beside a node is no refusal");
+    let report = lint(&dir, None, &Quiet::default()).expect("a note beside a node is no refusal");
     assert_eq!(
         report.nodes, 1,
         "one node, whatever else the directory holds"
@@ -212,7 +215,8 @@ fn a_markdown_sibling_and_git_internals_get_no_lint_row() {
     std::fs::write(dir.join(".git/HEAD"), "ref: refs/heads/master\n").expect("tool state");
     std::fs::write(dir.join(".git/hooks/pre-commit.sample"), "#!/bin/sh\n").expect("a sample");
 
-    let report = lint(&dir, None).expect("a document beside a node is no refusal");
+    let report =
+        lint(&dir, None, &Quiet::default()).expect("a document beside a node is no refusal");
     let advised: Vec<&str> = report
         .findings
         .iter()
@@ -231,7 +235,8 @@ fn an_uppercase_notes_md_gets_no_lint_row() {
     std::fs::write(dir.join("NOTES.MD"), "# what I learned\n").expect("a note");
     std::fs::write(dir.join("Targets.Json"), "{}\n").expect("a reference reading");
 
-    let report = lint(&dir, None).expect("a document beside a node is no refusal");
+    let report =
+        lint(&dir, None, &Quiet::default()).expect("a document beside a node is no refusal");
     let advised: Vec<&str> = report
         .findings
         .iter()
@@ -258,7 +263,8 @@ fn lint_of_one_node_sees_the_tempo() {
         .expect("a variable");
     }
 
-    let report = lint(&dir, Some("kick")).expect("one node lints under its own composition");
+    let report = lint(&dir, Some("kick"), &Quiet::default())
+        .expect("one node lints under its own composition");
     assert_eq!(codes(&report), "", "nothing to report: {}", codes(&report));
 }
 
@@ -273,8 +279,12 @@ fn lint_of_a_node_with_a_default_resolves() {
         ],
     );
 
-    assert_eq!(codes(&lint(&dir, Some("plain")).expect("a plain node")), "");
-    let report = lint(&dir, Some("voice")).expect("a node that declares a default");
+    assert_eq!(
+        codes(&lint(&dir, Some("plain"), &Quiet::default()).expect("a plain node")),
+        ""
+    );
+    let report =
+        lint(&dir, Some("voice"), &Quiet::default()).expect("a node that declares a default");
     assert_eq!(codes(&report), "", "{}", codes(&report));
     assert!(report.nodes > 0, "one node was checked, so one is reported");
 }
@@ -290,7 +300,8 @@ fn an_uppercase_numeral_tag_is_advised_not_refused() {
     )
     .expect("a node file");
 
-    let report = lint(&dir, None).expect("a numeral tag is not a broken composition");
+    let report =
+        lint(&dir, None, &Quiet::default()).expect("a numeral tag is not a broken composition");
     let advised: Vec<&sva_cli::Finding> = report
         .findings
         .iter()
@@ -325,7 +336,7 @@ fn a_one_row_grid_gets_the_same_advice_as_a_two_row_one() {
             format!("{}@pattern-8b\n", doc("a signal")),
         )
         .expect("a root");
-        lint(&dir, None)
+        lint(&dir, None, &Quiet::default())
             .unwrap_or_else(|e| panic!("{name}: {}", e.message()))
             .findings
             .iter()
@@ -353,7 +364,7 @@ fn a_short_strike_under_a_long_shoulder_is_advised() {
             ("master", "crop(@strike(t), 0s, 4s, rise=2s, fall=1s)\n"),
         ],
     );
-    let report = lint(&dir, None).expect("an advisory is no refusal");
+    let report = lint(&dir, None, &Quiet::default()).expect("an advisory is no refusal");
     let found = report
         .findings
         .iter()
@@ -376,7 +387,7 @@ fn a_short_strike_under_a_long_shoulder_is_advised() {
             ("master", "crop(@strike(t*2), 0s, 4s, rise=2s, fall=1s)\n"),
         ],
     );
-    let unplaced = lint(&warped, None).expect("a warp is no refusal");
+    let unplaced = lint(&warped, None, &Quiet::default()).expect("a warp is no refusal");
     assert!(
         !unplaced
             .findings
@@ -394,7 +405,7 @@ fn a_short_strike_under_a_long_shoulder_is_advised() {
             ("master", "crop(@strike(t), 0s, 4s, rise=2s, fall=1s)\n"),
         ],
     );
-    let quiet = lint(&shaped, None).expect("a shaped window is no advisory");
+    let quiet = lint(&shaped, None, &Quiet::default()).expect("a shaped window is no advisory");
     assert!(
         !quiet
             .findings
@@ -409,7 +420,7 @@ fn a_short_strike_under_a_long_shoulder_is_advised() {
 #[test]
 fn lint_of_an_undefined_target_refuses_like_render() {
     let dir = composition("undefined-target", &[("master", "sin(2*pi*300*t)\n")]);
-    let Err(linted) = lint(&dir, Some("drums/kik")) else {
+    let Err(linted) = lint(&dir, Some("drums/kik"), &Quiet::default()) else {
         panic!("a target nothing defines refuses");
     };
     let Err(rendered) = sva_core::probe(&dir, "@drums/kik") else {
@@ -432,7 +443,7 @@ fn a_skipped_special_file_is_reported_as_a_diagnostic() {
         .expect("mkfifo runs");
     assert!(made.success(), "mkfifo failed");
 
-    let report = lint(&dir, None).expect("a FIFO beside a node is no refusal");
+    let report = lint(&dir, None, &Quiet::default()).expect("a FIFO beside a node is no refusal");
     assert_eq!(report.nodes, 1, "the node beside it still loads");
     let found = report
         .findings
@@ -458,7 +469,7 @@ fn lint_of_a_parameterized_file_lists_its_instances() {
         ],
     );
 
-    let Err(refused) = lint(&dir, Some("tone")) else {
+    let Err(refused) = lint(&dir, Some("tone"), &Quiet::default()) else {
         panic!("a file with two instances is no node of its own");
     };
     let message = refused.message();
@@ -477,6 +488,58 @@ fn lint_of_a_parameterized_file_lists_its_instances() {
         format!("{}@tone(t, hz=220)\n", doc("master")),
     )
     .expect("a single call site");
-    let report = lint(&one, Some("tone")).expect("one instance is the node the caller meant");
+    let report = lint(&one, Some("tone"), &Quiet::default())
+        .expect("one instance is the node the caller meant");
     assert_eq!(report.nodes, 2, "the instance and what calls it");
+}
+
+/// A filter rings on with no end of its own, yet its bound proves it quiet long before the
+/// master stops computing it: the advisory spells the crop in bars, and never refuses.
+#[test]
+fn a_ringing_node_proven_quiet_is_advised_its_crop() {
+    let dir = composition(
+        "quiet-tail",
+        &[
+            (
+                "ring",
+                "lowpass(sample(exp(-t/0.05)*sin(2*pi*440*t)), cutoff=2000, q=0.7)\n",
+            ),
+            ("master", "crop(@ring(t) + @ring(t - 1b), 0s, 8b)\n"),
+        ],
+    );
+    std::fs::create_dir_all(dir.join("variables")).expect("a variables directory");
+    for (name, body) in [("bpm", "120\n"), ("meter", "4/4\n")] {
+        std::fs::write(
+            dir.join("variables").join(name),
+            format!("{}{body}", doc(name)),
+        )
+        .expect("a variable");
+    }
+
+    let report = lint(&dir, None, &Quiet::default()).expect("an advisory is no refusal");
+    let found: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.code == LintCode::QuietTail)
+        .collect();
+    let [found] = found.as_slice() else {
+        panic!("one quiet tail, on `ring`: {}", codes(&report));
+    };
+    assert_eq!(found.subject, "ring");
+    assert_eq!(found.severity, sva_core::Severity::Advice);
+    let crop = "`crop(lowpass(sample(exp(-t/0.05)*sin(2*pi*440*t)), cutoff=2000, q=0.7), 0s, ";
+    assert!(found.message.contains(crop), "{}", found.message);
+    assert!(found.message.ends_with("b)`"), "{}", found.message);
+
+    let mut longer = Quiet::default();
+    longer.set("quiet_after", "8b").expect("a time in bars");
+    let report = lint(&dir, None, &longer).expect("an advisory is no refusal");
+    assert!(
+        !report
+            .findings
+            .iter()
+            .any(|f| f.code == LintCode::QuietTail),
+        "no tail runs 8 bars past its quiet: {}",
+        codes(&report)
+    );
 }

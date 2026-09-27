@@ -8,6 +8,7 @@ mod lint;
 mod new;
 mod output;
 mod panic;
+mod quiet;
 mod rates;
 mod render;
 mod terminal;
@@ -26,6 +27,7 @@ pub use lint::{Finding, LintReport, entry_points, lint};
 pub use new::{FILES, NEXT, Scaffolded, scaffold};
 pub use output::{help_data, lint_data, new_data, trace_data, version_data};
 pub use panic::{Stopped, caught, stopped};
+pub use quiet::Quiet;
 pub use render::{analyze, render};
 pub use sva_core::{
     Builtins, Callable, CliError, builtins, builtins_data, cwd, error_envelope, success_envelope,

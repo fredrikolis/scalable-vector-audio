@@ -25,7 +25,7 @@ pub use expr::{Arg, BinOp, Binds, Expr, JOIN, Literal, SERIES, children, map_chi
 pub use filename::{FileSpan, SpanUnit};
 pub use graph::{Graph, VARIABLES, load, load_reaching, names_a_node, reads_of, resolve_ref_path};
 pub use ingest::{Parsed, occurs_free, parse_file};
-pub use lexer::{LogUnit, Token, TokenKind, ref_spans, tokenize};
+pub use lexer::{LogUnit, Token, TokenKind, ref_spans, strip_line_comment, tokenize};
 pub use outline::{Outline, outline};
 pub use parser::parse as parse_expr;
 pub use print::render as render_expr;

@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use sva_core::{Asked, CliError, Settings};
 
+use crate::quiet::Quiet;
+
 mod reading;
 
 pub(crate) use reading::check_frame;
@@ -13,7 +15,7 @@ pub const USAGE: &str = "usage: sva-cli render '<expression>' [--until '<conditi
      [--representation <r>[=<path>][,...]]... [--rate <hz>] [-c <key>=<value>]... [--confirm]\n       \
      sva-cli analyze <file.wav> [--representation <r>[=<path>][,...]]... [-c <key>=<value>]... \
      [--confirm]\n       \
-     sva-cli lint [<node|expression>] [--format <json|text>]\n       \
+     sva-cli lint [<node|expression>] [--format <json|text>] [-c <key>=<value>]...\n       \
      sva-cli trace <node|expression>\n       \
      sva-cli builtins\n       \
      sva-cli outline <expression>\n       \
@@ -24,7 +26,7 @@ pub const USAGE: &str = "usage: sva-cli render '<expression>' [--until '<conditi
      stereo bands crest loudness alias bindings arguments flops\n\
      analyses (`analyze` only): onsets trajectory masking gain-reduction\n\
      -c keys: flop_budget proof_limit node depth peaks oversample frame brief skim pcm16, \
-     and against for `analyze`\n\
+     and against for `analyze`; quiet_floor quiet_after for `lint`\n\
      destinations: a `.wav` path takes `samples` as audio; any other path takes JSON; none \
      puts the reading under `data.readings`\n\
      verb aliases: `validate`=lint, `list`=builtins, `create`=new, `show`=trace. `render` \
@@ -79,6 +81,7 @@ pub enum Command {
     Lint {
         target: Option<String>,
         format: Format,
+        quiet: Quiet,
     },
     Trace {
         target: String,
@@ -198,12 +201,24 @@ fn new_args(rest: &[String]) -> Result<Command, CliError> {
 fn lint_args(rest: &[String]) -> Result<Command, CliError> {
     let mut it = rest.iter().peekable();
     let target = match it.peek() {
-        Some(a) if !a.starts_with("--") => it.next().cloned(),
+        Some(a) if !a.starts_with("--") && *a != "-c" => it.next().cloned(),
         _ => None,
     };
     let mut format = Format::default();
+    let mut quiet = Quiet::default();
     while let Some(flag) = it.next() {
         match flag.as_str() {
+            "-c" => {
+                let raw = value(&mut it, "-c")?;
+                let Some((key, raw)) = raw.split_once('=') else {
+                    return Err(CliError::Usage(format!(
+                        "`-c {raw}` names no value; write `-c <key>=<value>`\n{USAGE}"
+                    )));
+                };
+                quiet
+                    .set(key, raw)
+                    .map_err(|e| CliError::Usage(format!("-c {}\n{USAGE}", e.message())))?;
+            }
             "--format" => {
                 format = match it.next().map(String::as_str) {
                     Some("json") => Format::Json,
@@ -218,13 +233,17 @@ fn lint_args(rest: &[String]) -> Result<Command, CliError> {
             }
             extra => {
                 return Err(CliError::Usage(format!(
-                    "lint takes only [<node|expression>] and `--format <json|text>`, not \
-                     `{extra}`\n{USAGE}"
+                    "lint takes only [<node|expression>], `--format <json|text>` and `-c \
+                     <key>=<value>`, not `{extra}`\n{USAGE}"
                 )));
             }
         }
     }
-    Ok(Command::Lint { target, format })
+    Ok(Command::Lint {
+        target,
+        format,
+        quiet,
+    })
 }
 
 /// One positional and nothing else: a trace answers structure, which no option narrows.
@@ -282,6 +301,7 @@ mod tests {
             Command::Lint {
                 target: None,
                 format: Format::Json,
+                quiet: Quiet::default(),
             }
         );
         assert_eq!(parse_args(&argv(&["list"])).unwrap(), Command::Builtins);
@@ -417,7 +437,8 @@ mod tests {
             parse_args(&argv(&["lint", "drums/kick"])).unwrap(),
             Command::Lint {
                 target: Some("drums/kick".to_string()),
-                format: Format::Json
+                format: Format::Json,
+                quiet: Quiet::default(),
             }
         );
         refused(&["lint", "a", "b"]);

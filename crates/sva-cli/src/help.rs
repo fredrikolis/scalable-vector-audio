@@ -5,10 +5,13 @@ use sva_core::{
 };
 use sva_engine::{DEFAULT_FRAME_SECS, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1};
 
+use crate::quiet::{DEFAULT_QUIET_AFTER_SECS, DEFAULT_QUIET_FLOOR_DB};
+
 /// Read off the constants the parser itself defaults to, so a printed default cannot drift
 /// from the one a render actually uses.
 pub fn help_text() -> String {
     let budget = PSYCHOACOUSTIC_V1.flop_budget;
+    let (quiet_floor, quiet_after) = (DEFAULT_QUIET_FLOOR_DB, DEFAULT_QUIET_AFTER_SECS);
     format!(
         r#"USAGE:
   sva-cli (render | analyze | lint | trace | builtins | outline | new) [arguments]
@@ -94,7 +97,7 @@ ANALYZE:
   second signal `masking` reads against.
 
 LINT:
-  sva-cli lint [<node|expression>] [--format <json|text>]
+  sva-cli lint [<node|expression>] [--format <json|text>] [-c <key>=<value>]...
 
   Checks binding, ref and tempo resolution in the current directory without
   rendering a sample. With no target it checks the whole directory against
@@ -105,6 +108,17 @@ LINT:
   Every check prints one `data.diagnostics` item. `advice` and `warning` exit 0,
   `error` exits non-zero, so branch on the verdict and never on whether the array
   is empty. No flag downgrades an error.
+
+  `quiet-tail` names a node with no end of its own (no crop, no release, no
+  exp or fade the engine cuts exactly) that the bound behind `--until
+  'max(envelope([t, inf))) < X'` proves under `-c quiet_floor` (default
+  {quiet_floor} dB) from an instant T on, in every instance, while a render still
+  computes it for `-c quiet_after` (default {quiet_after}s; `1b` is one bar) or more
+  past T. It prints T in bars where the composition declares bpm/meter, in
+  seconds otherwise, and the fix as text: `crop(<its expression>, 0s, T)`.
+  Nothing is cropped for you. It never renders: a node whose bound needs
+  samples (a physical solver), or that a root cannot place at {DEFAULT_SAMPLE_RATE} Hz, is
+  skipped.
 
   error    missing-comment       no `;` comment line
            multiline-comment     more than one
@@ -124,6 +138,8 @@ LINT:
            no-default-root       the directory has no `master`
            tag-shape             a tag over 3 lowercase words or 24 characters
            window-inside-ramp    a window sits wholly inside a crop's shoulder
+           quiet-tail            an uncropped node proven quiet long before its
+                                 render stops, and the crop that ends it
            literal-sample-rate   a written rate where `sp` belongs
            not-a-file            a socket, FIFO or device in the directory
            not-a-node            a filename no `@ref` can spell
@@ -217,6 +233,10 @@ DEFAULTS:
   -c against=<file>    the second signal `analyze`'s `masking` reads against.
                        No default: that one analysis requires it.
   -c brief, skim and pcm16 are `false` unless set `true`.
+  -c quiet_floor=<db>  the level `lint`'s `quiet-tail` proves a tail under.
+                       Default {quiet_floor} dB.
+  -c quiet_after=<t>   how long past that a render must run it for `quiet-tail`
+                       to name it, in seconds or bars. Default {quiet_after}s.
   --format <json|text> how `lint` prints its findings: the envelope, or one
                        terminal line each, colored where stdout is a terminal.
                        The same objects either way. Default json.

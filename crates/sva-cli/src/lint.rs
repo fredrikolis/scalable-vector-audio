@@ -7,9 +7,11 @@ use sva_ast::{Binds, Expr, Graph, Skip, Source, children, ref_spans, resolve_ref
 use sva_ast::{MAX_TAG_CHARS, MAX_TAGS, is_plain_tag, parse_doc_comment};
 use sva_core::{
     CliError, Diagnostic, LintCode, LintViolation, ROOT, Severity, lint_diagnostic, prepared,
-    refuse_unresolved_bars, settled,
+    refuse_unresolved_bars, settled, tempo,
 };
 use sva_engine::EngineError;
+
+use crate::quiet::{Quiet, quiet_findings};
 
 /// These ride a `success` envelope; a refusal raises [`sva_core::CliError::LintRefused`].
 pub struct Finding {
@@ -40,11 +42,11 @@ pub struct LintReport {
 
 /// With no target, lints the whole directory against `master`; with one, lints only what it
 /// reaches, against it instead.
-pub fn lint(dir: &Path, target: Option<&str>) -> Result<LintReport, CliError> {
+pub fn lint(dir: &Path, target: Option<&str>, quiet: &Quiet) -> Result<LintReport, CliError> {
     let source = sva_ast::Dir::at(dir);
     match target {
-        None => lint_whole(&source),
-        Some(target) => lint_reaching(&source, target),
+        None => lint_whole(&source, quiet),
+        Some(target) => lint_reaching(&source, target, quiet),
     }
 }
 
@@ -86,7 +88,7 @@ fn is_document(path: &str) -> bool {
     }
 }
 
-fn lint_whole(source: &dyn Source) -> Result<LintReport, CliError> {
+fn lint_whole(source: &dyn Source, quiet: &Quiet) -> Result<LintReport, CliError> {
     let graph = prepared(source)?;
     refuse_unresolved_bars(&graph)?;
     let violations = lint_violations(source, &graph);
@@ -114,10 +116,15 @@ fn lint_whole(source: &dyn Source) -> Result<LintReport, CliError> {
     findings.extend(tag_findings(source, &graph));
     findings.extend(crate::variables::key_findings(&graph));
     findings.extend(crate::rates::rate_findings(&graph));
-    findings.extend(crate::windows::window_findings(
+    let roots = whole_roots(&graph);
+    findings.extend(crate::windows::window_findings(&graph, &roots));
+    findings.extend(quiet_findings(
+        source,
         &graph,
-        &whole_roots(&graph),
-    ));
+        &roots,
+        quiet,
+        tempo(&graph)?,
+    )?);
     verdict(graph.paths().count(), violations, findings)
 }
 
@@ -171,7 +178,7 @@ fn entry_typing(graph: &Graph) -> Vec<Finding> {
         .collect()
 }
 
-fn lint_reaching(source: &dyn Source, target: &str) -> Result<LintReport, CliError> {
+fn lint_reaching(source: &dyn Source, target: &str, quiet: &Quiet) -> Result<LintReport, CliError> {
     let held = sva_core::roots_of(source, Some(target))?;
     let roots: Vec<&str> = held.iter().map(String::as_str).collect();
     let mut graph = settled(sva_ast::load_reaching(source, &roots))?;
@@ -190,7 +197,7 @@ fn lint_reaching(source: &dyn Source, target: &str) -> Result<LintReport, CliErr
     {
         // A closure loaded from the target alone never sees the call sites that bind it.
         return match sva_core::instances_behind(source, target, &refused).as_deref() {
-            Some([only]) if only != target => lint_reaching(source, only),
+            Some([only]) if only != target => lint_reaching(source, only, quiet),
             Some(held) => Err(CliError::Engine(EngineError::AmbiguousNode(
                 target.to_string(),
                 held.to_vec(),
@@ -203,7 +210,15 @@ fn lint_reaching(source: &dyn Source, target: &str) -> Result<LintReport, CliErr
     findings.extend(tag_findings(source, &graph));
     findings.extend(crate::variables::key_findings(&graph));
     findings.extend(crate::rates::rate_findings(&graph));
-    findings.extend(crate::windows::window_findings(&graph, &[root]));
+    let roots = [root];
+    findings.extend(crate::windows::window_findings(&graph, &roots));
+    findings.extend(quiet_findings(
+        source,
+        &graph,
+        &roots,
+        quiet,
+        tempo(&graph)?,
+    )?);
     verdict(graph.paths().count(), violations, findings)
 }
 
@@ -558,7 +573,8 @@ mod tests {
                 ("spare", &(doc("a spare") + "sin(2*pi*80*t)\n")),
             ],
         );
-        let report = lint(&dir, None).expect("a documented composition lints clean");
+        let report =
+            lint(&dir, None, &Quiet::default()).expect("a documented composition lints clean");
         let found: Vec<Diagnostic> = report.findings.iter().map(Finding::diagnostic).collect();
         let json = sva_core::success_envelope(
             &crate::output::lint_data(&dir.display().to_string(), None, report.nodes),
@@ -577,7 +593,7 @@ mod tests {
             "one-envelope-refused",
             &[("master", "@kick*0.5\n"), ("kick", "sin(t)\n")],
         );
-        let Err(err) = lint(&undocumented, None) else {
+        let Err(err) = lint(&undocumented, None, &Quiet::default()) else {
             panic!("an undocumented node must refuse");
         };
         let refused = sva_core::error_envelope(err.code(), &err.message(), &err.diagnostics());
@@ -644,7 +660,7 @@ mod tests {
             ],
         );
         assert!(
-            lint(&dir, None).is_ok(),
+            lint(&dir, None, &Quiet::default()).is_ok(),
             "a schedulable loop is not a finding"
         );
     }
@@ -661,7 +677,7 @@ mod tests {
                 ("orphan", &(doc("a fixture signal") + "sin(t)*0.5\n")),
             ],
         );
-        let whole = lint(&dir, None).unwrap();
+        let whole = lint(&dir, None, &Quiet::default()).unwrap();
         assert!(
             whole
                 .findings
@@ -670,7 +686,7 @@ mod tests {
             "a whole-directory lint must flag the unreferenced `orphan`"
         );
 
-        let targeted = lint(&dir, Some("master")).unwrap();
+        let targeted = lint(&dir, Some("master"), &Quiet::default()).unwrap();
         assert!(
             !targeted
                 .findings
@@ -695,7 +711,7 @@ mod tests {
                 ("master", &(doc("a fixture signal") + "@pattern-4b\n")),
             ],
         );
-        let whole = lint(&dir, None).unwrap();
+        let whole = lint(&dir, None, &Quiet::default()).unwrap();
         assert!(
             whole
                 .findings
@@ -705,7 +721,7 @@ mod tests {
             whole.findings.iter().map(|f| &f.code).collect::<Vec<_>>()
         );
 
-        let targeted = lint(&dir, Some("master")).unwrap();
+        let targeted = lint(&dir, Some("master"), &Quiet::default()).unwrap();
         assert!(
             targeted
                 .findings
@@ -729,7 +745,7 @@ mod tests {
             ],
         );
         assert!(
-            !lint(&dir, None)
+            !lint(&dir, None, &Quiet::default())
                 .unwrap()
                 .findings
                 .iter()
@@ -737,7 +753,7 @@ mod tests {
             "32 rows over 4 bars is an exact subdivision"
         );
         assert!(
-            !lint(&dir, Some("master"))
+            !lint(&dir, Some("master"), &Quiet::default())
                 .unwrap()
                 .findings
                 .iter()
@@ -759,7 +775,7 @@ mod tests {
             ],
         );
         assert!(
-            !lint(&dir, None)
+            !lint(&dir, None, &Quiet::default())
                 .unwrap()
                 .findings
                 .iter()
@@ -797,9 +813,13 @@ mod tests {
                             ("master", &(doc("a fixture signal") + "@long\n")),
                         ],
                     );
-                    assert_refused(lint(&dir, None), LintCode::LongCommentBlock, "long");
                     assert_refused(
-                        lint(&dir, Some("master")),
+                        lint(&dir, None, &Quiet::default()),
+                        LintCode::LongCommentBlock,
+                        "long",
+                    );
+                    assert_refused(
+                        lint(&dir, Some("master"), &Quiet::default()),
                         LintCode::LongCommentBlock,
                         "long",
                     );
@@ -837,9 +857,13 @@ mod tests {
                             ),
                         ],
                     );
-                    assert_refused(lint(&dir, None), LintCode::LongExpressionBody, "drone");
                     assert_refused(
-                        lint(&dir, Some("master")),
+                        lint(&dir, None, &Quiet::default()),
+                        LintCode::LongExpressionBody,
+                        "drone",
+                    );
+                    assert_refused(
+                        lint(&dir, Some("master"), &Quiet::default()),
                         LintCode::LongExpressionBody,
                         "drone",
                     );
@@ -857,7 +881,7 @@ mod tests {
                         &[("master", &(doc_with_tags(&"a".repeat(25)) + "sin(t)\n"))],
                     );
                     assert_eq!(
-                        advised(lint(&dir, None), "master"),
+                        advised(lint(&dir, None, &Quiet::default()), "master"),
                         vec![LintCode::TagShape]
                     );
                 }),
@@ -865,7 +889,7 @@ mod tests {
         ];
         for (label, at, over) in cases {
             assert!(
-                lint(&at, None).is_ok(),
+                lint(&at, None, &Quiet::default()).is_ok(),
                 "{label}: exactly at the threshold, not over it"
             );
             over();
@@ -882,7 +906,7 @@ mod tests {
         );
         let dir = dir_of("long-header-exempt", &[("master", &(header + "sin(t)\n"))]);
         assert!(
-            lint(&dir, None).is_ok(),
+            lint(&dir, None, &Quiet::default()).is_ok(),
             "a single well-formed doc-comment line is exempt from the long-comment-block \
              budget regardless of its own length"
         );
@@ -899,7 +923,7 @@ mod tests {
             "header-excluded-under",
             &[("master", &format!("{header}\n{boundary_line}\nsin(t)\n"))],
         );
-        let Err(CliError::LintRefused(violations)) = lint(&under, None) else {
+        let Err(CliError::LintRefused(violations)) = lint(&under, None, &Quiet::default()) else {
             panic!("a 2-line leading run is also multiline-comment, so this must still refuse")
         };
         assert!(
@@ -914,7 +938,11 @@ mod tests {
             "header-excluded-over",
             &[("master", &format!("{header}\n{over_line}\nsin(t)\n"))],
         );
-        assert_refused(lint(&over, None), LintCode::LongCommentBlock, "master");
+        assert_refused(
+            lint(&over, None, &Quiet::default()),
+            LintCode::LongCommentBlock,
+            "master",
+        );
     }
 
     /// Well-formed, so it never adds noise to a scenario testing some other node's comment.
@@ -932,9 +960,13 @@ mod tests {
                 ),
             ],
         );
-        assert_refused(lint(&dir, None), LintCode::MissingComment, "plucked");
         assert_refused(
-            lint(&dir, Some("master")),
+            lint(&dir, None, &Quiet::default()),
+            LintCode::MissingComment,
+            "plucked",
+        );
+        assert_refused(
+            lint(&dir, Some("master"), &Quiet::default()),
             LintCode::MissingComment,
             "plucked",
         );
@@ -955,9 +987,13 @@ mod tests {
                 ),
             ],
         );
-        assert_refused(lint(&dir, None), LintCode::MultilineComment, "stacked");
         assert_refused(
-            lint(&dir, Some("master")),
+            lint(&dir, None, &Quiet::default()),
+            LintCode::MultilineComment,
+            "stacked",
+        );
+        assert_refused(
+            lint(&dir, Some("master"), &Quiet::default()),
             LintCode::MultilineComment,
             "stacked",
         );
@@ -980,11 +1016,11 @@ mod tests {
             ],
         );
         assert!(
-            lint(&dir, None).is_ok(),
+            lint(&dir, None, &Quiet::default()).is_ok(),
             "a single well-formed, short comment must not refuse"
         );
         assert!(
-            lint(&dir, Some("master")).is_ok(),
+            lint(&dir, Some("master"), &Quiet::default()).is_ok(),
             "a single well-formed, short comment must not refuse"
         );
     }
@@ -1004,9 +1040,13 @@ mod tests {
                 ),
             ],
         );
-        assert_refused(lint(&dir, None), LintCode::MalformedComment, "plucked");
         assert_refused(
-            lint(&dir, Some("master")),
+            lint(&dir, None, &Quiet::default()),
+            LintCode::MalformedComment,
+            "plucked",
+        );
+        assert_refused(
+            lint(&dir, Some("master"), &Quiet::default()),
             LintCode::MalformedComment,
             "plucked",
         );
@@ -1033,7 +1073,7 @@ mod tests {
             ],
         );
         assert!(
-            lint(&dir, None).is_ok(),
+            lint(&dir, None, &Quiet::default()).is_ok(),
             "a grid's own inline comment must not be mistaken for a second doc comment"
         );
     }
@@ -1055,7 +1095,7 @@ mod tests {
             )],
         );
         assert!(
-            lint(&dir, None).is_ok(),
+            lint(&dir, None, &Quiet::default()).is_ok(),
             "the doc comment header must not count toward the body length"
         );
     }
@@ -1099,7 +1139,7 @@ mod tests {
             ],
         );
         assert!(
-            lint(&dir, None).is_ok(),
+            lint(&dir, None, &Quiet::default()).is_ok(),
             "a body over budget only from a verbose ref name must clear once ref names collapse"
         );
     }
@@ -1139,7 +1179,11 @@ mod tests {
                 ),
             ],
         );
-        assert_refused(lint(&dir, None), LintCode::LongExpressionBody, "drone");
+        assert_refused(
+            lint(&dir, None, &Quiet::default()),
+            LintCode::LongExpressionBody,
+            "drone",
+        );
     }
 
     /// A body with `@ref`s well under the raw cap is clean — refs or not, staying under
@@ -1165,7 +1209,7 @@ mod tests {
             ],
         );
         assert!(
-            lint(&dir, None).is_ok(),
+            lint(&dir, None, &Quiet::default()).is_ok(),
             "this body is well under the raw cap"
         );
     }
@@ -1189,7 +1233,7 @@ mod tests {
                  mix\nsin(t)\n",
             )],
         );
-        let Err(CliError::LintRefused(violations)) = lint(&dir, None) else {
+        let Err(CliError::LintRefused(violations)) = lint(&dir, None, &Quiet::default()) else {
             panic!("a comment with no `Tags:` field must refuse")
         };
         let violation = violations
@@ -1214,7 +1258,11 @@ mod tests {
             "empty-tags-field",
             &[("master", &(doc_with_tags("") + "sin(t)\n"))],
         );
-        assert_refused(lint(&dir, None), LintCode::MalformedComment, "master");
+        assert_refused(
+            lint(&dir, None, &Quiet::default()),
+            LintCode::MalformedComment,
+            "master",
+        );
     }
 
     #[test]
@@ -1227,7 +1275,7 @@ mod tests {
             )],
         );
         assert_eq!(
-            advised(lint(&dir, None), "master"),
+            advised(lint(&dir, None, &Quiet::default()), "master"),
             vec![LintCode::TagShape]
         );
     }
@@ -1239,7 +1287,7 @@ mod tests {
             &[("master", &(doc_with_tags("sustained pad") + "sin(t)\n"))],
         );
         assert_eq!(
-            advised(lint(&dir, None), "master"),
+            advised(lint(&dir, None, &Quiet::default()), "master"),
             vec![LintCode::TagShape]
         );
     }
@@ -1250,7 +1298,11 @@ mod tests {
             "empty-tag-between-commas",
             &[("master", &(doc_with_tags("piano,,pad") + "sin(t)\n"))],
         );
-        assert_refused(lint(&dir, None), LintCode::MalformedComment, "master");
+        assert_refused(
+            lint(&dir, None, &Quiet::default()),
+            LintCode::MalformedComment,
+            "master",
+        );
     }
 
     #[test]
@@ -1260,7 +1312,7 @@ mod tests {
             &[("master", &(doc_with_tags("piano") + "sin(t)\n"))],
         );
         assert!(
-            lint(&dir, None).is_ok(),
+            lint(&dir, None, &Quiet::default()).is_ok(),
             "a single valid tag is not a finding"
         );
     }
@@ -1275,7 +1327,7 @@ mod tests {
             )],
         );
         assert!(
-            lint(&dir, None).is_ok(),
+            lint(&dir, None, &Quiet::default()).is_ok(),
             "three valid comma-separated tags are not a finding"
         );
     }
@@ -1296,6 +1348,10 @@ mod tests {
                 ("master", &(doc_with_tags("fixture") + "@long\n")),
             ],
         );
-        assert_refused(lint(&dir, None), LintCode::LongCommentBlock, "long");
+        assert_refused(
+            lint(&dir, None, &Quiet::default()),
+            LintCode::LongCommentBlock,
+            "long",
+        );
     }
 }

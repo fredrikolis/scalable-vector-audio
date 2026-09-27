@@ -54,7 +54,7 @@ pub(crate) fn proven_at(
     let mut proofs = 0;
     loop {
         proofs += 1;
-        let mut bounds = Bounds::new(&forms, grid.clone(), &rendered, stepped);
+        let mut bounds = Bounds::new(&forms, grid.clone(), Some(&rendered), stepped);
         let envelope = match bounded(tys, root, &mut bounds, level) {
             Ok(envelope) => envelope,
             Err(e) => return (Err(e), proofs),
@@ -75,6 +75,38 @@ pub(crate) fn proven_at(
         // Each round at least halves the level, so a held bound is stepped past, or none holds.
         stepped *= level / last / 2.0;
     }
+}
+
+/// For each of `ids` a bound reaches without a sample computed, the first grid instant from
+/// t = 0 on it stays under `level` from, in seconds, within `limit_secs`.
+pub(crate) fn quiet_from(
+    tys: &crate::typing::Typing,
+    config: &RenderConfig,
+    ids: &[NodeId],
+    level: f64,
+    limit_secs: f64,
+) -> BTreeMap<NodeId, f64> {
+    let rate = f64::from(config.rate);
+    let grid = Grid {
+        first: 0,
+        rate,
+        points: (limit_secs * rate) as usize / STEP + 1,
+    };
+    let forms = Forms::new(Cow::Borrowed(tys), Cow::Borrowed(config));
+    let mut bounds = Bounds::new(&forms, grid, None, level);
+    let mut out = BTreeMap::new();
+    for &id in ids {
+        let Ok(Ok(envelope)) = bounds.of(id) else {
+            continue;
+        };
+        if envelope.floor >= level {
+            continue;
+        }
+        if let Some(j) = envelope.at.iter().position(|v| *v < level) {
+            out.insert(id, (j * STEP) as f64 / rate);
+        }
+    }
+    out
 }
 
 /// What no block changes, kept across a stream's proofs: nodes heard alone, forms compiled.
@@ -116,7 +148,7 @@ pub(crate) fn bound_from(
         heard.borrow_mut().insert(key, buffer.clone());
         Ok(buffer)
     };
-    let mut bounds = Bounds::new(&kept.forms, grid, &rendered, level);
+    let mut bounds = Bounds::new(&kept.forms, grid, Some(&rendered), level);
     bounds.live = Some(live);
     Ok(bounded(tys, root, &mut bounds, level)?.at[0])
 }
