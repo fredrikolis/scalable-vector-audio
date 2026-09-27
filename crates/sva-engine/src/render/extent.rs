@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
-use sva_formula::{Body, C64, Held, NodeId, Unary};
+use sva_formula::{Body, C64, Fold, Held, NodeId, Unary, exp_zero_at};
 use sva_samples::{Extent, NodeRenderer};
 
 use super::Render;
@@ -49,7 +49,7 @@ impl<'a> Supports<'a> {
 
     fn fresh(&self, id: NodeId) -> Extent {
         match self.tys.value(id) {
-            Value::ClosedForm(form) => self.body(&form.body),
+            Value::ClosedForm(form) => self.body(&form.body, form.var == sva_formula::Var::T),
             Value::Cast(Cast::Fourier | Cast::IFourier, _) => Extent::EVERYWHERE,
             Value::Cast(_, source) => self.of(*source),
             Value::Op { name, args } => self.operation(name, args, &|arg| self.of(arg)),
@@ -114,9 +114,10 @@ impl<'a> Supports<'a> {
         }
     }
 
-    fn body(&self, body: &Body) -> Extent {
+    /// `timed` where the form is in `t`: only there is a factor's zero a zero in time.
+    fn body(&self, body: &Body, timed: bool) -> Extent {
         let each = |parts: &[sva_formula::Part]| -> Vec<Extent> {
-            parts.iter().map(|p| self.body(&p.body)).collect()
+            parts.iter().map(|p| self.body(&p.body, timed)).collect()
         };
         match body {
             Body::Const(c) if *c == C64::ZERO => Extent::NOWHERE,
@@ -124,20 +125,28 @@ impl<'a> Supports<'a> {
             Body::Add(parts) | Body::Join(parts) => {
                 each(parts).into_iter().fold(Extent::NOWHERE, Extent::hull)
             }
-            Body::Mul(parts) => each(parts)
-                .into_iter()
-                .fold(Extent::EVERYWHERE, Extent::intersect),
-            Body::Div(num, den) if matches!(*den.body, Body::Const(c) if c != C64::ZERO) => {
-                self.body(&num.body)
+            Body::Mul(parts) => {
+                let held = each(parts)
+                    .into_iter()
+                    .fold(Extent::EVERYWHERE, Extent::intersect);
+                match timed {
+                    true => held.intersect(self.underflows(&factors(body))),
+                    false => held,
+                }
             }
-            Body::Pow(base, n) if *n > 0 => self.body(&base.body),
-            Body::Apply(op, arg) if keeps_zero(*op) => self.body(&arg.body),
-            Body::Shift { by, of } => moved(self.body(&of.body), by * f64::from(self.rate)),
+            Body::Apply(Unary::Exp, _) if timed => self.underflows(&[body]),
+            Body::Fold(Fold::Max, parts) if timed => ramp(self.rate, parts),
+            Body::Div(num, den) if matches!(*den.body, Body::Const(c) if c != C64::ZERO) => {
+                self.body(&num.body, timed)
+            }
+            Body::Pow(base, n) if *n > 0 => self.body(&base.body, timed),
+            Body::Apply(op, arg) if keeps_zero(*op) => self.body(&arg.body, timed),
+            Body::Shift { by, of } => moved(self.body(&of.body, timed), by * f64::from(self.rate)),
             Body::Crop { of, l, r, .. } => {
-                self.body(&of.body)
+                self.body(&of.body, timed)
                     .intersect(window(self.rate, l.value(), r.value()))
             }
-            Body::Channel(of, _) => self.body(&of.body),
+            Body::Channel(of, _) => self.body(&of.body, timed),
             _ => Extent::EVERYWHERE,
         }
     }
@@ -164,6 +173,248 @@ impl<'a> Supports<'a> {
             }),
             _ => None,
         }
+    }
+}
+
+impl Supports<'_> {
+    /// Where a product of exponentials is exactly zero: their exponents add, until every
+    /// factor's `exp` or the product of them underflows past the engine's own zero. Every
+    /// other factor is bounded there, so zero times it stays zero; the margin covers each
+    /// evaluator's own rounding of the exponent, the subnormals included.
+    fn underflows(&self, factors: &[&Body]) -> Extent {
+        let (mut exponent, mut sizes) = ([0.0f64; 3], [0.0f64; 3]);
+        let (mut exps, mut others) = (Vec::new(), Vec::new());
+        for factor in factors {
+            match exponential(factor) {
+                Some(p) => {
+                    for k in 0..3 {
+                        exponent[k] += p[k];
+                        sizes[k] += p[k].abs();
+                    }
+                    exps.push(*factor);
+                }
+                None => others.push(*factor),
+            }
+        }
+        let count = exps.len() as f64;
+        if count == 0.0 || !exponent.iter().all(|c| c.is_finite()) {
+            return Extent::EVERYWHERE;
+        }
+        let farthest = i64::MAX as f64 / f64::from(self.rate);
+        let at = |t: f64| exponent[0] + exponent[1] * t + exponent[2] * t * t;
+        let margin =
+            |t: f64| 8.0 + 2.0 * count + 1e-9 * (sizes[0] + sizes[1] * t.abs() + sizes[2] * t * t);
+        let side = |from: f64, to: f64| -> Option<f64> {
+            let zero =
+                |t: f64, bound: f64| at(t) + bound.max(1.0).ln() + margin(t) <= exp_zero_at();
+            let mut edge = crossing(from, to, |t| zero(t, 1.0))?;
+            for _ in 0..2 {
+                let (lo, hi) = (edge.min(to), edge.max(to));
+                let bound = others.iter().try_fold(1.0f64, |held, f| {
+                    Some(held * self.bound(f, lo, hi, 0)?.max(1.0))
+                })?;
+                edge = crossing(from, to, |t| zero(t, bound))?;
+            }
+            let (lo, hi) = (edge.min(to), edge.max(to));
+            let every = exps.iter().chain(&others);
+            let mut reach = every.map(|f| self.bound(f, lo, hi, 0).map(|b| b.max(1.0)));
+            let product = reach.try_fold(1.0f64, |held, b| Some(held * b?))?;
+            (product < 1e300).then_some(edge)
+        };
+        let samples = f64::from(self.rate);
+        let vertex = match exponent[2] {
+            a if a < 0.0 => -exponent[1] / (2.0 * a),
+            _ if exponent[1] < 0.0 => -farthest,
+            _ => return Extent::EVERYWHERE,
+        };
+        let end = side(vertex, farthest).map_or(i64::MAX, |t| {
+            ((t * samples).ceil() as i64).saturating_add(1)
+        });
+        let start = match exponent[2] < 0.0 {
+            true => side(vertex, -farthest).map_or(i64::MIN, |t| {
+                ((t * samples).floor() as i64).saturating_sub(1)
+            }),
+            false => i64::MIN,
+        };
+        match start < end {
+            true => Extent::new(start, end),
+            false => Extent::NOWHERE,
+        }
+    }
+
+    /// The largest magnitude `body` reaches over `[lo, hi]` seconds, where one is known.
+    fn bound(&self, body: &Body, lo: f64, hi: f64, depth: usize) -> Option<f64> {
+        let of = |b: &Body| self.bound(b, lo, hi, depth);
+        let held = match body {
+            Body::Const(c) => c.re.abs() + c.im.abs(),
+            Body::Line => lo.abs().max(hi.abs()),
+            Body::Add(parts) => parts.iter().try_fold(0.0, |h, p| Some(h + of(&p.body)?))?,
+            Body::Join(parts) | Body::Fold(_, parts) => parts
+                .iter()
+                .try_fold(0.0f64, |h, p| Some(h.max(of(&p.body)?)))?,
+            Body::Mul(parts) => parts
+                .iter()
+                .try_fold(1.0, |h, p| Some(h * of(&p.body)?.max(1.0)))?,
+            Body::Div(num, den) => match &*den.body {
+                Body::Const(c) if !c.is_zero() => of(&num.body)? / (c.re.abs() + c.im.abs()) * 2.0,
+                _ => return None,
+            },
+            Body::Pow(base, n) if *n >= 0 => of(&base.body)?.max(1.0).powi(*n),
+            Body::Apply(Unary::Sin | Unary::Cos, arg) => {
+                let [c0, c1, c2] = real_polynomial(&arg.body)?;
+                let t = lo.abs().max(hi.abs());
+                let reach = c0.abs() + c1.abs() * t + c2.abs() * t * t;
+                reach.is_finite().then_some(1.0)?
+            }
+            Body::Apply(Unary::Tanh | Unary::Sat, arg) => of(&arg.body).map(|_| 1.0)?,
+            Body::Apply(Unary::Abs, arg) => of(&arg.body)?,
+            Body::Apply(Unary::Exp, arg) => {
+                let [c0, c1, c2] = real_polynomial(&arg.body)?;
+                let at = |t: f64| c0 + c1 * t + c2 * t * t;
+                let mut top = at(lo).max(at(hi));
+                if c2 != 0.0 {
+                    let vertex = -c1 / (2.0 * c2);
+                    if lo < vertex && vertex < hi {
+                        top = top.max(at(vertex));
+                    }
+                }
+                (top + 1.0).exp()
+            }
+            Body::Crop { of: inner, .. } | Body::Channel(inner, _) => of(&inner.body)?,
+            Body::Shift { by, of: inner } => self.bound(&inner.body, lo - by, hi - by, depth)?,
+            Body::Node(id) if depth < 16 => match self.tys.value(*id) {
+                Value::ClosedForm(form) => self.bound(&form.body, lo, hi, depth + 1)?,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        (held < 1e300).then_some(held * 1.0001)
+    }
+}
+
+fn factors(body: &Body) -> Vec<&Body> {
+    match body {
+        Body::Mul(parts) => parts.iter().flat_map(|p| factors(&p.body)).collect(),
+        other => vec![other],
+    }
+}
+
+/// `exp` of a polynomial in `t`, as its exponent's real coefficients.
+fn exponential(body: &Body) -> Option<[f64; 3]> {
+    match body {
+        Body::Apply(Unary::Exp, arg) => {
+            let [c0, c1, c2] = sva_formula::affine::polynomial(&arg.body)?
+                .iter()
+                .map(|c| c.exact())
+                .collect::<Option<Vec<_>>>()?
+                .into_iter()
+                .chain(std::iter::repeat(C64::ZERO))
+                .take(3)
+                .map(|c| c.re)
+                .collect::<Vec<_>>()[..]
+            else {
+                return None;
+            };
+            Some([c0, c1, c2])
+        }
+        _ => None,
+    }
+}
+
+fn real_polynomial(body: &Body) -> Option<[f64; 3]> {
+    let held = sva_formula::affine::polynomial(body)?;
+    let mut out = [0.0; 3];
+    for (slot, c) in out.iter_mut().zip(held) {
+        let c = c.exact()?;
+        if c.im != 0.0 || !c.re.is_finite() {
+            return None;
+        }
+        *slot = c.re;
+    }
+    Some(out)
+}
+
+/// The first `t` from `from` towards `to` a predicate false then true holds at, to within
+/// the doubles' own spacing.
+fn crossing(from: f64, to: f64, holds: impl Fn(f64) -> bool) -> Option<f64> {
+    if !holds(to) {
+        return None;
+    }
+    let (mut no, mut yes) = (from, to);
+    for _ in 0..200 {
+        let mid = no + (yes - no) / 2.0;
+        if mid == no || mid == yes {
+            break;
+        }
+        match holds(mid) {
+            true => yes = mid,
+            false => no = mid,
+        }
+    }
+    Some(yes)
+}
+
+/// `max(0, v)` with `v` falling in `t` is exactly zero from the first sample every
+/// evaluator reads `v` at or below zero.
+fn ramp(rate: u32, parts: &[sva_formula::Part]) -> Extent {
+    let v = match parts {
+        [a, b] if matches!(*a.body, Body::Const(c) if c.re.to_bits() == 0 && c.im == 0.0) => {
+            &*b.body
+        }
+        [a, b] if matches!(*b.body, Body::Const(c) if c.re.to_bits() == 0 && c.im == 0.0) => {
+            &*a.body
+        }
+        _ => return Extent::EVERYWHERE,
+    };
+    let falls = real_polynomial(v).is_some() && monotone(v, &mut false);
+    let slope = sva_formula::affine::exact_affine(v).map(|(a, _)| a.re);
+    if !falls || !slope.is_some_and(|a| a < 0.0) {
+        return Extent::EVERYWHERE;
+    }
+    let sr = f64::from(rate);
+    let at = |t: f64| sva_samples::eval_written_at(v, 0, t, &Unread).map(|x| x.re);
+    let zero = |n: i64| {
+        let both = [at(n as f64 / sr), at(n as f64 * (1.0 / sr))];
+        both.iter().all(|x| x.as_ref().is_ok_and(|x| *x <= 0.0))
+    };
+    let reach = 1i64 << 62;
+    match zero(reach) {
+        false => Extent::EVERYWHERE,
+        true => {
+            let (mut no, mut yes) = (-reach, reach);
+            while i128::from(yes) - i128::from(no) > 1 {
+                let mid = ((i128::from(no) + i128::from(yes)) / 2) as i64;
+                match zero(mid) {
+                    true => yes = mid,
+                    false => no = mid,
+                }
+            }
+            Extent::new(i64::MIN, yes)
+        }
+    }
+}
+
+/// Built of steps each rising or falling with `t` alone, so its rounded value does too.
+fn monotone(body: &Body, moving: &mut bool) -> bool {
+    match body {
+        Body::Const(_) => true,
+        Body::Line => !std::mem::replace(moving, true),
+        Body::Add(parts) | Body::Mul(parts) => parts.iter().all(|p| monotone(&p.body, moving)),
+        Body::Div(num, den) => matches!(*den.body, Body::Const(_)) && monotone(&num.body, moving),
+        Body::Shift { of, .. } => monotone(&of.body, moving),
+        _ => false,
+    }
+}
+
+struct Unread;
+
+impl sva_samples::Refs for Unread {
+    fn value(&self, _: NodeId, _: usize, _: f64) -> Result<C64, sva_samples::CollapseError> {
+        Err(sva_samples::CollapseError::NotEvaluable("a node"))
+    }
+
+    fn width(&self, _: NodeId) -> usize {
+        1
     }
 }
 

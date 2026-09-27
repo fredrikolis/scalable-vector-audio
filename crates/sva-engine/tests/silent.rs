@@ -116,12 +116,18 @@ fn a_held_oscillator_is_never_silent() {
 
 #[test]
 fn a_slow_decay_is_not_silent_by_the_latest_time_asked() {
-    let g = graph_of("slow", &[("slow", "exp(-t/10)*sin(2*pi*220*t)\n")]);
+    let g = graph_of(
+        "slow",
+        &[(
+            "slow",
+            "lowpass(sample(exp(-t/10)*sin(2*pi*220*t)), cutoff=8000, q=0.707)\n",
+        )],
+    );
     let refused = render(&g, "slow", quiet(2f64.powi(-16), 5.0), None)
         .err()
-        .expect("a ten-second decay is not silent by five");
+        .expect("a filter over a ten-second decay rings on, and is not silent by five");
     assert_eq!(refused.code(), "engine.not_silent_by", "{refused}");
-    assert!(refused.to_string().contains("-4.3 dBFS"), "{refused}");
+    assert!(refused.to_string().contains("6.8 dBFS"), "{refused}");
 }
 
 /// A damped high string, so the ring-down fits a short render.

@@ -119,3 +119,30 @@ fn a_count_prices_the_render_it_names() {
     };
     assert_eq!(tree.total, held.work().priced_flops);
 }
+
+/// A factor the engine's own `exp` underflows, or a ramp past its foot, is exactly zero from
+/// where an open range now ends: every later instant evaluates to zero.
+#[test]
+fn a_decay_ends_the_support_where_it_is_exactly_zero() {
+    let g = graph_of(
+        "pruning-decay",
+        &[
+            ("decay", "sin(2*pi*440*t)*exp(-t/0.05)*exp(-t/0.1)\n"),
+            ("ramp", "sample(max(0, 1 - t/2))\n"),
+        ],
+    );
+    let open = |target: &str| {
+        render(&g, target, RenderConfig::at(RATE), None).unwrap_or_else(|e| panic!("{e}"))
+    };
+    let ramp = open("ramp");
+    assert_eq!(ramp.range.expect("a range").end, 2 * i64::from(RATE));
+
+    let decay = open("decay");
+    let end = decay.range.expect("a range").end;
+    let sum = &decay.symbolic[&decay.root];
+    let step = 1.0 / f64::from(RATE);
+    let at = |n: i64| sva_samples::eval_spectral_sum_at(sum, 0, n as f64 * step).expect("a value");
+    let last = (0..end).rev().find(|n| !at(*n).is_zero()).expect("a sound");
+    assert!(end - last < i64::from(RATE), "{last} {end}");
+    assert!((end..end + i64::from(RATE)).all(|n| at(n).is_zero()));
+}
