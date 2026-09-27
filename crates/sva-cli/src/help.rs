@@ -2,7 +2,6 @@
 
 use sva_core::{
     DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, DEFAULT_PROOF_LIMIT_SECS,
-    default_until,
 };
 use sva_engine::{DEFAULT_FRAME_SECS, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1};
 
@@ -10,7 +9,6 @@ use sva_engine::{DEFAULT_FRAME_SECS, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1};
 /// from the one a render actually uses.
 pub fn help_text() -> String {
     let budget = PSYCHOACOUSTIC_V1.flop_budget;
-    let until = default_until();
     format!(
         r#"USAGE:
   sva-cli (render | analyze | lint | trace | builtins | outline | new) [arguments]
@@ -37,18 +35,22 @@ RENDER:
   arguments are the node's own named ones. The start trims the output alone:
   history before it is still computed, so a loop or a filter carries the state
   it had there. With no interval the range starts at 0, earlier only where a
-  crop reaches before it, and its end is open.
+  crop reaches before it, and its end is open. A closed interval renders exactly
+  its length; an open one ends where the target's support does (a crop's end, a
+  release and its cropped tail), and refuses as `render.no_stop` where that
+  support never ends and no `--until` is written.
 
   `--until '<condition>'` ends the render at the first sample the condition
-  holds at, or at the interval's end, whichever is first. A condition compares
+  holds at, or at the interval's end, whichever is first. There is no default
+  condition, and no proof runs unless one is written. A condition compares
   (`<`, `<=`, `>`, `>=`) `t`, `envelope(t)` (the RMS of the `envelope`
   representation's 50 ms frames), `max`/`min(envelope([a, b]))` and literals,
   joined by `and`/`or`. A range reaching `inf` is answered by the tail proof, a
-  bound on every later sample. An open interval nothing proves an end for
-  refuses, naming the condition: a node holding a level forever as
-  `engine.never_silent`, one no bound is derived for yet (a physical solver
-  other than chaigne_askenfelt, a filter whose coefficients move) as
-  `engine.no_tail_bound`, one not quiet by `-c proof_limit` as
+  bound on every later sample. An open interval over an endless support that
+  nothing proves an end for refuses, naming the condition: a node holding a
+  level forever as `engine.never_silent`, one no bound is derived for yet (a
+  physical solver other than chaigne_askenfelt, a filter whose coefficients
+  move) as `engine.no_tail_bound`, one not quiet by `-c proof_limit` as
   `engine.not_silent_by`, and a condition no proof brings about as
   `render.no_stop`. A short-time transform reads its input whole, and refuses
   one with no end as `engine.unbounded_extent`.
@@ -195,7 +197,6 @@ OUTPUT:
   envelope of its own, at "data": {{"help"}}.
 
 DEFAULTS:
-  --until <condition>  `{until}`.
   --rate <hz>          the sample rate a render lays its seconds on.
                        Default {DEFAULT_SAMPLE_RATE}.
   -c flop_budget=<n>   the operation count paid before a render refuses.

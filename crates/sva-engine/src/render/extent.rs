@@ -39,7 +39,7 @@ impl<'a> Supports<'a> {
             return Extent::EVERYWHERE;
         }
         let found = match schedule::holds_self(self.tys, id, &mut BTreeSet::new()) {
-            true => stateful(self.ignoring_self(id)),
+            true => self.looped(id),
             false => self.fresh(id),
         };
         self.open.borrow_mut().remove(&id);
@@ -65,19 +65,28 @@ impl<'a> Supports<'a> {
         }
     }
 
-    /// A loop's own past read as silence, which is what its input alone is.
-    fn ignoring_self(&self, id: NodeId) -> Extent {
+    /// A loop starts where its input does and rings on, as far as a crop around it allows.
+    fn looped(&self, id: NodeId) -> Extent {
+        let rings = stateful(self.with_past(id, Extent::NOWHERE));
+        match rings.is_empty() {
+            true => Extent::NOWHERE,
+            false => self.with_past(id, rings).intersect(rings),
+        }
+    }
+
+    /// The loop `id` with its own past nonzero over `past`.
+    fn with_past(&self, id: NodeId, past: Extent) -> Extent {
         match self.tys.value(id) {
-            Value::SelfAt(_) => Extent::NOWHERE,
+            Value::SelfAt(_) => past,
             Value::Op { name, args } => self.operation(
                 name,
                 args,
                 &|arg| match schedule::holds_self(self.tys, arg, &mut BTreeSet::new()) {
-                    true => self.ignoring_self(arg),
+                    true => self.with_past(arg, past),
                     false => self.of(arg),
                 },
             ),
-            Value::Filter { x, .. } => stateful(self.ignoring_self(*x)),
+            Value::Filter { x, .. } => stateful(self.with_past(*x, past)),
             _ => self.of(id),
         }
     }
@@ -164,6 +173,11 @@ pub(crate) fn default_start(support: Extent) -> i64 {
         true => 0,
         false => support.start,
     }
+}
+
+/// Where a range with no stated end ends, if its support ends.
+pub(crate) fn default_end(support: Extent) -> Option<i64> {
+    (support.end != i64::MAX).then_some(support.end)
 }
 
 fn starting(support: Extent) -> Option<i64> {

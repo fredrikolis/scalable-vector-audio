@@ -504,7 +504,8 @@ impl Stream {
         parse(&work_json(&self.inner.work()))
     }
 
-    /// `until` as `stream` takes it, `sva-cli`'s default where unset.
+    /// `until` as `stream` takes it; unset, the stream ends where its interval or its
+    /// target's support does.
     pub fn resume(
         &self,
         checkpoint: &Checkpoint,
@@ -512,10 +513,12 @@ impl Stream {
         until: Option<String>,
     ) -> Result<Stream, JsValue> {
         let bindings = bindings_of(&bindings)?;
-        let text = until.unwrap_or_else(sva_core::default_until);
-        let condition = sva_core::until(&text, self.rate, None).map_err(|e| thrown(&e))?;
+        let condition = until
+            .map(|text| sva_core::until(&text, self.rate, None))
+            .transpose()
+            .map_err(|e| thrown(&e))?;
         self.inner
-            .resume(&checkpoint.inner, &bindings, Some(condition))
+            .resume(&checkpoint.inner, &bindings, condition)
             .map(|inner| Stream {
                 inner,
                 rate: self.rate,

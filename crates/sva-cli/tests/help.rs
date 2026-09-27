@@ -12,9 +12,8 @@ fn help_states_the_sample_rate_default() {
 }
 
 #[test]
-fn help_states_the_until_and_proof_limit_defaults() {
+fn help_states_the_proof_limit_default() {
     let page = help_text();
-    assert!(page.contains(&sva_core::default_until()), "{page}");
     assert!(
         page.contains(&format!(
             "Default {} seconds",

@@ -45,11 +45,11 @@ fn an_interval_anywhere_but_the_targets_own_ref_or_without_units_refuses() {
     }
 }
 
-/// The default condition is every later frame under 24 bits, which the tail proof answers.
+/// Every later frame under a level is the condition the tail proof answers.
 #[test]
 fn a_condition_reads_comparisons_over_time_and_level() {
-    let quiet = until(&sva_core::default_until(), 44_100, None).expect("the default parses");
-    assert_eq!(quiet, Until::quiet(10f64.powf(-144.5 / 20.0)));
+    let quiet = until("max(envelope([t, inf))) < -96db", 44_100, None).expect("quiet parses");
+    assert_eq!(quiet, Until::quiet(10f64.powf(-96.0 / 20.0)));
     let joined = until(
         "t > 2s or envelope(t - 50ms) < -60db and t >= 1b",
         44_100,

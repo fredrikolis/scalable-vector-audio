@@ -24,7 +24,8 @@ pub struct StreamConfig {
     pub rate: u32,
     pub block: usize,
     pub range: Range,
-    /// Ends the stream at the first sample it holds at; `None` runs to the range's end.
+    /// Ends the stream at the first sample it holds at; `None` runs to the range's end, or
+    /// where the target's support ends where the range states none.
     pub until: Option<Until>,
 }
 
@@ -41,6 +42,10 @@ pub struct Stream {
     start: i64,
     at: i64,
     kept: Kept,
+    /// The range's end, or where the root's support ends where the range states none.
+    last: Option<i64>,
+    /// Where the root's support ends, from where on every sample is exactly zero.
+    silent_from: Option<i64>,
     end: Option<i64>,
     work: Work,
 }
@@ -102,13 +107,16 @@ impl Stream {
         };
         let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
         let mut shell = Render::shell(held.tys, held.root, render_config, schedule);
-        let start = config.range.start.unwrap_or_else(|| {
-            extent::default_start(Supports::new(&shell.tys, config.rate).of(shell.root))
-        });
-        let demand = Extent::new(start, config.range.end.unwrap_or(i64::MAX).max(start));
+        let support = Supports::new(&shell.tys, config.rate).of(shell.root);
+        let start = config
+            .range
+            .start
+            .unwrap_or_else(|| extent::default_start(support));
+        let last = config.range.end.or(extent::default_end(support));
+        let demand = Extent::new(start, last.unwrap_or(i64::MAX).max(start));
         let order = shell.schedule.materialize.clone();
         shell.extents = extent::decide(&shell, &order, &[(shell.root, demand)])?;
-        if config.range.end.is_none() {
+        if last.is_none() {
             provable(&shell, config.until.as_ref(), start)?;
         }
         let keep = config.until.as_ref().map_or(0, |u| u.reach(config.rate));
@@ -129,6 +137,8 @@ impl Stream {
             start,
             at: start,
             kept,
+            last,
+            silent_from: extent::default_end(support),
             end: None,
             work: Work {
                 waves: Some(0),
@@ -143,7 +153,7 @@ impl Stream {
         if self.end.is_some() {
             return Ok(());
         }
-        if self.config.range.end == Some(to) {
+        if self.last == Some(to) {
             self.end = Some(to);
         }
         let Some(until) = self.config.until.clone() else {
@@ -158,10 +168,14 @@ impl Stream {
                 self.work.proofs += 1;
                 match bound_from(&self.kept, self.shell.root, level, &live, to) {
                     Ok(bound) => bound,
-                    Err(e) if self.config.range.end.is_none() => return Err(e),
+                    Err(e) if self.last.is_none() => return Err(e),
                     Err(_) => f64::INFINITY,
                 }
             }
+        };
+        let beyond = match self.silent_from {
+            Some(silent) if to >= silent => 0.0,
+            _ => beyond,
         };
         let root = &self.nodes[self.root];
         let base = root.tape.base().max(self.start);
@@ -179,7 +193,7 @@ impl Stream {
         if self.end.is_some_and(|end| from >= end) {
             return Ok(None);
         }
-        let to = match self.config.range.end {
+        let to = match self.last {
             Some(end) => end.min(from + self.config.block as i64),
             None => from + self.config.block as i64,
         };
@@ -269,15 +283,22 @@ fn provable(shell: &Render, until: Option<&Until>, start: i64) -> Result<(), Eng
     if held.is_some() {
         return Ok(());
     }
-    let condition = until.map_or("nothing".to_string(), |u| format!("`{u}`"));
+    let message = match until {
+        Some(until) => format!(
+            "`{name}` streams over an interval with no end, and `{until}` is never proven to \
+             hold"
+        ),
+        None => {
+            format!("`{name}` streams over an interval with no end, and its support never ends")
+        }
+    };
     Err(EngineError::refused(Diagnostic {
         code: "render.no_stop".to_string(),
-        message: format!(
-            "`{name}` streams over an interval with no end, and {condition} is never proven \
-             to hold"
-        ),
+        message,
         location: Located::at(name, None),
-        help: "give the interval an end, or a condition a proof brings about".to_string(),
+        help: "give the interval an end, as `[0, 2s]`, or an `until` condition that ends it, \
+               as `max(envelope([t, inf))) < -96db`"
+            .to_string(),
     }))
 }
 

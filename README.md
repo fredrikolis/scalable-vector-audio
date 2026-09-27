@@ -120,8 +120,9 @@ sva-cli render '@master' --representation samples=/tmp/song.wav --rate 48000
 
 `flops` counts the render before running it, 1,243,620 operations here against the profile's
 1e10 budget; a render over that budget refuses, naming the node that dominates. The second
-line writes 48 kHz float up to where the triad is proven silent, half a second in:
-`'@master([0, 2s])'` names an interval, and `--until` a condition that ends it sooner.
+line writes 48 kHz float over the two seconds `master`'s crop holds. `'@master([0, 1s])'`
+names an interval, and `--until 'max(envelope([t, inf))) < -96db'` ends the render where
+the triad is proven quiet, half a second in.
 `ledger` prints rms, peak and clipped per node.
 
 Every reading says whether it is `exact` or `measured`, under which profile and at which

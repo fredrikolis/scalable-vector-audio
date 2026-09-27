@@ -28,7 +28,7 @@ pub use query::{
 pub use settings::{Settings, wav_path};
 pub use target::{Edge, Target, target};
 pub use tempo::refuse_unresolved_bars;
-pub use until::{default_until, until};
+pub use until::until;
 
 use std::path::Path;
 
@@ -86,7 +86,8 @@ impl Rendered {
 pub struct Job<'a> {
     pub source: &'a dyn Source,
     pub target: &'a str,
-    /// The condition that ends the render; `default_until()` where `None`.
+    /// The condition that ends the render; `None` ends it where the interval or the target's
+    /// support ends.
     pub until: Option<&'a str>,
     pub rate: Option<u32>,
     pub cache: Option<&'a Cache>,
@@ -155,12 +156,12 @@ fn settle(job: &Job) -> Result<(Graph, RenderConfig), CliError> {
         )));
     }
     let until = match job.until {
-        Some(text) => until(text, rate, per_bar)?,
-        None => until(&default_until(), rate, per_bar)?,
+        Some(text) => Some(until(text, rate, per_bar)?),
+        None => None,
     };
     let mut config = RenderConfig {
         range,
-        until: Some(until),
+        until,
         ..RenderConfig::at(rate)
     };
     if let Some(budget) = job.flop_budget {

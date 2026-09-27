@@ -5,16 +5,6 @@ use sva_engine::{At, Cmp, Term, Until};
 
 use crate::cli_error::CliError;
 
-/// Where a render ends when no `--until` says: every later frame under the profile's
-/// precision.
-pub fn default_until() -> String {
-    let bits = f64::from(sva_engine::PSYCHOACOUSTIC_V1.precision_bits);
-    format!(
-        "max(envelope([t, inf))) < {:.1}db",
-        -20.0 * bits * 2f64.log10()
-    )
-}
-
 /// `t` in seconds is compared with times, a level with levels; `and` binds tighter than `or`.
 pub fn until(text: &str, rate: u32, seconds_per_bar: Option<f64>) -> Result<Until, CliError> {
     let tokens = tokenize(text).map_err(|d| refused(text, &d.message))?;
@@ -215,7 +205,7 @@ fn spelled(kind: &TokenKind) -> &'static str {
 fn refused(text: &str, why: &str) -> CliError {
     CliError::Usage(format!(
         "`{text}` is no condition: {why}. write comparisons over `t`, `envelope(t)` and \
-         `max`/`min(envelope([a, b]))`, joined by `and`/`or`, as `{}`",
-        default_until()
+         `max`/`min(envelope([a, b]))`, joined by `and`/`or`, as \
+         `max(envelope([t, inf))) < -96db`"
     ))
 }

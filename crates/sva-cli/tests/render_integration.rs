@@ -492,8 +492,8 @@ fn two_readings_share_one_collapse() {
         .filter(|l| l.kind == PayloadKind::Samples)
         .count();
     assert_eq!(
-        buffers, 2,
-        "two readings collapse the one node once, beside where it stopped: {stats:?}"
+        buffers, 1,
+        "two readings collapse the one node once: {stats:?}"
     );
 }
 

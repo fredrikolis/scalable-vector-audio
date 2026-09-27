@@ -193,6 +193,33 @@ fn a_cropped_solver_is_bounded_by_the_window_it_is_heard_in() {
     assert!(secs(&heard(&render)) <= 0.2);
 }
 
+/// Past a crop's end the root is exactly zero, a crop around a loop's feedback included, so
+/// an open range ends there with no condition, or with one no proof reaches inside; an
+/// endless root with no condition refuses.
+#[test]
+fn an_open_range_ends_where_the_root_support_does() {
+    let files = [
+        ("cut", "crop(sin(2*pi*log(max(2, 1))*100*t), 0s, 1s)\n"),
+        (
+            "fed",
+            "crop(0.5*(sample(sin(2*pi*100*t)) + 0.3*self(t - 1sp)), 0s, 1s)\n",
+        ),
+        ("held", "sin(2*pi*100*t)\n"),
+    ];
+    let g = graph_of("cut", &files);
+    for root in ["cut", "fed"] {
+        for config in [RenderConfig::at(RATE), quiet(deep(), 30.0)] {
+            let cut = render(&g, root, config, None).unwrap_or_else(|e| panic!("{root}: {e}"));
+            let end = secs(&heard(&cut));
+            assert!((1.0..=1.0001).contains(&end), "{root} ends at {end}");
+        }
+    }
+    let refused = render(&g, "held", RenderConfig::at(RATE), None)
+        .err()
+        .expect("nothing ends an endless root");
+    assert_eq!(refused.code(), "render.no_stop", "{refused}");
+}
+
 /// A warm render runs no proof: where it stopped is stored beside the samples, under the
 /// condition that stopped it.
 #[test]

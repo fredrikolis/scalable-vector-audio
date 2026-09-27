@@ -16,6 +16,8 @@ pub(super) struct Reached {
     proven: Vec<Proven>,
     stop: Option<i64>,
     key: Option<Hash>,
+    /// Where the root's support ends, from where on every sample is exactly zero.
+    silent_from: Option<i64>,
 }
 
 /// A reading of samples, or a count of what they cost, needs the range; a closed form's lines
@@ -63,9 +65,12 @@ fn decided(
     identity: Option<(Hash, bool)>,
     volatile_root: bool,
 ) -> Result<Reached, EngineError> {
-    let start = held.config.range.start.unwrap_or_else(|| {
-        extent::default_start(Supports::new(&held.tys, held.config.rate).of(held.root))
-    });
+    let support = Supports::new(&held.tys, held.config.rate).of(held.root);
+    let start = held
+        .config
+        .range
+        .start
+        .unwrap_or_else(|| extent::default_start(support));
     let key = identity
         .filter(|_| !volatile_root && held.config.until.is_some())
         .map(|identity| stop_key(identity, held, start));
@@ -73,7 +78,7 @@ fn decided(
     let (end, proven, stop) = match recalled(lens.as_ref(), key, held) {
         Some((end, stop)) => (end, Vec::new(), Some(stop)),
         None => {
-            let (end, proven) = ended(held, start)?;
+            let (end, proven) = ended(held, start, support)?;
             (end, proven, None)
         }
     };
@@ -82,7 +87,12 @@ fn decided(
     demands.extend(held.schedule.wanted.iter().map(|id| (*id, range)));
     held.extents = extent::decide(held, &held.schedule.materialize, &demands)?;
     held.range = Some(range);
-    Ok(Reached { proven, stop, key })
+    Ok(Reached {
+        proven,
+        stop,
+        key,
+        silent_from: extent::default_end(support),
+    })
 }
 
 /// The root cut to the first sample `until` holds at, which is where the render ends.
@@ -95,11 +105,14 @@ pub(super) fn stopped(held: &mut Render, reached: Reached, recording: Option<&Re
         .stop
         .unwrap_or_else(|| match (&held.config.until, root) {
             (Some(until), Some(root)) => {
-                let beyond = reached
-                    .proven
-                    .iter()
-                    .map(|p| p.from(range.end))
-                    .fold(f64::INFINITY, f64::min);
+                let beyond = match reached.silent_from {
+                    Some(silent) if range.end >= silent => 0.0,
+                    _ => reached
+                        .proven
+                        .iter()
+                        .map(|p| p.from(range.end))
+                        .fold(f64::INFINITY, f64::min),
+                };
                 let known = Known::new(
                     root.plane(0),
                     range.start,
@@ -122,26 +135,28 @@ pub(super) fn stopped(held: &mut Render, reached: Reached, recording: Option<&Re
     }
 }
 
-/// The range's end, or the first sample `until` is proven to hold at, whichever is first.
-fn ended(held: &mut Render, start: i64) -> Result<(i64, Vec<Proven>), EngineError> {
+/// The range's end, where the root's support ends where the range states none, or the first
+/// sample `until` is proven to hold at, whichever is first.
+fn ended(
+    held: &mut Render,
+    start: i64,
+    support: Extent,
+) -> Result<(i64, Vec<Proven>), EngineError> {
     let config = &held.config;
     let rate = f64::from(config.rate);
+    let last = config.range.end.or(extent::default_end(support));
     let Some(until) = &config.until else {
-        return match config.range.end {
+        return match last {
             Some(end) => Ok((end, Vec::new())),
             None => Err(no_stop(held, None, None)),
         };
     };
-    let limit = config
-        .range
-        .end
-        .unwrap_or(start + (config.proof_limit_secs * rate).ceil() as i64);
+    let limit = last.unwrap_or(start + (config.proof_limit_secs * rate).ceil() as i64);
     let mut levels = Vec::new();
     until.levels(&mut levels);
     levels.sort_by(f64::total_cmp);
     levels.dedup();
     // A proof bounds the state a render starts with only from where that state starts.
-    let support = Supports::new(&held.tys, config.rate).of(held.root);
     let first = start.min(extent::default_start(support));
     let (mut proven, mut failed, mut proofs) = (Vec::new(), None, 0);
     for level in levels {
@@ -161,7 +176,7 @@ fn ended(held: &mut Render, start: i64) -> Result<(i64, Vec<Proven>), EngineErro
             .map(|(_, p)| p.at)
     };
     let provable = until.provable(start, config.rate, &quiet).map(|(at, _)| at);
-    let end = match (config.range.end, provable) {
+    let end = match (last, provable) {
         (Some(end), Some(at)) => end.min(at),
         (Some(end), None) => end,
         (None, Some(at)) => at,
@@ -174,7 +189,19 @@ fn ended(held: &mut Render, start: i64) -> Result<(i64, Vec<Proven>), EngineErro
 /// An open range that nothing proves an end for, in the words of the proof that failed.
 fn no_stop(held: &Render, until: Option<&Until>, failed: Option<EngineError>) -> EngineError {
     let name = held.tys.name(held.root);
-    let condition = until.map_or("nothing".to_string(), |u| format!("`{u}`"));
+    let Some(until) = until else {
+        return EngineError::refused(Diagnostic {
+            code: "render.no_stop".to_string(),
+            message: format!(
+                "`{name}` is read over an interval with no end, and its support never ends"
+            ),
+            location: Located::at(name, None),
+            help: "give the interval an end, as `[0, 2s]`, or --until a condition that ends \
+                   it, as `max(envelope([t, inf))) < -96db`"
+                .to_string(),
+        });
+    };
+    let condition = format!("`{until}`");
     match failed {
         Some(EngineError::Refused(mut d)) => {
             d.message = format!("{condition} is never proven to hold: {}", d.message);
