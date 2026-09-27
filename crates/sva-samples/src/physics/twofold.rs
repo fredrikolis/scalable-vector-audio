@@ -1,4 +1,4 @@
-// Concern: sums and products carried to twice f64's precision, the reference a rounding bound is checked against | Non-concern: any bound itself (string_tail.rs) | IO: (f64s) -> a value to about 2^-104
+// Concern: sums and products carried to twice f64's precision, the reference a rounding bound is checked against | Non-concern: any energy (string_energy.rs) | IO: (f64s) -> a value to about 2^-104
 
 /// `hi + lo`, by Dekker's and Knuth's error-free transforms.
 #[derive(Clone, Copy, Debug)]

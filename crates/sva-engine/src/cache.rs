@@ -147,12 +147,8 @@ pub fn buffer_key(
     )
 }
 
-pub fn precise_key(buffer: Hash, bits: i32, cuts: &[(Hash, i64)]) -> Hash {
-    let mut words = vec![bits as u64];
-    for (node, at) in cuts {
-        words.extend([node.0, node.1, *at as u64]);
-    }
-    mixed(buffer, &words)
+pub fn precise_key(buffer: Hash, bits: i32) -> Hash {
+    mixed(buffer, &[bits as u64])
 }
 
 const ADDRESS_ROTATE: u32 = 17;

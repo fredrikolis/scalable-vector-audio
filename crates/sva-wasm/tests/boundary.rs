@@ -580,28 +580,23 @@ fn builtins_cross_with_what_each_named_argument_means() {
     assert_eq!(field(&b, "part").as_string().as_deref(), Some("string"));
 }
 
-/// An open render ends where its root is cut at the decay floor: the echoes of a 50 ms burst
-/// fall under 24 bits after the fifteenth. A held sine is never cut, so its render refuses and
-/// its stream plays on for as long as it is pulled.
+/// An open render ends where its root's support does. A held sine's never does, so its render
+/// refuses and its stream plays on for as long as it is pulled.
 #[wasm_bindgen_test]
-fn an_open_render_ends_where_its_root_is_cut() {
+fn an_open_render_ends_where_its_support_does() {
     let mut held = Composition::new(None);
-    held.insert(
-        "master",
-        "crop(sin(2*pi*440*t), 0s, 0.05s) + 0.35*self(t - 0.25s)\n",
-    );
-    let cut = held
+    held.insert("master", "crop(sin(2*pi*440*t), 0s, 0.3s)\n");
+    let ended = held
         .render("@master", None, options(&[]))
-        .unwrap_or_else(|_| unreachable!("the echo is cut"));
-    let secs = cut.duration_secs();
-    assert!((3.75..=6.0).contains(&secs), "{secs}");
+        .unwrap_or_else(|_| unreachable!("the crop ends it"));
+    assert_eq!(ended.duration_secs(), 0.3);
 
     let never = held.render("sin(2*pi*100*t)", None, options(&[]));
     let refused = never
         .err()
-        .unwrap_or_else(|| unreachable!("a held sine is never cut"));
+        .unwrap_or_else(|| unreachable!("a held sine never ends"));
     assert!(
-        as_text(&field(&refused, "refusal")).contains("render.never_ends"),
+        as_text(&field(&refused, "refusal")).contains("render.no_end"),
         "{}",
         as_text(&refused)
     );
@@ -700,14 +695,14 @@ fn a_wide_stream_lays_each_component_a_block_apart() {
     }
 }
 
-/// An open stream ends where a render of the same target is cut.
+/// An open stream ends where a render of the same target does, here where `exp` underflows.
 #[wasm_bindgen_test]
-fn an_open_stream_ends_where_the_render_is_cut() {
+fn an_open_stream_ends_where_the_render_does() {
     let mut held = Composition::new(None);
-    held.insert("master", "sin(2*pi*100*t)*exp(0 - 30*t)\n");
+    held.insert("master", "sin(2*pi*100*t)*exp(0 - 300*t)\n");
     let mut stream = held
         .stream("@master", BLOCK, options(&[]))
-        .unwrap_or_else(|_| unreachable!("a decay is cut"));
+        .unwrap_or_else(|_| unreachable!("a decay ends"));
     assert_eq!(stream.end(), None, "no block has reached the end yet");
     let mut out = vec![0.0f32; BLOCK];
     let mut heard = Vec::new();
@@ -725,7 +720,7 @@ fn an_open_stream_ends_where_the_render_is_cut() {
     assert_eq!(stream.next(&mut out).ok(), Some(0), "nothing after the end");
     let whole = held
         .render("@master", None, options(&[]))
-        .unwrap_or_else(|_| unreachable!("the same decay is cut"));
+        .unwrap_or_else(|_| unreachable!("the same decay ends"));
     assert_eq!(heard[..], plane(&whole)[..]);
 }
 
@@ -761,7 +756,6 @@ fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
     let count = |of: &JsValue, name: &str| field(of, name).as_f64();
     let samples = (4 * BLOCK) as f64;
     assert_eq!(count(&work, "samples"), Some(samples));
-    assert!(count(&work, "proofs").is_some_and(|p| p >= 1.0));
     assert_eq!(count(&work, "waves"), Some(2.0 * samples));
     assert!(count(&work, "priced_flops").is_some_and(|f| f > 0.0));
 

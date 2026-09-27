@@ -3,7 +3,7 @@
 mod helpers;
 
 use helpers::scratch;
-use sva_cli::{Decision, lint};
+use sva_cli::lint;
 use sva_core::LintCode;
 
 fn doc(models: &str) -> String {
@@ -44,7 +44,7 @@ fn a_lint_finding_names_its_line() {
     )
     .expect("a node file");
 
-    let Err(refused) = lint(&dir, None, &Decision::default()) else {
+    let Err(refused) = lint(&dir, None) else {
         panic!("a comment block over the threshold refuses")
     };
     let found = refused.diagnostics();
@@ -71,7 +71,7 @@ fn a_literal_sample_rate_refuses() {
             ("clean", "self(t - 1sp) + sample(sin(2*pi*220*t))*1sp\n"),
         ],
     );
-    let Err(sva_core::CliError::LintRefused(found)) = lint(&dir, None, &Decision::default()) else {
+    let Err(sva_core::CliError::LintRefused(found)) = lint(&dir, None) else {
         panic!("a literal rate refuses")
     };
     let refused: Vec<&str> = found
@@ -99,8 +99,7 @@ fn lint_of_one_node_sees_the_tempo() {
         .expect("a variable");
     }
 
-    let report = lint(&dir, Some("@kick"), &Decision::default())
-        .expect("one node lints under its own composition");
+    let report = lint(&dir, Some("@kick")).expect("one node lints under its own composition");
     assert_eq!(codes(&report), "", "nothing to report: {}", codes(&report));
 }
 
@@ -116,11 +115,10 @@ fn lint_of_a_node_with_a_default_resolves() {
     );
 
     assert_eq!(
-        codes(&lint(&dir, Some("@plain([0, 1s])"), &Decision::default()).expect("a plain node")),
+        codes(&lint(&dir, Some("@plain([0, 1s])")).expect("a plain node")),
         ""
     );
-    let report = lint(&dir, Some("@voice([0, 1s])"), &Decision::default())
-        .expect("a node that declares a default");
+    let report = lint(&dir, Some("@voice([0, 1s])")).expect("a node that declares a default");
     assert_eq!(codes(&report), "", "{}", codes(&report));
     assert!(report.nodes > 0, "one node was checked, so one is reported");
 }
@@ -140,7 +138,7 @@ fn a_one_row_grid_gets_the_same_warning_as_a_two_row_one() {
             format!("{}@pattern-8b\n", doc("a signal")),
         )
         .expect("a root");
-        lint(&dir, None, &Decision::default())
+        lint(&dir, None)
             .unwrap_or_else(|e| panic!("{name}: {}", e.message()))
             .findings
             .iter()
@@ -160,7 +158,7 @@ fn a_one_row_grid_gets_the_same_warning_as_a_two_row_one() {
 #[test]
 fn lint_of_an_undefined_target_refuses_like_render() {
     let dir = composition("undefined-target", &[("master", "sin(2*pi*300*t)\n")]);
-    let Err(linted) = lint(&dir, Some("@drums/kik"), &Decision::default()) else {
+    let Err(linted) = lint(&dir, Some("@drums/kik")) else {
         panic!("a target nothing defines refuses");
     };
     let Err(rendered) = sva_core::probe(&dir, "@drums/kik") else {
@@ -168,4 +166,36 @@ fn lint_of_an_undefined_target_refuses_like_render() {
     };
     assert_eq!(linted.code(), rendered.code());
     assert_eq!(linted.exit_code(), rendered.exit_code());
+}
+
+/// A decay nothing crops runs on to where `exp` underflows, long after it is under the 24-bit
+/// resolution: lint names it and when, and a crop there clears it. A render still runs it.
+#[test]
+fn a_tail_computed_long_past_the_resolution_refuses() {
+    let dir = composition(
+        "quiet-tail",
+        &[
+            ("ping", "sin(2*pi*880*t)*exp(0 - t/0.05)\n"),
+            ("cropped", "crop(sin(2*pi*880*t)*exp(0 - t/0.05), 0s, 1s)\n"),
+            ("master", "@ping + @cropped\n"),
+        ],
+    );
+    for target in [None, Some("@master")] {
+        let Err(sva_core::CliError::LintRefused(found)) = lint(&dir, target) else {
+            panic!("{target:?}: a long quiet tail refuses")
+        };
+        let named: Vec<&str> = found
+            .iter()
+            .filter(|f| f.code == LintCode::QuietTail)
+            .map(|f| f.subject.as_str())
+            .collect();
+        assert_eq!(named, ["ping"], "{target:?}: only the uncropped decay");
+        assert!(
+            found[0].message.contains("from 0.833s"),
+            "{}",
+            found[0].message
+        );
+    }
+    let rendered = sva_core::execute(sva_core::Job::over(&sva_ast::Dir::at(&dir), "@ping"));
+    assert!(rendered.is_ok(), "render does not refuse it");
 }

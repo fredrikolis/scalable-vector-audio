@@ -80,7 +80,7 @@ fn referenced(graph: &Graph) -> BTreeSet<String> {
 }
 
 /// Every node nothing references, the roots a whole composition has.
-fn entry_points(graph: &Graph) -> Vec<String> {
+pub(crate) fn entry_points(graph: &Graph) -> Vec<String> {
     let reached = referenced(graph);
     graph
         .paths()

@@ -35,7 +35,7 @@ fn rendered(graph: &Graph, cache: Option<&Cache>, policy: Option<CachePolicy>) -
     render(graph, "master", config, cache).expect("a render")
 }
 
-/// The node's own buffer key at 24 bits with nothing cut, as the store holds it.
+/// The node's own buffer key at 24 bits, as the store holds it.
 fn own(render: &Render, node: &str) -> Hash {
     let id = render.id(node).expect("the node types");
     let buffer = buffer_key(
@@ -45,7 +45,7 @@ fn own(render: &Render, node: &str) -> Hash {
         render.tys.ty(id).width as usize,
         AliasScore::NotAsked,
     );
-    precise_key(buffer, 24, &[])
+    precise_key(buffer, 24)
 }
 
 fn stored(render: &Render) -> BTreeSet<Hash> {

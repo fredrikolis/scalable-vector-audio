@@ -652,18 +652,14 @@ fn a_capped_reading_names_the_second_its_items_stop_before() {
     }
 }
 
-/// The interval a reading reports is the one the root's cut ended.
+/// The interval a reading reports is the one the root's support ended.
 #[test]
-fn a_render_reports_the_interval_its_cut_ended() {
-    let dir = scratch("cut");
-    put(
-        &dir,
-        "echo",
-        "crop(sin(2*pi*440*t), 0s, 0.05s) + 0.35*self(t - 0.25s)\n",
-    );
-    let rendered = probe(&dir, "@echo").expect("the echo is cut");
+fn a_render_reports_the_interval_its_support_ended() {
+    let dir = scratch("support");
+    put(&dir, "tone", "crop(sin(2*pi*440*t), 0s, 0.3s)\n");
+    let rendered = probe(&dir, "@tone").expect("the tone ends");
     let end = secs(&rendered);
-    assert!((3.8..=3.81).contains(&end), "{end}");
+    assert_eq!(end, 0.3);
     assert_eq!(
         plane(&rendered, PROBE).len(),
         (end * 44_100.0).round() as usize

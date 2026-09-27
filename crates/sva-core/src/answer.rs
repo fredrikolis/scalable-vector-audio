@@ -4,9 +4,8 @@ use std::path::Path;
 
 use sva_engine::{
     Alias, AliasBand, Answer, Arguments, BandCrest, BandTrack, Bands, Binding, Buffer, CacheStats,
-    Cost, Crest, Cuts, Detail, EnvelopeFrame, FormantFrame, Label, LedgerEntry, Loudness,
-    LoudnessFrame, Missing, Outcome, Output, PayloadKind, Source, SpectralSum, Spectrum,
-    StereoFrame, StereoImage, Work,
+    Cost, Crest, Detail, EnvelopeFrame, FormantFrame, Label, LedgerEntry, Loudness, LoudnessFrame,
+    Outcome, Output, PayloadKind, Source, SpectralSum, Spectrum, StereoFrame, StereoImage, Work,
 };
 
 use crate::json::{NONE, capped, escape, list, num};
@@ -479,8 +478,8 @@ pub fn label_json(label: &Label) -> String {
 pub fn work_json(work: &Work) -> String {
     let waves = work.waves.map_or(NONE.to_string(), |w| w.to_string());
     format!(
-        "{{ \"samples\": {}, \"proofs\": {}, \"priced_flops\": {}, \"waves\": {waves} }}",
-        work.samples, work.proofs, work.priced_flops
+        "{{ \"samples\": {}, \"priced_flops\": {}, \"waves\": {waves} }}",
+        work.samples, work.priced_flops
     )
 }
 
@@ -533,9 +532,8 @@ pub struct Printed {
 pub struct Report<'a> {
     pub target: &'a str,
     pub rate: u32,
-    /// The precision every sample was written to, the floor decaying nodes were cut at and
-    /// every cut; `None` for a file read back.
-    pub cuts: Option<&'a Cuts>,
+    /// The precision every sample was written to; `None` for a file read back.
+    pub bits: Option<i32>,
     /// The seconds the readings were taken over; `None` where none read samples.
     pub interval: Option<(f64, f64)>,
     pub profile: &'a str,
@@ -590,46 +588,12 @@ pub fn query_data(report: &Report) -> String {
         )
     });
     format!(
-        "{{\n  \"target\": \"{}\",\n  \"sample_rate\": {},\n  {},\n  \
+        "{{\n  \"target\": \"{}\",\n  \"sample_rate\": {},\n  \"bits\": {},\n  \
          \"profile\": \"{}\",\n  \"interval\": {interval},\n  \"label\": {label},\n  \
          \"written\": {written},\n  \"representations\": {{\n    {reads}\n  }}\n}}",
         escape(report.target),
         report.rate,
-        cuts_json(report.cuts, report.rate),
+        report.bits.map_or(NONE.to_string(), |b| b.to_string()),
         escape(report.profile),
-    )
-}
-
-/// `bits`, `decay_floor_db`, `cuts` and `uncut`: what a render was written at, and every node
-/// it cut or could not; `null` each for a file read back.
-pub fn cuts_json(cuts: Option<&Cuts>, rate: u32) -> String {
-    let Some(cuts) = cuts else {
-        return format!(
-            "\"bits\": {NONE},\n  \"decay_floor_db\": {NONE},\n  \"cuts\": {NONE},\n  \
-             \"uncut\": {NONE}"
-        );
-    };
-    let cut = list(&cuts.cut, |c| {
-        format!(
-            "\n    {{ \"node\": \"{}\", \"at_secs\": {} }}",
-            escape(&c.node),
-            num(c.at as f64 / f64::from(rate))
-        )
-    });
-    let uncut = list(&cuts.uncut, |u| {
-        let missing = match u.missing {
-            Missing::Bound => "bound",
-            Missing::Gain => "gain",
-        };
-        format!(
-            "\n    {{ \"node\": \"{}\", \"missing\": \"{missing}\", \"why\": \"{}\" }}",
-            escape(&u.node),
-            escape(&u.why)
-        )
-    });
-    format!(
-        "\"bits\": {},\n  \"decay_floor_db\": {},\n  \"cuts\": {cut},\n  \"uncut\": {uncut}",
-        cuts.bits,
-        num(20.0 * cuts.floor.log10())
     )
 }

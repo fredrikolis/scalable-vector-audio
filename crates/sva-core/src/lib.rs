@@ -13,8 +13,8 @@ mod tempo;
 mod until;
 
 pub use answer::{
-    Printed, Report, SAMPLE_LIMIT, answer_json, cuts_json, label_json, query_data, stats_json,
-    value_json, work_json,
+    Printed, Report, SAMPLE_LIMIT, answer_json, label_json, query_data, stats_json, value_json,
+    work_json,
 };
 pub use builtins::{Builtins, Callable, Crossing, builtins, builtins_data};
 pub use cli_error::{CliError, LintViolation, lint_diagnostic};
@@ -36,7 +36,7 @@ use sva_engine::{
     Ask, DEFAULT_SAMPLE_RATE, EngineError, Range, RenderConfig, StreamConfig, render,
 };
 
-pub use sva_engine::{Checkpoint, Cut, Cuts, Missing, Stream, Uncut, Until};
+pub use sva_engine::{Checkpoint, QuietTail, Stream, Until};
 
 pub use sva_engine::{Answer, Extent, Label, Output, Representation};
 pub use sva_engine::{Cache, CachePolicy, PrunePolicy};
@@ -89,7 +89,6 @@ pub struct Job<'a> {
     pub until: Option<&'a str>,
     pub rate: Option<u32>,
     pub bits: Option<i32>,
-    pub decay_floor_db: Option<f64>,
     pub cache: Option<&'a Cache>,
     pub cache_policy: Option<CachePolicy>,
     pub asked: &'a [Asked],
@@ -106,7 +105,6 @@ impl<'a> Job<'a> {
             until: None,
             rate: None,
             bits: None,
-            decay_floor_db: None,
             cache: None,
             cache_policy: None,
             asked: &[],
@@ -167,9 +165,6 @@ fn settle(job: &Job) -> Result<(Graph, RenderConfig), CliError> {
     if let Some(bits) = job.bits {
         config.profile.precision_bits = precision(bits)?;
     }
-    if let Some(db) = job.decay_floor_db {
-        config.decay_floor = Some(level(db)?);
-    }
     config.volatile = job.volatile.to_vec();
     config.cache_policy = job.cache_policy;
     config.asks = job
@@ -229,10 +224,17 @@ pub fn execute(job: Job) -> Result<Rendered, CliError> {
     })
 }
 
-/// A render's own decision before its first sample: its range and every cut.
 pub fn plan(job: &Job) -> Result<sva_engine::Render, CliError> {
     let (graph, config) = settle(job)?;
     sva_engine::plan(&graph, PROBE, config).map_err(|e| CliError::Engine(as_written(e, job.target)))
+}
+
+/// The target is no file to crop, so it is not among them.
+pub fn quiet_tails(job: &Job) -> Result<Vec<QuietTail>, CliError> {
+    let (graph, config) = settle(job)?;
+    let found = sva_engine::quiet_tails(&graph, PROBE, config)
+        .map_err(|e| CliError::Engine(as_written(e, job.target)))?;
+    Ok(found.into_iter().filter(|t| t.file != PROBE).collect())
 }
 
 pub fn stream(job: &Job, block: usize) -> Result<Stream, CliError> {
@@ -246,43 +248,6 @@ pub fn stream(job: &Job, block: usize) -> Result<Stream, CliError> {
         render: config,
     };
     Stream::open(&graph, &target, config).map_err(|e| CliError::Engine(as_written(e, job.target)))
-}
-
-/// Each node the engine named `probe` named as the caller wrote the target.
-pub fn written_cuts(cuts: &Cuts, target: &str) -> Cuts {
-    let name = |node: &str| match node {
-        PROBE => target.to_string(),
-        other => other.to_string(),
-    };
-    Cuts {
-        cut: cuts
-            .cut
-            .iter()
-            .map(|c| Cut {
-                node: name(&c.node),
-                at: c.at,
-            })
-            .collect(),
-        uncut: cuts
-            .uncut
-            .iter()
-            .map(|u| Uncut {
-                node: name(&u.node),
-                ..u.clone()
-            })
-            .collect(),
-        bits: cuts.bits,
-        floor: cuts.floor,
-    }
-}
-
-fn level(db: f64) -> Result<f64, CliError> {
-    match db.is_finite() && db < 0.0 {
-        true => Ok(10f64.powf(db / 20.0)),
-        false => Err(CliError::Usage(format!(
-            "`--decay-floor` takes a level under 0 dB, not {db}"
-        ))),
-    }
 }
 
 /// A double holds no bit past its own mantissa, and one bit writes only zero.

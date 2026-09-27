@@ -12,6 +12,7 @@ pub enum LintCode {
     LongExpressionBody,
     LiteralSampleRate,
     KeyIsNotAPitch,
+    QuietTail,
 }
 
 impl LintCode {
@@ -24,6 +25,7 @@ impl LintCode {
         LintCode::LongExpressionBody,
         LintCode::LiteralSampleRate,
         LintCode::KeyIsNotAPitch,
+        LintCode::QuietTail,
     ];
 
     pub fn code_str(self) -> &'static str {
@@ -36,6 +38,7 @@ impl LintCode {
             LintCode::LongExpressionBody => "long-expression-body",
             LintCode::LiteralSampleRate => "literal-sample-rate",
             LintCode::KeyIsNotAPitch => "key-is-not-a-pitch",
+            LintCode::QuietTail => "quiet-tail",
         }
     }
 
@@ -60,6 +63,7 @@ impl LintCode {
             LintCode::KeyIsNotAPitch => {
                 "hold one note name or a number of hertz in `variables/key`"
             }
+            LintCode::QuietTail => "crop the node where it falls under the resolution",
         }
     }
 }

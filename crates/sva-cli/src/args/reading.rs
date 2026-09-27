@@ -5,9 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use sva_core::{Asked, Call, CliError, asked, calls, is_wav, wav_path};
 use sva_engine::{DEFAULT_SAMPLE_RATE, MAX_PINNED_FRAME, Representation, pinned_frame};
 
-use super::{
-    ANALYZE_REPRESENTATIONS, Analysis, AnalyzeArgs, Command, Decision, RenderArgs, USAGE, value,
-};
+use super::{ANALYZE_REPRESENTATIONS, Analysis, AnalyzeArgs, Command, RenderArgs, USAGE, value};
 
 /// What `render` and `analyze` both read: the calls asked for, and `--confirm`.
 #[derive(Default)]
@@ -117,13 +115,18 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
         ))
     })?;
     let mut flags = Flags::default();
-    let (mut until, mut decision) = (None, Decision::default());
+    let (mut until, mut rate, mut bits, mut flop_budget) = (None, None, None, None);
     while let Some(flag) = it.next() {
-        if flags.read(flag, &mut it)? || decision.read(flag, &mut it)? {
+        if flags.read(flag, &mut it)? {
             continue;
         }
         match flag.as_str() {
             "--until" => until = Some(value(&mut it, "--until")?),
+            "--rate" => rate = Some(hertz(&value(&mut it, "--rate")?)?),
+            "--bits" => bits = Some(whole(&value(&mut it, "--bits")?, "--bits")?),
+            "--flop-budget" => {
+                flop_budget = Some(operations(&value(&mut it, "--flop-budget")?)?);
+            }
             other => {
                 return Err(CliError::Usage(format!(
                     "unknown argument `{other}`\n{USAGE}"
@@ -139,11 +142,13 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
              samples=<path>.wav` writes audio\n{USAGE}"
         )));
     }
-    check_frame(&asked, decision.rate.unwrap_or(DEFAULT_SAMPLE_RATE))?;
+    check_frame(&asked, rate.unwrap_or(DEFAULT_SAMPLE_RATE))?;
     Ok(Command::Render(Box::new(RenderArgs {
         target,
         until,
-        decision,
+        rate,
+        bits,
+        flop_budget,
         asked,
         confirm: flags.confirm,
     })))
@@ -222,32 +227,6 @@ fn lexical(path: &Path) -> PathBuf {
     out
 }
 
-impl Decision {
-    /// `Ok(false)` means this flag is none of the four a decision reads.
-    pub(super) fn read<'a>(
-        &mut self,
-        flag: &str,
-        it: &mut impl Iterator<Item = &'a String>,
-    ) -> Result<bool, CliError> {
-        match flag {
-            "--rate" => self.rate = Some(hertz(&value(it, "--rate")?)?),
-            "--bits" => self.bits = Some(whole(&value(it, "--bits")?, "--bits")?),
-            "--decay-floor" => self.decay_floor_db = Some(decibels(&value(it, "--decay-floor")?)?),
-            "--flop-budget" => self.flop_budget = Some(operations(&value(it, "--flop-budget")?)?),
-            _ => return Ok(false),
-        }
-        Ok(true)
-    }
-}
-
-fn decibels(raw: &str) -> Result<f64, CliError> {
-    raw.parse::<f64>().map_err(|_| {
-        CliError::Usage(format!(
-            "--decay-floor needs a level in dB, as `-96`, got `{raw}`\n{USAGE}"
-        ))
-    })
-}
-
 fn hertz(raw: &str) -> Result<u32, CliError> {
     match raw.parse::<u32>() {
         Ok(hz) if hz > 0 => Ok(hz),
@@ -257,12 +236,12 @@ fn hertz(raw: &str) -> Result<u32, CliError> {
     }
 }
 
-fn whole(raw: &str, flag: &str) -> Result<i32, CliError> {
+pub(super) fn whole(raw: &str, flag: &str) -> Result<i32, CliError> {
     raw.parse::<i32>()
         .map_err(|_| CliError::Usage(format!("{flag} needs a whole number, got `{raw}`\n{USAGE}")))
 }
 
-fn operations(raw: &str) -> Result<u128, CliError> {
+pub(super) fn operations(raw: &str) -> Result<u128, CliError> {
     raw.parse::<u128>().map_err(|_| {
         CliError::Usage(format!(
             "--flop-budget needs a whole count of operations, got `{raw}`\n{USAGE}"

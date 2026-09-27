@@ -2,30 +2,25 @@
 
 use sva_core::json::{NONE, escape, list, num, pair_list, strings};
 
-use crate::lint::Planned;
-
 /// `target: null` is a lint of every file under its own rules, which decides no render: its
-/// interval, bits, floor and cuts are `null`.
+/// interval is `null`.
 pub fn lint_data(
     dir: &str,
     target: Option<&str>,
     nodes: usize,
-    planned: Option<&Planned>,
+    interval: Option<(f64, f64)>,
 ) -> String {
     let target = target.map_or_else(|| NONE.to_string(), |t| format!("\"{}\"", escape(t)));
-    let interval = planned
-        .and_then(|p| p.interval)
-        .map_or(NONE.to_string(), |(start, end)| {
-            format!(
-                "{{ \"start_secs\": {}, \"end_secs\": {} }}",
-                num(start),
-                num(end)
-            )
-        });
-    let cuts = sva_core::cuts_json(planned.map(|p| &p.cuts), planned.map_or(1, |p| p.rate));
+    let interval = interval.map_or(NONE.to_string(), |(start, end)| {
+        format!(
+            "{{ \"start_secs\": {}, \"end_secs\": {} }}",
+            num(start),
+            num(end)
+        )
+    });
     format!(
         "{{\n  \"dir\": \"{}\",\n  \"target\": {target},\n  \"nodes\": {nodes},\n  \
-         \"interval\": {interval},\n  {cuts}\n  }}",
+         \"interval\": {interval}\n  }}",
         escape(dir)
     )
 }

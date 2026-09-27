@@ -1,10 +1,9 @@
-// Concern: decides the root's range and every extent under it, each node cut at the decay floor | Non-concern: where a node is cut (cut/), computing a sample | IO: (&mut Render) -> a range
+// Concern: decides the root's range and every extent under it | Non-concern: where a node's support ends (extent.rs), computing a sample | IO: (&mut Render) -> a range
 
 use sva_formula::NodeId;
 use sva_samples::Extent;
 
 use super::Render;
-use super::cut;
 use super::extent::{self, Supports};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::query::Representation;
@@ -20,13 +19,8 @@ fn needed(held: &Render) -> bool {
             .any(|ask| ask.representation == Representation::Flops)
 }
 
-/// An envelope needs a range only where its form reaches no symbolic one. Only `audio`, what
-/// audio out holds, is cut, so the cuts are the same whatever is read.
-pub(super) fn ranged(
-    held: &mut Render,
-    audio: &[NodeId],
-    costed: &[NodeId],
-) -> Result<bool, EngineError> {
+/// An envelope needs a range only where its form reaches no symbolic one.
+pub(super) fn ranged(held: &mut Render, costed: &[NodeId]) -> Result<bool, EngineError> {
     if !needed(held) {
         let envelope = held
             .config
@@ -36,7 +30,7 @@ pub(super) fn ranged(
         if !envelope {
             return Ok(false);
         }
-        return match decided(held, audio, costed) {
+        return match decided(held, costed, Ends::Refused) {
             Ok(()) => Ok(true),
             Err(refused) => {
                 held.unranged = Some(refused);
@@ -44,28 +38,34 @@ pub(super) fn ranged(
             }
         };
     }
-    decided(held, audio, costed).map(|()| true)
+    decided(held, costed, Ends::Refused).map(|()| true)
 }
 
-fn decided(held: &mut Render, audio: &[NodeId], costed: &[NodeId]) -> Result<(), EngineError> {
-    let (rate, root) = (held.config.rate, held.root);
-    let support = Supports::new(&held.tys, rate).of(root);
+/// A root whose support never ends streams for as long as it is pulled.
+pub(super) fn streamed(held: &mut Render, audio: &[NodeId]) -> Result<(), EngineError> {
+    decided(held, audio, Ends::Pulled)
+}
+
+enum Ends {
+    Refused,
+    Pulled,
+}
+
+/// An unstated end is where the root's support ends.
+fn decided(held: &mut Render, costed: &[NodeId], ends: Ends) -> Result<(), EngineError> {
+    let support = Supports::new(&held.tys, held.config.rate).of(held.root);
     let start = held
         .config
         .range
         .start
         .unwrap_or_else(|| extent::default_start(support));
-    let decision = cut::decide(held, audio, start)?;
-    let cut_support = Supports::cut(&held.tys, rate, decision.at.clone()).of(root);
-    let end = match held.config.range.end.or(extent::default_end(cut_support)) {
+    let end = match held.config.range.end.or(extent::default_end(support)) {
         Some(end) => end,
-        None => return Err(decision.endless.unwrap_or_else(|| endless(held))),
+        None => match ends {
+            Ends::Pulled => i64::MAX,
+            Ends::Refused => return Err(endless(held)),
+        },
     };
-    held.proofs = decision.passes;
-    held.proof_ops = decision.ops;
-    held.cuts = decision.report;
-    held.extents.cuts = decision.at;
-    held.played = decision.played;
     extend(held, costed, Extent::new(start, end.max(start)))
 }
 
@@ -87,8 +87,7 @@ pub(super) fn extend(
             .filter(|id| !rows.contains(id) || measured.as_ref().is_none_or(|m| m.contains(id)))
             .map(|id| (*id, range)),
     );
-    let cuts = std::mem::take(&mut held.extents.cuts);
-    held.extents = extent::decide(held, costed, &demands, &cuts)?;
+    held.extents = extent::decide(held, costed, &demands)?;
     held.range = Some(range);
     Ok(())
 }
@@ -98,9 +97,9 @@ fn endless(held: &Render) -> EngineError {
     EngineError::refused(Diagnostic {
         code: "render.no_end".to_string(),
         message: format!(
-            "`{name}` is read over an interval with no end, and its extent never ends"
+            "`{name}` is read over an interval with no end, and its support never ends"
         ),
         location: Located::at(name, None),
-        help: "give the interval an end, as `[0, 2s]`".to_string(),
+        help: "give the interval an end, as `[0, 2s]`, or crop it".to_string(),
     })
 }

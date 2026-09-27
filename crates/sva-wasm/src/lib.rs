@@ -55,7 +55,6 @@ fn refuse(message: String, help: &str) -> JsValue {
 struct Options {
     rate: Option<u32>,
     bits: Option<i32>,
-    decay_floor: Option<f64>,
     flop_budget: Option<u128>,
     until: Option<String>,
     volatile: Vec<String>,
@@ -87,14 +86,6 @@ fn options_of(options: &JsValue, keys: &[&str]) -> Result<Options, JsValue> {
         match key.as_str() {
             "rate" => held.rate = Some(whole(&key, &value)?),
             "bits" => held.bits = Some(whole(&key, &value)?),
-            "decay_floor" => {
-                held.decay_floor = Some(value.as_f64().ok_or_else(|| {
-                    refuse(
-                        "`decay_floor` is not a number".into(),
-                        "pass a level in dB, as -96",
-                    )
-                })?);
-            }
             "flop_budget" => held.flop_budget = Some(whole(&key, &value)?),
             "until" => held.until = Some(text(&key, &value)?),
             "cache" => held.cache = Some(cache_policy(&text(&key, &value)?)?),
@@ -225,8 +216,8 @@ impl Composition {
 
     /// `target` as `sva-cli render` takes it, `@piano([0, 2b], f0=C4)`; `representations`
     /// what `representations()` answers, `samples` where unset, each a call as
-    /// `--representation` writes it. `options` sets `rate`, `bits`, `decay_floor` (dB),
-    /// `flop_budget`, `until`, `volatile` and `cache`.
+    /// `--representation` writes it. `options` sets `rate`, `bits`, `flop_budget`, `until`,
+    /// `volatile` and `cache`.
     pub fn render(
         &self,
         target: &str,
@@ -235,15 +226,7 @@ impl Composition {
     ) -> Result<Rendering, JsValue> {
         let options = options_of(
             &options,
-            &[
-                "rate",
-                "bits",
-                "decay_floor",
-                "flop_budget",
-                "until",
-                "volatile",
-                "cache",
-            ],
+            &["rate", "bits", "flop_budget", "until", "volatile", "cache"],
         )?;
         let names = representations.unwrap_or_else(|| vec!["samples".to_string()]);
         let asked = representations_of(&names)?;
@@ -251,7 +234,6 @@ impl Composition {
             until: options.until.as_deref(),
             rate: options.rate,
             bits: options.bits,
-            decay_floor_db: options.decay_floor,
             cache: Some(&self.store),
             cache_policy: options.cache,
             asked: &asked,
@@ -264,21 +246,15 @@ impl Composition {
             .map_err(|e| thrown(&e))
     }
 
-    /// `target` block by block over the extents and cuts a render takes, each cut decided when
-    /// reached, a root never cut pulled on; each named argument its own ref writes as a number
-    /// is one `resume` may move. `options` sets `rate`, `bits`,
-    /// `decay_floor` (dB), `flop_budget` and `until`.
+    /// `target` block by block over the extents a render takes, a root whose support never
+    /// ends pulled on; each named argument its own ref writes as a number is one `resume` may
+    /// move. `options` sets `rate`, `bits` and `until`.
     pub fn stream(&self, target: &str, block: usize, options: JsValue) -> Result<Stream, JsValue> {
-        let options = options_of(
-            &options,
-            &["rate", "bits", "decay_floor", "flop_budget", "until"],
-        )?;
+        let options = options_of(&options, &["rate", "bits", "until"])?;
         let job = Job {
             until: options.until.as_deref(),
             rate: options.rate,
             bits: options.bits,
-            decay_floor_db: options.decay_floor,
-            flop_budget: options.flop_budget,
             ..Job::over(&self.inner, target)
         };
         sva_core::stream(&job, block)
@@ -449,11 +425,10 @@ impl Rendering {
             .render
             .range
             .map(|r| (r.start_secs(rate), r.end as f64 / f64::from(rate)));
-        let cuts = sva_core::written_cuts(&self.inner.render.cuts, &self.inner.expression);
         parse(&query_data(&Report {
             target: &self.inner.expression,
             rate,
-            cuts: Some(&cuts),
+            bits: Some(self.inner.config.profile.precision_bits),
             interval,
             profile: self.inner.config.profile.name,
             label: self.inner.label(),
@@ -508,7 +483,7 @@ impl Stream {
         }
     }
 
-    /// `{ samples, proofs, priced_flops, waves }` since it opened or resumed.
+    /// `{ samples, priced_flops, waves }` since it opened or resumed.
     pub fn work(&self) -> Result<JsValue, JsValue> {
         parse(&work_json(&self.inner.work()))
     }

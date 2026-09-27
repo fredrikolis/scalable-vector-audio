@@ -90,7 +90,7 @@ pub fn json_of(r: &Rendered, name: &str, representation: Representation) -> Stri
         &query_data(&Report {
             target: &r.expression,
             rate,
-            cuts: Some(&r.render.cuts),
+            bits: Some(r.config.profile.precision_bits),
             interval,
             profile: r.config.profile.name,
             label: r.label(),

@@ -115,7 +115,7 @@ fn a_json_destination_carries_every_sample_where_stdout_caps_them() {
         &sva_cli::Framing {
             target: "@master".to_string(),
             rate: rendered.config.rate,
-            cuts: Some(rendered.render.cuts.clone()),
+            bits: Some(rendered.config.profile.precision_bits),
             interval: None,
             profile: rendered.config.profile.name,
             encoding: SampleEncoding::Float,
@@ -195,7 +195,7 @@ fn a_non_audio_reading_at_a_wav_path_refuses_the_same_way_on_both_sides() {
         &sva_cli::Framing {
             target: "@master".to_string(),
             rate: rendered.config.rate,
-            cuts: Some(rendered.render.cuts.clone()),
+            bits: Some(rendered.config.profile.precision_bits),
             interval: None,
             profile: rendered.config.profile.name,
             encoding: SampleEncoding::Float,

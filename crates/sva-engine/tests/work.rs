@@ -91,12 +91,3 @@ fn a_stream_prices_each_sample_as_a_whole_render_prices_it() {
         work.priced_flops
     );
 }
-
-/// The cut's bounds are found before any sample, in passes a render counts.
-#[test]
-fn a_cut_is_decided_in_counted_passes_before_the_render() {
-    let g = composition();
-    let whole = render(&g, "high", RenderConfig::at(RATE), None).expect("a cut render");
-    assert!(whole.work().proofs >= 1);
-    assert_eq!(whole.work().waves, None);
-}

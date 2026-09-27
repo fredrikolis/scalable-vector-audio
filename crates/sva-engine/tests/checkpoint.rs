@@ -71,7 +71,6 @@ fn config(end: Option<i64>) -> StreamConfig {
                 start: Some(0),
                 end,
             },
-            decay_floor: Some(2f64.powi(-16)),
             ..RenderConfig::at(RATE)
         },
     }
@@ -97,24 +96,19 @@ fn blocks(stream: &mut Stream, count: usize) -> Vec<f64> {
 
 fn whole(g: &Graph, target: &str, samples: usize) -> Vec<f64> {
     let secs = samples as f64 / f64::from(RATE);
-    let config = RenderConfig {
-        decay_floor: Some(2f64.powi(-16)),
-        ..RenderConfig::seconds(RATE, secs)
-    };
-    let held = render(g, target, config, None).unwrap_or_else(|e| panic!("{target}: {e}"));
+    let held = render(g, target, RenderConfig::seconds(RATE, secs), None)
+        .unwrap_or_else(|e| panic!("{target}: {e}"));
     let id = held.id(target).expect("the root");
     held.output(id).expect("a buffer").plane(0).to_vec()
 }
 
 /// Key-up lands on the block grid at sample `k`: the held blocks up to it and the released
-/// ones after are one whole render with `release = k/rate`, echo and all.
-#[test]
-fn a_note_released_at_a_checkpoint_is_the_whole_render_released_there() {
-    let k = 12 * BLOCK;
+/// ones after are one whole render with `release = k/rate`.
+fn released_at(target: &str, whole_target: &str, k: usize) {
     let release = k as f64 / f64::from(RATE);
     let g = composition(release);
-    let mut held = opened(&g, "key");
-    let mut heard = blocks(&mut held, 12);
+    let mut held = opened(&g, target);
+    let mut heard = blocks(&mut held, k / BLOCK);
     let checkpoint = held.checkpoint();
     assert_eq!(checkpoint.position(), k as i64);
     let mut released = held
@@ -122,13 +116,18 @@ fn a_note_released_at_a_checkpoint_is_the_whole_render_released_there() {
         .unwrap_or_else(|e| panic!("{e}"));
     heard.extend(blocks(&mut released, 8));
 
-    let want = whole(&g, "released", heard.len());
+    let want = whole(&g, whole_target, heard.len());
     assert_ne!(
         want[k + 2_000..],
         blocks(&mut held, 8)[2_000..],
-        "the damper did nothing"
+        "{target}: the damper did nothing"
     );
-    assert_eq!(heard, want);
+    assert_eq!(heard, want, "{target}");
+}
+
+#[test]
+fn a_note_released_at_a_checkpoint_is_the_whole_render_released_there() {
+    released_at("key", "released", 12 * BLOCK);
 }
 
 #[test]
@@ -141,25 +140,6 @@ fn a_checkpoint_resumed_with_the_same_bindings_is_the_stream_it_was_taken_of() {
     let (on, resumed) = (blocks(&mut stream, 14), blocks(&mut again, 14));
     assert!(on.iter().any(|v| *v != 0.0), "silence tests nothing");
     assert_eq!(resumed, on);
-}
-
-/// A stream decides each grid instant's cuts, 256 samples apart, as it reaches it: opened, or
-/// resumed at key-up, it has decided none past where it stands, and a block only those it
-/// reached. No bound is looked ahead of the stream for.
-#[test]
-fn a_stream_decides_each_cut_only_as_it_reaches_it() {
-    let decided = |at: i64| (at / 256 + 1) as u64;
-    let g = composition(1.0);
-    let mut held = opened_to(&g, "note", None);
-    assert_eq!(held.work().proofs, decided(0));
-    blocks(&mut held, 40);
-    let at = held.position();
-    assert_eq!(held.work().proofs, decided(at));
-    let release = at as f64 / f64::from(RATE);
-    let released = held
-        .resume(&held.checkpoint(), &[("release".into(), release)])
-        .unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(released.work().proofs, decided(at));
 }
 
 /// A crop's end at `release` is the other causal use: the envelope closes at key-up.
@@ -210,25 +190,17 @@ fn a_checkpoint_resumed_on_another_stream_refuses() {
     assert_eq!(refused.code(), "engine.checkpoint_mismatch", "{refused}");
 }
 
-/// Held open-ended as a keyboard holds a key, then released at a checkpoint, a stream ends
-/// where the released render does and is that render, sample for sample: every node cut
-/// where the render cuts it. Nothing a longer render writes after the end is heard.
-fn streams_until_cut(target: &str, whole_target: &str, k: usize) -> usize {
-    let level = 2f64.powi(-16);
+/// Held open-ended as a keyboard holds a key past the first second, then released at a
+/// checkpoint, a stream ends where its support does, the release's underflowing tail, and is
+/// the released render over its own open interval, sample for sample.
+#[test]
+fn a_note_held_past_a_second_released_at_a_checkpoint_ends_where_its_support_does() {
+    let k = 64 * BLOCK;
     let release = k as f64 / f64::from(RATE);
     let g = composition(release);
-    let config = RenderConfig {
-        decay_floor: Some(level),
-        ..RenderConfig::at(RATE)
-    };
-    let whole_cut = render(&g, whole_target, config, None).expect("a cut render");
-    let want = whole_cut.output(whole_cut.root).expect("a buffer");
-    let want = want.plane(0);
-    assert!(
-        want.len() > k,
-        "{target}: cut before the release tests nothing"
-    );
-    let mut held = opened_to(&g, target, None);
+    let whole = render(&g, "faded", RenderConfig::at(RATE), None).expect("an ending render");
+    let want = whole.output(whole.root).expect("a buffer");
+    let mut held = opened_to(&g, "fading", None);
     let mut heard = blocks(&mut held, k / BLOCK);
     let mut released = held
         .resume(&held.checkpoint(), &[("release".into(), release)])
@@ -236,51 +208,39 @@ fn streams_until_cut(target: &str, whole_target: &str, k: usize) -> usize {
     while let Some(block) = released.next_block().expect("a block") {
         heard.extend_from_slice(block.plane(0));
     }
-    assert_eq!(heard[..], *want, "{target}");
-    let longer = whole(&g, whole_target, heard.len() + RATE as usize);
-    assert_eq!(heard[..], longer[..heard.len()], "{target}");
-    let after = longer[want.len()..]
-        .iter()
-        .fold(0.0f64, |m, v| m.max(v.abs()));
-    assert!(after < level, "{target}: {after} heard after the end");
-    heard.len()
-}
-
-/// A key held past the first second, over a level that never decays or a string still
-/// ringing, streams on until key-up, and its released tail ends at the cut.
-#[test]
-fn a_note_held_past_a_second_released_at_a_checkpoint_streams_until_it_is_cut() {
-    streams_until_cut("fading", "faded", 64 * BLOCK);
-    streams_until_cut("string", "struck", 64 * BLOCK);
+    assert!(
+        heard.len() > k + RATE as usize,
+        "the tail rings past key-up"
+    );
+    assert_eq!(Some(heard.len() as i64), released.end());
+    assert_eq!(heard[..], *want.plane(0));
 }
 
 #[test]
-fn a_string_released_at_a_checkpoint_streams_until_it_is_cut() {
-    streams_until_cut("string", "struck", 3 * BLOCK);
+fn a_string_released_at_a_checkpoint_is_the_whole_render_released_there() {
+    released_at("string", "struck", 3 * BLOCK);
 }
 
 #[test]
-fn a_unison_released_at_a_checkpoint_streams_until_it_is_cut() {
-    streams_until_cut("note", "played", 22 * BLOCK);
+fn a_unison_released_at_a_checkpoint_is_the_whole_render_released_there() {
+    released_at("note", "played", 22 * BLOCK);
 }
 
 /// The tail an echo adds, not the string under it, is what this proves, so the cheap single
 /// string carries it.
 #[test]
-fn an_echo_over_a_released_note_streams_until_it_is_cut() {
-    streams_until_cut("single_echo", "single_echoed", 3 * BLOCK);
+fn an_echo_over_a_released_note_is_the_whole_render_released_there() {
+    released_at("single_echo", "single_echoed", 3 * BLOCK);
 }
 
-/// Kept on the full unison note: a bare single string's default damping does not settle
-/// under this filter's resonance in reach of a proof, where the piano's tuned damping does.
 #[test]
-fn a_filtered_released_note_streams_until_it_is_cut() {
-    streams_until_cut("toned", "toned_up", 22 * BLOCK);
+fn a_filtered_released_note_is_the_whole_render_released_there() {
+    released_at("toned", "toned_up", 22 * BLOCK);
 }
 
 /// Reading the released node twice at an offset, not the string under it, is what this
 /// proves, so the cheap single string carries it.
 #[test]
-fn a_released_note_read_again_later_streams_until_it_is_cut() {
-    streams_until_cut("doubled", "doubled_up", 3 * BLOCK);
+fn a_released_note_read_again_later_is_the_whole_render_released_there() {
+    released_at("doubled", "doubled_up", 3 * BLOCK);
 }

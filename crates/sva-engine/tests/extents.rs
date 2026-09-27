@@ -1,4 +1,4 @@
-// Concern: proves every node is computed over its own support met with its readers' demand, whatever reads it | Non-concern: where a node is cut (cuts.rs) | IO: (a composition, a range) -> samples
+// Concern: proves every node is computed over its own support met with its readers' demand, whatever reads it | Non-concern: where a range ends (stream.rs) | IO: (a composition, a range) -> samples
 
 mod fixtures;
 
@@ -51,15 +51,6 @@ fn over(g: &Graph, target: &str, start: i64, end: i64) -> Vec<f64> {
     held.output(held.root).expect("the root").plane(0).to_vec()
 }
 
-fn quiet(g: &Graph, target: &str, level: f64) -> Vec<f64> {
-    let config = RenderConfig {
-        decay_floor: Some(level),
-        ..RenderConfig::at(RATE)
-    };
-    let held = render(g, target, config, None).unwrap_or_else(|e| panic!("{target}: {e}"));
-    held.output(held.root).expect("the root").plane(0).to_vec()
-}
-
 fn secs(n: f64) -> i64 {
     (n * f64::from(RATE)) as i64
 }
@@ -89,16 +80,18 @@ fn a_shifted_ref_reads_its_source_where_that_source_sounds() {
 #[test]
 fn a_crop_inside_a_loop_or_under_a_filter_keeps_the_tail() {
     let g = composition();
-    let echo = quiet(&g, "echo", 2f64.powi(-24));
+    let echo = over(&g, "echo", 0, secs(4.5));
     let echoes = &echo[secs(0.25) as usize..secs(0.45) as usize];
     assert!(
         echoes.iter().any(|v| v.abs() > 0.1),
         "the first echo sounds"
     );
-    assert!(echo.len() > secs(4.0) as usize, "ends at {}", echo.len());
-    let ring = quiet(&g, "ring", 2f64.powi(-16));
-    assert!(ring.len() > secs(0.1) as usize, "ends at {}", ring.len());
-    let tail = &ring[secs(0.05) as usize..secs(0.1) as usize];
+    assert!(
+        echo[secs(4.0) as usize..].iter().any(|v| *v != 0.0),
+        "the sixteenth echo sounds"
+    );
+    let ring = over(&g, "ring", 0, secs(0.1));
+    let tail = &ring[secs(0.05) as usize..];
     assert!(
         tail.iter().any(|v| v.abs() > 1e-3),
         "the ring sounds past the crop"
@@ -114,20 +107,6 @@ fn a_start_past_zero_keeps_the_state_its_history_left() {
         assert!(late.iter().any(|v| *v != 0.0), "{target}: silence");
         assert_eq!(late[..], whole[secs(0.3) as usize..], "{target}");
     }
-    let config = RenderConfig {
-        range: Range {
-            start: Some(secs(0.3)),
-            end: None,
-        },
-        ..RenderConfig::at(RATE)
-    };
-    let late = render(&g, "echo", config, None).expect("a late echo");
-    let ended = late.range.expect("a range").end as usize;
-    assert_eq!(
-        ended,
-        quiet(&g, "echo", 2f64.powi(-24)).len(),
-        "a late start ends where the whole render is cut"
-    );
 }
 
 #[test]

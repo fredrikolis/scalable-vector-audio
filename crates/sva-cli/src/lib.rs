@@ -16,13 +16,12 @@ mod variables;
 mod wav;
 
 pub use args::{
-    ANALYZE_REPRESENTATIONS, Analysis, AnalyzeArgs, Command, Decision, Format, RenderArgs, USAGE,
-    parse_args,
+    ANALYZE_REPRESENTATIONS, Analysis, AnalyzeArgs, Command, Format, RenderArgs, USAGE, parse_args,
 };
 pub use composition::{composition, located};
 pub use destination::{Framing, refuse_inside, write as write_destination, write_analysis};
 pub use help::help_text;
-pub use lint::{Finding, LintReport, Planned, lint};
+pub use lint::{Finding, LintReport, lint};
 pub use new::{FILES, NEXT, Scaffolded, scaffold};
 pub use output::{help_data, lint_data, new_data, trace_data, version_data};
 pub use panic::{Stopped, caught, stopped};

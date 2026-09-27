@@ -48,21 +48,19 @@ fn composition() -> Graph {
             ("voice", VOICE),
             ("low", "@voice(t, f0=65.406, vel=0.8, release=0.1)\n"),
             ("high", "@voice(t, f0=1046.502, vel=0.8, release=0.1)\n"),
-            (
-                "released",
-                "@voice(t, f0=1046.502, vel=0.8, release=0.05)\n",
-            ),
             ("tone", "0.3*saw(220)\n"),
-            ("clipped", "crop(0.3*saw(220), 0s, 0.1s)\n"),
-            ("at_released", "@released\n"),
+            ("clipped", "crop(0.3*sin(2*pi*220*t), 0s, 0.1s)\n"),
+            ("decayed", "sin(2*pi*220*t)*exp(0 - t/0.005)\n"),
+            ("at_clipped", "@clipped\n"),
+            ("at_decayed", "@decayed\n"),
             ("at_damped", "@damped\n"),
         ],
     )
 }
 
-/// A render of `@target`, the node a stream of it reads through, cut where the stream is.
+/// A render of `@target`, the node a stream of it reads through, over the same interval.
 fn read_through(g: &Graph, target: &str, config: RenderConfig) -> Vec<f64> {
-    let whole = render(g, &format!("at_{target}"), config, None).expect("a cut render");
+    let whole = render(g, &format!("at_{target}"), config, None).expect("a render");
     whole
         .output(whole.root)
         .expect("a buffer")
@@ -83,20 +81,18 @@ fn four() -> Range {
     }
 }
 
-/// `floor` the decay floor, the resolution of 24 bits where `None`.
-fn config(block: usize, range: Range, floor: Option<f64>) -> StreamConfig {
+fn config(block: usize, range: Range) -> StreamConfig {
     StreamConfig {
         block,
         render: RenderConfig {
             range,
-            decay_floor: floor,
             ..RenderConfig::at(RATE)
         },
     }
 }
 
 fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Vec<f64> {
-    let config = config(block, four(), None);
+    let config = config(block, four());
     let mut stream = Stream::open(g, &at(target), config).unwrap_or_else(|e| panic!("{e}"));
     let mut out = Vec::with_capacity(samples + block);
     while out.len() < samples {
@@ -191,13 +187,14 @@ fn a_streamed_synth_voice_is_the_whole_render_bit_for_bit_in_blocks_of_any_size(
     }
 }
 
-/// An open stream ends where its root is cut, the render's own end.
+/// An open stream ends where its root's support does, at a crop or where `exp` underflows,
+/// the render's own end.
 #[test]
-fn a_released_voice_ends_where_the_render_does() {
+fn an_open_stream_ends_where_its_support_does() {
     let g = composition();
-    for target in ["released"] {
+    for target in ["clipped", "decayed"] {
         let mut stream =
-            Stream::open(&g, &at(target), config(441, Range::default(), None)).expect("opens");
+            Stream::open(&g, &at(target), config(441, Range::default())).expect("opens");
         let mut heard = Vec::new();
         while let Some(block) = stream.next_block().expect("a block") {
             heard.extend_from_slice(block.plane(0));
@@ -231,7 +228,7 @@ fn a_stream_from_a_later_start_is_the_whole_render_over_the_same_range() {
             whole(&g, target, (start + samples) as usize)[start as usize..],
             "{target}: a late start trims the output alone"
         );
-        let mut stream = Stream::open(&g, &at(target), self::config(777, range, None))
+        let mut stream = Stream::open(&g, &at(target), self::config(777, range))
             .unwrap_or_else(|e| panic!("{target}: {e}"));
         let mut heard = Vec::new();
         while let Some(block) = stream.next_block().expect("a block") {
@@ -247,7 +244,7 @@ fn a_stream_from_a_later_start_is_the_whole_render_over_the_same_range() {
 fn a_named_argument_of_the_target_is_a_binding_the_stream_holds() {
     let g = composition();
     let target = sva_ast::parse_expr("@piano3(t, f0=261.63, vel=4.5)").expect("a ref");
-    let mut stream = Stream::open(&g, &target, config(2_000, four(), None)).expect("a stream");
+    let mut stream = Stream::open(&g, &target, config(2_000, four())).expect("a stream");
     let first = stream.next_block().expect("a block").expect("no end");
     assert_eq!(first.plane(0), &whole(&g, "note", 2_000)[..]);
     let refused = stream
@@ -260,45 +257,32 @@ fn a_named_argument_of_the_target_is_a_binding_the_stream_holds() {
 #[test]
 fn a_node_no_block_reads_alone_refuses_the_stream() {
     let g = composition();
-    let refused = Stream::open(&g, &at("ahead"), config(256, four(), None))
+    let refused = Stream::open(&g, &at("ahead"), config(256, four()))
         .err()
         .expect("a read ahead refuses");
     assert_eq!(refused.code(), "engine.no_stream", "{refused}");
 }
 
-/// An open stream ends where the render of it is cut; one never cut streams on for as long
-/// as it is pulled.
+/// A root whose support never ends streams on for as long as it is pulled, where a whole
+/// render of it refuses.
 #[test]
-fn an_open_stream_ends_where_its_render_is_cut_or_streams_on_while_pulled() {
+fn an_open_stream_whose_support_never_ends_streams_on_while_pulled() {
     let g = composition();
-    let sixteen = Some(2f64.powi(-16));
-    for target in ["damped"] {
-        let mut stream = Stream::open(&g, &at(target), config(441, Range::default(), sixteen))
-            .expect("a cut end");
-        let mut heard = Vec::new();
-        while let Some(block) = stream.next_block().expect("a block") {
-            heard.extend_from_slice(block.plane(0));
-        }
-        assert_eq!(Some(heard.len() as i64), stream.end());
-        let cut = RenderConfig {
-            decay_floor: sixteen,
-            ..RenderConfig::at(RATE)
-        };
-        let want = read_through(&g, target, cut);
-        sounds(&want);
-        assert_eq!(heard, want, "{target}");
-    }
-    for target in ["held", "tone", "bar"] {
-        let mut stream = Stream::open(&g, &at(target), config(4_410, Range::default(), sixteen))
+    for target in ["held", "tone", "bar", "damped"] {
+        let mut stream = Stream::open(&g, &at(target), config(4_410, Range::default()))
             .unwrap_or_else(|e| panic!("{target}: {e}"));
         let mut heard = Vec::new();
         for _ in 0..30 {
-            let block = stream.next_block().expect("a block").expect("never cut");
+            let block = stream.next_block().expect("a block").expect("no end");
             heard.extend_from_slice(block.plane(0));
         }
         assert_eq!(stream.end(), None, "{target}");
         sounds(&heard[heard.len() - 4_410..]);
     }
+    let refused = render(&g, "at_damped", RenderConfig::at(RATE), None)
+        .err()
+        .expect("an open render with no end");
+    assert_eq!(refused.code(), "render.no_end", "{refused}");
 }
 
 /// A range with an end ends there whatever holds under it.
@@ -310,7 +294,7 @@ fn a_closed_stream_ends_at_its_range() {
         end: Some(1_000),
     };
     let mut stream =
-        Stream::open(&g, &at("tone"), config(256, range, None)).expect("a closed range opens");
+        Stream::open(&g, &at("tone"), config(256, range)).expect("a closed range opens");
     let mut heard = 0;
     while let Some(block) = stream.next_block().expect("a block") {
         heard += block.len();

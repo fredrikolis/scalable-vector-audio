@@ -1,4 +1,4 @@
-// Concern: names the six finite-difference models, opens a solver or its tail bound, holds the ceiling and the drive two share | Non-concern: a model's own grid (the siblings) | IO: (Params) -> a Solver
+// Concern: names the six finite-difference models, opens a solver, holds the ceiling and the drive two share | Non-concern: a model's own grid (the siblings) | IO: (Params) -> a Solver
 
 pub(crate) mod arrow;
 mod ball;
@@ -6,17 +6,15 @@ pub mod botteldooren;
 pub mod bound;
 pub mod chaigne_askenfelt;
 pub mod chaigne_doutaut;
-mod chaigne_tail;
-pub use chaigne_tail::Walk;
 pub mod darabundit_scavone;
 pub mod hammer;
 pub mod rhaouti_chaigne_joly;
 pub(crate) mod stiff_string;
-pub(crate) mod string_tail;
+pub(crate) mod string_energy;
 pub mod tonehole;
 #[cfg(test)]
 mod twofold;
-mod unison_tail;
+mod unison_energy;
 pub mod willemsen_bilbao_serafin;
 
 use std::any::Any;
@@ -129,31 +127,6 @@ pub fn site(p: &Params, rate: u32) -> Result<Box<dyn Solver>, SampleError> {
             Box::new(BotteldoorenSite::new(p, sr))
         }
     })
-}
-
-/// `at[j]` bounds every sample from `j * step` on; `held` if held under `level` early.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Tail {
-    pub at: Vec<f64>,
-    pub held: bool,
-}
-
-pub fn tail(p: &Params, rate: u32, step: usize, points: usize, level: f64) -> Result<Tail, String> {
-    match p {
-        Params::ChaigneAskenfelt(p) => chaigne_tail::tail(p, f64::from(rate), step, points, level),
-        other => Err(format!("the {} solver", other.name())),
-    }
-}
-
-/// [`tail`] from the state `solver` holds now; `None` for a model with no bound.
-pub fn tail_from(
-    solver: &dyn Solver,
-    step: usize,
-    points: usize,
-    level: f64,
-) -> Option<Result<Tail, String>> {
-    let site = solver.as_any().downcast_ref::<ChaigneAskenfeltSite>()?;
-    Some(chaigne_tail::tail_from(site, step, points, level))
 }
 
 fn under_ceiling(model: &'static str, nodes: f64, ceiling: usize) -> Result<(), SampleError> {

@@ -2,9 +2,9 @@
 
 mod answer;
 pub(crate) mod bound;
-mod cut;
 pub(crate) mod extent;
 mod pointwise;
+mod quiet;
 mod reach;
 mod sampled;
 mod slots;
@@ -34,7 +34,7 @@ use crate::typing::{self, Typing, Value};
 
 /// Where a target is read, grid samples from sample 0 at t = 0. An unstated start is where
 /// the root starts, before t = 0 only where its support reaches there; an unstated end is
-/// where the root, cut at the decay floor, ends.
+/// where its support ends.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Range {
     pub start: Option<i64>,
@@ -47,8 +47,6 @@ pub struct RenderConfig {
     pub range: Range,
     /// Where the render stops before the range ends; `None` reads the range to its end.
     pub until: Option<Until>,
-    /// Linear; the profile's own resolution where `None`.
-    pub decay_floor: Option<f64>,
     pub profile: Profile,
     /// What the caller means to read. An empty list is audio out, which collapses the root.
     pub asks: Vec<Ask>,
@@ -66,7 +64,6 @@ impl RenderConfig {
             rate,
             range: Range::default(),
             until: None,
-            decay_floor: None,
             profile: PSYCHOACOUSTIC_V1,
             asks: Vec::new(),
             flop_budget: PSYCHOACOUSTIC_V1.flop_budget,
@@ -93,7 +90,7 @@ impl RenderConfig {
 }
 
 pub use answer::{answer, answer_buffer, sketch_atom};
-pub use cut::{Cut, Cuts, Missing, Uncut};
+pub use quiet::{QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, quiet_tails};
 pub use stream::{Block, Checkpoint, STREAMED, Stream, StreamConfig};
 pub use until::Until;
 
@@ -109,15 +106,10 @@ pub struct Render {
     pub schedule: Schedule,
     pub bindings: BTreeMap<NodeId, Vec<Binding>>,
     pub cache_stats: Option<CacheStats>,
-    /// The grid instants the cut decided, and what they cost.
-    pub proofs: u64,
-    pub proof_ops: u128,
-    pub cuts: Cuts,
     /// The samples the root was read over; `None` where no reading needed any.
     pub range: Option<Extent>,
     pub(crate) unranged: Option<EngineError>,
     pub(crate) extents: extent::Extents,
-    pub(crate) played: BTreeMap<NodeId, bound::Played>,
     identities: std::cell::RefCell<BTreeMap<NodeId, sva_formula::Hash>>,
 }
 
@@ -128,11 +120,6 @@ impl Render {
         config: RenderConfig,
         schedule: Schedule,
     ) -> Self {
-        let cuts = Cuts {
-            bits: config.profile.precision_bits,
-            floor: config.decay_floor.unwrap_or(config.profile.half_lsb()),
-            ..Cuts::default()
-        };
         Render {
             root,
             tys,
@@ -145,13 +132,9 @@ impl Render {
             schedule,
             bindings: BTreeMap::new(),
             cache_stats: None,
-            proofs: 0,
-            proof_ops: 0,
-            cuts,
             range: None,
             unranged: None,
             extents: extent::Extents::default(),
-            played: BTreeMap::new(),
             identities: Default::default(),
         }
     }
@@ -162,36 +145,17 @@ impl Render {
     }
 
     /// `key` with what a node's samples read beyond its content: the precision a collapse
-    /// truncates at, and every cut under it.
-    pub(crate) fn keyed(
-        &self,
-        id: NodeId,
-        key: sva_formula::Hash,
-    ) -> Result<sva_formula::Hash, EngineError> {
-        let mut cuts = Vec::new();
-        if !self.extents.cuts.is_empty() {
-            let under = cut::under(&self.tys, id);
-            for (node, at) in &self.extents.cuts {
-                if under.contains(node) {
-                    cuts.push((self.identity(*node)?, *at));
-                }
-            }
-        }
-        let bits = self.config.profile.precision_bits;
-        Ok(crate::cache::precise_key(key, bits, &cuts))
+    /// truncates at.
+    pub(crate) fn keyed(&self, key: sva_formula::Hash) -> sva_formula::Hash {
+        crate::cache::precise_key(key, self.config.profile.precision_bits)
     }
 
     pub fn work(&self) -> crate::flops::Work {
         crate::flops::Work {
             samples: self.range.map_or(0, |range| range.len() as u64),
-            proofs: self.proofs,
             priced_flops: crate::flops::total(self),
             waves: None,
         }
-    }
-
-    pub(crate) fn priced(&self) -> u128 {
-        crate::flops::total(self) + self.proof_ops
     }
 
     pub fn output(&self, node: NodeId) -> Option<Buffer> {
@@ -283,8 +247,7 @@ pub(crate) fn prepared<'g>(graph: &'g Graph, target: &str) -> Result<Prepared<'g
     })
 }
 
-/// The range and every extent under it are decided before the first sample, each node cut
-/// where it falls under the decay floor.
+/// The range and every extent under it are decided before the first sample.
 pub(crate) fn run(
     prepared: Prepared,
     config: RenderConfig,
@@ -338,11 +301,11 @@ fn planned(prepared: Prepared<'_>, config: RenderConfig) -> Result<Planned<'_>, 
         .collect();
     let mut held = Render::shell(tys, root, config, schedule);
     held.bindings = bindings;
-    reach::ranged(&mut held, &audio, &costed)?;
+    reach::ranged(&mut held, &costed)?;
     Ok((held, instances, target, looped, costed))
 }
 
-/// The range, every extent and every cut a render of `target` decides, and no sample.
+/// The range and every extent a render of `target` decides, and no sample.
 pub fn plan(graph: &Graph, target: &str, config: RenderConfig) -> Result<Render, EngineError> {
     planned(prepared(graph, target)?, config).map(|(held, ..)| held)
 }
@@ -454,7 +417,7 @@ fn affordable(held: &Render) -> Result<(), EngineError> {
     if held.schedule.materialize.is_empty() {
         return Ok(());
     }
-    let total = held.priced();
+    let total = crate::flops::total(held);
     if total <= held.config.flop_budget {
         return Ok(());
     }
@@ -463,9 +426,9 @@ fn affordable(held: &Render) -> Result<(), EngineError> {
     Err(EngineError::refused(Diagnostic {
         code: "collapse.over_budget".to_string(),
         message: format!(
-            "this render counts {} operations and its cuts' bounds {}, over the budget of {}; \
-             `{}` dominates it at {} by {}",
-            counted.total, held.proof_ops, counted.budget, over.node, over.subtree, over.route
+            "this render counts {} operations, over the budget of {}; `{}` dominates it at {} \
+             by {}",
+            counted.total, counted.budget, over.node, over.subtree, over.route
         ),
         location: Located::at(held.tys.name(held.root), None),
         help: format!("pass --flop-budget {total} to render it anyway"),
@@ -607,8 +570,7 @@ fn materialize(held: &mut Render, id: NodeId, lenses: &Lenses) -> Result<(), Eng
         for read in reads(held, id) {
             materialize(held, read, lenses)?;
         }
-        let played = held.played.remove(&id);
-        return sampled::run(held, id, key.map(|(key, _)| key), lens.as_ref(), played);
+        return sampled::run(held, id, key.map(|(key, _)| key), lens.as_ref());
     }
     for operand in schedule::materialized_operands(&held.tys, id) {
         materialize(held, operand, lenses)?;
@@ -668,13 +630,10 @@ fn collapse_closed_form(
     };
     let width = held.tys.ty(id).width as usize;
     let key = match identity {
-        Some(identity) => Some(held.keyed(
-            id,
-            crate::cache::mixed(
-                crate::cache::buffer_key(identity, rate, over, width, score),
-                &route,
-            ),
-        )?),
+        Some(identity) => Some(held.keyed(crate::cache::mixed(
+            crate::cache::buffer_key(identity, rate, over, width, score),
+            &route,
+        ))),
         None => None,
     };
     if let Ok(sum) = &sum {
@@ -780,16 +739,13 @@ fn frames_of(held: &mut Render, id: NodeId, cache: Option<&Lens>) -> Result<(), 
         .ok_or_else(|| not_frames(held, id))?;
     let key = match cache {
         Some(_) => Some(frames_key(
-            held.keyed(
-                source,
-                crate::cache::buffer_key(
-                    held.identity(source)?,
-                    buffer.rate,
-                    buffer.extent(),
-                    buffer.width,
-                    AliasScore::NotAsked,
-                ),
-            )?,
+            held.keyed(crate::cache::buffer_key(
+                held.identity(source)?,
+                buffer.rate,
+                buffer.extent(),
+                buffer.width,
+                AliasScore::NotAsked,
+            )),
             window,
             hop,
         )),

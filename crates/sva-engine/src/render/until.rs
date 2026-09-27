@@ -1,4 +1,4 @@
-// Concern: the condition a render stops at, and the first sample it holds at | Non-concern: parsing it, where a render's extent ends (cut/) | IO: (Until, the root's samples) -> a sample
+// Concern: the condition a render stops at, and the first sample it holds at | Non-concern: parsing it, where a render's extent ends (reach.rs) | IO: (Until, the root's samples) -> a sample
 
 use std::fmt;
 

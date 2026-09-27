@@ -205,7 +205,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 78] = [
+pub static REGISTRY: [(&str, &str); 75] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -468,18 +468,6 @@ pub static REGISTRY: [(&str, &str); 78] = [
     ),
     (
         "render.no_end",
-        "an interval with no end whose root's bound stays over the decay floor as far as the budget looks",
-    ),
-    (
-        "render.never_ends",
-        "an interval with no end over a root that returns to a level at or over the decay floor forever",
-    ),
-    (
-        "render.no_bound",
-        "an interval with no end over a root no bound is derived for",
-    ),
-    (
-        "render.floor_below_resolution",
-        "a decay floor under the resolution the render's bits write",
+        "an interval with no end over a root whose support never ends",
     ),
 ];

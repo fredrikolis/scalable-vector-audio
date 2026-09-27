@@ -18,7 +18,6 @@ pub use live::Span;
 pub use ops::Layout as MachineLayout;
 
 /// The op array, one width per slot, and the call sites the run opens state for.
-#[derive(Clone)]
 struct Program {
     ops: Vec<Op>,
     widths: Vec<usize>,
@@ -60,44 +59,7 @@ impl NodeRenderer {
 #[derive(Clone)]
 enum State {
     Filter(FilterSite),
-    Physics(Box<dyn Solver>, Heard),
-}
-
-/// A physics site's loudest sample in each chunk of `step` steps; `step` 0 keeps none.
-#[derive(Clone, Debug, Default)]
-pub struct Heard {
-    step: u64,
-    count: u64,
-    open: f64,
-    chunks: Vec<f64>,
-}
-
-impl Heard {
-    pub(crate) fn every(step: u64) -> Heard {
-        Heard {
-            step,
-            ..Heard::default()
-        }
-    }
-
-    pub(crate) fn note(&mut self, v: f64) {
-        if self.step == 0 {
-            return;
-        }
-        self.open = self.open.max(v.abs());
-        self.count += 1;
-        if self.count.is_multiple_of(self.step) {
-            self.chunks.push(std::mem::take(&mut self.open));
-        }
-    }
-
-    pub fn count(&self) -> u64 {
-        self.count
-    }
-
-    pub fn chunks(&self) -> &[f64] {
-        &self.chunks
-    }
+    Physics(Box<dyn Solver>),
 }
 
 impl Clone for Box<dyn Solver> {
@@ -128,14 +90,13 @@ fn open(p: &Program, rate: u32) -> Result<Vec<State>, SampleError> {
                     &[0.0],
                     f64::from(rate),
                 )),
-                Site::Physics(params) => State::Physics(site(params, rate)?, Heard::default()),
+                Site::Physics(params) => State::Physics(site(params, rate)?),
             })
         })
         .collect()
 }
 
 /// One value slot per op and a stack of the indices waiting. Nothing allocates in the loop.
-#[derive(Clone)]
 struct Stack {
     values: Vec<Vec<f64>>,
     pending: Vec<usize>,
@@ -157,7 +118,6 @@ fn part(v: &[f64], c: usize) -> f64 {
 
 /// One compiled node and every call site's state, run over any span of the grid in order.
 /// A span continues exactly where the last ended, so blocks write the samples one run would.
-#[derive(Clone)]
 pub struct Machine {
     program: Program,
     states: Vec<State>,
@@ -228,22 +188,7 @@ impl Machine {
     /// Call site `site`'s solver as it stands now, where that site is one.
     pub fn solver(&self, site: usize) -> Option<&dyn Solver> {
         match self.states.get(site)? {
-            State::Physics(solver, _) => Some(solver.as_ref()),
-            State::Filter(_) => None,
-        }
-    }
-
-    pub fn hear(&mut self, step: u64) {
-        for state in &mut self.states {
-            if let State::Physics(_, heard) = state {
-                heard.step = step;
-            }
-        }
-    }
-
-    pub fn heard(&self, site: usize) -> Option<&Heard> {
-        match self.states.get(site)? {
-            State::Physics(_, heard) => Some(heard),
+            State::Physics(solver) => Some(solver.as_ref()),
             State::Filter(_) => None,
         }
     }
@@ -251,7 +196,7 @@ impl Machine {
     pub fn filter(&self, site: usize) -> Option<&FilterSite> {
         match self.states.get(site)? {
             State::Filter(filter) => Some(filter),
-            State::Physics(..) => None,
+            State::Physics(_) => None,
         }
     }
 
@@ -277,12 +222,9 @@ impl Machine {
                 (
                     Site::Physics(a),
                     Site::Physics(b),
-                    State::Physics(solver, heard),
-                    State::Physics(motion, held),
-                ) if a.differs_in_release_alone(b) => {
-                    *heard = held.clone();
-                    solver.take_motion(motion.as_ref())
-                }
+                    State::Physics(solver),
+                    State::Physics(motion),
+                ) if a.differs_in_release_alone(b) => solver.take_motion(motion.as_ref()),
                 _ => false,
             };
             if !taken {
@@ -415,11 +357,10 @@ fn fill(
             filter.process(arg(0), arg(1), arg(2), arg(3), result, sr, n);
         }
         Op::Physics { site, .. } => {
-            let State::Physics(solver, heard) = &mut states[site.0 as usize] else {
+            let State::Physics(solver) = &mut states[site.0 as usize] else {
                 unreachable!("a physics op names a physics site")
             };
             result[0] = solver.step()?;
-            heard.note(result[0]);
         }
     }
     Ok(())

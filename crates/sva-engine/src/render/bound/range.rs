@@ -8,8 +8,8 @@ use sva_samples::collapse::run::{bound, reach};
 /// A written form compiled once, so every instant reads it without normalizing again.
 pub(super) enum Range {
     Atoms(Vec<SpectralAtom>),
-    /// A run's lines, the most they reach and its own rounding bound.
-    Run(Vec<SpectralAtom>, f64, f64),
+    /// The most a run's lines reach, and its own rounding bound.
+    Run(f64, f64),
     Real(f64),
     Line,
     Node(NodeId),
@@ -23,13 +23,6 @@ pub(super) enum Range {
     Crop(Box<Range>, f64, f64),
     Shift(Box<Range>, f64),
     Wide(Vec<Range>),
-}
-
-/// How a node's own bounds reach a written form, and the rate its lines are sampled at.
-pub(super) struct Reads<'a> {
-    pub(super) node: &'a dyn Fn(NodeId, f64) -> f64,
-    pub(super) floor: &'a dyn Fn(NodeId) -> f64,
-    pub(super) rate: f64,
 }
 
 /// One rounding's relative size, with room for the few a single constructor makes.
@@ -80,10 +73,9 @@ impl Range {
     /// The constructor no bound is derived for, where one is reached.
     pub(super) fn of(f: &Body) -> Result<Range, &'static str> {
         if let Body::Run(run) = f
-            && let Ok(sum) = sva_formula::normalize(f, Var::T)
+            && sva_formula::normalize(f, Var::T).is_ok()
         {
-            let atoms = sum.atoms().copied().collect();
-            return Ok(Range::Run(atoms, reach(run), bound(run)));
+            return Ok(Range::Run(reach(run), bound(run)));
         }
         if holds_no_run(f)
             && let Ok(sum) = sva_formula::normalize(f, Var::T)
@@ -143,83 +135,6 @@ impl Range {
         }
     }
 
-    /// The terms one instant's bound evaluates, what reading it once costs.
-    pub(super) fn size(&self) -> usize {
-        match self {
-            Range::Add(parts)
-            | Range::Mul(parts)
-            | Range::Max(parts)
-            | Range::Min(parts)
-            | Range::Wide(parts) => 1 + parts.iter().map(Range::size).sum::<usize>(),
-            Range::Div(a, b) => 1 + a.size() + b.size(),
-            Range::Pow(a, _) | Range::Map(_, a) | Range::Crop(a, ..) | Range::Shift(a, _) => {
-                1 + a.size()
-            }
-            Range::Atoms(atoms) | Range::Run(atoms, ..) => atoms.len().max(1),
-            Range::Real(_) | Range::Line | Range::Node(_) => 1,
-        }
-    }
-
-    /// A level the value returns to forever: `last` is the latest instant a tail is read
-    /// from, and each operand's own tail bounds what it returns to.
-    pub(super) fn floor(&self, last: f64, reads: &Reads) -> f64 {
-        let tail = |r: &Range| {
-            r.from(last, reads.node)
-                .map_or(f64::INFINITY, |s| s.reach() + s.err)
-        };
-        // A value that stays on one side of zero from `last` on stays that far from it.
-        let apart = self.from(last, reads.node).map_or(0.0, |s| {
-            let gap = match (s.lo > 0.0, s.hi < 0.0) {
-                (true, _) => s.lo,
-                (_, true) => -s.hi,
-                _ => 0.0,
-            };
-            (gap - s.err).max(0.0)
-        });
-        let kept = match self {
-            Range::Atoms(atoms) | Range::Run(atoms, ..) => {
-                super::floor::of_atoms(atoms, reads.rate)
-            }
-            Range::Real(c) => c.abs(),
-            Range::Line => f64::INFINITY,
-            Range::Node(id) => (reads.floor)(*id),
-            Range::Add(parts) => {
-                let floors: Vec<f64> = parts.iter().map(|p| p.floor(last, reads)).collect();
-                let tails: Vec<f64> = parts.iter().map(tail).collect();
-                super::floor::summed(&floors, &tails)
-            }
-            Range::Mul(parts) => {
-                let (constant, moving): (Vec<&Range>, Vec<&Range>) =
-                    parts.iter().partition(|p| matches!(p, Range::Real(_)));
-                let scale: f64 = constant
-                    .iter()
-                    .map(|p| match p {
-                        Range::Real(c) => c.abs(),
-                        _ => 1.0,
-                    })
-                    .product();
-                match moving.as_slice() {
-                    [one] => one.floor(last, reads) * scale,
-                    _ => 0.0,
-                }
-            }
-            Range::Div(num, den) => match **den {
-                Range::Real(d) if d != 0.0 => num.floor(last, reads) / d.abs(),
-                _ => 0.0,
-            },
-            Range::Pow(base, n) if *n >= 1 => base.floor(last, reads).powi(*n),
-            Range::Map(op, arg) => super::floor::through(*op, arg.floor(last, reads)),
-            Range::Crop(of, _, r) if r.is_infinite() => of.floor(last, reads),
-            Range::Shift(of, _) => of.floor(last, reads),
-            Range::Wide(parts) => parts
-                .iter()
-                .map(|p| p.floor(last, reads))
-                .fold(0.0, f64::max),
-            _ => 0.0,
-        };
-        kept.max(apart)
-    }
-
     /// Interval arithmetic over `s >= t`: each operand's span holds over the same instants,
     /// so their combination holds too. `node` answers a node's magnitude from an instant on,
     /// its own rounding included. A time read slightly off is still an instant from `t` on.
@@ -238,7 +153,7 @@ impl Range {
                 let terms = atoms.len() as f64 + TRANSFORM_OPS;
                 Some(Span::new(-sum, sum, OP * terms * sum))
             }
-            Range::Run(_, reach, err) => Some(Span::new(-reach, *reach, *err)),
+            Range::Run(reach, err) => Some(Span::new(-reach, *reach, *err)),
             Range::Real(c) => Some(Span::new(*c, *c, 0.0)),
             Range::Line => Some(Span::new(t, f64::INFINITY, 0.0)),
             Range::Node(id) => magnitude(node(*id, t)),

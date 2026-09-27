@@ -3,7 +3,7 @@
 mod helpers;
 
 use helpers::scratch;
-use sva_cli::{Decision, lint};
+use sva_cli::lint;
 
 fn doc(models: &str) -> String {
     format!(
@@ -25,7 +25,7 @@ fn a_refusing_lint_still_lists_its_warnings() {
     std::fs::write(dir.join("variables/key"), format!("{}sin(t)\n", doc("key")))
         .expect("a key that is no pitch");
 
-    let Err(refused) = lint(&dir, None, &Decision::default()) else {
+    let Err(refused) = lint(&dir, None) else {
         panic!("a node with no `;`-comment refuses");
     };
     let answered = refused.diagnostics();
@@ -60,7 +60,7 @@ fn a_refusing_targeted_lint_still_lists_every_violation() {
     )
     .expect("two call sites");
 
-    let Err(refused) = lint(&dir, Some("@tone([0, 1s], hz=1)"), &Decision::default()) else {
+    let Err(refused) = lint(&dir, Some("@tone([0, 1s], hz=1)")) else {
         panic!("a node with no `;`-comment refuses, whatever else its file is");
     };
     let answered = refused.diagnostics();
