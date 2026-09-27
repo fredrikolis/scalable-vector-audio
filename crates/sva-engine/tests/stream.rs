@@ -266,9 +266,10 @@ fn a_node_no_block_reads_alone_refuses_the_stream() {
     assert_eq!(refused.code(), "engine.no_stream", "{refused}");
 }
 
-/// An open stream ends where the render of it is cut; one never cut refuses at its opening.
+/// An open stream ends where the render of it is cut; one never cut streams on for as long
+/// as it is pulled.
 #[test]
-fn an_open_stream_ends_where_its_render_is_cut_or_refuses_at_its_opening() {
+fn an_open_stream_ends_where_its_render_is_cut_or_streams_on_while_pulled() {
     let g = composition();
     let sixteen = Some(2f64.powi(-16));
     for target in ["damped"] {
@@ -287,15 +288,16 @@ fn an_open_stream_ends_where_its_render_is_cut_or_refuses_at_its_opening() {
         sounds(&want);
         assert_eq!(heard, want, "{target}");
     }
-    for (target, code) in [
-        ("held", "render.never_ends"),
-        ("tone", "render.never_ends"),
-        ("bar", "render.no_bound"),
-    ] {
-        let refused = Stream::open(&g, &at(target), config(256, Range::default(), sixteen))
-            .err()
-            .expect("never cut");
-        assert_eq!(refused.code(), code, "{target}: {refused}");
+    for target in ["held", "tone", "bar"] {
+        let mut stream = Stream::open(&g, &at(target), config(4_410, Range::default(), sixteen))
+            .unwrap_or_else(|e| panic!("{target}: {e}"));
+        let mut heard = Vec::new();
+        for _ in 0..30 {
+            let block = stream.next_block().expect("a block").expect("never cut");
+            heard.extend_from_slice(block.plane(0));
+        }
+        assert_eq!(stream.end(), None, "{target}");
+        sounds(&heard[heard.len() - 4_410..]);
     }
 }
 

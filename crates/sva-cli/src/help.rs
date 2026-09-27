@@ -175,8 +175,8 @@ EXAMPLES:
   sva-cli new song1 && cd song1
   sva-cli render '@master' --representation samples=/tmp/song1.wav
   sva-cli render '@master([0, 8b])' --representation 'ledger(depth=2),loudness'
-  sva-cli render '@voice/note([1s, inf), f0=C4, release=0.5s)' --decay-floor -96 \
-    --until 'envelope(t) < -60db and t > 2s' --representation samples=/tmp/note.wav
+  sva-cli render '@voice/note([0, inf), f0=C4, len=2s)' --decay-floor -96 \
+    --until 'envelope(t) < -60db and t > 1s' --representation samples=/tmp/note.wav
   sva-cli render '@chord/home' --representation 'spectrum(peaks=8)' --rate 48000
   sva-cli lint
   sva-cli lint '@master' --bits 16

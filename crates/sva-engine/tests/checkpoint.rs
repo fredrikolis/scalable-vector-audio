@@ -37,6 +37,7 @@ fn composition(released: f64) -> Graph {
                 "sin(2*pi*220*t)*(crop(1, 0s, release) + crop(exp(0 - (t - release)/0.01), \
                  release, 60s))\n",
             ),
+            ("faded", &format!("@fading(t, release={released})\n")),
             ("string", "chaigne_askenfelt(523.25, release=release)\n"),
             ("struck", &format!("@string(t, release={released})\n")),
             ("note", "@piano(t, f0=261.63, vel=4.5, release=release)\n"),
@@ -190,9 +191,9 @@ fn a_checkpoint_resumed_on_another_stream_refuses() {
     assert_eq!(refused.code(), "engine.checkpoint_mismatch", "{refused}");
 }
 
-/// Released at a checkpoint, a stream over the interval the released render ends at is
-/// that render, sample for sample: every node cut where the render cuts it. Nothing a longer
-/// render writes after the end is heard.
+/// Held open-ended as a keyboard holds a key, then released at a checkpoint, a stream ends
+/// where the released render does and is that render, sample for sample: every node cut
+/// where the render cuts it. Nothing a longer render writes after the end is heard.
 fn streams_until_cut(target: &str, whole_target: &str, k: usize) -> usize {
     let level = 2f64.powi(-16);
     let release = k as f64 / f64::from(RATE);
@@ -208,7 +209,7 @@ fn streams_until_cut(target: &str, whole_target: &str, k: usize) -> usize {
         want.len() > k,
         "{target}: cut before the release tests nothing"
     );
-    let mut held = opened_to(&g, target, Some(want.len() as i64));
+    let mut held = opened_to(&g, target, None);
     let mut heard = blocks(&mut held, k / BLOCK);
     let mut released = held
         .resume(&held.checkpoint(), &[("release".into(), release)])
@@ -224,6 +225,14 @@ fn streams_until_cut(target: &str, whole_target: &str, k: usize) -> usize {
         .fold(0.0f64, |m, v| m.max(v.abs()));
     assert!(after < level, "{target}: {after} heard after the end");
     heard.len()
+}
+
+/// A key held past the first second, over a level that never decays or a string still
+/// ringing, streams on until key-up, and its released tail ends at the cut.
+#[test]
+fn a_note_held_past_a_second_released_at_a_checkpoint_streams_until_it_is_cut() {
+    streams_until_cut("fading", "faded", 64 * BLOCK);
+    streams_until_cut("string", "struck", 64 * BLOCK);
 }
 
 #[test]

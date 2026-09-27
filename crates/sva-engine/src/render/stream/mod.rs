@@ -35,7 +35,8 @@ pub struct Stream {
     root: usize,
     start: i64,
     at: i64,
-    /// The range's end, or where the root, cut, ends where the range states none.
+    /// The range's end, or where the root, cut, ends where the range states none; `i64::MAX`
+    /// where the root is never cut, pulled on until its consumer stops.
     last: i64,
     frame: usize,
     end: Option<i64>,
@@ -102,7 +103,7 @@ impl Stream {
         let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
         let audio = schedule.materialize.clone();
         let mut shell = Render::shell(held.tys, held.root, config.render.clone(), schedule);
-        reach::ranged(&mut shell, &audio, &audio)?;
+        reach::streamed(&mut shell, &audio)?;
         let range = shell.range.expect("audio out decides a range");
         let rate = config.render.rate;
         let frame = ((DEFAULT_FRAME_SECS * f64::from(rate)).round() as usize).max(1);

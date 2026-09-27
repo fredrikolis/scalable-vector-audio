@@ -581,7 +581,8 @@ fn builtins_cross_with_what_each_named_argument_means() {
 }
 
 /// An open render ends where its root is cut at the decay floor: the echoes of a 50 ms burst
-/// fall under 24 bits after the fifteenth. A held sine is never cut.
+/// fall under 24 bits after the fifteenth. A held sine is never cut, so its render refuses and
+/// its stream plays on for as long as it is pulled.
 #[wasm_bindgen_test]
 fn an_open_render_ends_where_its_root_is_cut() {
     let mut held = Composition::new(None);
@@ -604,6 +605,11 @@ fn an_open_render_ends_where_its_root_is_cut() {
         "{}",
         as_text(&refused)
     );
+    let mut sine = held
+        .stream("sin(2*pi*100*t)", BLOCK, options(&[]))
+        .unwrap_or_else(|e| unreachable!("{}", as_text(&field(&e, "refusal"))));
+    let heard = blocks(&mut sine, 80);
+    assert_eq!((heard.len(), sine.end()), (80 * BLOCK, None));
 }
 
 const BLOCK: usize = 256;

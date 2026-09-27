@@ -263,11 +263,9 @@ impl Chosen {
     }
 }
 
-/// A level the root provably returns to forever, at or above its share of the floor, or a
-/// bound with no finite value to fall from.
+/// A level the root returns to forever, over its share; an infinite bound may yet fall.
 fn never(root: &Found, share: f64) -> bool {
-    root.as_ref()
-        .is_ok_and(|e| e.floor >= share || !e.at.last().is_some_and(|v| v.is_finite()))
+    root.as_ref().is_ok_and(|e| e.floor >= share)
 }
 
 /// Every node the render holds whose bound, or whose gain to the output, is not derived.
