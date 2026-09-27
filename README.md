@@ -109,22 +109,24 @@ the node that made it discrete:
 "ty": "samples", "discrete": "sample(chord)", "down": ["chord", "master"]
 ```
 
-`master` is under `down` because `self` reads it. `sva-cli render chord --as lines` refuses
-and says why: the envelope's window widens every line, so `chord` has no line list. `--as
-atoms` prints its terms as they stand, off the expression, with no buffer allocated.
+`master` is under `down` because `self` reads it. `sva-cli render '@chord' --representation
+lines` refuses and says why: the envelope's window widens every line, so `chord` has no line
+list. `atoms` prints its terms as they stand, off the expression, with no buffer allocated.
 
 ```
-sva-cli render master --as flops
-sva-cli render master --as samples=/tmp/song.wav --sample-rate 48000
+sva-cli render '@master' --representation flops
+sva-cli render '@master' --representation samples=/tmp/song.wav --rate 48000
 ```
 
-`flops` counts the render before running it, 1,896,300 operations here against the profile's
+`flops` counts the render before running it, 1,243,620 operations here against the profile's
 1e10 budget; a render over that budget refuses, naming the node that dominates. The second
-line writes two seconds of 48 kHz float. `--as ledger` prints rms, peak and clipped per node.
+line writes 48 kHz float up to where the triad is proven silent, half a second in:
+`'@master([0, 2s])'` names an interval, and `--until` a condition that ends it sooner.
+`ledger` prints rms, peak and clipped per node.
 
 Every reading says whether it is `exact` or `measured`, under which profile and at which
 rate. No expression can read that rate as a number: `1sp` is the one literal measured in it,
-and a node that writes one is discrete. `--sample-rate` is legal with every `--as`.
+and a node that writes one is discrete. `--rate` is legal with every representation.
 
 `sva-cli builtins` prints every builtin with its arity and named arguments, the unit suffixes
 and the note-name grammar; the vocabulary is closed, so a name outside it does not parse.
