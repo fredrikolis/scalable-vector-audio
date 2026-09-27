@@ -94,6 +94,20 @@ fn an_envelope_released_at_half_a_second_falls_silent_where_its_release_crosses_
     );
 }
 
+/// The release nearly every envelope is written with, uncropped: its argument grows without
+/// bound, yet its rounding stays relative to its tiny value, so it ends where it crosses.
+#[test]
+fn an_uncropped_release_after_a_duration_falls_silent_where_it_crosses_24_bits() {
+    let files = [("note", "sin(2*pi*220*t)*exp(-max(0, t - 0.5)/0.1)\n")];
+    let render = until_quiet(&files, "note", deep()).expect("silence is proven");
+    let silent_from = 0.5 + 0.1 * (2f64.powi(24) / 2f64.sqrt()).ln();
+    let end = secs(&heard(&render));
+    assert!(
+        (silent_from - 0.05..=silent_from + 0.05).contains(&end),
+        "ends at {end}, silent from {silent_from}"
+    );
+}
+
 #[test]
 fn a_filtered_decay_falls_silent_where_its_input_does() {
     let files = [(

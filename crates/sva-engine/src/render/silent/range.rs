@@ -38,22 +38,41 @@ pub(super) const OP: f64 = 8.0 * f64::EPSILON;
 /// The rounding a transform over up to 2^64 bins adds, counted in terms.
 pub(super) const TRANSFORM_OPS: f64 = 64.0;
 
-/// `[lo, hi]` holds the exact value at every instant from one on, and `err` bounds how far a
-/// rendered value may sit from it.
+/// `[lo, hi]` holds the exact value `v` at every instant from one on, and `err + rel * |v|`
+/// bounds how far a rendered value may sit from it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Span {
     pub(super) lo: f64,
     pub(super) hi: f64,
     pub(super) err: f64,
+    rel: f64,
 }
 
 impl Span {
     fn new(lo: f64, hi: f64, err: f64) -> Span {
-        Span { lo, hi, err }
+        Span {
+            lo,
+            hi,
+            err,
+            rel: 0.0,
+        }
     }
 
     pub(super) fn reach(self) -> f64 {
         self.lo.abs().max(self.hi.abs())
+    }
+
+    fn absolute(self) -> Span {
+        match self.rel == 0.0 {
+            true => self,
+            false => Span::new(self.lo, self.hi, self.err + self.rel * self.reach()),
+        }
+    }
+
+    fn constant(self) -> Option<(f64, f64)> {
+        let s = self.absolute();
+        let rho = s.err / s.lo.abs();
+        (s.lo == s.hi && s.lo != 0.0 && s.lo.is_finite() && rho < 0.5).then_some((s.lo, rho))
     }
 }
 
@@ -188,6 +207,10 @@ impl Range {
     /// so their combination holds too. `node` answers a node's magnitude from an instant on,
     /// its own rounding included. A time read slightly off is still an instant from `t` on.
     pub(super) fn from(&self, t: f64, node: &dyn Fn(NodeId, f64) -> f64) -> Option<Span> {
+        self.span(t, node).map(Span::absolute)
+    }
+
+    fn span(&self, t: f64, node: &dyn Fn(NodeId, f64) -> f64) -> Option<Span> {
         let magnitude = |m: f64| Some(Span::new(-m, m, 0.0));
         match self {
             Range::Atoms(atoms) => {
@@ -203,19 +226,22 @@ impl Range {
             Range::Line => Some(Span::new(t, f64::INFINITY, 0.0)),
             Range::Node(id) => magnitude(node(*id, t)),
             Range::Add(parts) => {
-                let mut held = Span::new(0.0, 0.0, 0.0);
-                for p in parts {
-                    let s = p.from(t, node)?;
-                    held = Span::new(held.lo + s.lo, held.hi + s.hi, held.err + s.err);
-                    held.err += OP * held.reach();
-                }
-                Some(held)
+                let spans: Option<Vec<Span>> = parts.iter().map(|p| p.span(t, node)).collect();
+                Some(summed(&spans?))
             }
             Range::Mul(parts) => parts.iter().try_fold(Span::new(1.0, 1.0, 0.0), |held, p| {
-                Some(times(held, p.from(t, node)?))
+                let s = p.span(t, node)?;
+                Some(match (held.constant(), s.constant()) {
+                    (Some((c, rho)), _) => scaled(s, c, rho),
+                    (_, Some((c, rho))) => scaled(held, c, rho),
+                    _ => times(held.absolute(), s.absolute()),
+                })
             }),
             Range::Div(num, den) => {
                 let d = den.from(t, node)?;
+                if let Some((c, rho)) = d.constant() {
+                    return Some(scaled(num.span(t, node)?, 1.0 / c, rho / (1.0 - rho)));
+                }
                 let least = d.lo.abs().min(d.hi.abs()) - d.err;
                 if (d.lo <= 0.0 && d.hi >= 0.0) || least <= 0.0 {
                     return None;
@@ -236,6 +262,7 @@ impl Range {
                     false => inverse(held),
                 }
             }
+            Range::Map(Unary::Exp, arg) => Some(exp(arg.span(t, node)?)),
             Range::Map(op, arg) => mapped(*op, arg.from(t, node)?),
             Range::Max(parts) => fold(parts, t, node, f64::max),
             Range::Min(parts) => fold(parts, t, node, f64::min),
@@ -250,7 +277,7 @@ impl Range {
                     ))
                 }
             },
-            Range::Shift(of, by) => of.from(t - by, node),
+            Range::Shift(of, by) => of.span(t - by, node),
             Range::Wide(parts) => {
                 let (mut m, mut err) = (0.0f64, 0.0f64);
                 for p in parts {
@@ -262,6 +289,73 @@ impl Range {
             }
         }
     }
+}
+
+/// With one part unbounded, it and each partial sum is under `|v| + rest` plus rounding.
+fn summed(spans: &[Span]) -> Span {
+    let (lo, hi) = spans
+        .iter()
+        .fold((0.0, 0.0), |(lo, hi), s| (lo + s.lo, hi + s.hi));
+    let unbounded: Vec<usize> = (0..spans.len())
+        .filter(|j| !spans[*j].reach().is_finite())
+        .collect();
+    let adds = spans.len() as f64 * OP;
+    if let ([k], true) = (unbounded.as_slice(), adds < 0.5) {
+        let others = spans.iter().enumerate().filter(|(j, _)| j != k);
+        let rest: f64 = others.clone().map(|(_, s)| s.reach()).sum();
+        let own = others.map(|(_, s)| s.absolute().err).sum::<f64>()
+            + spans[*k].err
+            + spans[*k].rel * rest;
+        let grown = adds / (1.0 - adds);
+        let rel = spans[*k].rel;
+        return Span {
+            lo,
+            hi,
+            err: own + grown * (rest + own),
+            rel: rel + grown * (1.0 + rel),
+        };
+    }
+    let mut held = Span::new(0.0, 0.0, 0.0);
+    for s in spans.iter().map(|s| s.absolute()) {
+        held = Span::new(held.lo + s.lo, held.hi + s.hi, held.err + s.err);
+        held.err += OP * held.reach();
+    }
+    held
+}
+
+/// `|c' v' - c v| <= |c| err (1 + rho) + (rho + rel (1 + rho)) |c v|`, then one rounding.
+fn scaled(s: Span, c: f64, rho: f64) -> Span {
+    let (lo, hi) = product((s.lo, s.hi), (c, c));
+    Span {
+        lo,
+        hi,
+        err: c.abs() * s.err * (1.0 + rho) * (1.0 + OP),
+        rel: (rho + s.rel * (1.0 + rho)) * (1.0 + OP) + OP,
+    }
+}
+
+/// Error at most `g(x) = exp(x + d) (d + OP)`, `d = err + rel |x|`, which rises on `x >= 0`
+/// and on `x <= 0` until `(err + OP) / rel - 1 / (1 - rel)`.
+fn exp(s: Span) -> Span {
+    let (err, rel) = (s.err, s.rel);
+    if rel >= 0.5 || (rel > 0.0 && !s.hi.is_finite()) {
+        return mapped(Unary::Exp, s.absolute()).expect("exp maps every span");
+    }
+    let g = |x: f64| {
+        let d = err + rel * x.abs();
+        (x + d).exp() * (d + OP)
+    };
+    let mut most = g(s.hi);
+    if s.lo < 0.0 {
+        let top = s.hi.min(0.0);
+        most = most.max(g(top));
+        if rel > 0.0 {
+            let turn = ((err + OP) / rel - 1.0 / (1.0 - rel)).clamp(s.lo, top);
+            most = most.max(g(turn));
+        }
+    }
+    let most = if most.is_nan() { f64::INFINITY } else { most };
+    Span::new(s.lo.exp(), s.hi.exp(), most)
 }
 
 /// A run is summed by its own evaluator, so its lines' atoms never stand for it.
@@ -312,15 +406,24 @@ fn fold(
     pick: fn(f64, f64) -> f64,
 ) -> Option<Span> {
     let mut it = parts.iter();
-    let first = it.next()?.from(t, node)?;
-    it.try_fold(first, |held, p| {
-        let s = p.from(t, node)?;
-        Some(Span::new(
-            pick(held.lo, s.lo),
-            pick(held.hi, s.hi),
-            held.err.max(s.err),
-        ))
-    })
+    let first = it.next()?.span(t, node)?;
+    it.try_fold(first, |held, p| Some(picked(held, p.span(t, node)?, pick)))
+}
+
+/// Rounding picks the other operand only where `|v_other| <= |v|` plus both errors.
+fn picked(a: Span, b: Span, pick: fn(f64, f64) -> f64) -> Span {
+    let rel = a.rel.max(b.rel);
+    let (a, b, rel) = match rel < 0.5 {
+        true => (a, b, rel),
+        false => (a.absolute(), b.absolute(), 0.0),
+    };
+    let grown = (1.0 + rel) / (1.0 - rel);
+    Span {
+        lo: pick(a.lo, b.lo),
+        hi: pick(a.hi, b.hi),
+        err: a.err.max(b.err) * grown,
+        rel: rel * grown,
+    }
 }
 
 /// A zero factor is zero whatever the other spans, infinite ones included.
