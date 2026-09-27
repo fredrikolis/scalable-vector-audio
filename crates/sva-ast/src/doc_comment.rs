@@ -1,11 +1,6 @@
-// Concern: the grammar of a node's `Models | Neglects | IO | Tags` line, and tag house style | Non-concern: finding that line, how loudly to object (sva-cli) | IO: (&str) -> DocComment or why not
+// Concern: the grammar of a node's `Models | Neglects | IO | Tags` line | Non-concern: finding that line, how loudly to object (sva-cli) | IO: (&str) -> DocComment or why not
 
 use std::fmt;
-
-/// Above real compound tags (`sustained-pad`=13, `transient-response`=18).
-pub const MAX_TAG_CHARS: usize = 24;
-/// Few tags keep `Tags:` a quick triage aid, not a second `Neglects:` field.
-pub const MAX_TAGS: usize = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocComment {
@@ -73,17 +68,6 @@ pub fn parse(line: &str) -> Result<DocComment, String> {
     })
 }
 
-/// House style, not grammar: whether an odd tag is advised or refused is the caller's call.
-pub fn is_plain_tag(tag: &str) -> bool {
-    !tag.starts_with('-')
-        && !tag.ends_with('-')
-        && !tag.contains("--")
-        && tag.chars().count() <= MAX_TAG_CHARS
-        && tag
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-}
-
 impl fmt::Display for DocComment {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -141,11 +125,8 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_count_or_shape_is_style_the_grammar_accepts() {
+    fn any_tag_count_or_shape_is_one_the_grammar_accepts() {
         let d = parse("Models: a | Neglects: b | IO: t -> m | Tags: w, x, y, Free Text").unwrap();
-        assert_eq!(d.tags.len(), MAX_TAGS + 1);
-        assert!(!is_plain_tag("Free Text"));
-        assert!(is_plain_tag("sustained-pad"));
-        assert!(!is_plain_tag("a--b"));
+        assert_eq!(d.tags, ["w", "x", "y", "Free Text"]);
     }
 }

@@ -131,12 +131,9 @@ fn the_roots_of_a_target_are_what_its_math_reads() {
             .unwrap()
             .contains(&name.to_string())
     };
+    assert!(holds("@kick*0.5", "kick"), "argv math pulls what it reads");
     assert!(
-        holds(Some("@kick*0.5"), "kick"),
-        "argv math pulls what it reads"
-    );
-    assert!(
-        holds(Some("sin(t)"), "bpm"),
+        holds("sin(t)", "bpm"),
         "and every reserved variable, which no ref walk reaches"
     );
 }

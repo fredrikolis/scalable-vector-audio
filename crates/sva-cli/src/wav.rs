@@ -4,12 +4,22 @@ use std::path::Path;
 
 use sva_core::CliError;
 
-/// `Pcm16` is the format tag Python's stdlib `wave` module can open; hound marks any
-/// `bits_per_sample > 16` format `WAVE_FORMAT_EXTENSIBLE`, which it refuses.
+/// Integer PCM at up to 16 bits is the format tag Python's stdlib `wave` module can open;
+/// hound marks any `bits_per_sample > 16` format `WAVE_FORMAT_EXTENSIBLE`, which it refuses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SampleEncoding {
     Float,
-    Pcm16,
+    /// This many bits, 16 at most, left-justified in an 8- or 16-bit word.
+    Pcm(u8),
+}
+
+impl SampleEncoding {
+    pub fn of(bits: i32) -> SampleEncoding {
+        match u8::try_from(bits) {
+            Ok(bits) if bits <= 16 => SampleEncoding::Pcm(bits),
+            _ => SampleEncoding::Float,
+        }
+    }
 }
 
 pub fn write_channels(
@@ -20,7 +30,12 @@ pub fn write_channels(
 ) -> Result<(), CliError> {
     match encoding {
         SampleEncoding::Float => write_as::<f32>(planes, sample_rate, path, 32, |s| s),
-        SampleEncoding::Pcm16 => write_as::<i16>(planes, sample_rate, path, 16, quantize),
+        SampleEncoding::Pcm(bits) if bits <= 8 => {
+            write_as::<i8>(planes, sample_rate, path, 8, |s| quantize(s, bits, 8) as i8)
+        }
+        SampleEncoding::Pcm(bits) => write_as::<i16>(planes, sample_rate, path, 16, |s| {
+            quantize(s, bits, 16) as i16
+        }),
     }
 }
 
@@ -33,8 +48,10 @@ pub fn write_wav(
     write_channels(&[samples], sample_rate, path, encoding)
 }
 
-fn quantize(sample: f32) -> i16 {
-    (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)).round() as i16
+/// `bits` of full scale, shifted up to fill a `word`-bit sample.
+fn quantize(sample: f32, bits: u8, word: u8) -> i32 {
+    let full = ((1i32 << (bits - 1)) - 1) as f32;
+    ((sample.clamp(-1.0, 1.0) * full).round() as i32) << (word - bits)
 }
 
 /// A file that is not there is `not_found`, never the `internal_error` of a tool that broke.
@@ -135,7 +152,13 @@ mod tests {
     #[test]
     fn pcm16_writes_a_plain_format_tag_a_bare_riff_parser_can_read() {
         let path = tmp("pcm16-tag");
-        write_wav(&[0.5, -0.5, 1.5, -1.5], 44100, &path, SampleEncoding::Pcm16).unwrap();
+        write_wav(
+            &[0.5, -0.5, 1.5, -1.5],
+            44100,
+            &path,
+            SampleEncoding::Pcm(16),
+        )
+        .unwrap();
 
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(&bytes[0..4], b"RIFF");
@@ -178,8 +201,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// `write_channels`/`read_channels` are inverses at 32-bit float: no quantization step sits
-    /// between them, so the round trip is exact, and the file's own rate comes back untouched.
+    /// Inverses at 32-bit float: the round trip is exact, at the file's own rate.
     #[test]
     fn read_channels_round_trips_a_float_wav_exactly_at_its_own_rate() {
         let path = tmp("read-float-roundtrip");
@@ -194,13 +216,12 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 16-bit PCM quantizes on the way in, so the round trip is within one quantization step,
-    /// never exact — the same tolerance `pcm16_writes_a_plain_format_tag...` already measures.
+    /// 16-bit PCM quantizes on the way in, so the round trip is within one step.
     #[test]
     fn read_channels_unquantizes_pcm16_within_one_step() {
         let path = tmp("read-pcm16-roundtrip");
         let pcm = [0.5f32, -0.5, 0.1, -0.9];
-        write_wav(&pcm, 44_100, &path, SampleEncoding::Pcm16).unwrap();
+        write_wav(&pcm, 44_100, &path, SampleEncoding::Pcm(16)).unwrap();
 
         let (mono, sample_rate) = read_wav(&path).unwrap();
         assert_eq!(sample_rate, 44_100);

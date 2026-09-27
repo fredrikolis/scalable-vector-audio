@@ -23,7 +23,7 @@ fn every_lint_code_answers_a_unique_tag_and_its_own_remediation() {
 #[test]
 fn a_lint_codes_diagnostic_is_namespaced_and_carries_that_remediation() {
     for code in LintCode::ALL {
-        let d = lint_diagnostic(*code, "kick", "a message", Severity::Advice, Some(7));
+        let d = lint_diagnostic(*code, "kick", "a message", Severity::Warning, Some(7));
         assert_eq!(
             d.code,
             format!("lint.{}", code.code_str()).replace('-', "_")

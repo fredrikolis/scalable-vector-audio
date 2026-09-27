@@ -2,11 +2,11 @@
 
 use std::path::Path;
 
-use sva_ast::{Expr, Graph, Literal};
+use std::collections::BTreeSet;
+
+use sva_ast::{Binds, Expr, Graph, Literal, children, resolve_ref_path};
 use sva_core::{CliError, PROBE, define_probe_for, prepared, refuse_unresolved_bars};
 use sva_engine::{EngineError, Traced};
-
-use crate::lint::{entry_points, referenced};
 
 pub struct Traceable {
     pub bpm: Option<f64>,
@@ -14,8 +14,17 @@ pub struct Traceable {
     pub traced: Traced,
 }
 
-/// Every entry point is a root: `master` has no privilege, an uninstantiated bench refuses.
+/// Every entry point is a root, and an uninstantiated bench refuses. A structure has no
+/// time, so an interval the target reads is dropped.
 pub fn trace(dir: &Path, target: &str) -> Result<Traceable, CliError> {
+    let target = match sva_core::target(target)? {
+        sva_core::Target {
+            expr,
+            interval: Some(_),
+        } => expr,
+        _ => target.to_string(),
+    };
+    let target = target.as_str();
     let mut graph = prepared(&sva_ast::Dir::at(dir))?;
     refuse_unresolved_bars(&graph)?;
 
@@ -57,5 +66,37 @@ fn text(e: Option<&Expr>) -> Option<String> {
     match e {
         Some(Expr::Lit(Literal::Str(v))) => Some(v.clone()),
         _ => None,
+    }
+}
+
+fn referenced(graph: &Graph) -> BTreeSet<String> {
+    let mut reached: BTreeSet<String> = BTreeSet::new();
+    for path in graph.paths() {
+        if let Some(expr) = graph.expr(path) {
+            collect_refs(path, expr, &mut reached);
+        }
+    }
+    reached
+}
+
+/// Every node nothing references, the roots a whole composition has.
+fn entry_points(graph: &Graph) -> Vec<String> {
+    let reached = referenced(graph);
+    graph
+        .paths()
+        .filter(|p| !reached.contains(*p))
+        .filter(|p| !sva_core::RESERVED_VARIABLES.contains(&p.rsplit('/').next().unwrap_or(p)))
+        .map(str::to_string)
+        .collect()
+}
+
+fn collect_refs(from: &str, expr: &Expr, out: &mut BTreeSet<String>) {
+    if let Expr::Ref { path, .. } = expr
+        && let Some(resolved) = resolve_ref_path(from, path)
+    {
+        out.insert(resolved);
+    }
+    for child in children(expr, Binds::Substitute) {
+        collect_refs(from, child, out);
     }
 }

@@ -2,33 +2,29 @@
 
 use std::path::PathBuf;
 
-use sva_core::{Asked, CliError, Settings};
-
-use crate::quiet::Quiet;
+use sva_core::{Asked, CliError};
 
 mod reading;
 
 pub(crate) use reading::check_frame;
 use reading::{analyze_args, render_args};
 
-pub const USAGE: &str = "usage: sva-cli render '<expression>' [--until '<condition>'] \
-     [--representation <r>[=<path>][,...]]... [--rate <hz>] [-c <key>=<value>]... [--confirm]\n       \
-     sva-cli analyze <file.wav> [--representation <r>[=<path>][,...]]... [-c <key>=<value>]... \
-     [--confirm]\n       \
-     sva-cli lint [<node|expression>] [--format <json|text>] [-c <key>=<value>]...\n       \
+pub const USAGE: &str = "usage: sva-cli render '<expression>' --representation <r>[=<path>][,...] \
+     [--until '<condition>'] [--bits <n>] [--rate <hz>] [--flop-budget <n>] [--confirm]\n       \
+     sva-cli analyze <file.wav> --representation <r>[=<path>][,...] [--confirm]\n       \
+     sva-cli lint [<node|expression>] [--format <json|text>]\n       \
      sva-cli trace <node|expression>\n       \
      sva-cli builtins\n       \
      sva-cli outline <expression>\n       \
      sva-cli new <name> [--idempotency-key <key>]\n\
      a render's target is one expression; `@path` reads a node in the current directory, \
      `@/abs/path` one anywhere, and its own ref may read an interval: `@piano([0, 2b], f0=C4)`\n\
-     representations: lines atoms spectrum envelope derivative samples ledger pitch formants \
-     stereo bands crest loudness alias bindings arguments flops\n\
-     analyses (`analyze` only): onsets trajectory masking gain-reduction\n\
-     -c keys: flop_budget proof_limit node depth peaks oversample frame brief skim pcm16, \
-     and against for `analyze`; quiet_floor quiet_after for `lint`\n\
+     representations: lines atoms spectrum(peaks, frame) envelope(frame) derivative samples \
+     ledger(depth, brief, skim) pitch(peaks, frame) formants(peaks, frame) stereo(frame) bands \
+     crest loudness alias(oversample) bindings(node) arguments flops\n\
+     analyses (`analyze` only): onsets trajectory masking(against) gain-reduction\n\
      destinations: a `.wav` path takes `samples` as audio; any other path takes JSON; none \
-     puts the reading under `data.readings`\n\
+     puts the reading under `data.representations`\n\
      verb aliases: `validate`=lint, `list`=builtins, `create`=new, `show`=trace. `render` \
      and `analyze` take a reading, which the standard's verb list has no word for, so they \
      keep their own names.";
@@ -53,19 +49,29 @@ pub struct RenderArgs {
     pub target: String,
     pub until: Option<String>,
     pub rate: Option<u32>,
+    /// The precision every sample is written to; the profile's own where `None`.
+    pub bits: Option<i32>,
+    /// The operation count the caller acknowledges paying; the profile's own where `None`.
+    pub flop_budget: Option<u128>,
     pub asked: Vec<Asked>,
-    pub settings: Settings,
     /// The caller said a destination that already holds a file may be replaced.
     pub confirm: bool,
+}
+
+/// One reading `sva-analysis` answers, which no `Representation` names.
+#[derive(Debug, PartialEq)]
+pub struct Analysis {
+    pub name: String,
+    pub dest: Option<PathBuf>,
+    /// `masking(against=b.wav)`: the second signal it reads against.
+    pub against: Option<PathBuf>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct AnalyzeArgs {
     pub path: PathBuf,
     pub asked: Vec<Asked>,
-    /// The readings `sva-analysis` answers, which no `Representation` names.
-    pub analyses: Vec<(String, Option<PathBuf>)>,
-    pub settings: Settings,
+    pub analyses: Vec<Analysis>,
     /// The caller said a destination that already holds a file may be replaced.
     pub confirm: bool,
 }
@@ -81,7 +87,6 @@ pub enum Command {
     Lint {
         target: Option<String>,
         format: Format,
-        quiet: Quiet,
     },
     Trace {
         target: String,
@@ -201,24 +206,12 @@ fn new_args(rest: &[String]) -> Result<Command, CliError> {
 fn lint_args(rest: &[String]) -> Result<Command, CliError> {
     let mut it = rest.iter().peekable();
     let target = match it.peek() {
-        Some(a) if !a.starts_with("--") && *a != "-c" => it.next().cloned(),
+        Some(a) if !a.starts_with("--") => it.next().cloned(),
         _ => None,
     };
     let mut format = Format::default();
-    let mut quiet = Quiet::default();
     while let Some(flag) = it.next() {
         match flag.as_str() {
-            "-c" => {
-                let raw = value(&mut it, "-c")?;
-                let Some((key, raw)) = raw.split_once('=') else {
-                    return Err(CliError::Usage(format!(
-                        "`-c {raw}` names no value; write `-c <key>=<value>`\n{USAGE}"
-                    )));
-                };
-                quiet
-                    .set(key, raw)
-                    .map_err(|e| CliError::Usage(format!("-c {}\n{USAGE}", e.message())))?;
-            }
             "--format" => {
                 format = match it.next().map(String::as_str) {
                     Some("json") => Format::Json,
@@ -233,17 +226,13 @@ fn lint_args(rest: &[String]) -> Result<Command, CliError> {
             }
             extra => {
                 return Err(CliError::Usage(format!(
-                    "lint takes only [<node|expression>], `--format <json|text>` and `-c \
-                     <key>=<value>`, not `{extra}`\n{USAGE}"
+                    "lint takes only [<node|expression>] and `--format <json|text>`, not \
+                     `{extra}`\n{USAGE}"
                 )));
             }
         }
     }
-    Ok(Command::Lint {
-        target,
-        format,
-        quiet,
-    })
+    Ok(Command::Lint { target, format })
 }
 
 /// One positional and nothing else: a trace answers structure, which no option narrows.
@@ -301,7 +290,6 @@ mod tests {
             Command::Lint {
                 target: None,
                 format: Format::Json,
-                quiet: Quiet::default(),
             }
         );
         assert_eq!(parse_args(&argv(&["list"])).unwrap(), Command::Builtins);
@@ -320,37 +308,54 @@ mod tests {
         );
     }
 
-    /// A render names its target, its readings as one comma list or several, its rate and
-    /// its settings; nothing else.
+    /// A render names its target, its readings as calls in one comma list or several, each
+    /// reading's options as its own arguments, and its flags; nothing else.
     #[test]
-    fn a_render_takes_a_target_readings_a_rate_and_settings() {
+    fn a_render_takes_a_target_readings_with_their_arguments_and_flags() {
         let args = rendered(&[
             "render",
             "@piano([0, 2b], f0=C4)",
             "--representation",
-            "samples=/tmp/out.wav,lines",
+            "samples=/tmp/out.wav, spectrum(peaks=8, frame=50ms)",
             "--representation",
-            "ledger",
+            "ledger(depth=2, brief=1)=/tmp/ledger.json,bindings(node=@voice)",
             "--rate",
             "48000",
-            "-c",
-            "depth=2",
-            "-c",
-            "pcm16=true",
+            "--bits",
+            "16",
+            "--flop-budget",
+            "1000",
             "--until",
             "t > 1s",
         ]);
         assert_eq!(args.target, "@piano([0, 2b], f0=C4)");
         assert_eq!(args.until.as_deref(), Some("t > 1s"));
         assert_eq!(args.rate, Some(48_000));
+        assert_eq!(args.bits, Some(16));
+        assert_eq!(args.flop_budget, Some(1000));
         let names: Vec<&str> = args.asked.iter().map(|a| a.name.as_str()).collect();
-        assert_eq!(names, ["samples", "lines", "ledger"]);
+        assert_eq!(names, ["samples", "spectrum", "ledger", "bindings"]);
         assert_eq!(
             args.asked[0].dest.as_deref(),
             Some(Path::new("/tmp/out.wav"))
         );
-        assert_eq!(args.settings.shape.depth, 2);
-        assert!(args.settings.pcm16);
+        assert_eq!(
+            args.asked[1].representation,
+            sva_engine::Representation::Spectrum {
+                max_peaks: 8,
+                frame_secs: Some(0.05)
+            }
+        );
+        assert_eq!(
+            args.asked[2].representation,
+            sva_engine::Representation::Ledger { depth: 2 }
+        );
+        assert!(args.asked[2].brief);
+        assert_eq!(
+            args.asked[2].dest.as_deref(),
+            Some(Path::new("/tmp/ledger.json"))
+        );
+        assert_eq!(args.asked[3].node.as_deref(), Some("voice"));
     }
 
     #[test]
@@ -370,12 +375,12 @@ mod tests {
     #[test]
     fn a_retired_flag_refuses_by_name() {
         for gone in [
+            "-c",
             "--in",
             "--from",
             "--to",
             "--max",
             "--sample-rate",
-            "--flop-budget",
             "--as",
             "--node",
             "--frame",
@@ -392,15 +397,18 @@ mod tests {
     }
 
     #[test]
-    fn a_setting_no_key_names_or_a_malformed_one_refuses() {
-        for setting in [
-            "colour=red",
-            "depth",
-            "depth=many",
-            "pcm16=yes",
-            "against=/tmp/a.wav",
+    fn an_argument_its_reading_does_not_take_or_a_malformed_one_refuses() {
+        for reading in [
+            "lines(depth=2)",
+            "ledger(colour=red)",
+            "ledger(depth)",
+            "ledger(depth=many)",
+            "ledger(brief=yes)",
+            "samples(bits=16)",
+            "spectrum(peaks=8",
+            "bindings(node=voice)",
         ] {
-            refused(&["render", "@a", "--representation", "lines", "-c", setting]);
+            refused(&["render", "@a", "--representation", reading]);
         }
     }
 
@@ -420,15 +428,6 @@ mod tests {
     #[test]
     fn bindings_needs_a_node() {
         refused(&["render", "@a", "--representation", "bindings"]);
-        let args = rendered(&[
-            "render",
-            "@a",
-            "--representation",
-            "bindings",
-            "-c",
-            "node=kick",
-        ]);
-        assert_eq!(args.settings.node.as_deref(), Some("kick"));
     }
 
     #[test]
@@ -438,7 +437,6 @@ mod tests {
             Command::Lint {
                 target: Some("drums/kick".to_string()),
                 format: Format::Json,
-                quiet: Quiet::default(),
             }
         );
         refused(&["lint", "a", "b"]);

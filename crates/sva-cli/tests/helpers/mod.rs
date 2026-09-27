@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use sva_cli::{CliError, success_envelope};
+use sva_core::{Printed, Report, query_data};
 use sva_core::{Rendered, SAMPLE_LIMIT};
-use sva_core::{Report, query_data};
 use sva_engine::{Buffer, LedgerEntry, Output, Representation};
 
 static RUN: AtomicU32 = AtomicU32::new(0);
@@ -76,12 +76,13 @@ pub fn entry(r: &Rendered, node: &str) -> LedgerEntry {
 }
 
 pub fn json_of(r: &Rendered, name: &str, representation: Representation) -> String {
-    let answers = [(
-        name.to_string(),
-        r.answer(&r.target, representation).unwrap(),
-    )];
+    let answers = [Printed {
+        name: name.to_string(),
+        answer: r.answer(&r.target, representation).unwrap(),
+        skim: false,
+    }];
     let rate = r.config.rate;
-    let range = r
+    let interval = r
         .render
         .range
         .map(|x| (x.start_secs(rate), x.end as f64 / f64::from(rate)));
@@ -89,15 +90,24 @@ pub fn json_of(r: &Rendered, name: &str, representation: Representation) -> Stri
         &query_data(&Report {
             target: &r.expression,
             rate,
-            range,
+            bits: Some(r.config.profile.precision_bits),
+            interval,
             profile: r.config.profile.name,
             label: r.label(),
             written: &[],
             answers: &answers,
             analyses: &[],
             limit: Some(SAMPLE_LIMIT),
-            skim: false,
         }),
         &[],
     )
+}
+
+/// The readings a comma list of calls names, as `--representation` reads it.
+pub fn asked(list: &str) -> Vec<sva_core::Asked> {
+    sva_core::calls(list)
+        .expect("calls")
+        .iter()
+        .map(|call| sva_core::asked(call).expect("a reading"))
+        .collect()
 }

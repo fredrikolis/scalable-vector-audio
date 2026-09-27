@@ -6,7 +6,6 @@ use crate::json::{NONE, escape, list, meta};
 pub enum Severity {
     Error,
     Warning,
-    Advice,
 }
 
 impl Severity {
@@ -14,7 +13,6 @@ impl Severity {
         match self {
             Severity::Error => "error",
             Severity::Warning => "warning",
-            Severity::Advice => "advice",
         }
     }
 }

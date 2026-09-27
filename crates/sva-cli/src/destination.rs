@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use sva_core::{Answer, CliError, Output, Report, is_wav, query_data};
+use sva_core::{CliError, Output, Printed, Report, is_wav, query_data};
 
 use crate::wav::{SampleEncoding, write_channels};
 use sva_core::success_envelope;
@@ -48,10 +48,10 @@ fn under(dir: &Path, dest: &Path) -> bool {
 pub struct Framing {
     pub target: String,
     pub rate: u32,
-    pub range: Option<(f64, f64)>,
+    pub bits: i32,
+    pub interval: Option<(f64, f64)>,
     pub profile: &'static str,
     pub encoding: SampleEncoding,
-    pub skim: bool,
     pub replace: bool,
 }
 
@@ -85,14 +85,14 @@ pub fn write_analysis(
         &query_data(&Report {
             target: &framing.target,
             rate: framing.rate,
-            range: framing.range,
+            bits: None,
+            interval: framing.interval,
             profile: framing.profile,
             label: None,
             written: &[],
             answers: &[],
             analyses: &analyses,
             limit: None,
-            skim: framing.skim,
         }),
         &[],
     );
@@ -108,29 +108,28 @@ fn not_audio(name: &str) -> CliError {
 }
 
 /// A `.wav` path takes the samples; any other takes the JSON stdout caps.
-pub fn write(name: &str, answer: &Answer, dest: &Path, framing: &Framing) -> Result<(), CliError> {
+pub fn write(printed: &Printed, dest: &Path, framing: &Framing) -> Result<(), CliError> {
     refuse_replacing(dest, framing.replace)?;
     if is_wav(dest) {
-        let Output::Samples(buffer) = &answer.value else {
-            return Err(not_audio(name));
+        let Output::Samples(buffer) = &printed.answer.value else {
+            return Err(not_audio(&printed.name));
         };
         let held: Vec<Vec<f32>> = (0..buffer.width).map(|c| buffer.as_f32(c)).collect();
         let planes: Vec<&[f32]> = held.iter().map(Vec::as_slice).collect();
         return write_channels(&planes, buffer.rate, dest, framing.encoding);
     }
-    let answers = [(name.to_string(), answer.clone())];
     let json = success_envelope(
         &query_data(&Report {
             target: &framing.target,
             rate: framing.rate,
-            range: framing.range,
+            bits: Some(framing.bits),
+            interval: framing.interval,
             profile: framing.profile,
             label: None,
             written: &[],
-            answers: &answers,
+            answers: std::slice::from_ref(printed),
             analyses: &[],
             limit: None,
-            skim: framing.skim,
         }),
         &[],
     );

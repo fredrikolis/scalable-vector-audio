@@ -106,16 +106,19 @@ fn a_json_destination_carries_every_sample_where_stdout_caps_them() {
     let answer = rendered.answer(PROBE, Representation::Samples).unwrap();
     let path: PathBuf = out.join("s.json");
     sva_cli::write_destination(
-        "samples",
-        &answer,
+        &sva_core::Printed {
+            name: "samples".to_string(),
+            answer,
+            skim: false,
+        },
         &path,
         &sva_cli::Framing {
             target: "@master".to_string(),
             rate: rendered.config.rate,
-            range: None,
+            bits: rendered.config.profile.precision_bits,
+            interval: None,
             profile: rendered.config.profile.name,
             encoding: SampleEncoding::Float,
-            skim: false,
             replace: true,
         },
     )
@@ -173,8 +176,9 @@ fn a_non_audio_reading_at_a_wav_path_refuses_the_same_way_on_both_sides() {
     };
 
     let source = sva_ast::Dir::at(fixture("basic"));
+    let asked = [sva_core::asked(&sva_core::call("lines").expect("a call")).expect("a reading")];
     let rendered = sva_core::execute(sva_core::Job {
-        representations: vec![Representation::Lines],
+        asked: &asked,
         ..sva_core::Job::over(&source, "sin(2*pi*440*t)")
     })
     .expect("a probe");
@@ -182,16 +186,19 @@ fn a_non_audio_reading_at_a_wav_path_refuses_the_same_way_on_both_sides() {
         .answer(sva_core::PROBE, Representation::Lines)
         .expect("lines answers");
     let Err(as_a_library) = sva_cli::write_destination(
-        "lines",
-        &answer,
+        &sva_core::Printed {
+            name: "lines".to_string(),
+            answer,
+            skim: false,
+        },
         Path::new("/tmp/out.wav"),
         &sva_cli::Framing {
             target: "@master".to_string(),
             rate: rendered.config.rate,
-            range: None,
+            bits: rendered.config.profile.precision_bits,
+            interval: None,
             profile: rendered.config.profile.name,
             encoding: SampleEncoding::Float,
-            skim: false,
             replace: true,
         },
     ) else {

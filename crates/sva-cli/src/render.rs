@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use sva_core::{
-    Answer, Asked, CliError, Job, Output, Report, SAMPLE_LIMIT, cwd, execute, query_data,
+    Answer, Asked, CliError, Job, Output, Printed, Report, SAMPLE_LIMIT, cwd, execute, query_data,
 };
 use sva_engine::{Buffer, DEFAULT_FRAME_SECS, PSYCHOACOUSTIC_V1, Representation, answer_buffer};
 
@@ -23,44 +23,37 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
             refuse_replacing(dest, args.confirm)?;
         }
     }
-    let settings = &args.settings;
     let source = sva_ast::Dir::at(&dir);
     let rendered = execute(Job {
         until: args.until.as_deref(),
         rate: args.rate,
-        reading: settings.node.as_deref(),
-        representations: args.asked.iter().map(|a| a.representation).collect(),
-        flop_budget: settings.flop_budget,
-        proof_limit_secs: settings.proof_limit,
+        bits: args.bits,
+        asked: &args.asked,
+        flop_budget: args.flop_budget,
         ..Job::over(&source, &target)
     })?;
 
-    let node = settings
-        .node
-        .clone()
-        .unwrap_or_else(|| rendered.target.clone());
     let rate = rendered.config.rate;
-    let range = rendered
+    let bits = rendered.config.profile.precision_bits;
+    let interval = rendered
         .render
         .range
         .map(|r| (r.start_secs(rate), r.end as f64 / f64::from(rate)));
     let framing = Framing {
         target: args.target.clone(),
         rate,
-        range,
+        bits,
+        interval,
         profile: rendered.config.profile.name,
-        encoding: match settings.pcm16 {
-            true => SampleEncoding::Pcm16,
-            false => SampleEncoding::Float,
-        },
-        skim: settings.skim,
+        encoding: SampleEncoding::of(bits),
         replace: args.confirm,
     };
 
     let mut taken = Vec::with_capacity(args.asked.len());
     for asked in &args.asked {
-        let answer = rendered.answer(&node, asked.representation)?;
-        taken.push(match settings.brief {
+        let node = asked.node.as_deref().unwrap_or(&rendered.target);
+        let answer = rendered.answer(node, asked.representation)?;
+        taken.push(match asked.brief {
             true => briefed(answer),
             false => answer,
         });
@@ -71,21 +64,21 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
         &query_data(&Report {
             target: &args.target,
             rate,
-            range,
+            bits: Some(bits),
+            interval,
             profile: rendered.config.profile.name,
             label: rendered.label(),
             written: &written,
             answers: &answers,
             analyses: &[],
             limit: Some(SAMPLE_LIMIT),
-            skim: settings.skim,
         }),
         &[],
     ))
 }
 
 /// What stays in the envelope, and what left it for a file.
-type Routed<'a> = (Vec<(String, Answer)>, Vec<(String, &'a Path)>);
+type Routed<'a> = (Vec<Printed>, Vec<(String, &'a Path)>);
 
 /// Every reading is taken before any file is opened, so a later refusal writes nothing.
 fn routed<'a>(
@@ -96,10 +89,15 @@ fn routed<'a>(
     let mut answers = Vec::new();
     let mut written = Vec::new();
     for (one, answer) in asked.iter().zip(taken) {
+        let printed = Printed {
+            name: one.name.clone(),
+            answer,
+            skim: one.skim,
+        };
         match one.dest.as_deref() {
-            None => answers.push((one.name.clone(), answer)),
+            None => answers.push(printed),
             Some(dest) => {
-                write(&one.name, &answer, dest, framing)?;
+                write(&printed, dest, framing)?;
                 written.push((one.name.clone(), dest));
             }
         }
@@ -107,7 +105,8 @@ fn routed<'a>(
     Ok((answers, written))
 }
 
-/// `-c brief=true`: a node that did not clip is not news, so a ledger keeps only the ones that did.
+/// `ledger(brief=1)`: a node that did not clip is not news, so a ledger keeps only the ones
+/// that did.
 fn briefed(answer: Answer) -> Answer {
     let Output::Ledger(entries) = answer.value else {
         return answer;
@@ -132,7 +131,7 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
         .asked
         .iter()
         .map(|a| a.dest.as_deref())
-        .chain(args.analyses.iter().map(|(_, dest)| dest.as_deref()));
+        .chain(args.analyses.iter().map(|a| a.dest.as_deref()));
     for dest in destinations {
         let Some(dest) = dest else {
             continue;
@@ -153,14 +152,14 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
     );
     crate::args::check_frame(&args.asked, rate)?;
     let buffer = held;
-    let range = Some((0.0, buffer.len() as f64 / f64::from(rate)));
+    let interval = Some((0.0, buffer.len() as f64 / f64::from(rate)));
     let framing = Framing {
         target: target.clone(),
         rate,
-        range,
+        bits: PSYCHOACOUSTIC_V1.precision_bits,
+        interval,
         profile: PSYCHOACOUSTIC_V1.name,
         encoding: SampleEncoding::Float,
-        skim: false,
         replace: args.confirm,
     };
 
@@ -179,12 +178,12 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
     let heard = analysed(args, &buffer)?;
     let (answers, mut written) = routed(&args.asked, taken, &framing)?;
     let mut analyses = Vec::new();
-    for ((name, dest), value) in args.analyses.iter().zip(heard) {
-        match dest.as_deref() {
-            None => analyses.push((name.clone(), value)),
+    for (analysis, value) in args.analyses.iter().zip(heard) {
+        match analysis.dest.as_deref() {
+            None => analyses.push((analysis.name.clone(), value)),
             Some(dest) => {
-                write_analysis(name, &value, dest, &framing)?;
-                written.push((name.clone(), dest));
+                write_analysis(&analysis.name, &value, dest, &framing)?;
+                written.push((analysis.name.clone(), dest));
             }
         }
     }
@@ -192,14 +191,14 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
         &query_data(&Report {
             target: &target,
             rate,
-            range,
+            bits: None,
+            interval,
             profile: PSYCHOACOUSTIC_V1.name,
             label: None,
             written: &written,
             answers: &answers,
             analyses: &analyses,
             limit: Some(SAMPLE_LIMIT),
-            skim: false,
         }),
         &[],
     ))
@@ -213,7 +212,7 @@ fn analysed(args: &AnalyzeArgs, buffer: &Buffer) -> Result<Vec<String>, CliError
     }
     let rate = f64::from(buffer.rate);
     let mono: Vec<f32> = buffer.plane(0).iter().map(|s| *s as f32).collect();
-    let against = match &args.settings.against {
+    let against = match args.analyses.iter().find_map(|a| a.against.as_deref()) {
         Some(path) => {
             let (planes, _) = read_channels(path)?;
             Some(planes.first().cloned().unwrap_or_default())
@@ -247,9 +246,9 @@ fn analysed(args: &AnalyzeArgs, buffer: &Buffer) -> Result<Vec<String>, CliError
         input_envelope: None,
     };
     let mut out = Vec::with_capacity(args.analyses.len());
-    for (name, _) in &args.analyses {
+    for analysis in &args.analyses {
         out.push(
-            sva_analysis::run(name, &request)
+            sva_analysis::run(&analysis.name, &request)
                 .map_err(|sva_analysis::AnalysisError(why)| CliError::Usage(why))?,
         );
     }

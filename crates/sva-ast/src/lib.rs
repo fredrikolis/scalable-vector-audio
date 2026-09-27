@@ -18,9 +18,7 @@ mod tsv;
 
 pub use diag::{ByteSpan, Diag, DiagCode};
 pub use dir::Dir;
-pub use doc_comment::{
-    DocComment, MAX_TAG_CHARS, MAX_TAGS, is_plain_tag, parse as parse_doc_comment,
-};
+pub use doc_comment::{DocComment, parse as parse_doc_comment};
 pub use expr::{Arg, BinOp, Binds, Expr, JOIN, Literal, SERIES, children, map_children};
 pub use filename::{FileSpan, SpanUnit};
 pub use graph::{Graph, VARIABLES, load, load_reaching, names_a_node, reads_of, resolve_ref_path};

@@ -5,10 +5,10 @@
 //! `refusal` the envelope it would print.
 
 use sva_core::{
-    Answer, CliError, Diagnostic, Job, Rendered, Report, SAMPLE_LIMIT, Settings, Shaping,
-    error_envelope, execute, query_data, representation_for, retired, stats_json, work_json,
+    Asked, CliError, Diagnostic, Job, Printed, Rendered, Report, SAMPLE_LIMIT, error_envelope,
+    execute, query_data, stats_json, work_json,
 };
-use sva_engine::{Buffer, Cache, CachePolicy, CacheStats, PrunePolicy, Representation};
+use sva_engine::{Buffer, Cache, CachePolicy, CacheStats, PrunePolicy};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -52,40 +52,44 @@ fn refuse(message: String, help: &str) -> JsValue {
 }
 
 #[derive(Default)]
-struct Config {
-    settings: Settings,
+struct Options {
+    rate: Option<u32>,
+    bits: Option<i32>,
+    flop_budget: Option<u128>,
+    until: Option<String>,
     volatile: Vec<String>,
     cache: Option<CachePolicy>,
 }
 
-/// The keys `sva-cli`'s `-c` takes for a render, read by the same parser.
-const SETTINGS: [&str; 7] = [
-    "flop_budget",
-    "proof_limit",
-    "node",
-    "depth",
-    "peaks",
-    "oversample",
-    "frame",
-];
-
-fn config_of(config: &JsValue) -> Result<Config, JsValue> {
-    let mut held = Config::default();
-    if config.is_undefined() || config.is_null() {
+/// `keys` are the options this call reads; any other is refused by name.
+fn options_of(options: &JsValue, keys: &[&str]) -> Result<Options, JsValue> {
+    let mut held = Options::default();
+    if options.is_undefined() || options.is_null() {
         return Ok(held);
     }
-    let object = config.dyn_ref::<js_sys::Object>().ok_or_else(|| {
+    let object = options.dyn_ref::<js_sys::Object>().ok_or_else(|| {
         refuse(
-            "`config` is not an object".into(),
-            "pass an object, such as { flop_budget: 1e9 }",
+            "`options` is not an object".into(),
+            "pass an object, such as { rate: 48000 }",
         )
     })?;
     for entry in js_sys::Object::entries(object).iter() {
         let pair = js_sys::Array::from(&entry);
         let key = pair.get(0).as_string().unwrap_or_default();
         let value = pair.get(1);
+        if !keys.contains(&key.as_str()) {
+            return Err(refuse(
+                format!("`{key}` is no option here"),
+                &format!("the options are {}", keys.join(", ")),
+            ));
+        }
         match key.as_str() {
-            "volatile" => {
+            "rate" => held.rate = Some(whole(&key, &value)?),
+            "bits" => held.bits = Some(whole(&key, &value)?),
+            "flop_budget" => held.flop_budget = Some(whole(&key, &value)?),
+            "until" => held.until = Some(text(&key, &value)?),
+            "cache" => held.cache = Some(cache_policy(&text(&key, &value)?)?),
+            _ => {
                 let names = value.dyn_ref::<js_sys::Array>().ok_or_else(|| {
                     refuse(
                         "`volatile` is not an array".into(),
@@ -101,56 +105,47 @@ fn config_of(config: &JsValue) -> Result<Config, JsValue> {
                     })?);
                 }
             }
-            "cache" => {
-                let named = value.as_string().ok_or_else(|| {
-                    refuse(
-                        "`cache` is not a policy name".into(),
-                        "pass a policy's name",
-                    )
-                })?;
-                held.cache = Some(cache_policy(&named)?);
-            }
-            key => {
-                let raw = match (value.as_f64(), value.as_string()) {
-                    (Some(number), _) => number.to_string(),
-                    (None, Some(text)) => text,
-                    _ => {
-                        return Err(refuse(
-                            format!("`{key}` is set to neither a number nor a string"),
-                            "set it as `sva-cli`'s `-c` would",
-                        ));
-                    }
-                };
-                held.settings
-                    .set(key, &raw, &SETTINGS)
-                    .map_err(|e| thrown(&e))?;
-            }
         }
     }
     Ok(held)
 }
 
-fn representations_of(
-    names: &[String],
-    shape: Shaping,
-) -> Result<Vec<(String, Representation)>, JsValue> {
+fn whole<N: TryFrom<u64>>(key: &str, value: &JsValue) -> Result<N, JsValue> {
+    value
+        .as_f64()
+        .filter(|v| v.fract() == 0.0 && *v >= 0.0 && *v <= 2f64.powi(53))
+        .and_then(|v| N::try_from(v as u64).ok())
+        .ok_or_else(|| {
+            refuse(
+                format!("`{key}` is not a whole number in range"),
+                "pass a whole number",
+            )
+        })
+}
+
+fn text(key: &str, value: &JsValue) -> Result<String, JsValue> {
+    value.as_string().ok_or_else(|| {
+        refuse(
+            format!("`{key}` is not a string"),
+            "pass it as a string, as `sva-cli` writes it",
+        )
+    })
+}
+
+/// Each entry one call, as `sva-cli`'s `--representation` writes it: `spectrum(peaks=8)`.
+/// A page holds no file to write one to.
+fn representations_of(names: &[String]) -> Result<Vec<Asked>, JsValue> {
     names
         .iter()
         .map(|name| {
-            if let Some(write) = retired(name) {
+            let call = sva_core::call(name).map_err(|e| thrown(&e))?;
+            if call.dest.is_some() {
                 return Err(refuse(
-                    format!("`{name}` left the language"),
-                    &format!("ask for `{write}`"),
+                    format!("`{name}` names a destination, and a page writes no file"),
+                    "drop the `=path`, and read it from `representations()`",
                 ));
             }
-            representation_for(name, shape)
-                .map(|representation| (name.clone(), representation))
-                .ok_or_else(|| {
-                    refuse(
-                        format!("unknown representation `{name}`"),
-                        "ask for one of the readings a render answers",
-                    )
-                })
+            sva_core::asked(&call).map_err(|e| thrown(&e))
         })
         .collect()
 }
@@ -219,40 +214,35 @@ impl Composition {
         self.inner.insert(path, text);
     }
 
-    /// `target` as `sva-cli render` takes it, `@piano([0, 2b], f0=C4)`; `until` its condition;
-    /// `representations` what `readings()` answers, `samples` where unset. `config` sets
-    /// `flop_budget`, `proof_limit`, `node`, `depth`, `peaks`, `oversample`, `frame`,
+    /// `target` as `sva-cli render` takes it, `@piano([0, 2b], f0=C4)`; `representations`
+    /// what `representations()` answers, `samples` where unset, each a call as
+    /// `--representation` writes it. `options` sets `rate`, `bits`, `flop_budget`, `until`,
     /// `volatile` and `cache`.
     pub fn render(
         &self,
         target: &str,
-        until: Option<String>,
         representations: Option<Vec<String>>,
-        rate: Option<u32>,
-        config: JsValue,
+        options: JsValue,
     ) -> Result<Rendering, JsValue> {
-        let config = config_of(&config)?;
-        let settings = &config.settings;
+        let options = options_of(
+            &options,
+            &["rate", "bits", "flop_budget", "until", "volatile", "cache"],
+        )?;
         let names = representations.unwrap_or_else(|| vec!["samples".to_string()]);
-        let asked = representations_of(&names, settings.shape)?;
+        let asked = representations_of(&names)?;
         let rendered = execute(Job {
-            until: until.as_deref(),
-            rate,
+            until: options.until.as_deref(),
+            rate: options.rate,
+            bits: options.bits,
             cache: Some(&self.store),
-            cache_policy: config.cache,
-            reading: settings.node.as_deref(),
-            representations: asked.iter().map(|(_, r)| *r).collect(),
-            flop_budget: settings.flop_budget,
-            proof_limit_secs: settings.proof_limit,
-            volatile: &config.volatile,
+            cache_policy: options.cache,
+            asked: &asked,
+            flop_budget: options.flop_budget,
+            volatile: &options.volatile,
             ..Job::over(&self.inner, target)
         });
         rendered
-            .map(|inner| Rendering {
-                inner,
-                asked,
-                node: settings.node.clone(),
-            })
+            .map(|inner| Rendering { inner, asked })
             .map_err(|e| thrown(&e))
     }
 
@@ -358,8 +348,7 @@ fn prune_policy(name: &str) -> Result<PrunePolicy, JsValue> {
 #[wasm_bindgen]
 pub struct Rendering {
     inner: Rendered,
-    asked: Vec<(String, Representation)>,
-    node: Option<String>,
+    asked: Vec<Asked>,
 }
 
 #[wasm_bindgen]
@@ -424,18 +413,22 @@ impl Rendering {
 
     /// The object `sva-cli render` puts under `data`, one reading per representation asked,
     /// arrays capped as it caps.
-    pub fn readings(&self) -> Result<JsValue, JsValue> {
-        let node = self.node.as_deref().unwrap_or(&self.inner.target);
-        let mut answers: Vec<(String, Answer)> = Vec::with_capacity(self.asked.len());
-        for (name, representation) in &self.asked {
+    pub fn representations(&self) -> Result<JsValue, JsValue> {
+        let mut answers = Vec::with_capacity(self.asked.len());
+        for asked in &self.asked {
+            let node = asked.node.as_deref().unwrap_or(&self.inner.target);
             let answer = self
                 .inner
-                .answer(node, *representation)
+                .answer(node, asked.representation)
                 .map_err(|e| thrown(&e))?;
-            answers.push((name.clone(), answer));
+            answers.push(Printed {
+                name: asked.name.clone(),
+                answer,
+                skim: asked.skim,
+            });
         }
         let rate = self.inner.config.rate;
-        let range = self
+        let interval = self
             .inner
             .render
             .range
@@ -443,14 +436,14 @@ impl Rendering {
         parse(&query_data(&Report {
             target: &self.inner.expression,
             rate,
-            range,
+            bits: Some(self.inner.config.profile.precision_bits),
+            interval,
             profile: self.inner.config.profile.name,
             label: self.inner.label(),
             written: &[],
             answers: &answers,
             analyses: &[],
             limit: Some(SAMPLE_LIMIT),
-            skim: false,
         }))
     }
 

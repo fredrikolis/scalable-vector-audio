@@ -127,7 +127,7 @@ pub const NEXT: [(&str, &str); 9] = [
         "what the render costs, counted before it runs",
     ),
     (
-        "sva-cli render '@master' --representation ledger -c skim=true",
+        "sva-cli render '@master' --representation ledger(skim=1)",
         "per-node rms, peak, clipped",
     ),
     (
@@ -319,7 +319,7 @@ mod tests {
     fn the_scaffolded_composition_lints_clean_of_every_doc_comment_check() {
         let dir = tmp("lints-clean");
         let scaffolded = scaffold(&dir, "song1", None).unwrap();
-        let report = crate::lint::lint(&scaffolded.root, None, &crate::quiet::Quiet::default());
+        let report = crate::lint::lint(&scaffolded.root, None);
         assert!(
             report.is_ok(),
             "a freshly scaffolded composition must carry a well-formed doc comment on every \
@@ -328,7 +328,7 @@ mod tests {
         );
         assert!(
             report.is_ok_and(|held| held.findings.is_empty()),
-            "and no advice either: the quickstart's very first command must come back silent"
+            "and no warning either: the quickstart's very first command must come back silent"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

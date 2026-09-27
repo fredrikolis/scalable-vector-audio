@@ -5,9 +5,9 @@ use std::process::ExitCode;
 use sva_core::Diagnostic;
 
 use sva_cli::{
-    CliError, Command, Finding, Format, NAME, Quiet, VERSION, analyze, builtins, builtins_data,
-    caught, colored, composition, cwd, diagnostics_text, error_envelope, help_data, help_text,
-    lint, lint_data, new_data, parse_args, render, scaffold, stopped, success_envelope, trace,
+    CliError, Command, Finding, Format, NAME, VERSION, analyze, builtins, builtins_data, caught,
+    colored, composition, cwd, diagnostics_text, error_envelope, help_data, help_text, lint,
+    lint_data, new_data, parse_args, render, scaffold, stopped, success_envelope, trace,
     trace_data, version_data,
 };
 
@@ -39,11 +39,7 @@ fn run() -> ExitCode {
         Ok(Command::Help) => Ok(success_envelope(&help_data(&help_text()), &[])),
         Ok(Command::Render(args)) => render(&args),
         Ok(Command::Analyze(args)) => analyze(&args),
-        Ok(Command::Lint {
-            target,
-            format,
-            quiet,
-        }) => lint_composition(target.as_deref(), format, &quiet),
+        Ok(Command::Lint { target, format }) => lint_composition(target.as_deref(), format),
         Ok(Command::Trace { target }) => trace_node(&target),
         Ok(Command::Builtins) => Ok(success_envelope(&builtins_data(&builtins()), &[])),
         Ok(Command::Outline { text }) => {
@@ -80,13 +76,9 @@ fn run() -> ExitCode {
     }
 }
 
-fn lint_composition(
-    target: Option<&str>,
-    format: Format,
-    quiet: &Quiet,
-) -> Result<String, CliError> {
+fn lint_composition(target: Option<&str>, format: Format) -> Result<String, CliError> {
     let dir = composition()?;
-    let report = lint(&dir, target, quiet)?;
+    let report = lint(&dir, target)?;
     let found: Vec<Diagnostic> = report.findings.iter().map(Finding::diagnostic).collect();
     if format == Format::Text {
         return Ok(diagnostics_text(&found, colored()));

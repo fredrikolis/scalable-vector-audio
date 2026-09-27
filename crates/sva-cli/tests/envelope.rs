@@ -29,10 +29,15 @@ fn every_response_carries_the_diagnostics_collection_found_or_not() {
 
     let found = success_envelope(
         &lint_data("/tmp/song1", None, 3),
-        &[Diagnostic::new("lint.entry_point", "nothing refs `spare`")
-            .with_severity(Severity::Advice)],
+        &[
+            Diagnostic::new("lint.grid_rows_per_bar", "33 rows over 4 bars")
+                .with_severity(Severity::Warning),
+        ],
     );
-    assert!(found.contains("\"code\": \"lint.entry_point\""), "{found}");
+    assert!(
+        found.contains("\"code\": \"lint.grid_rows_per_bar\""),
+        "{found}"
+    );
     assert!(found.contains("\"count\": 1"), "{found}");
 
     let refused = error_envelope(
@@ -48,8 +53,8 @@ fn every_response_carries_the_diagnostics_collection_found_or_not() {
 #[test]
 fn the_terminal_rendering_shows_the_diagnostics_the_envelope_carries() {
     let found = [
-        Diagnostic::new("lint.entry_point", "nothing refs `spare`")
-            .with_severity(Severity::Advice)
+        Diagnostic::new("lint.grid_rows_per_bar", "33 rows over 4 bars")
+            .with_severity(Severity::Warning)
             .at(Some("spare".to_string()), None)
             .helped("ref it or delete it"),
         Diagnostic::new("lint.missing_comment", "no `;`-comment")
@@ -62,7 +67,7 @@ fn the_terminal_rendering_shows_the_diagnostics_the_envelope_carries() {
         assert!(plain.contains(&held.message), "{plain}");
     }
     assert!(
-        plain.contains("advice["),
+        plain.contains("warning["),
         "the severity it carries: {plain}"
     );
     assert!(plain.contains("spare"), "the node it located: {plain}");

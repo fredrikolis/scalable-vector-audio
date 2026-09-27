@@ -4,7 +4,7 @@ mod helpers;
 mod tempo;
 mod written;
 
-use helpers::{entry, fixture, json_of, master, plane, put, scratch, secs};
+use helpers::{asked, entry, fixture, json_of, master, plane, put, scratch, secs};
 use sva_ast::Dir;
 use sva_cli::{CliError, error_envelope};
 use sva_core::{Job, PROBE, ROOT, execute, probe};
@@ -415,7 +415,7 @@ fn a_law_answers_lines_with_no_buffer_behind_it() {
     let dir = fixture("basic");
     let source = Dir::at(&dir);
     let rendered = execute(Job {
-        representations: vec![Representation::Lines],
+        asked: &asked("lines"),
         ..Job::over(&source, "sin(2*pi*261.63*t) + sin(2*pi*329.63*t)")
     })
     .unwrap();
@@ -441,7 +441,7 @@ fn lines_reads_a_pair_written_in_either_variable() {
     let listed = |expr: &str| {
         let source = Dir::at(&dir);
         let rendered = execute(Job {
-            representations: vec![Representation::Lines],
+            asked: &asked("lines"),
             ..Job::over(&source, expr)
         })
         .expect("the probe types");
@@ -474,10 +474,7 @@ fn two_readings_share_one_collapse() {
     let cache = Cache::new();
     let source = Dir::at(&dir);
     let rendered = execute(Job {
-        representations: vec![
-            Representation::Loudness,
-            Representation::Envelope { frame_secs: None },
-        ],
+        asked: &asked("loudness, envelope"),
         cache: Some(&cache),
         ..Job::over(&source, "@master([0, 1s])")
     })
@@ -505,7 +502,7 @@ fn a_missing_node_is_not_found() {
 
     let source = Dir::at(&dir);
     let rendered = execute(Job {
-        representations: vec![Representation::Lines],
+        asked: &asked("lines"),
         ..Job::over(&source, "@master")
     })
     .expect("the composition renders");

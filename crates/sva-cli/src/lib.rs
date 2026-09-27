@@ -8,26 +8,23 @@ mod lint;
 mod new;
 mod output;
 mod panic;
-mod quiet;
 mod rates;
 mod render;
 mod terminal;
 mod trace;
 mod variables;
 mod wav;
-mod windows;
 
 pub use args::{
-    ANALYZE_REPRESENTATIONS, AnalyzeArgs, Command, Format, RenderArgs, USAGE, parse_args,
+    ANALYZE_REPRESENTATIONS, Analysis, AnalyzeArgs, Command, Format, RenderArgs, USAGE, parse_args,
 };
 pub use composition::{composition, located};
 pub use destination::{Framing, refuse_inside, write as write_destination, write_analysis};
 pub use help::help_text;
-pub use lint::{Finding, LintReport, entry_points, lint};
+pub use lint::{Finding, LintReport, lint};
 pub use new::{FILES, NEXT, Scaffolded, scaffold};
 pub use output::{help_data, lint_data, new_data, trace_data, version_data};
 pub use panic::{Stopped, caught, stopped};
-pub use quiet::Quiet;
 pub use render::{analyze, render};
 pub use sva_core::{
     Builtins, Callable, CliError, builtins, builtins_data, cwd, error_envelope, success_envelope,

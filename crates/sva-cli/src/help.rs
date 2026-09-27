@@ -5,13 +5,11 @@ use sva_core::{
 };
 use sva_engine::{DEFAULT_FRAME_SECS, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1};
 
-use crate::quiet::{DEFAULT_QUIET_AFTER_SECS, DEFAULT_QUIET_FLOOR_DB};
-
 /// Read off the constants the parser itself defaults to, so a printed default cannot drift
 /// from the one a render actually uses.
 pub fn help_text() -> String {
     let budget = PSYCHOACOUSTIC_V1.flop_budget;
-    let (quiet_floor, quiet_after) = (DEFAULT_QUIET_FLOOR_DB, DEFAULT_QUIET_AFTER_SECS);
+    let bits = PSYCHOACOUSTIC_V1.precision_bits;
     format!(
         r#"USAGE:
   sva-cli (render | analyze | lint | trace | builtins | outline | new) [arguments]
@@ -23,12 +21,12 @@ DESCRIPTION:
   directory; `new` writes beside it and `analyze` reads a file.
 
 RENDER:
-  sva-cli render '<expression>' [--until '<condition>'] [--representation <list>]...
-                 [--rate <hz>] [-c <key>=<value>]... [--confirm]
+  sva-cli render '<expression>' --representation <list> [--until '<condition>']
+                 [--bits <n>] [--rate <hz>] [--flop-budget <n>] [--confirm]
 
   Renders one expression, in the grammar a node file's body uses, and prints one
-  reading per representation under `data.readings`. `@path` reads a node from
-  the current directory and `@/abs/path` one anywhere; there is no default
+  reading per representation under `data.representations`. `@path` reads a node
+  from the current directory and `@/abs/path` one anywhere; there is no default
   target. Every reading states its `source` (exact or measured), the
   conformance profile it ran under, and its rate.
 
@@ -37,11 +35,12 @@ RENDER:
   `sp`, or a bare `0`); `[a, inf)` and `[a,)` leave the end open; the other
   arguments are the node's own named ones. The start trims the output alone:
   history before it is still computed, so a loop or a filter carries the state
-  it had there. With no interval the range starts at 0, earlier only where a
+  it had there. With no interval the render starts at 0, earlier only where a
   crop reaches before it, and its end is open. A closed interval renders exactly
   its length; an open one ends where the target's support does (a crop's end, a
   release and its cropped tail), and refuses as `render.no_stop` where that
-  support never ends and no `--until` is written.
+  support never ends and no `--until` is written. Inside an expression a window
+  is a `crop`.
 
   `--until '<condition>'` ends the render at the first sample the condition
   holds at, or at the interval's end, whichever is first. There is no default
@@ -49,35 +48,39 @@ RENDER:
   (`<`, `<=`, `>`, `>=`) `t`, `envelope(t)` (the RMS of the `envelope`
   representation's 50 ms frames), `max`/`min(envelope([a, b]))` and literals,
   joined by `and`/`or`. A range reaching `inf` is answered by the tail proof, a
-  bound on every later sample. An open interval over an endless support that
-  nothing proves an end for refuses, naming the condition: a node holding a
-  level forever as `engine.never_silent`, one no bound is derived for yet (a
-  physical solver other than chaigne_askenfelt, a filter whose coefficients
-  move) as `engine.no_tail_bound`, one not quiet by `-c proof_limit` as
-  `engine.not_silent_by`, and a condition no proof brings about as
-  `render.no_stop`. A short-time transform reads its input whole, and refuses
-  one with no end as `engine.unbounded_extent`.
+  bound on every later sample, which looks {DEFAULT_PROOF_LIMIT_SECS} seconds ahead. An
+  open interval over an endless support that nothing proves an end for refuses,
+  naming the condition: a node holding a level forever as
+  `engine.never_silent`, one no bound is derived for yet (a physical solver
+  other than chaigne_askenfelt, a filter whose coefficients move) as
+  `engine.no_tail_bound`, one not quiet by then as `engine.not_silent_by`, and a
+  condition no proof brings about as `render.no_stop`. A short-time transform
+  reads its input whole, and refuses one with no end as
+  `engine.unbounded_extent`.
 
-  `--representation <r>[=<path>][,...]` takes a comma list and may repeat. An
-  entry with `=<path>` writes a file instead, listed under `written`:
-  `samples=<path>.wav` writes 32-bit float audio, or 16-bit PCM under
-  `-c pcm16=true`; any other path takes the reading's JSON, uncapped. A path
-  that already holds a file refuses unless `--confirm` is written. `lines`,
-  `atoms`, `derivative`, `bindings`, `arguments`, and a closed form's
-  `spectrum`, `envelope` and `pitch`, read the expression and ignore the range.
+  `--representation <list>` takes a comma list of readings and may repeat. Each
+  is a call in the language's own syntax, its options its named arguments:
+  `spectrum(peaks=8, frame=50ms)`, `ledger(depth=3, brief=1)`. An entry
+  followed by `=<path>` writes a file instead, listed under `written`:
+  `samples=<path>.wav` writes audio, encoded as `--bits` says; any other path
+  takes the reading's JSON, uncapped. A path that already holds a file refuses
+  unless `--confirm` is written. `lines`, `atoms`, `derivative`, `bindings`,
+  `arguments`, and a closed form's `spectrum`, `envelope` and `pitch`, read the
+  expression and ignore the range.
 
-  `--rate <hz>` is the sample rate; no expression can read it. `-c` sets the
-  rest, one `key=value` each: `flop_budget`, `proof_limit`, `node` (the
-  instance a reading is taken of; `bindings` requires it), `depth`, `peaks`,
-  `oversample`, `frame`, `brief`, `skim` and `pcm16`.
+  `--bits <n>` is the precision every sample is written to, from 2 to 52: the
+  point where a series is truncated, and the encoding of a `.wav`, integer PCM
+  at n bits up to 16 and 32-bit float above. `--rate <hz>` is the sample rate;
+  no expression can read it. `--flop-budget <n>` is the operation count paid
+  before a render refuses.
 
   `ledger` prints one row per node under the target. A row's `share` is the
   part of its reader's own energy that row accounts for, so one reader's refs
   sum to 1; a ref no addend isolates, such as one factor of a product, prints
   `null`. Each ref carrying a share is collapsed once on its own, so a ledger
   costs one collapse per attributed ref beyond the render, and `depth` bounds
-  how many. `brief=true` keeps only the rows that clipped, `skim=true` drops
-  the wider fields.
+  how many. `brief=1` keeps only the rows that clipped, `skim=1` drops the
+  wider fields.
 
   `arguments` renders nothing: for every instance under the target it prints
   each builtin call's named arguments as the numbers the call was lowered
@@ -89,37 +92,23 @@ RENDER:
   own body, as `sva-cli outline` counts them.
 
 ANALYZE:
-  sva-cli analyze <file.wav> [--representation <list>]... [-c <key>=<value>]...
+  sva-cli analyze <file.wav> --representation <list> [--confirm]
 
   Runs the same readings over a whole external `.wav` at its own rate, never
   resampled. Only the readings a buffer answers alone apply; the rest need the
-  graph behind it. `-c` takes `frame`, `peaks`, and `against=<file.wav>`, the
-  second signal `masking` reads against.
+  graph behind it. `masking(against=<file.wav>)` names the second signal
+  masking reads against.
 
 LINT:
-  sva-cli lint [<node|expression>] [--format <json|text>] [-c <key>=<value>]...
+  sva-cli lint [<node|expression>] [--format <json|text>]
 
-  Checks binding, ref and tempo resolution in the current directory without
-  rendering a sample. With no target it checks the whole directory against
-  `master`. With a target it checks
-  only the nodes that target reaches, and `entry-point` does not run, since the
-  target's own reach references every node in it.
+  Checks the current directory without rendering a sample. With no target it
+  checks every file under its own rules. With a target it checks the files that
+  target reaches, and the types a render of it decides.
 
-  Every check prints one `data.diagnostics` item. `advice` and `warning` exit 0,
-  `error` exits non-zero, so branch on the verdict and never on whether the array
-  is empty. No flag downgrades an error.
-
-  `quiet-tail` names a node that the bound behind `--until
-  'max(envelope([t, inf))) < X'` proves under `-c quiet_floor` (default
-  {quiet_floor} dB) from an instant T on, in every instance, while its support
-  still runs `-c quiet_after` (default {quiet_after}s; `1b` is one bar) or more past
-  T: to where an exp the engine cuts exactly ends it, or, where nothing ends it,
-  as far as a render computes it. A node whose own crop ends it is not named.
-  It prints T in bars where the composition declares bpm/meter, in seconds
-  otherwise, and the fix as text: `crop(<its expression>, 0s, T)`. Nothing is
-  cropped for you. It never renders: a node whose bound needs
-  samples (a physical solver), or that a root cannot place at {DEFAULT_SAMPLE_RATE} Hz, is
-  skipped.
+  Every check prints one `data.diagnostics` item. `warning` exits 0, `error`
+  exits non-zero, so branch on the verdict and never on whether the array is
+  empty. No flag downgrades an error.
 
   error    missing-comment       no `;` comment line
            multiline-comment     more than one
@@ -129,21 +118,11 @@ LINT:
                                  doc comment's own run exempted
            long-expression-body  a body over 10000 characters, a backstop rather
                                  than a complexity budget
+           literal-sample-rate   a written rate where `sp` belongs
   warning  grid-rows-per-bar     a TSV grid's row count does not divide evenly
                                  into its filename's bar span
            key-is-not-a-pitch    `variables/key` holds neither a note name nor
                                  a number of hertz
-           entry-point-refused   a node a whole-directory render reaches does
-                                 not type
-  advice   entry-point           nothing references this node
-           no-default-root       the directory has no `master`
-           tag-shape             a tag over 3 lowercase words or 24 characters
-           window-inside-ramp    a window sits wholly inside a crop's shoulder
-           quiet-tail            an uncropped node proven quiet long before its
-                                 render stops, and the crop that ends it
-           literal-sample-rate   a written rate where `sp` belongs
-           not-a-file            a socket, FIFO or device in the directory
-           not-a-node            a filename no `@ref` can spell
 
 TRACE:
   sva-cli trace <node|expression>
@@ -151,7 +130,7 @@ TRACE:
   Prints one node's position without rendering audio: what it reads (`down`, one
   hop), everything that reads it (`up`, transitively to an entry point), each
   beside the expression doing the reading, the node that made it discrete, and
-  the feedback loop it sits in, if any.
+  the feedback loop it sits in, if any. An interval the target reads is ignored.
 
 BUILTINS:
   sva-cli builtins
@@ -185,22 +164,22 @@ NEW:
 EXAMPLES:
   sva-cli new song1 && cd song1
   sva-cli render '@master' --representation samples=/tmp/song1.wav
-  sva-cli render '@master([0, 8b])' --representation ledger,loudness
+  sva-cli render '@master([0, 8b])' --representation 'ledger(depth=2),loudness'
   sva-cli render '@voice/note([1s, inf), f0=C4, release=0.5s)' \
     --until 'max(envelope([t, inf))) < -96db' --representation samples=/tmp/note.wav
-  sva-cli render '@chord/home' --representation lines --rate 48000
+  sva-cli render '@chord/home' --representation 'spectrum(peaks=8)' --rate 48000
   sva-cli lint
   sva-cli trace grid/phrase-2b
   sva-cli builtins
 
 OUTPUT:
   {{"status": "success", "data": {{"target": "@master([0, 8b])", "sample_rate":
-  44100, "profile": "psychoacoustic-v1", "range": {{"start_secs": 0,
-  "end_secs": 16}}, "label": {{...}}, "written": {{"items": [...]}}, "readings":
-  {{"ledger": {{...}}}}, "diagnostics": {{"items": []}}}}, "meta": {{"request_id":
-  "req_...", "timestamp": 1700000000}}}}
+  44100, "bits": 24, "profile": "psychoacoustic-v1", "interval": {{"start_secs":
+  0, "end_secs": 16}}, "label": {{...}}, "written": {{"items": [...]}},
+  "representations": {{"ledger": {{...}}}}, "diagnostics": {{"items": []}}}},
+  "meta": {{"request_id": "req_...", "timestamp": 1700000000}}}}
 
-  `range` is null where no reading read samples. An error adds "error":
+  `interval` is null where no reading read samples. An error adds "error":
   {{"code", "message", "details": {{"count", "codes"}}}}. Success or error,
   every response carries every finding in full at "data": {{"diagnostics":
   {{"items": [{{"code", "severity", "message", "location", "help"}}],
@@ -216,28 +195,21 @@ OUTPUT:
 DEFAULTS:
   --rate <hz>          the sample rate a render lays its seconds on.
                        Default {DEFAULT_SAMPLE_RATE}.
-  -c flop_budget=<n>   the operation count paid before a render refuses.
+  --bits <n>           the precision every sample is written to. Default {bits},
+                       the `psychoacoustic-v1` profile's own.
+  --flop-budget <n>    the operation count paid before a render refuses.
                        Default {budget}, the `psychoacoustic-v1` profile's own.
-  -c proof_limit=<s>   how far a proof looks for the condition where the
-                       interval has no end. Default {DEFAULT_PROOF_LIMIT_SECS} seconds.
-  -c depth=<n>         how deep below its target a `ledger` walks.
+  ledger(depth=<n>)    how deep below its target a `ledger` walks.
                        Default {DEFAULT_LEDGER_DEPTH}.
-  -c peaks=<n>         peaks a `spectrum` keeps, notes a `pitch`, formants a
+  (peaks=<n>)          peaks a `spectrum` keeps, notes a `pitch`, formants a
                        `formants`. Default {DEFAULT_MAX_PEAKS}.
-  -c oversample=<n>    the multiple `alias` re-renders at to hear what folded.
+  alias(oversample=<n>) the multiple `alias` re-renders at to hear what folded.
                        Default {DEFAULT_OVERSAMPLE}.
-  -c frame=<s>         the step a framed reading advances by, in seconds.
-                       Default {DEFAULT_FRAME_SECS}, except `spectrum`, which
-                       sizes its own transform to the range unless it is set.
-  -c node=<path>       the instance a reading is taken of. Defaults to the
-                       target itself; `bindings` requires it.
-  -c against=<file>    the second signal `analyze`'s `masking` reads against.
-                       No default: that one analysis requires it.
-  -c brief, skim and pcm16 are `false` unless set `true`.
-  -c quiet_floor=<db>  the level `lint`'s `quiet-tail` proves a tail under.
-                       Default {quiet_floor} dB.
-  -c quiet_after=<t>   how long past that its support must run for `quiet-tail`
-                       to name it, in seconds or bars. Default {quiet_after}s.
+  (frame=<t>)          the step a framed reading advances by, in seconds.
+                       Default {DEFAULT_FRAME_SECS}, except `spectrum`, which sizes
+                       its own transform to the range unless it is set.
+  bindings(node=@<path>) the instance whose bindings are read; required.
+  ledger(brief, skim)  `0` unless set `1`.
   --format <json|text> how `lint` prints its findings: the envelope, or one
                        terminal line each, colored where stdout is a terminal.
                        The same objects either way. Default json.

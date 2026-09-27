@@ -192,9 +192,7 @@ fn a_frame_past_the_transform_bound_refuses_on_both_paths() {
                 "render",
                 "@master",
                 "--representation",
-                "spectrum",
-                "-c",
-                &format!("frame={span}"),
+                &format!("spectrum(frame={span})"),
             ])
             .output()
             .expect("the binary runs");
@@ -210,9 +208,7 @@ fn a_frame_past_the_transform_bound_refuses_on_both_paths() {
             "analyze",
             &path.display().to_string(),
             "--representation",
-            "spectrum",
-            "-c",
-            "frame=1e9",
+            "spectrum(frame=1e9)",
         ])
         .output()
         .expect("the binary runs");

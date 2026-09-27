@@ -520,24 +520,33 @@ pub fn stats_json(stats: &CacheStats) -> String {
     )
 }
 
+/// One answer as a report prints it.
+pub struct Printed {
+    pub name: String,
+    pub answer: Answer,
+    /// `ledger(skim=1)`: each row's level alone.
+    pub skim: bool,
+}
+
 /// What a render answered with, and where anything too big for the object went instead.
 pub struct Report<'a> {
     pub target: &'a str,
     pub rate: u32,
+    /// The precision every sample was written to; `None` for a file read back.
+    pub bits: Option<i32>,
     /// The seconds the readings were taken over; `None` where none read samples.
-    pub range: Option<(f64, f64)>,
+    pub interval: Option<(f64, f64)>,
     pub profile: &'a str,
     pub label: Option<&'a Label>,
     pub written: &'a [(String, &'a Path)],
-    pub answers: &'a [(String, Answer)],
+    pub answers: &'a [Printed],
     /// Readings a crate outside this pipeline answered, each already a JSON value: this
     /// envelope only says which reading ran, under which profile, and at what rate.
     pub analyses: &'a [(String, String)],
     pub limit: Option<usize>,
-    pub skim: bool,
 }
 
-/// `written` names every reading that went to a file rather than into `readings`.
+/// `written` names every reading that went to a file rather than into `representations`.
 pub fn query_data(report: &Report) -> String {
     let written = list(report.written, |(name, path)| {
         format!(
@@ -553,11 +562,11 @@ pub fn query_data(report: &Report) -> String {
     let reads = report
         .answers
         .iter()
-        .map(|(name, answer)| {
+        .map(|printed| {
             format!(
                 "\"{}\": {}",
-                escape(name),
-                answer_json(answer, report.limit, report.skim)
+                escape(&printed.name),
+                answer_json(&printed.answer, report.limit, printed.skim)
             )
         })
         .chain(report.analyses.iter().map(|(name, value)| {
@@ -571,7 +580,7 @@ pub fn query_data(report: &Report) -> String {
         }))
         .collect::<Vec<_>>()
         .join(",\n    ");
-    let range = report.range.map_or(NONE.to_string(), |(start, end)| {
+    let interval = report.interval.map_or(NONE.to_string(), |(start, end)| {
         format!(
             "{{ \"start_secs\": {}, \"end_secs\": {} }}",
             num(start),
@@ -579,11 +588,12 @@ pub fn query_data(report: &Report) -> String {
         )
     });
     format!(
-        "{{\n  \"target\": \"{}\",\n  \"sample_rate\": {},\n  \"profile\": \"{}\",\n  \
-         \"range\": {range},\n  \"label\": {label},\n  \"written\": {written},\n  \
-         \"readings\": {{\n    {reads}\n  }}\n}}",
+        "{{\n  \"target\": \"{}\",\n  \"sample_rate\": {},\n  \"bits\": {},\n  \
+         \"profile\": \"{}\",\n  \"interval\": {interval},\n  \"label\": {label},\n  \
+         \"written\": {written},\n  \"representations\": {{\n    {reads}\n  }}\n}}",
         escape(report.target),
         report.rate,
+        report.bits.map_or(NONE.to_string(), |b| b.to_string()),
         escape(report.profile),
     )
 }

@@ -14,7 +14,6 @@ pub fn diagnostics_text(diagnostics: &[Diagnostic], color: bool) -> String {
         let (word, shade) = match d.severity {
             Severity::Error => ("error", "\x1b[31m"),
             Severity::Warning => ("warning", "\x1b[33m"),
-            Severity::Advice => ("advice", "\x1b[36m"),
         };
         let (open, close) = match color {
             true => (shade, "\x1b[0m"),

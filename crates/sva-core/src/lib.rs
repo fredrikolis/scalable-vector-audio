@@ -8,13 +8,13 @@ mod lint_code;
 mod outline;
 mod output;
 mod query;
-mod settings;
 mod target;
 mod tempo;
 mod until;
 
 pub use answer::{
-    Report, SAMPLE_LIMIT, answer_json, label_json, query_data, stats_json, value_json, work_json,
+    Printed, Report, SAMPLE_LIMIT, answer_json, label_json, query_data, stats_json, value_json,
+    work_json,
 };
 pub use builtins::{Builtins, Callable, Crossing, builtins, builtins_data};
 pub use cli_error::{CliError, LintViolation, lint_diagnostic};
@@ -22,10 +22,9 @@ pub use lint_code::LintCode;
 pub use outline::outline_data;
 pub use output::{Diagnostic, Severity, diagnostics_json, error_envelope, success_envelope};
 pub use query::{
-    Asked, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, REPRESENTATIONS, RETIRED,
-    Shaping, is_wav, representation_for, retired,
+    Asked, Call, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, REPRESENTATIONS,
+    RETIRED, asked, call, calls, is_wav, retired, seconds, wav_path,
 };
-pub use settings::{Settings, wav_path};
 pub use target::{Edge, Target, target};
 pub use tempo::{Tempo, refuse_unresolved_bars, resolved as tempo};
 pub use until::until;
@@ -34,7 +33,7 @@ use std::path::Path;
 
 use sva_ast::{Dir, Graph, Refusal, Source};
 use sva_engine::{
-    Ask, BindingFault, DEFAULT_SAMPLE_RATE, EngineError, Range, RenderConfig, StreamConfig, render,
+    Ask, DEFAULT_SAMPLE_RATE, EngineError, Range, RenderConfig, StreamConfig, render,
 };
 
 pub use sva_engine::{Checkpoint, DEFAULT_PROOF_LIMIT_SECS, Stream, Until};
@@ -86,18 +85,15 @@ impl Rendered {
 pub struct Job<'a> {
     pub source: &'a dyn Source,
     pub target: &'a str,
-    /// The condition that ends the render; `None` ends it where the interval or the target's
-    /// support ends.
+    /// `None` ends the render where the interval or the target's support ends.
     pub until: Option<&'a str>,
     pub rate: Option<u32>,
+    pub bits: Option<i32>,
     pub cache: Option<&'a Cache>,
     pub cache_policy: Option<CachePolicy>,
-    /// The instance every reading is taken of; the target itself where this is `None`.
-    pub reading: Option<&'a str>,
-    pub representations: Vec<Representation>,
+    pub asked: &'a [Asked],
     /// The operation count the caller acknowledges paying; the profile's own where `None`.
     pub flop_budget: Option<u128>,
-    pub proof_limit_secs: Option<f64>,
     pub volatile: &'a [String],
 }
 
@@ -108,12 +104,11 @@ impl<'a> Job<'a> {
             target,
             until: None,
             rate: None,
+            bits: None,
             cache: None,
             cache_policy: None,
-            reading: None,
-            representations: Vec::new(),
+            asked: &[],
             flop_budget: None,
-            proof_limit_secs: None,
             volatile: &[],
         }
     }
@@ -123,7 +118,7 @@ fn settle(job: &Job) -> Result<(Graph, RenderConfig), CliError> {
     let Target { expr, interval } = target(job.target)?;
     let mut graph = settled(sva_ast::load_reaching(
         job.source,
-        &roots_of(job.source, Some(&expr))?
+        &roots_of(job.source, &expr)?
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>(),
@@ -167,18 +162,17 @@ fn settle(job: &Job) -> Result<(Graph, RenderConfig), CliError> {
     if let Some(budget) = job.flop_budget {
         config.flop_budget = budget;
     }
-    if let Some(limit) = job.proof_limit_secs {
-        config.proof_limit_secs = limit;
+    if let Some(bits) = job.bits {
+        config.profile.precision_bits = precision(bits)?;
     }
     config.volatile = job.volatile.to_vec();
     config.cache_policy = job.cache_policy;
-    let node = job.reading.unwrap_or(PROBE);
     config.asks = job
-        .representations
+        .asked
         .iter()
-        .map(|representation| Ask {
-            node: node.to_string(),
-            representation: *representation,
+        .map(|asked| Ask {
+            node: asked.node.clone().unwrap_or_else(|| PROBE.to_string()),
+            representation: asked.representation,
         })
         .collect();
     Ok((graph, config))
@@ -246,6 +240,16 @@ pub fn stream(job: &Job, block: usize, bindings: &[(String, f64)]) -> Result<Str
         .map_err(|e| CliError::Engine(as_written(e, job.target)))
 }
 
+/// A double holds no bit past its own mantissa, and one bit writes only zero.
+fn precision(bits: i32) -> Result<i32, CliError> {
+    match (2..=52).contains(&bits) {
+        true => Ok(bits),
+        false => Err(CliError::Usage(format!(
+            "`--bits` takes a precision from 2 to 52 bits, not {bits}"
+        ))),
+    }
+}
+
 /// The engine knows a target only as the node it was defined as, so a refusal that names
 /// that node names the target as the caller wrote it instead.
 fn as_written(refused: EngineError, target: &str) -> EngineError {
@@ -266,34 +270,6 @@ fn as_written(refused: EngineError, target: &str) -> EngineError {
         },
         other => other,
     }
-}
-
-pub fn instances_behind(
-    source: &dyn Source,
-    target: &str,
-    refused: &EngineError,
-) -> Option<Vec<String>> {
-    unbound(refused)
-        .then(|| instances_of(source, target))
-        .flatten()
-}
-
-fn unbound(refused: &EngineError) -> bool {
-    matches!(
-        refused,
-        EngineError::Binding {
-            fault: BindingFault::Unbound(..),
-            ..
-        }
-    )
-}
-
-/// The instances a whole composition expanded a file into; a render reaches none of them.
-fn instances_of(source: &dyn Source, target: &str) -> Option<Vec<String>> {
-    let graph = prepared(source).ok()?;
-    let (instances, _) = sva_engine::instantiate::from_roots(&graph, &[ROOT.to_string()]).ok()?;
-    let held: Vec<String> = instances.instances_of(target).collect();
-    (!held.is_empty()).then_some(held)
 }
 
 pub fn probe(dir: &Path, expression: &str) -> Result<Rendered, CliError> {
@@ -371,17 +347,16 @@ pub fn settled(loaded: Result<Graph, Vec<Refusal>>) -> Result<Graph, CliError> {
 pub const RESERVED_VARIABLES: [&str; 3] = ["bpm", "meter", "key"];
 
 /// A path the source answers for is a node; anything else is math, and its reads are roots.
-pub fn roots_of(source: &dyn Source, target: Option<&str>) -> Result<Vec<String>, CliError> {
+pub fn roots_of(source: &dyn Source, target: &str) -> Result<Vec<String>, CliError> {
     let mut roots: Vec<String> = RESERVED_VARIABLES
         .iter()
         .flat_map(|n| [(*n).to_string(), format!("{}/{n}", sva_ast::VARIABLES)])
         .collect();
     match target {
-        None => roots.push(ROOT.to_string()),
-        Some(target) if source.get(target).map_err(CliError::Io)?.is_some() => {
+        target if source.get(target).map_err(CliError::Io)?.is_some() => {
             roots.push(target.to_string());
         }
-        Some(text) => match instance_call(text).map(|(path, _)| path) {
+        text => match instance_call(text).map(|(path, _)| path) {
             Some(path) if source.get(path).map_err(CliError::Io)?.is_some() => {
                 roots.push(path.to_string());
             }

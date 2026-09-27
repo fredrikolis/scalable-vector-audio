@@ -27,6 +27,16 @@ fn field(value: &JsValue, name: &str) -> JsValue {
         .unwrap_or_else(|_| unreachable!("{name} is readable"))
 }
 
+/// `{ rate: 8000 }` and each of `more`, as a page writes its options.
+fn options(more: &[(&str, JsValue)]) -> JsValue {
+    let held = js_sys::Object::new();
+    for (key, value) in [("rate", JsValue::from(8000))].iter().chain(more) {
+        js_sys::Reflect::set(&held, &(*key).into(), value)
+            .unwrap_or_else(|_| unreachable!("an object takes a key"));
+    }
+    held.into()
+}
+
 fn page() -> Composition {
     let mut held = Composition::new(Some("a-registry".to_string()));
     held.insert("master", "@partials/one*0.5\n");
@@ -39,14 +49,8 @@ fn page() -> Composition {
 /// `@<node>` over its first second, read for `representations`.
 fn asking(of: &Composition, node: &str, representations: &[&str]) -> Rendering {
     let asked = representations.iter().map(|r| (*r).to_string()).collect();
-    of.render(
-        &format!("@{node}([0, 1s])"),
-        None,
-        Some(asked),
-        Some(8000),
-        JsValue::UNDEFINED,
-    )
-    .unwrap_or_else(|_| unreachable!("`{node}` renders"))
+    of.render(&format!("@{node}([0, 1s])"), Some(asked), options(&[]))
+        .unwrap_or_else(|_| unreachable!("`{node}` renders"))
 }
 
 fn render(of: &Composition, node: &str) -> Rendering {
@@ -59,8 +63,9 @@ fn plane(of: &Rendering) -> Vec<f32> {
 }
 
 fn readings(of: &Rendering) -> JsValue {
-    of.readings()
-        .unwrap_or_else(|e| unreachable!("readings answer: {}", as_text(&field(&e, "refusal"))))
+    of.representations().unwrap_or_else(|e| {
+        unreachable!("representations answer: {}", as_text(&field(&e, "refusal")))
+    })
 }
 
 #[wasm_bindgen_test]
@@ -83,17 +88,11 @@ fn every_export_survives_the_boundary() {
     assert!((drawn[2] - want).abs() < 1e-4, "{} vs {want}", drawn[2]);
 
     let part = held
-        .render(
-            "@partials/one([0.25s, 0.5s])",
-            None,
-            None,
-            Some(8000),
-            JsValue::UNDEFINED,
-        )
+        .render("@partials/one([0.25s, 0.5s])", None, options(&[]))
         .unwrap_or_else(|_| unreachable!("an interval renders"));
     assert_eq!(part.start_secs(), 0.25);
     assert_eq!(plane(&part).len(), 2000, "an interval narrows the array");
-    let read = field(&readings(&part), "readings");
+    let read = field(&readings(&part), "representations");
     let component = items(&field(&field(&read, "samples"), "value"), "components").get(0);
     let paging = field(&field(&component, "values"), "pagination");
     assert_eq!(
@@ -130,7 +129,7 @@ fn a_representation_crosses_as_the_object_the_cli_puts_under_data() {
     );
     assert_eq!(field(&asked, "sample_rate").as_f64(), Some(8000.0));
 
-    let read = field(&asked, "readings");
+    let read = field(&asked, "representations");
     let component = items(&field(&field(&read, "samples"), "value"), "components").get(0);
     let values = field(&component, "values");
     assert_eq!(
@@ -186,12 +185,10 @@ fn every_representation_name_the_cli_answers_crosses_and_the_removed_ones_refuse
     ] {
         let asked = held.render(
             "@partials/one([0, 1s])",
-            None,
             Some(vec![name.to_string()]),
-            Some(8000),
-            JsValue::UNDEFINED,
+            options(&[]),
         );
-        if let Err(refused) = asked.and_then(|one| one.readings()) {
+        if let Err(refused) = asked.and_then(|one| one.representations()) {
             let spelled = as_text(&field(&refused, "refusal"));
             assert!(
                 !spelled.contains("unknown representation"),
@@ -208,10 +205,8 @@ fn every_representation_name_the_cli_answers_crosses_and_the_removed_ones_refuse
         assert!(
             held.render(
                 "@partials/one([0, 1s])",
-                None,
                 Some(vec![gone.to_string()]),
-                Some(8000),
-                JsValue::UNDEFINED,
+                options(&[]),
             )
             .is_err(),
             "`{gone}` is not a reading this surface answers"
@@ -300,24 +295,18 @@ fn knob(cutoff: u32) -> String {
     format!("@tone([0, inf), x=@note, cutoff={cutoff})")
 }
 
-/// `{ volatile: [..] }` as a page writes it.
+/// `{ rate, until, volatile: [..] }` as a page writes it.
 fn config(volatile: &[&str]) -> JsValue {
-    let config = js_sys::Object::new();
     let names: js_sys::Array = volatile.iter().map(|n| JsValue::from_str(n)).collect();
-    js_sys::Reflect::set(&config, &"volatile".into(), &names)
-        .unwrap_or_else(|_| unreachable!("an object takes a key"));
-    config.into()
+    options(&[
+        ("until", JsValue::from_str("t >= 0.05s")),
+        ("volatile", names.into()),
+    ])
 }
 
 fn played(held: &Composition, cutoff: u32, volatile: &[&str]) -> Rendering {
-    held.render(
-        &knob(cutoff),
-        Some("t >= 0.05s".to_string()),
-        None,
-        Some(8000),
-        config(volatile),
-    )
-    .unwrap_or_else(|_| unreachable!("the knob at {cutoff} renders"))
+    held.render(&knob(cutoff), None, config(volatile))
+        .unwrap_or_else(|_| unreachable!("the knob at {cutoff} renders"))
 }
 
 fn stats_of(of: &Rendering) -> JsValue {
@@ -361,13 +350,7 @@ fn a_volatile_knob_crosses_in_the_config_and_keeps_one_value_per_node() {
     );
 
     let refused = held
-        .render(
-            &knob(500),
-            Some("t >= 0.05s".to_string()),
-            None,
-            Some(8000),
-            config(&["cutof"]),
-        )
+        .render(&knob(500), None, config(&["cutof"]))
         .err()
         .unwrap_or_else(|| unreachable!("a name nothing binds refuses"));
     assert!(
@@ -402,10 +385,11 @@ fn a_cache_policy_crosses_by_name_and_per_render() {
     assert!(held.set_cache_policy("some").is_err());
 
     let at = |policy: &str| {
-        let config = js_sys::Object::new();
-        js_sys::Reflect::set(&config, &"cache".into(), &policy.into())
-            .unwrap_or_else(|_| unreachable!("an object takes a key"));
-        held.render("@master([0, 1s])", None, None, Some(8000), config.into())
+        held.render(
+            "@master([0, 1s])",
+            None,
+            options(&[("cache", JsValue::from_str(policy))]),
+        )
     };
     let target = at("target").unwrap_or_else(|_| unreachable!("target is a policy"));
     let stored = field(&stats_of(&target), "stored").as_f64();
@@ -449,13 +433,7 @@ fn a_refusal_crosses_as_data_and_the_module_keeps_working() {
     held.insert("master", "@nowhere*2\n");
 
     let refused = held
-        .render(
-            "@master([0, 1s])",
-            None,
-            None,
-            Some(8000),
-            JsValue::UNDEFINED,
-        )
+        .render("@master([0, 1s])", None, options(&[]))
         .err()
         .unwrap_or_else(|| unreachable!("a dangling ref refuses"));
 
@@ -507,10 +485,8 @@ fn a_refusal_crosses_as_data_and_the_module_keeps_working() {
 fn a_refusal_the_page_raised_crosses_exactly_as_a_pipeline_one_does() {
     let Err(raised) = page().render(
         "@partials/one([0, 1s])",
-        None,
         Some(vec!["nonsense".to_string()]),
-        Some(8000),
-        JsValue::UNDEFINED,
+        options(&[]),
     ) else {
         unreachable!("`nonsense` is no reading")
     };
@@ -538,17 +514,15 @@ fn a_ledger_is_summed_over_the_interval_asked_for() {
     let held = page()
         .render(
             "@master([0.25s, 0.5s])",
-            None,
             Some(vec!["ledger".to_string()]),
-            Some(8000),
-            JsValue::UNDEFINED,
+            options(&[]),
         )
         .unwrap_or_else(|_| unreachable!("a ledger answers"));
     let asked = readings(&held);
-    let range = field(&asked, "range");
-    assert_eq!(field(&range, "start_secs").as_f64(), Some(0.25));
-    assert_eq!(field(&range, "end_secs").as_f64(), Some(0.5));
-    let rows = items(&field(&field(&asked, "readings"), "ledger"), "value");
+    let interval = field(&asked, "interval");
+    assert_eq!(field(&interval, "start_secs").as_f64(), Some(0.25));
+    assert_eq!(field(&interval, "end_secs").as_f64(), Some(0.5));
+    let rows = items(&field(&field(&asked, "representations"), "ledger"), "value");
     let spelled = as_text(&asked);
     assert!(rows.length() >= 2, "the target and its ref: {spelled}");
     let rms = field(&rows.get(0), "rms").as_f64().unwrap_or(0.0);
@@ -616,17 +590,18 @@ fn an_open_render_ends_where_its_condition_is_proven() {
         "crop(sin(2*pi*440*t), 0s, 0.05s) + 0.35*self(t - 0.25s)\n",
     );
     let quiet = held
-        .render("@master", None, None, Some(8000), JsValue::UNDEFINED)
+        .render("@master", None, options(&[]))
         .unwrap_or_else(|_| unreachable!("the echo falls silent"));
     let secs = quiet.duration_secs();
     assert!((3.75..=3.8).contains(&secs), "{secs}");
 
     let never = held.render(
         "sin(2*pi*100*t)",
-        Some("max(envelope([t, inf))) < -96db".to_string()),
         None,
-        Some(8000),
-        JsValue::UNDEFINED,
+        options(&[(
+            "until",
+            JsValue::from_str("max(envelope([t, inf))) < -96db"),
+        )]),
     );
     let refused = never
         .err()
@@ -756,7 +731,11 @@ fn a_stream_until_quiet_ends_where_the_quiet_render_proves_it() {
     assert_eq!(heard.len() as f64, end);
     assert_eq!(stream.next(&mut out).ok(), Some(0), "nothing after silence");
     let whole = held
-        .render("@master", quiet(), None, Some(8000), JsValue::UNDEFINED)
+        .render(
+            "@master",
+            None,
+            options(&[("until", JsValue::from(quiet()))]),
+        )
         .unwrap_or_else(|_| unreachable!("the same decay falls silent"));
     let proven = plane(&whole);
     assert_eq!(heard[..proven.len()], proven[..]);

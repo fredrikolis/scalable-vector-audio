@@ -3,7 +3,7 @@
 mod helpers;
 
 use helpers::scratch;
-use sva_cli::{Quiet, lint};
+use sva_cli::lint;
 
 fn doc(models: &str) -> String {
     format!(
@@ -11,23 +11,21 @@ fn doc(models: &str) -> String {
     )
 }
 
-/// The refusal used to raise before every advisory pass, so one malformed comment hid the rest.
+/// The refusal used to raise before every other pass, so one malformed comment hid the rest.
 #[test]
-fn a_refusing_lint_still_lists_its_advisories() {
-    let dir = scratch("refusing-with-advice");
+fn a_refusing_lint_still_lists_its_warnings() {
+    let dir = scratch("refusing-with-warnings");
     std::fs::write(dir.join("master"), "@tone*0.5\n").expect("a node with no doc comment");
     std::fs::write(
         dir.join("tone"),
-        format!("{}sin(2*pi*44100*t)\n", doc("tone")),
+        format!("{}sin(2*pi*110*t)\n", doc("tone")),
     )
-    .expect("a node written against the rate");
-    std::fs::write(
-        dir.join("spare"),
-        format!("{}sin(2*pi*110*t)\n", doc("spare")),
-    )
-    .expect("a node nothing references");
+    .expect("a documented node");
+    std::fs::create_dir_all(dir.join("variables")).expect("a variables directory");
+    std::fs::write(dir.join("variables/key"), format!("{}sin(t)\n", doc("key")))
+        .expect("a key that is no pitch");
 
-    let Err(refused) = lint(&dir, None, &Quiet::default()) else {
+    let Err(refused) = lint(&dir, None) else {
         panic!("a node with no `;`-comment refuses");
     };
     let answered = refused.diagnostics();
@@ -39,23 +37,21 @@ fn a_refusing_lint_still_lists_its_advisories() {
         found.contains(&("lint.missing_comment", sva_core::Severity::Error)),
         "{found:?}"
     );
-    for advised in ["lint.entry_point", "lint.literal_sample_rate"] {
-        assert!(
-            found.contains(&(advised, sva_core::Severity::Advice)),
-            "{advised} is answered beside the refusal: {found:?}"
-        );
-    }
+    assert!(
+        found.contains(&("lint.key_is_not_a_pitch", sva_core::Severity::Warning)),
+        "the warning is answered beside the refusal: {found:?}"
+    );
     assert_eq!(
         refused.message(),
         "1 lint violation(s)",
-        "the verdict counts what refused, not what was advised"
+        "the verdict counts what refused, not what was warned"
     );
 }
 
 /// A target's own reach refuses through a second path, which used to return before folding in
 /// what the same scan had already found.
 #[test]
-fn a_refusing_targeted_lint_still_lists_its_advisories() {
+fn a_refusing_targeted_lint_still_lists_every_violation() {
     let dir = scratch("refusing-target");
     std::fs::write(dir.join("tone"), "sin(2*pi*44100*hz*t)\n").expect("a node with no comment");
     std::fs::write(
@@ -64,7 +60,7 @@ fn a_refusing_targeted_lint_still_lists_its_advisories() {
     )
     .expect("two call sites");
 
-    let Err(refused) = lint(&dir, Some("tone"), &Quiet::default()) else {
+    let Err(refused) = lint(&dir, Some("tone")) else {
         panic!("a node with no `;`-comment refuses, whatever else its file is");
     };
     let answered = refused.diagnostics();

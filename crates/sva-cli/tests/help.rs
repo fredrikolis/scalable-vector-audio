@@ -12,18 +12,6 @@ fn help_states_the_sample_rate_default() {
 }
 
 #[test]
-fn help_states_the_proof_limit_default() {
-    let page = help_text();
-    assert!(
-        page.contains(&format!(
-            "Default {} seconds",
-            sva_core::DEFAULT_PROOF_LIMIT_SECS
-        )),
-        "{page}"
-    );
-}
-
-#[test]
 fn help_states_the_depth_peaks_oversample_and_frame_defaults() {
     let page = help_text();
     let counts = [
@@ -39,11 +27,13 @@ fn help_states_the_depth_peaks_oversample_and_frame_defaults() {
         "the frame a pitch or stereo reading steps by: {page}"
     );
     for flag in [
-        "-c depth=",
-        "-c peaks=",
-        "-c oversample=",
-        "-c frame=",
+        "ledger(depth=",
+        "(peaks=",
+        "alias(oversample=",
+        "(frame=",
         "--rate",
+        "--bits",
+        "--flop-budget",
     ] {
         assert!(
             page.contains(flag),

@@ -1,17 +1,16 @@
-// Concern: parses the readings and settings a render or an analysis is asked under | Non-concern: the subcommand dispatch (mod.rs), what a target names | IO: (argv tail) -> Command or CliError
+// Concern: parses the readings, flags and destinations of a render or an analysis | Non-concern: the subcommand dispatch (mod.rs), what a target names | IO: (argv tail) -> Command or CliError
 
 use std::path::{Component, Path, PathBuf};
 
-use sva_core::{Asked, CliError, Settings, is_wav, representation_for, retired, wav_path};
+use sva_core::{Asked, Call, CliError, asked, calls, is_wav, wav_path};
 use sva_engine::{DEFAULT_SAMPLE_RATE, MAX_PINNED_FRAME, Representation, pinned_frame};
 
-use super::{ANALYZE_REPRESENTATIONS, AnalyzeArgs, Command, RenderArgs, USAGE, value};
+use super::{ANALYZE_REPRESENTATIONS, Analysis, AnalyzeArgs, Command, RenderArgs, USAGE, value};
 
-/// What `render` and `analyze` both read: readings and settings.
+/// What `render` and `analyze` both read: the calls asked for, and `--confirm`.
 #[derive(Default)]
 struct Flags {
-    asked: Vec<(String, Option<PathBuf>)>,
-    settings: Settings,
+    calls: Vec<Call>,
     confirm: bool,
 }
 
@@ -21,48 +20,57 @@ impl Flags {
         &mut self,
         flag: &str,
         it: &mut impl Iterator<Item = &'a String>,
-        keys: &[&str],
     ) -> Result<bool, CliError> {
         match flag {
             "--representation" => {
-                for entry in value(it, "--representation")?.split(',') {
-                    let (name, dest) = split_as(entry.trim())?;
-                    refuse_audio_dest(&name, dest.as_deref())?;
-                    self.asked.push((name, dest));
+                for call in calls(&value(it, "--representation")?).map_err(usage)? {
+                    refuse_audio_dest(&call.name, call.dest.as_deref())?;
+                    self.calls.push(call);
                 }
             }
-            "-c" => self.set(&value(it, "-c")?, keys)?,
             "--confirm" => self.confirm = true,
             _ => return Ok(false),
         }
         Ok(true)
     }
 
-    fn set(&mut self, raw: &str, keys: &[&str]) -> Result<(), CliError> {
-        let Some((key, raw)) = raw.split_once('=') else {
-            return Err(CliError::Usage(format!(
-                "`-c {raw}` names no value; write `-c <key>=<value>`\n{USAGE}"
-            )));
-        };
-        self.settings
-            .set(key, raw, keys)
-            .map_err(|e| CliError::Usage(format!("-c {}\n{USAGE}", e.message())))
-    }
-
     /// The asks `sva-analysis` answers, lifted out before a `Representation` is looked for:
     /// those four name no representation and never reach `sva-core`'s table.
-    fn analyses(&self) -> Vec<(String, Option<PathBuf>)> {
-        self.asked
-            .iter()
-            .filter(|(name, _)| sva_analysis::ANALYSES.contains(&name.as_str()))
-            .cloned()
-            .collect()
+    fn analyses(&self) -> Result<Vec<Analysis>, CliError> {
+        let mut out = Vec::new();
+        for call in &self.calls {
+            if !sva_analysis::ANALYSES.contains(&call.name.as_str()) {
+                continue;
+            }
+            let mut against = None;
+            for (key, raw) in &call.args {
+                match (call.name.as_str(), key.as_str()) {
+                    ("masking", "against") => against = Some(wav_path(raw).map_err(usage)?),
+                    (name, key) => {
+                        return Err(CliError::Usage(format!(
+                            "`{name}` takes no argument `{key}`{}\n{USAGE}",
+                            match name {
+                                "masking" => "; it takes `against`",
+                                _ => "",
+                            }
+                        )));
+                    }
+                }
+            }
+            out.push(Analysis {
+                name: call.name.clone(),
+                dest: call.dest.clone(),
+                against,
+            });
+        }
+        Ok(out)
     }
 
     fn resolved(&self, allowed: Option<&[&str]>) -> Result<Vec<Asked>, CliError> {
-        let mut out = Vec::with_capacity(self.asked.len());
-        for (name, dest) in &self.asked {
-            if sva_analysis::ANALYSES.contains(&name.as_str()) {
+        let mut out = Vec::with_capacity(self.calls.len());
+        for call in &self.calls {
+            let name = call.name.as_str();
+            if sva_analysis::ANALYSES.contains(&name) {
                 if allowed.is_none() {
                     return Err(CliError::Usage(format!(
                         "`{name}` reads a rendered buffer back; write the render to a `.wav` \
@@ -71,50 +79,31 @@ impl Flags {
                 }
                 continue;
             }
-            if let Some(write) = retired(name) {
-                return Err(CliError::Usage(format!(
-                    "`{name}` left the language; write `{write}`\n{USAGE}"
-                )));
-            }
-            let representation =
-                representation_for(name, self.settings.shape).ok_or_else(|| {
-                    CliError::Usage(format!("unknown representation `{name}`\n{USAGE}"))
-                })?;
-            if allowed.is_some_and(|set| !set.contains(&name.as_str())) {
+            let one = asked(call).map_err(usage)?;
+            if allowed.is_some_and(|set| !set.contains(&name)) {
                 return Err(CliError::Usage(format!(
                     "`analyze` does not answer `{name}` — only {} need no rendered \
                      graph\n{USAGE}",
                     ANALYZE_REPRESENTATIONS.join(", ")
                 )));
             }
-            out.push(Asked {
-                name: name.clone(),
-                representation,
-                dest: dest.clone(),
-            });
+            out.push(one);
         }
         Ok(out)
     }
 }
 
-const RENDER_KEYS: [&str; 10] = [
-    "flop_budget",
-    "proof_limit",
-    "node",
-    "depth",
-    "peaks",
-    "oversample",
-    "frame",
-    "brief",
-    "skim",
-    "pcm16",
-];
-
-const ANALYZE_KEYS: [&str; 3] = ["frame", "peaks", "against"];
+/// A refusal from the shared parser, with this CLI's usage after it.
+fn usage(e: CliError) -> CliError {
+    match e {
+        CliError::Usage(message) => CliError::Usage(format!("{message}\n{USAGE}")),
+        other => other,
+    }
+}
 
 /// A positional, which may open with a minus as an expression does; only a flag is none.
 fn positional(arg: Option<&String>) -> Option<String> {
-    arg.filter(|a| !a.starts_with("--") && *a != "-c").cloned()
+    arg.filter(|a| !a.starts_with("--")).cloned()
 }
 
 /// The target is the one positional; everything else is a flag.
@@ -122,18 +111,22 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
     let mut it = rest.iter();
     let target = positional(it.next()).ok_or_else(|| {
         CliError::Usage(format!(
-            "render needs a target expression, as `sva-cli render '@master([0, inf))'`\n{USAGE}"
+            "render needs a target expression, as `sva-cli render '@song([0, inf))'`\n{USAGE}"
         ))
     })?;
     let mut flags = Flags::default();
-    let (mut until, mut rate) = (None, None);
+    let (mut until, mut rate, mut bits, mut flop_budget) = (None, None, None, None);
     while let Some(flag) = it.next() {
-        if flags.read(flag, &mut it, &RENDER_KEYS)? {
+        if flags.read(flag, &mut it)? {
             continue;
         }
         match flag.as_str() {
             "--until" => until = Some(value(&mut it, "--until")?),
             "--rate" => rate = Some(hertz(&value(&mut it, "--rate")?)?),
+            "--bits" => bits = Some(whole(&value(&mut it, "--bits")?, "--bits")?),
+            "--flop-budget" => {
+                flop_budget = Some(operations(&value(&mut it, "--flop-budget")?)?);
+            }
             other => {
                 return Err(CliError::Usage(format!(
                     "unknown argument `{other}`\n{USAGE}"
@@ -149,18 +142,14 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
              samples=<path>.wav` writes audio\n{USAGE}"
         )));
     }
-    if asked.iter().any(|a| a.name == "bindings") && flags.settings.node.is_none() {
-        return Err(CliError::Usage(format!(
-            "`bindings` needs `-c node=<path>`\n{USAGE}"
-        )));
-    }
     check_frame(&asked, rate.unwrap_or(DEFAULT_SAMPLE_RATE))?;
     Ok(Command::Render(Box::new(RenderArgs {
         target,
         until,
         rate,
+        bits,
+        flop_budget,
         asked,
-        settings: flags.settings,
         confirm: flags.confirm,
     })))
 }
@@ -170,10 +159,10 @@ pub(super) fn analyze_args(rest: &[String]) -> Result<Command, CliError> {
     let mut it = rest.iter();
     let path = positional(it.next())
         .ok_or_else(|| CliError::Usage(format!("missing <file.wav>\n{USAGE}")))?;
-    let path = wav_path(&path)?;
+    let path = wav_path(&path).map_err(usage)?;
     let mut flags = Flags::default();
     while let Some(flag) = it.next() {
-        if flags.read(flag, &mut it, &ANALYZE_KEYS)? {
+        if flags.read(flag, &mut it)? {
             continue;
         }
         return Err(CliError::Usage(format!(
@@ -181,12 +170,12 @@ pub(super) fn analyze_args(rest: &[String]) -> Result<Command, CliError> {
         )));
     }
     let asked = flags.resolved(Some(&ANALYZE_REPRESENTATIONS))?;
-    let analyses = flags.analyses();
+    let analyses = flags.analyses()?;
     refuse_shared_destination(
         asked
             .iter()
             .filter_map(|a| a.dest.as_deref())
-            .chain(analyses.iter().filter_map(|(_, dest)| dest.as_deref())),
+            .chain(analyses.iter().filter_map(|a| a.dest.as_deref())),
     )?;
     if asked.is_empty() && analyses.is_empty() {
         return Err(CliError::Usage(format!(
@@ -197,7 +186,6 @@ pub(super) fn analyze_args(rest: &[String]) -> Result<Command, CliError> {
         path,
         asked,
         analyses,
-        settings: flags.settings,
         confirm: flags.confirm,
     })))
 }
@@ -248,15 +236,17 @@ fn hertz(raw: &str) -> Result<u32, CliError> {
     }
 }
 
-/// The destination may hold `=` itself, so only the first one separates.
-fn split_as(raw: &str) -> Result<(String, Option<PathBuf>), CliError> {
-    match raw.split_once('=') {
-        Some((name, "")) => Err(CliError::Usage(format!(
-            "`{name}=` names no destination; drop the `=` to read it under `data.readings`\n{USAGE}"
-        ))),
-        Some((name, path)) => Ok((name.to_string(), Some(PathBuf::from(path)))),
-        None => Ok((raw.to_string(), None)),
-    }
+pub(super) fn whole(raw: &str, flag: &str) -> Result<i32, CliError> {
+    raw.parse::<i32>()
+        .map_err(|_| CliError::Usage(format!("{flag} needs a whole number, got `{raw}`\n{USAGE}")))
+}
+
+pub(super) fn operations(raw: &str) -> Result<u128, CliError> {
+    raw.parse::<u128>().map_err(|_| {
+        CliError::Usage(format!(
+            "--flop-budget needs a whole count of operations, got `{raw}`\n{USAGE}"
+        ))
+    })
 }
 
 fn refuse_audio_dest(name: &str, dest: Option<&Path>) -> Result<(), CliError> {
@@ -283,8 +273,8 @@ pub(crate) fn check_frame(asked: &[Asked], rate: u32) -> Result<(), CliError> {
         let frame = pinned_frame(secs, sr);
         if frame > MAX_PINNED_FRAME {
             return Err(CliError::Usage(format!(
-                "-c frame={secs} sizes spectrum's transform to {frame} samples at {sr} Hz, past \
-                 the {MAX_PINNED_FRAME}-sample bound\n{USAGE}"
+                "`spectrum(frame={secs})` sizes its transform to {frame} samples at {sr} Hz, \
+                 past the {MAX_PINNED_FRAME}-sample bound\n{USAGE}"
             )));
         }
     }

@@ -210,7 +210,6 @@ fn three_verbs_agree_on_an_instance_name() {
         "reading a file on its own terms does not make it an entry point"
     );
 
-    let report = sva_cli::lint(&dir, Some("motif"), &sva_cli::Quiet::default())
-        .expect("`lint motif` names the same file");
+    let report = sva_cli::lint(&dir, Some("motif")).expect("`lint motif` names the same file");
     assert_eq!(report.nodes, 1, "one node checked");
 }
