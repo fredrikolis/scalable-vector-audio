@@ -109,14 +109,15 @@ LINT:
   `error` exits non-zero, so branch on the verdict and never on whether the array
   is empty. No flag downgrades an error.
 
-  `quiet-tail` names a node with no end of its own (no crop, no release, no
-  exp or fade the engine cuts exactly) that the bound behind `--until
+  `quiet-tail` names a node that the bound behind `--until
   'max(envelope([t, inf))) < X'` proves under `-c quiet_floor` (default
-  {quiet_floor} dB) from an instant T on, in every instance, while a render still
-  computes it for `-c quiet_after` (default {quiet_after}s; `1b` is one bar) or more
-  past T. It prints T in bars where the composition declares bpm/meter, in
-  seconds otherwise, and the fix as text: `crop(<its expression>, 0s, T)`.
-  Nothing is cropped for you. It never renders: a node whose bound needs
+  {quiet_floor} dB) from an instant T on, in every instance, while its support
+  still runs `-c quiet_after` (default {quiet_after}s; `1b` is one bar) or more past
+  T: to where an exp the engine cuts exactly ends it, or, where nothing ends it,
+  as far as a render computes it. A node whose own crop ends it is not named.
+  It prints T in bars where the composition declares bpm/meter, in seconds
+  otherwise, and the fix as text: `crop(<its expression>, 0s, T)`. Nothing is
+  cropped for you. It never renders: a node whose bound needs
   samples (a physical solver), or that a root cannot place at {DEFAULT_SAMPLE_RATE} Hz, is
   skipped.
 
@@ -235,7 +236,7 @@ DEFAULTS:
   -c brief, skim and pcm16 are `false` unless set `true`.
   -c quiet_floor=<db>  the level `lint`'s `quiet-tail` proves a tail under.
                        Default {quiet_floor} dB.
-  -c quiet_after=<t>   how long past that a render must run it for `quiet-tail`
+  -c quiet_after=<t>   how long past that its support must run for `quiet-tail`
                        to name it, in seconds or bars. Default {quiet_after}s.
   --format <json|text> how `lint` prints its findings: the envelope, or one
                        terminal line each, colored where stdout is a terminal.

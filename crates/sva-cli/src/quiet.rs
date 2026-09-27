@@ -1,8 +1,8 @@
-// Concern: advises a crop where a node with no end is proven quiet long before its render stops | Non-concern: the bound (sva-engine), cropping anything | IO: (&Graph, roots, Quiet) -> Vec<Finding>
+// Concern: advises a crop where an uncropped node is proven quiet long before it ends | Non-concern: the bound (sva-engine), cropping anything | IO: (&Graph, roots, Quiet) -> Vec<Finding>
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use sva_ast::{Graph, Source, SpanUnit, TokenKind};
+use sva_ast::{BinOp, Expr, Graph, Source, SpanUnit, TokenKind};
 use sva_core::{CliError, LintCode, Severity, Tempo};
 use sva_engine::{DEFAULT_PROOF_LIMIT_SECS, DEFAULT_SAMPLE_RATE, QuietTail, RenderConfig};
 
@@ -97,13 +97,17 @@ pub fn quiet_findings(
         let Some(from) = proven.and_then(|p| p.into_iter().reduce(f64::max)) else {
             continue;
         };
-        let open: Vec<_> = held
+        let open = held.iter().filter(|t| t.support.1 == f64::INFINITY).count();
+        // An end the node's own crop writes is no run-on; one with no end runs as far as computed.
+        let cropped = graph.expr(file).is_some_and(crops);
+        let run_on = held
             .iter()
-            .filter(|t| t.support.1 == f64::INFINITY)
-            .collect();
-        let run_on = open
-            .iter()
-            .map(|t| t.computed_until.unwrap_or(f64::NEG_INFINITY) - from)
+            .map(|t| match (t.support.1.is_finite(), cropped) {
+                (false, _) => t.computed_until.unwrap_or(f64::NEG_INFINITY),
+                (true, false) => t.support.1,
+                (true, true) => f64::NEG_INFINITY,
+            })
+            .map(|end| end - from)
             .fold(f64::NEG_INFINITY, f64::max);
         // Before 0 a crop from 0 would cut what the instance holds there.
         let before = held.iter().any(|t| t.support.0 < 0.0);
@@ -118,9 +122,9 @@ pub fn quiet_findings(
             true => format!("for {} past that", spelled(run_on, tempo, f64::floor)),
             false => "with no end".to_string(),
         };
-        let count = match (open.len(), held.len()) {
+        let count = match (open, held.len()) {
             (_, 1) => String::new(),
-            (n, all) if n == all => format!(" in each of its {n} instances"),
+            (n, all) if n == all || n == 0 => format!(" in each of its {all} instances"),
             (n, all) => format!(" in all {all} of its instances, {n} of them with no end"),
         };
         out.push(Finding {
@@ -128,8 +132,8 @@ pub fn quiet_findings(
             severity: Severity::Advice,
             subject: file.to_string(),
             message: format!(
-                "`{file}` has no crop, and its tail bound is under {} dB from {at} on{count}, \
-                 yet it is computed {computed}: `crop({body}, 0s, {at})`",
+                "`{file}` has no crop that ends it, and its tail bound is under {} dB from {at} \
+                 on{count}, yet it is computed {computed}: `crop({body}, 0s, {at})`",
                 quiet.floor_db
             ),
             line: None,
@@ -174,6 +178,17 @@ fn later(a: Option<f64>, b: Option<f64>) -> Option<f64> {
     match (a, b) {
         (Some(a), Some(b)) => Some(a.max(b)),
         (a, b) => a.or(b),
+    }
+}
+
+/// Whether a written crop ends the whole value: a sum only where every addend is cropped.
+fn crops(e: &Expr) -> bool {
+    match e {
+        Expr::Call { name, .. } => name == "crop",
+        Expr::Bin(BinOp::Mul, l, r) => crops(l) || crops(r),
+        Expr::Bin(BinOp::Div, l, _) => crops(l),
+        Expr::Bin(BinOp::Add | BinOp::Sub, l, r) => crops(l) && crops(r),
+        _ => false,
     }
 }
 

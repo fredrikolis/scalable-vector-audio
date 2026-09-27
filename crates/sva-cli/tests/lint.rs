@@ -543,3 +543,29 @@ fn a_ringing_node_proven_quiet_is_advised_its_crop() {
         codes(&report)
     );
 }
+
+/// A Gaussian ends where the engine's own exp underflows it, 2.4 s past where its bound is
+/// already under the floor: an end that far out is a run-on all the same.
+#[test]
+fn a_node_ending_long_after_it_is_proven_quiet_is_advised_its_crop() {
+    let ring = "exp(-(t - 3)*(t - 3)/0.01)*sin(2*pi*440*t)\n";
+    let dir = composition(
+        "quiet-end",
+        &[("ring", ring), ("master", "crop(@ring(t), 0s, 8s)\n")],
+    );
+    let report = lint(&dir, None, &Quiet::default()).expect("an advisory is no refusal");
+    let found: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.code == LintCode::QuietTail)
+        .collect();
+    let [found] = found.as_slice() else {
+        panic!(
+            "one quiet tail, on `ring` and not the crop reading it: {}",
+            codes(&report)
+        );
+    };
+    assert_eq!(found.subject, "ring");
+    let crop = "`crop(exp(-(t - 3)*(t - 3)/0.01)*sin(2*pi*440*t), 0s, 3.";
+    assert!(found.message.contains(crop), "{}", found.message);
+}
