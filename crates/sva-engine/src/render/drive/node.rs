@@ -1,12 +1,13 @@
-// Concern: builds a driven node, its clock and its readers' reach, and runs it over a block | Non-concern: the order nodes run in, what an edit keeps | IO: (NodeId) -> Driven; (from, to) -> its tape
+// Concern: builds a driven node, its clock, reach and store run, and runs it over a block | Non-concern: the order nodes run in, what an edit keeps | IO: (NodeId) -> Driven; (from, to) -> its tape
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use sva_formula::{Held, NodeId};
+use sva_formula::{Hash, Held, NodeId};
 use sva_samples::{Buffer, Extent, Machine, MachineState, NodeRenderer, Rows, Tape, Window};
 
 use super::super::pointwise::{self, Point};
-use super::super::{Render, collapse_refused, sampled};
+use super::super::{Lenses, Render, collapse_refused, sampled};
+use crate::cache::{Expected, Payload, Run, run_key};
 use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::refs;
@@ -42,6 +43,16 @@ pub(in crate::render) struct Driven {
     pub(in crate::render) extent: Extent,
     pub(in crate::render) support: Extent,
     pub(in crate::render) tape: Tape,
+    pub(in crate::render) run: Option<Recorded>,
+}
+
+pub(in crate::render) struct Recorded {
+    key: Hash,
+    /// How far the store holds this run.
+    pub(super) stored: i64,
+    /// Every sample from where its state starts is kept.
+    pub(super) records: bool,
+    pub(super) loaded: bool,
 }
 
 /// How a driver holds its nodes' samples.
@@ -52,16 +63,18 @@ pub(in crate::render) enum Hold {
     Every(BTreeMap<NodeId, Buffer>),
 }
 
-/// Each of `order`, its clock and the reach its readers need.
+/// Each of `order`: a run the store holds is read, except where `unloaded` names an edit's.
 pub(in crate::render) fn built(
     shell: &Render,
     order: &[NodeId],
     mut hold: Hold,
+    lenses: &Lenses,
+    unloaded: &dyn Fn(usize) -> bool,
 ) -> Result<Vec<Driven>, EngineError> {
     let trailing = matches!(hold, Hold::Trailing { .. });
     let mut nodes: Vec<Driven> = Vec::new();
     let mut index: BTreeMap<NodeId, usize> = BTreeMap::new();
-    for &id in order {
+    for (at, &id) in order.iter().enumerate() {
         let extent = shell.extents.of(id);
         let support = shell.extents.support(id);
         index.insert(id, nodes.len());
@@ -69,6 +82,21 @@ pub(in crate::render) fn built(
             && let Some(buffer) = held.remove(&id)
         {
             nodes.push(whole(id, buffer, extent, support));
+            continue;
+        }
+        let run = match lenses.runs.contains(&id) && !extent.is_empty() {
+            true => found(shell, id, extent, lenses, !unloaded(at))?,
+            false => None,
+        };
+        if let (false, Some((recorded, run))) = (trailing, &run)
+            && run.end() >= extent.end
+        {
+            let mut node = whole(id, run.samples.over(extent, support), extent, support);
+            node.run = Some(Recorded {
+                records: false,
+                ..*recorded
+            });
+            nodes.push(node);
             continue;
         }
         let Built {
@@ -81,7 +109,7 @@ pub(in crate::render) fn built(
             Kind::Whole | Kind::Rows(_) | Kind::Ended => 0,
             Kind::Point(_) | Kind::Machine { .. } => crate::flops::per_sample(shell, id),
         };
-        nodes.push(Driven {
+        let mut node = Driven {
             id,
             kind,
             per_sample,
@@ -94,16 +122,31 @@ pub(in crate::render) fn built(
             extent,
             support,
             tape: Tape::new(width, 0, extent.start),
-        });
+            run: None,
+        };
+        if let Some((recorded, run)) = run {
+            node.run = Some(recorded);
+            node.preload(run);
+        }
+        nodes.push(node);
     }
     let root = index.get(&shell.root).copied();
     clocked(&mut nodes, root, trailing);
     if let Hold::Trailing { block, root_keep } = hold {
+        let last = shell.range.map_or(i64::MAX, |range| range.end);
         for (at, node) in nodes.iter_mut().enumerate() {
             if Some(at) == root {
                 node.keep = node.keep.max(root_keep);
             }
-            node.tape = Tape::new(node.width, node.keep + block, node.extent.start);
+            let leaf = node.reads.is_empty()
+                && matches!(&node.kind, Kind::Machine { machine, .. } if machine.stateful());
+            let ends = node.extent.end.saturating_add(node.lag) < last;
+            if let Some(run) = &mut node.run {
+                run.records &= leaf || ends;
+            }
+            if node.tape.end() == node.extent.start {
+                node.tape = Tape::new(node.width, node.keep + block, node.extent.start);
+            }
         }
     }
     Ok(nodes)
@@ -136,6 +179,86 @@ fn clocked(nodes: &mut [Driven], root: Option<usize>, trailing: bool) {
     }
 }
 
+/// A machine a stream and a whole render compute alike, so one run answers both: it reads
+/// only such machines, and holds call-site state only where it reads nothing.
+pub(in crate::render) fn runnable(shell: &Render, order: &[NodeId]) -> BTreeSet<NodeId> {
+    let mut out = BTreeSet::new();
+    for &id in order {
+        if !matches!(shell.tys.ty(id).held, Held::Sampled)
+            || matches!(shell.tys.value(id), Value::Cast(Cast::Istft, _))
+        {
+            continue;
+        }
+        let Ok(program) = sampled::program_reading(shell, id, &|_| 1) else {
+            continue;
+        };
+        let mut ahead = false;
+        crate::render::extent::leaves(&program.renderer, &mut |leaf| {
+            ahead |= matches!(leaf, NodeRenderer::Buffer { shift, .. } if *shift > 0);
+        });
+        let reads = program.reads.iter().all(|r| out.contains(r));
+        if !ahead && reads && (program.layout.sites.is_empty() || program.reads.is_empty()) {
+            out.insert(id);
+        }
+    }
+    out
+}
+
+/// A run starting after the extent is no prefix of it; a stateless one starting before is.
+fn found(
+    shell: &Render,
+    id: NodeId,
+    extent: Extent,
+    lenses: &Lenses,
+    looks: bool,
+) -> Result<Option<(Recorded, Run)>, EngineError> {
+    let (Some(lens), Some(recording)) = (lenses.at(id), lenses.recording) else {
+        return Ok(None);
+    };
+    let width = usize::from(shell.tys.ty(id).width).max(1);
+    let key = run_key_of(shell, id)?;
+    let mut recorded = Recorded {
+        key,
+        stored: extent.start,
+        records: lens.keeps(),
+        loaded: false,
+    };
+    let usable = recording
+        .run_span(key)
+        .is_none_or(|span| span.start <= extent.start && extent.start < span.end);
+    if !looks || !usable {
+        return Ok(Some((recorded, empty_run(shell, width, extent))));
+    }
+    let expected = Expected::Run {
+        rate: shell.config.rate,
+        width,
+    };
+    let Some(run) = lens
+        .load(key, shell.tys.name(id), expected)
+        .and_then(|entry| entry.payload.run())
+    else {
+        return Ok(Some((recorded, empty_run(shell, width, extent))));
+    };
+    recorded.stored = run.end();
+    recorded.loaded = true;
+    recorded.records &= run.samples.start == extent.start;
+    Ok(Some((recorded, run)))
+}
+
+pub(in crate::render) fn run_key_of(shell: &Render, id: NodeId) -> Result<Hash, EngineError> {
+    let width = usize::from(shell.tys.ty(id).width).max(1);
+    Ok(shell.keyed(run_key(shell.identity(id)?, shell.config.rate, width)))
+}
+
+fn empty_run(shell: &Render, width: usize, extent: Extent) -> Run {
+    let mut samples = Buffer::silence(shell.config.rate, width, 0);
+    samples.start = extent.start;
+    Run {
+        samples,
+        state: None,
+    }
+}
+
 /// A node held whole before any reader runs.
 pub(in crate::render) fn whole(
     id: NodeId,
@@ -156,6 +279,7 @@ pub(in crate::render) fn whole(
         extent,
         support,
         tape: Tape::from(buffer),
+        run: None,
     }
 }
 
@@ -275,6 +399,26 @@ fn point(shell: &Render, id: NodeId) -> Result<(Kind, usize), EngineError> {
 }
 
 impl Driven {
+    fn preload(&mut self, run: Run) {
+        let end = run.end().min(self.extent.end);
+        let carried = match (&mut self.kind, &run.state) {
+            (Kind::Machine { machine, .. }, _) if !machine.stateful() || end < run.end() => true,
+            (Kind::Machine { machine, .. }, Some(last)) => machine.carry(last).is_ok(),
+            (Kind::Machine { .. }, None) => false,
+            _ => true,
+        };
+        if run.samples.is_empty() || !carried {
+            if let Some(recorded) = &mut self.run {
+                recorded.loaded = false;
+            }
+            return;
+        }
+        let mut tape = Tape::from(run.samples);
+        tape.forget_before(self.extent.start);
+        tape.cut(end);
+        self.tape = tape;
+    }
+
     /// Samples up to `to` on its own clock, every node it reads already there; the span it
     /// computed.
     pub(in crate::render) fn run(
@@ -322,7 +466,7 @@ impl Driven {
     }
 
     pub(super) fn forgets(&self) -> bool {
-        self.trailing
+        self.trailing && self.run.as_ref().is_none_or(|run| !run.records)
     }
 
     /// `(priced flops, waves)` over `[from, to)` of its extent: a pointwise tree's waves go
@@ -346,9 +490,37 @@ impl Driven {
             && local - self.keep as i64 >= self.extent.end
     }
 
-    pub(in crate::render) fn end(&mut self) {
+    pub(in crate::render) fn end(&mut self, shell: &Render, lenses: &Lenses) {
+        self.store(shell, lenses);
         self.kind = Kind::Ended;
         self.tape = Tape::new(self.width, 0, self.extent.end);
+        self.run = None;
+    }
+
+    /// What it recorded past what the store holds.
+    pub(in crate::render) fn store(&mut self, shell: &Render, lenses: &Lenses) {
+        let Some(recorded) = &self.run else {
+            return;
+        };
+        let end = self.tape.end();
+        if !recorded.records || end <= recorded.stored || self.tape.base() != self.extent.start {
+            return;
+        }
+        let Some(lens) = lenses.at(self.id) else {
+            return;
+        };
+        let state = match &self.kind {
+            Kind::Machine { machine, .. } if machine.stateful() => Some(machine.state()),
+            _ => None,
+        };
+        let run = Run {
+            samples: self.tape.clone().into_buffer(shell.config.rate),
+            state,
+        };
+        lens.store(recorded.key, &Payload::Run(Box::new(run)), None);
+        if let Some(recorded) = &mut self.run {
+            recorded.stored = end;
+        }
     }
 
     /// Held only where its tape ends at `at`; a machine with no call site holds none.

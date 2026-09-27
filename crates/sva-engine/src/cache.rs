@@ -9,14 +9,15 @@ pub use store::{Cache, CachePolicy, DEFAULT_CACHE_BYTES, PrunePolicy};
 pub use sva_formula::Hash;
 
 use sva_formula::SpectralSum;
-use sva_samples::{Buffer, Frames, Label};
+use sva_samples::{Buffer, Frames, Label, MachineState};
 
-/// A spectral sum, one collapse of it, or one analysis of that collapse.
+/// A spectral sum, one collapse of it, one analysis of that collapse, or a machine's run.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Payload {
     Samples(Box<Buffer>),
     Frames(Box<Frames>),
     Symbolic(Box<SpectralSum>),
+    Run(Box<Run>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +25,40 @@ pub enum PayloadKind {
     Samples,
     Frames,
     Symbolic,
+    Run,
+}
+
+/// A machine node's samples from where its state starts, and the state where they end.
+#[derive(Clone)]
+pub struct Run {
+    pub samples: Buffer,
+    pub state: Option<MachineState>,
+}
+
+impl Run {
+    pub fn end(&self) -> i64 {
+        self.samples.extent().end
+    }
+
+    pub fn bytes(&self) -> usize {
+        let state = self.state.as_ref().map_or(0, MachineState::bytes);
+        self.samples.len() * self.samples.width * size_of::<f64>() + state
+    }
+}
+
+/// The state is the node's own where its samples end, so the samples decide.
+impl PartialEq for Run {
+    fn eq(&self, other: &Run) -> bool {
+        self.samples == other.samples
+    }
+}
+
+impl std::fmt::Debug for Run {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Run")
+            .field("samples", &self.samples.extent())
+            .finish()
+    }
 }
 
 /// An entry not matching this is a miss, never a coercion.
@@ -36,6 +71,10 @@ pub enum Expected {
     },
     Frames,
     Symbolic,
+    Run {
+        rate: u32,
+        width: usize,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -51,6 +90,7 @@ impl Expected {
             Expected::Samples { .. } => PayloadKind::Samples,
             Expected::Frames => PayloadKind::Frames,
             Expected::Symbolic => PayloadKind::Symbolic,
+            Expected::Run { .. } => PayloadKind::Run,
         }
     }
 }
@@ -61,6 +101,7 @@ impl Payload {
             Payload::Samples(_) => PayloadKind::Samples,
             Payload::Frames(_) => PayloadKind::Frames,
             Payload::Symbolic(_) => PayloadKind::Symbolic,
+            Payload::Run(_) => PayloadKind::Run,
         }
     }
 
@@ -74,6 +115,13 @@ impl Payload {
     pub fn symbolic(&self) -> Option<&SpectralSum> {
         match self {
             Payload::Symbolic(sum) => Some(sum),
+            _ => None,
+        }
+    }
+
+    pub fn run(self) -> Option<Run> {
+        match self {
+            Payload::Run(run) => Some(*run),
             _ => None,
         }
     }
@@ -92,6 +140,7 @@ impl Payload {
                         })
                         .sum::<usize>()
             }
+            Payload::Run(run) => run.bytes(),
         }
     }
 
@@ -107,6 +156,9 @@ impl Payload {
             ) => b.rate == rate && b.width == width && b.len() == samples,
             (Payload::Frames(_), Expected::Frames) => true,
             (Payload::Symbolic(_), Expected::Symbolic) => true,
+            (Payload::Run(run), Expected::Run { rate, width }) => {
+                run.samples.rate == rate && run.samples.width == width
+            }
             _ => false,
         }
     }
@@ -144,6 +196,14 @@ pub fn buffer_key(
             u64::from(score == sva_samples::AliasScore::Asked),
             0x62_75_66_66_65_72_00_01,
         ],
+    )
+}
+
+/// Wherever the node is read from, and however far.
+pub fn run_key(identity: Hash, rate: u32, width: usize) -> Hash {
+    mixed(
+        identity,
+        &[u64::from(rate), width as u64, 0x72_75_6e_00_00_00_00_01],
     )
 }
 

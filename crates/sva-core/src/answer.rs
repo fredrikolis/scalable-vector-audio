@@ -492,6 +492,7 @@ pub fn stats_json(stats: &CacheStats) -> String {
             Outcome::ComputedStored => "computed_stored",
             Outcome::ComputedNotStored => "computed_not_stored",
             Outcome::ComputedReplaced => "computed_replaced",
+            Outcome::Extended => "extended",
         };
         format!(
             "{{ \"node\": \"{}\", \"key\": \"{}\", \"kind\": \"{}\", \"outcome\": \"{outcome}\" }}",
@@ -501,11 +502,12 @@ pub fn stats_json(stats: &CacheStats) -> String {
                 PayloadKind::Samples => "samples",
                 PayloadKind::Frames => "frames",
                 PayloadKind::Symbolic => "symbolic",
+                PayloadKind::Run => "run",
             }
         )
     });
     format!(
-        "{{ \"nodes\": {}, \"hits\": {}, \"computed\": {}, \"stored\": {}, \"replaced\": {}, \
+        "{{ \"nodes\": {}, \"hits\": {}, \"computed\": {}, \"stored\": {}, \"replaced\": {}, \"extended\": {}, \
          \"bytes\": {}, \"max_bytes\": {}, \"entries\": {}, \"evictions\": {}, \
          \"lookups\": {lookups} }}",
         stats.nodes(),
@@ -513,6 +515,7 @@ pub fn stats_json(stats: &CacheStats) -> String {
         stats.computed(),
         stats.stored(),
         stats.replaced(),
+        stats.extended(),
         stats.bytes,
         stats.max_bytes,
         stats.entries,

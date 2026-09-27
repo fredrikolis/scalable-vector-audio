@@ -6,7 +6,7 @@ pub(super) mod node;
 use sva_samples::{Extent, Tape};
 
 use super::until::{Known, Until};
-use super::{Render, RenderConfig};
+use super::{Lenses, Render, RenderConfig};
 use crate::error::EngineError;
 use crate::flops::Work;
 use crate::query::{DEFAULT_FRAME_SECS, Representation};
@@ -118,9 +118,13 @@ impl Driver {
         }
     }
 
-    pub(super) fn next_block(&mut self, shell: &Render) -> Result<Option<Block>, EngineError> {
+    pub(super) fn next_block(
+        &mut self,
+        shell: &Render,
+        lenses: &Lenses,
+    ) -> Result<Option<Block>, EngineError> {
         let from = self.at;
-        if !self.pull(shell)? {
+        if !self.pull(shell, lenses)? {
             return Ok(None);
         }
         let end = self.end.map_or(self.at, |end| end.clamp(from, self.at));
@@ -129,7 +133,7 @@ impl Driver {
     }
 
     /// `false` once the target has ended.
-    pub(super) fn pull(&mut self, shell: &Render) -> Result<bool, EngineError> {
+    pub(super) fn pull(&mut self, shell: &Render, lenses: &Lenses) -> Result<bool, EngineError> {
         let from = self.at;
         if self.end.is_some_and(|end| from >= end) {
             return Ok(false);
@@ -152,7 +156,7 @@ impl Driver {
         if self.prunes {
             for (at, node) in self.nodes.iter_mut().enumerate() {
                 if Some(at) != self.root && node.spent(to - node.lag) {
-                    node.end();
+                    node.end(shell, lenses);
                 }
             }
         }

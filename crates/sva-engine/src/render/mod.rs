@@ -257,10 +257,8 @@ pub(crate) fn run(
 ) -> Result<Render, EngineError> {
     let (mut held, instances, target, looped, costed) = planned(prepared, config)?;
     let lenses = Lenses {
-        recording,
         volatile: volatile::mark(&instances, &held, &target)?,
-        forks: schedule::forks(&held.tys, &held.schedule.materialize),
-        root: held.root,
+        ..Lenses::of(recording, &held)
     };
     pull::computed(&mut held, &lenses, &looped, &costed)?;
     compose_read(&mut held);
@@ -384,10 +382,37 @@ fn compose_read(held: &mut Render) {
 }
 
 pub(crate) struct Lenses<'r> {
-    pub(super) recording: Option<&'r Recording<'r>>,
+    pub(super) recording: Option<&'r Recording>,
     volatile: volatile::Volatile,
     forks: std::collections::BTreeSet<NodeId>,
     root: NodeId,
+    /// The machines one run in the store answers wherever they are read.
+    pub(super) runs: std::collections::BTreeSet<NodeId>,
+}
+
+impl<'r> Lenses<'r> {
+    /// No parameter is volatile.
+    pub(super) fn of(recording: Option<&'r Recording>, held: &Render) -> Lenses<'r> {
+        let order = &held.schedule.materialize;
+        Lenses {
+            recording,
+            volatile: volatile::Volatile::default(),
+            forks: schedule::forks(&held.tys, order),
+            root: held.root,
+            runs: drive::node::runnable(held, order),
+        }
+    }
+
+    /// The same view through another recording.
+    pub(super) fn with<'s>(&self, recording: Option<&'s Recording>) -> Lenses<'s> {
+        Lenses {
+            recording,
+            volatile: volatile::Volatile::default(),
+            forks: self.forks.clone(),
+            root: self.root,
+            runs: self.runs.clone(),
+        }
+    }
 }
 
 impl Lenses<'_> {
@@ -435,7 +460,15 @@ impl Lenses<'_> {
         let (Some(recording), Held::Sampled) = (self.recording, held.tys.ty(id).held) else {
             return false;
         };
-        sampled::key(held, id).is_ok_and(|(key, _)| recording.holds(key))
+        if !self.runs.contains(&id) {
+            return sampled::key(held, id).is_ok_and(|(key, _)| recording.holds(key));
+        }
+        let extent = held.extents.of(id);
+        drive::node::run_key_of(held, id).is_ok_and(|key| {
+            recording
+                .run_span(key)
+                .is_some_and(|span| span.start <= extent.start && extent.end <= span.end)
+        })
     }
 }
 

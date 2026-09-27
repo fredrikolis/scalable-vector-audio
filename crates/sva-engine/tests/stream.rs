@@ -93,7 +93,7 @@ fn config(block: usize, range: Range) -> StreamConfig {
 
 fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Vec<f64> {
     let config = config(block, four());
-    let mut stream = Stream::open(g, &at(target), config).unwrap_or_else(|e| panic!("{e}"));
+    let mut stream = Stream::open(g, &at(target), config, None).unwrap_or_else(|e| panic!("{e}"));
     let mut out = Vec::with_capacity(samples + block);
     while out.len() < samples {
         let block = stream.next_block().unwrap_or_else(|e| panic!("{e}"));
@@ -194,7 +194,7 @@ fn an_open_stream_ends_where_its_support_does() {
     let g = composition();
     for target in ["clipped", "decayed"] {
         let mut stream =
-            Stream::open(&g, &at(target), config(441, Range::default())).expect("opens");
+            Stream::open(&g, &at(target), config(441, Range::default()), None).expect("opens");
         let mut heard = Vec::new();
         while let Some(block) = stream.next_block().expect("a block") {
             heard.extend_from_slice(block.plane(0));
@@ -228,7 +228,7 @@ fn a_stream_from_a_later_start_is_the_whole_render_over_the_same_range() {
             whole(&g, target, (start + samples) as usize)[start as usize..],
             "{target}: a late start trims the output alone"
         );
-        let mut stream = Stream::open(&g, &at(target), self::config(777, range))
+        let mut stream = Stream::open(&g, &at(target), self::config(777, range), None)
             .unwrap_or_else(|e| panic!("{target}: {e}"));
         let mut heard = Vec::new();
         while let Some(block) = stream.next_block().expect("a block") {
@@ -241,7 +241,7 @@ fn a_stream_from_a_later_start_is_the_whole_render_over_the_same_range() {
 #[test]
 fn a_node_no_block_reads_alone_refuses_the_stream() {
     let g = composition();
-    let refused = Stream::open(&g, &at("ahead"), config(256, four()))
+    let refused = Stream::open(&g, &at("ahead"), config(256, four()), None)
         .err()
         .expect("a read ahead refuses");
     assert_eq!(refused.code(), "engine.no_stream", "{refused}");
@@ -253,7 +253,7 @@ fn a_node_no_block_reads_alone_refuses_the_stream() {
 fn an_open_stream_whose_support_never_ends_streams_on_while_pulled() {
     let g = composition();
     for target in ["held", "tone", "bar", "damped"] {
-        let mut stream = Stream::open(&g, &at(target), config(4_410, Range::default()))
+        let mut stream = Stream::open(&g, &at(target), config(4_410, Range::default()), None)
             .unwrap_or_else(|e| panic!("{target}: {e}"));
         let mut heard = Vec::new();
         for _ in 0..30 {
@@ -278,7 +278,7 @@ fn a_closed_stream_ends_at_its_range() {
         end: Some(1_000),
     };
     let mut stream =
-        Stream::open(&g, &at("tone"), config(256, range)).expect("a closed range opens");
+        Stream::open(&g, &at("tone"), config(256, range), None).expect("a closed range opens");
     let mut heard = 0;
     while let Some(block) = stream.next_block().expect("a block") {
         heard += block.len();

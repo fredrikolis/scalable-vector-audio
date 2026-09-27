@@ -29,7 +29,7 @@ use rhaouti_chaigne_joly::{RhaoutiChaigneJolyParams, RhaoutiChaigneJolySite};
 use willemsen_bilbao_serafin::{WillemsenBilbaoSerafinParams, WillemsenBilbaoSerafinSite};
 
 /// One sample per call. The derivative half of the old pair died with the lanes.
-pub trait Solver: Held {
+pub trait Solver: Held + Send + Sync {
     fn step(&mut self) -> Result<f64, SampleError>;
 
     /// What one copy of this site holds, its grids and parameters alike.

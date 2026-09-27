@@ -40,7 +40,7 @@ fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Work {
         },
     };
     let target = sva_ast::parse_expr(&format!("@{target}")).expect("a ref");
-    let mut stream = Stream::open(g, &target, config).expect("a stream");
+    let mut stream = Stream::open(g, &target, config, None).expect("a stream");
     while stream.position() < samples as i64 {
         if stream.next_block().expect("a block").is_none() {
             break;

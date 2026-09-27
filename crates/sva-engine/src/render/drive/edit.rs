@@ -1,4 +1,4 @@
-// Concern: which old node each node of an edited expression carries on, and from where | Non-concern: building either set | IO: (new, old nodes, now) -> carried nodes
+// Concern: which old node each node of an edited expression carries on, and from where | Non-concern: building either set | IO: (new, old nodes, pairs, now) -> the new nodes, carried in place
 
 use std::collections::BTreeSet;
 
@@ -13,9 +13,9 @@ enum Carry {
     Unheld,
 }
 
-/// Readers first, each node carries on the old node of its identity, else the node its carried
-/// reader read at the same shift where the structure takes its state, else starts at `now`.
-/// One whose predecessor lacks what is asked steps again from its start.
+/// Readers first, each node carries on the old node of its identity, else a run in the store,
+/// else the node its carried reader read at the same shift where the structure takes its
+/// state, else starts at `now`. One whose predecessor lacks what is asked steps again.
 pub(in crate::render) fn carried(
     nodes: &mut [Driven],
     old: &mut [Driven],
@@ -48,6 +48,7 @@ pub(in crate::render) fn carried(
         }
         let carry = match same[at] {
             Some(was) => nodes[at].continues(&mut old[was], local, need, true),
+            None if nodes[at].run.as_ref().is_some_and(|run| run.loaded) => Carry::Taken,
             None => {
                 let mut candidates: Vec<usize> = Vec::new();
                 if Some(at) == roots.0 {
@@ -118,7 +119,15 @@ impl Driven {
         }
         let mut tape = std::mem::replace(&mut old.tape, Tape::new(old.width, 0, old.extent.end));
         tape.cut(from);
+        let origin = tape.base() == self.extent.start;
         self.tape = tape;
+        let was = old.run.take();
+        if let Some(run) = &mut self.run {
+            run.records &= origin && was.as_ref().is_some_and(|was| was.records);
+            if let (true, Some(was)) = (same, was) {
+                run.stored = was.stored;
+            }
+        }
         old.kind = Kind::Ended;
         Carry::Taken
     }
@@ -134,6 +143,9 @@ impl Driven {
             false => self.extent.start,
         };
         self.tape = Tape::new(self.width, self.tape.capacity(), start);
+        if let Some(run) = &mut self.run {
+            run.records &= start == self.extent.start;
+        }
     }
 
     fn starts_at(&mut self, at: i64) {
@@ -142,5 +154,8 @@ impl Driven {
         }
         self.tape = Tape::new(self.width, self.tape.capacity(), at);
         self.support = self.support.intersect(Extent::from(at));
+        if let Some(run) = &mut self.run {
+            run.records = false;
+        }
     }
 }

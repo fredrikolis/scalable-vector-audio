@@ -1,7 +1,7 @@
 // Concern: the one bounded store, what it evicts and the cap it never passes | Non-concern: what a render asks of it (stats.rs) | IO: (Hash) -> a payload + label
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use sva_formula::Hash;
 use sva_samples::Label;
@@ -191,9 +191,11 @@ impl State {
 }
 
 /// Every value a render computed and chose to keep, under its content hash. A hit is the value
-/// the cold run wrote, so what is kept or evicted decides only what is computed again.
+/// the cold run wrote, so what is kept or evicted decides only what is computed again. A clone
+/// is a handle on the same store, which a stream holds for as long as it plays.
+#[derive(Clone)]
 pub struct Cache {
-    state: Mutex<State>,
+    state: Arc<Mutex<State>>,
 }
 
 impl Default for Cache {
@@ -209,10 +211,10 @@ impl Cache {
 
     pub fn holding(max_bytes: u64) -> Cache {
         Cache {
-            state: Mutex::new(State {
+            state: Arc::new(Mutex::new(State {
                 max_bytes,
                 ..State::default()
-            }),
+            })),
         }
     }
 
@@ -280,6 +282,13 @@ impl Cache {
 
     pub fn holds(&self, key: Hash) -> bool {
         self.locked().entries.contains_key(&key)
+    }
+
+    pub(crate) fn run_span(&self, key: Hash) -> Option<sva_samples::Extent> {
+        match &self.locked().entries.get(&key)?.payload {
+            Payload::Run(run) => Some(run.samples.extent()),
+            _ => None,
+        }
     }
 
     pub(crate) fn begin_tree(&self) -> u64 {

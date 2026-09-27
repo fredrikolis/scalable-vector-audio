@@ -247,7 +247,8 @@ pub fn stream(job: &Job, block: usize) -> Result<Stream, CliError> {
         block,
         render: config,
     };
-    Stream::open(&graph, &target, config).map_err(|e| CliError::Engine(as_written(e, job.target)))
+    Stream::open(&graph, &target, config, job.cache)
+        .map_err(|e| CliError::Engine(as_written(e, job.target)))
 }
 
 /// `target`, an expression over `source` with no interval of its own, in place of what

@@ -220,13 +220,15 @@ impl Composition {
             .map_err(|e| thrown(&e))
     }
 
-    /// `target` block by block over the nodes held now. `options`: `rate`, `bits`, `until`.
+    /// `target` block by block, through this store. `options`: `rate`, `bits`, `until`, `cache`.
     pub fn stream(&self, target: &str, block: usize, options: JsValue) -> Result<Stream, JsValue> {
-        let options = options_of(&options, &["rate", "bits", "until"])?;
+        let options = options_of(&options, &["rate", "bits", "until", "cache"])?;
         let job = Job {
             until: options.until.as_deref(),
             rate: options.rate,
             bits: options.bits,
+            cache: Some(&self.store),
+            cache_policy: options.cache,
             ..Job::over(&self.inner, target)
         };
         sva_core::stream(&job, block)
@@ -461,6 +463,10 @@ impl Stream {
     /// `{ samples, priced_flops, waves }` since it opened.
     pub fn work(&self) -> Result<JsValue, JsValue> {
         parse(&work_json(&self.inner.work()))
+    }
+
+    pub fn stats(&self) -> Result<JsValue, JsValue> {
+        parse(&stats_json(&self.inner.stats()))
     }
 
     #[wasm_bindgen(getter)]

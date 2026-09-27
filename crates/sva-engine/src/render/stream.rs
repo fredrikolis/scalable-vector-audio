@@ -1,4 +1,4 @@
-// Concern: opens a target as a stream and edits its expression as it plays | Non-concern: pulling its blocks (drive/), what an edit carries on (edit.rs) | IO: (&Graph, target) -> a Stream; (expr) -> ()
+// Concern: opens a target as a stream and edits its expression as it plays | Non-concern: pulling its blocks, what an edit carries on (edit.rs) | IO: (&Graph, target) -> a Stream; (&Graph, expr) -> ()
 
 use std::collections::BTreeMap;
 
@@ -6,7 +6,8 @@ use sva_ast::{Expr, Graph};
 
 use super::drive::node::{self, Driven, Hold};
 use super::drive::{self, Block, Driver, edit};
-use super::{Render, RenderConfig, prepared, reach, sampled};
+use super::{Lenses, Render, RenderConfig, prepared, reach, sampled};
+use crate::cache::{Cache, CacheStats, Recording};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::flops::Work;
 use crate::schedule;
@@ -24,11 +25,19 @@ pub struct StreamConfig {
 pub struct Stream {
     config: StreamConfig,
     shell: Render,
+    lenses: Lenses<'static>,
     driver: Driver,
+    recording: Option<Recording>,
 }
 
 impl Stream {
-    pub fn open(graph: &Graph, target: &Expr, config: StreamConfig) -> Result<Stream, EngineError> {
+    /// Reads and writes `cache` under its own policies, or the render's where it names one.
+    pub fn open(
+        graph: &Graph,
+        target: &Expr,
+        config: StreamConfig,
+        cache: Option<&Cache>,
+    ) -> Result<Stream, EngineError> {
         if config.block == 0 {
             return Err(refusal("a block of no samples".to_string()));
         }
@@ -44,10 +53,15 @@ impl Stream {
                 &shell.config,
                 true,
             ),
+            recording: cache.map(|cache| Recording::over(cache, config.render.cache_policy)),
             config,
+            lenses: Lenses::of(None, &shell),
             shell,
         };
-        let nodes = node::built(&stream.shell, &order(&stream.shell), stream.hold())?;
+        let lenses = stream.lenses.with(stream.recording.as_ref());
+        let order = order(&stream.shell);
+        let nodes = node::built(&stream.shell, &order, stream.hold(), &lenses, &|_| false)?;
+        drop(lenses);
         let root = root_of(&stream.shell, &nodes)?;
         stream.driver.replace(nodes, Some(root), range.end);
         Ok(stream)
@@ -72,7 +86,19 @@ impl Stream {
             let identity = shell.identity(*id).ok();
             same.push(identity.and_then(|identity| kept.remove(&identity)));
         }
-        let mut nodes = node::built(&shell, &order, self.hold())?;
+        let hold = self.hold();
+        let next = Lenses::of(None, &shell);
+        let (was, now) = (
+            self.lenses.with(self.recording.as_ref()),
+            next.with(self.recording.as_ref()),
+        );
+        for (at, node) in self.driver.nodes.iter_mut().enumerate() {
+            if !same.contains(&Some(at)) {
+                node.store(&self.shell, &was);
+            }
+        }
+        let mut nodes = node::built(&shell, &order, hold, &now, &|at| same[at].is_some())?;
+        drop((was, now));
         let root = root_of(&shell, &nodes)?;
         let old_root = self.driver.root;
         edit::carried(
@@ -84,12 +110,14 @@ impl Stream {
         );
         self.driver.replace(nodes, Some(root), range.end);
         self.shell = shell;
+        self.lenses = next;
         Ok(())
     }
 
     /// The next block, cut where the stream ends; `None` from there on.
     pub fn next_block(&mut self) -> Result<Option<Block>, EngineError> {
-        self.driver.next_block(&self.shell)
+        let lenses = self.lenses.with(self.recording.as_ref());
+        self.driver.next_block(&self.shell, &lenses)
     }
 
     pub fn position(&self) -> i64 {
@@ -98,6 +126,14 @@ impl Stream {
 
     pub fn work(&self) -> Work {
         self.driver.work
+    }
+
+    /// Every lookup since it opened.
+    pub fn stats(&self) -> CacheStats {
+        self.recording
+            .as_ref()
+            .map(Recording::stats)
+            .unwrap_or_default()
     }
 
     /// The bytes its nodes hold, samples and state.

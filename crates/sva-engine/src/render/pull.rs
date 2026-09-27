@@ -36,7 +36,8 @@ pub(super) fn computed(
     let keys = keys(held, lenses, &needed, costed, recalled)?;
     let (whole, stored) = whole(held, lenses, &needed, &keys);
     for id in held.schedule.materialize.clone() {
-        if !needed.contains(&id) || !whole.contains(&id) {
+        let run = stored.contains(&id) && lenses.runs.contains(&id);
+        if !needed.contains(&id) || !whole.contains(&id) || run {
             continue;
         }
         match (stored.contains(&id), keys.get(&id)) {
@@ -73,7 +74,7 @@ fn keys(
     let mut out = BTreeMap::new();
     for &id in &held.schedule.materialize {
         let pulled = needed.contains(&id) && matches!(held.tys.ty(id).held, Held::Sampled);
-        if !pulled || lenses.at(id).is_none() {
+        if !pulled || lenses.at(id).is_none() || lenses.runs.contains(&id) {
             continue;
         }
         let extent = cut.as_ref().map_or(held.extents.of(id), |cut| cut.of(id));
@@ -107,7 +108,11 @@ fn whole(
             || !matches!(held.tys.ty(id).held, Held::Sampled)
             || matches!(held.tys.value(id), Value::Cast(Cast::Istft, _))
             || reads_ahead(held, id);
-        let answered = !forced && holds(id) == Some(true);
+        let answered = !forced
+            && match lenses.runs.contains(&id) {
+                true => lenses.answered(held, id),
+                false => holds(id) == Some(true),
+            };
         if answered {
             stored.insert(id);
         }
@@ -169,7 +174,7 @@ fn pulled(
         .iter()
         .filter_map(|id| Some((*id, held.buffers.remove(id)?)))
         .collect();
-    let mut nodes = node::built(held, &order, Hold::Every(whole))?;
+    let mut nodes = node::built(held, &order, Hold::Every(whole), lenses, &|_| false)?;
     if aside {
         let root = answer::on_the_grid(held, held.root)?;
         let support = extent::Supports::new(&held.tys, held.config.rate).of(held.root);
@@ -177,16 +182,20 @@ fn pulled(
     }
     let root = nodes.iter().position(|n| n.id == held.root);
     let mut driver = Driver::new(nodes, root, pulled, BLOCK, until, &held.config, false);
-    while driver.pull(held)? {}
+    while driver.pull(held, lenses)? {}
     let stop = recalled.or(driver.stop().filter(|stop| *stop < range.end));
     let mut driven = Vec::new();
-    for node in driver.nodes {
+    for mut node in driver.nodes {
         if aside && node.id == held.root {
             continue;
         }
-        if !matches!(node.kind, Kind::Whole) {
+        node.store(held, lenses);
+        let computed = !matches!(node.kind, Kind::Whole);
+        if computed || node.run.is_some() {
             let label = Label::measured(held.config.profile.name, held.config.rate);
             held.labels.insert(node.id, label);
+        }
+        if computed {
             driven.push(node.id);
         }
         let buffer = node.tape.into_buffer(held.config.rate);

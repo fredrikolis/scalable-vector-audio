@@ -4,7 +4,7 @@ mod fixtures;
 
 use fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{Range, RenderConfig, Stream, StreamConfig, render};
+use sva_engine::{Cache, Outcome, PayloadKind, Range, RenderConfig, Stream, StreamConfig, render};
 
 const RATE: u32 = 44_100;
 const BLOCK: usize = 1_024;
@@ -73,9 +73,9 @@ fn expr(text: &str) -> sva_ast::Expr {
     sva_ast::parse_expr(text).unwrap_or_else(|e| panic!("`{text}`: {}", e.message))
 }
 
-fn opened(g: &Graph, text: &str) -> Stream {
+fn opened(g: &Graph, text: &str, cache: Option<&Cache>) -> Stream {
     let end = Some(4 * i64::from(RATE));
-    Stream::open(g, &expr(text), config(end)).unwrap_or_else(|e| panic!("{e}"))
+    Stream::open(g, &expr(text), config(end), cache).unwrap_or_else(|e| panic!("{e}"))
 }
 
 fn edit(stream: &mut Stream, g: &Graph, text: &str) {
@@ -106,9 +106,9 @@ fn whole(g: &Graph, target: &str, samples: usize) -> Vec<f64> {
 fn released_at(target: &str, whole_target: &str, k: usize) {
     let release = k as f64 / f64::from(RATE);
     let g = composition(release);
-    let mut held = opened(&g, &format!("@{target}(t)"));
+    let mut held = opened(&g, &format!("@{target}(t)"), None);
     let mut heard = blocks(&mut held, k / BLOCK);
-    let mut released = opened(&g, &format!("@{target}(t)"));
+    let mut released = opened(&g, &format!("@{target}(t)"), None);
     blocks(&mut released, k / BLOCK);
     edit(
         &mut released,
@@ -159,7 +159,7 @@ fn a_note_pressed_and_released_mid_stream_is_the_whole_render_of_the_last_edit()
     let last = format!("{released} + @pluck(t - {t2}sp, f0=440)");
     let g = composition(1.0);
     let echoed = |x: &str| format!("@echo(t, x={x})");
-    let mut stream = opened(&g, &echoed(first));
+    let mut stream = opened(&g, &echoed(first), None);
     let mut heard = blocks(&mut stream, t0 / BLOCK);
     edit(&mut stream, &g, &echoed(&pressed));
     heard.extend(blocks(&mut stream, (t1 - t0) / BLOCK));
@@ -184,7 +184,7 @@ fn a_note_pressed_and_released_mid_stream_is_the_whole_render_of_the_last_edit()
 #[test]
 fn a_constant_moved_inside_a_loop_keeps_its_tail_ringing() {
     let g = composition(1.0);
-    let mut stream = opened(&g, "@echo(t, x=sample(@burst), feedback=0.35)");
+    let mut stream = opened(&g, "@echo(t, x=sample(@burst), feedback=0.35)", None);
     let k = 13 * BLOCK;
     let mut heard = blocks(&mut stream, k / BLOCK);
     edit(&mut stream, &g, "@echo(t, x=sample(@burst), feedback=0.5)");
@@ -213,7 +213,7 @@ fn a_long_session_holds_no_more_than_its_first_seconds() {
             ..RenderConfig::at(rate)
         },
     };
-    let mut stream = Stream::open(&g, &expr("@echo(t, x=0)"), config).expect("opens");
+    let mut stream = Stream::open(&g, &expr("@echo(t, x=0)"), config, None).expect("opens");
     let (every, kept) = (8 * 256, 2 * i64::from(rate));
     let mut onsets: Vec<i64> = Vec::new();
     let mut held = Vec::new();
@@ -239,4 +239,31 @@ fn a_long_session_holds_no_more_than_its_first_seconds() {
     let first = held[..seconds(10)].iter().max().expect("ten seconds");
     let last = held[seconds(50)..].iter().max().expect("ten more");
     assert!(last <= first, "{last} bytes held late, {first} early");
+}
+
+/// A shifted term reads the node the store holds by identity, wherever it is shifted to: a
+/// shorter run is carried on from its end and stored again, and a run long enough answers
+/// both of two shifted reads of the one node. Either way, the samples are the cold stream's.
+#[test]
+fn a_shifted_term_reads_and_extends_the_run_its_node_holds_in_the_store() {
+    let g = composition(1.0);
+    let cache = Cache::new();
+    render(&g, "string", RenderConfig::seconds(RATE, 0.2), Some(&cache)).expect("a render");
+    let runs = |stream: &Stream, outcome: Outcome| {
+        let stats = stream.stats();
+        let lookups = stats.lookups.iter();
+        lookups
+            .filter(|l| l.kind == PayloadKind::Run && l.outcome == outcome)
+            .count()
+    };
+    let later = "@echo(t, x=@pluck(t - 2000sp, f0=523.25))";
+    let (mut cold, mut warm) = (opened(&g, later, None), opened(&g, later, Some(&cache)));
+    assert_eq!(blocks(&mut warm, 20), blocks(&mut cold, 20));
+    edit(&mut warm, &g, "@echo(t, x=0)");
+    assert_eq!(runs(&warm, Outcome::Extended), 1, "{:?}", warm.stats());
+
+    let twice = "@pluck(t - 1000sp, f0=523.25) + @pluck(t - 3000sp, f0=523.25)";
+    let (mut cold, mut warm) = (opened(&g, twice, None), opened(&g, twice, Some(&cache)));
+    assert_eq!(blocks(&mut warm, 16), blocks(&mut cold, 16));
+    assert_eq!(runs(&warm, Outcome::Hit), 1, "{:?}", warm.stats());
 }

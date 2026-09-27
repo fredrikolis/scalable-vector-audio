@@ -15,6 +15,8 @@ pub enum Outcome {
     ComputedNotStored,
     /// A volatile node's value, stored in place of its last one.
     ComputedReplaced,
+    /// A run found short, carried on and stored again.
+    Extended,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -61,25 +63,29 @@ impl CacheStats {
         self.count(|o| o == Outcome::ComputedReplaced)
     }
 
+    pub fn extended(&self) -> usize {
+        self.count(|o| o == Outcome::Extended)
+    }
+
     fn count(&self, of: impl Fn(Outcome) -> bool) -> usize {
         self.lookups.iter().filter(|l| of(l.outcome)).count()
     }
 }
 
 /// One render's view of the store, so the render itself never says what it looked up.
-pub(crate) struct Recording<'a> {
-    cache: &'a Cache,
+pub(crate) struct Recording {
+    cache: Cache,
     policy: CachePolicy,
     tree: u64,
     evictions: u64,
     lookups: Mutex<Vec<Lookup>>,
 }
 
-impl<'a> Recording<'a> {
+impl Recording {
     /// `policy` where the render names one, the store's own where it names none.
-    pub(crate) fn over(cache: &'a Cache, policy: Option<CachePolicy>) -> Recording<'a> {
+    pub(crate) fn over(cache: &Cache, policy: Option<CachePolicy>) -> Recording {
         Recording {
-            cache,
+            cache: cache.clone(),
             policy: policy.unwrap_or_else(|| cache.policy()),
             tree: cache.begin_tree(),
             evictions: cache.evictions(),
@@ -88,11 +94,12 @@ impl<'a> Recording<'a> {
     }
 
     pub(crate) fn finish(self) -> CacheStats {
+        self.stats()
+    }
+
+    pub(crate) fn stats(&self) -> CacheStats {
         CacheStats {
-            lookups: self
-                .lookups
-                .into_inner()
-                .unwrap_or_else(PoisonError::into_inner),
+            lookups: self.held().clone(),
             bytes: self.cache.bytes(),
             max_bytes: self.cache.max_bytes(),
             entries: self.cache.entries(),
@@ -119,24 +126,31 @@ impl<'a> Recording<'a> {
         self.cache.holds(key)
     }
 
+    pub(crate) fn run_span(&self, key: Hash) -> Option<sva_samples::Extent> {
+        self.cache.run_span(key)
+    }
+
     fn held(&self) -> MutexGuard<'_, Vec<Lookup>> {
         self.lookups.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn settle(&self, key: Hash, outcome: Outcome) {
-        if let Some(missed) = self
-            .held()
-            .iter_mut()
-            .rev()
-            .find(|l| l.key == key && l.outcome == Outcome::ComputedNotStored)
-        {
-            missed.outcome = outcome;
+        let mut held = self.held();
+        let last = held.iter_mut().rev().find(|l| l.key == key);
+        match last {
+            Some(missed) if missed.outcome == Outcome::ComputedNotStored => {
+                missed.outcome = outcome;
+            }
+            Some(hit) if hit.outcome == Outcome::Hit && hit.kind == PayloadKind::Run => {
+                hit.outcome = Outcome::Extended;
+            }
+            _ => {}
         }
     }
 }
 
 pub(crate) struct Lens<'a> {
-    recording: &'a Recording<'a>,
+    recording: &'a Recording,
     slot: Option<Hash>,
     fork: bool,
     stores: bool,
@@ -177,6 +191,10 @@ impl Lens<'_> {
                 lookup.key = now;
             }
         }
+    }
+
+    pub(crate) fn keeps(&self) -> bool {
+        self.stores
     }
 
     pub(crate) fn store(&self, key: Hash, payload: &Payload, label: Option<&Label>) {
