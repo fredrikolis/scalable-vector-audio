@@ -57,6 +57,24 @@ impl Order {
             _ => true,
         }
     }
+
+    /// Each path that reaches a loop of refs, and one path of that loop.
+    pub(crate) fn looped(&self) -> BTreeMap<String, String> {
+        let mut out: BTreeMap<String, String> = BTreeMap::new();
+        for group in &self.groups {
+            let reached = match self.is_loop(group) {
+                true => Some(group[0].clone()),
+                false => group
+                    .iter()
+                    .flat_map(|path| self.deps(path))
+                    .find_map(|dep| out.get(dep).cloned()),
+            };
+            if let Some(member) = reached {
+                out.extend(group.iter().map(|path| (path.clone(), member.clone())));
+            }
+        }
+        out
+    }
 }
 
 pub fn direct_deps(inst: &Instances, path: &str) -> Result<Vec<String>, EngineError> {
@@ -191,11 +209,14 @@ pub struct Schedule {
     /// The nodes a reading asked a closed form of, each named once however many asked
     /// and none of them already materialized.
     pub compose: Vec<NodeId>,
+    /// What a ledger holds under its target and nothing else asked for.
+    pub rows: Vec<NodeId>,
 }
 
 /// A closed form is materialized only under a buffer reading, a `sample(...)`, or the render root.
 pub fn plan(typing: &Typing, order: &Order, root: NodeId, asks: &[Ask]) -> Schedule {
     let mut wanted: BTreeSet<NodeId> = BTreeSet::new();
+    let mut rows: BTreeSet<NodeId> = BTreeSet::new();
     let mut compose: Vec<NodeId> = Vec::new();
     let audio = asks.is_empty();
     for ask in asks {
@@ -219,12 +240,14 @@ pub fn plan(typing: &Typing, order: &Order, root: NodeId, asks: &[Ask]) -> Sched
             }
         }
         if let crate::query::Representation::Ledger { depth } = ask.representation {
-            attributed(typing, id, depth, &mut wanted);
+            attributed(typing, id, depth, &mut rows);
         }
     }
-    if audio || !wanted.is_empty() {
+    if audio || !wanted.is_empty() || !rows.is_empty() {
         wanted.insert(root);
     }
+    rows.retain(|id| !wanted.contains(id));
+    wanted.extend(&rows);
 
     let mut reached: BTreeSet<NodeId> = BTreeSet::new();
     let mut work: Vec<NodeId> = wanted.iter().copied().collect();
@@ -261,6 +284,11 @@ pub fn plan(typing: &Typing, order: &Order, root: NodeId, asks: &[Ask]) -> Sched
             .iter()
             .copied()
             .filter(|id| wanted.contains(id))
+            .collect(),
+        rows: materialize
+            .iter()
+            .copied()
+            .filter(|id| rows.contains(id))
             .collect(),
         materialize,
         symbolic,

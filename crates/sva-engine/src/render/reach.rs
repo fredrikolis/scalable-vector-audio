@@ -1,6 +1,6 @@
 // Concern: decides the root's range, the proofs that end it and the extents under it | Non-concern: the condition's own arithmetic (until.rs), computing a sample | IO: (&mut Render) -> a range, a stop
 
-use sva_formula::Hash;
+use sva_formula::{Hash, NodeId};
 use sva_samples::{Buffer, Extent};
 
 use super::extent::{self, Supports};
@@ -38,6 +38,7 @@ pub(super) fn ranged(
     recording: Option<&Recording>,
     identity: Option<(Hash, bool)>,
     volatile_root: bool,
+    costed: &[NodeId],
 ) -> Result<Option<Reached>, EngineError> {
     if !needed(held) {
         let envelope = held
@@ -48,7 +49,7 @@ pub(super) fn ranged(
         if !envelope {
             return Ok(None);
         }
-        return match decided(held, recording, identity, volatile_root) {
+        return match decided(held, recording, identity, volatile_root, costed) {
             Ok(reached) => Ok(Some(reached)),
             Err(refused) => {
                 held.unranged = Some(refused);
@@ -56,7 +57,7 @@ pub(super) fn ranged(
             }
         };
     }
-    decided(held, recording, identity, volatile_root).map(Some)
+    decided(held, recording, identity, volatile_root, costed).map(Some)
 }
 
 fn decided(
@@ -64,6 +65,7 @@ fn decided(
     recording: Option<&Recording>,
     identity: Option<(Hash, bool)>,
     volatile_root: bool,
+    costed: &[NodeId],
 ) -> Result<Reached, EngineError> {
     let support = Supports::new(&held.tys, held.config.rate).of(held.root);
     let start = held
@@ -84,8 +86,19 @@ fn decided(
     };
     let range = Extent::new(start, end.max(start));
     let mut demands = vec![(held.root, range)];
-    demands.extend(held.schedule.wanted.iter().map(|id| (*id, range)));
-    held.extents = extent::decide(held, &held.schedule.materialize, &demands)?;
+    let rows = &held.schedule.rows;
+    let measured = match rows.is_empty() {
+        true => None,
+        false => super::answer::ledger_reads(held),
+    };
+    demands.extend(
+        held.schedule
+            .wanted
+            .iter()
+            .filter(|id| !rows.contains(id) || measured.as_ref().is_none_or(|m| m.contains(id)))
+            .map(|id| (*id, range)),
+    );
+    held.extents = extent::decide(held, costed, &demands)?;
     held.range = Some(range);
     Ok(Reached {
         proven,

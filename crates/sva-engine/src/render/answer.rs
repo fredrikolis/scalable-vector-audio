@@ -1,7 +1,7 @@
 // Concern: takes one reading off the representation a node declares, a ledger edge by edge | Non-concern: naming the observations (query.rs), the arithmetic of one | IO: (&Render, node) -> Answer
 
 use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
-use sva_formula::{AUDIBLE_CEILING_HZ, Line, SpectralSum, Var, d_dt, envelope, line_atoms};
+use sva_formula::{AUDIBLE_CEILING_HZ, Held, Line, SpectralSum, Var, d_dt, envelope, line_atoms};
 use sva_samples::{
     AliasScore, Buffer, Consumes, Extent, Peak, PitchFrame, Source, measure::bands, measure::crest,
     measure::envelope, measure::formants, measure::loudness, measure::pitch, measure::spectrum,
@@ -112,7 +112,6 @@ pub(super) fn on_the_grid(
     if let Some(held) = render.output(node) {
         return Ok(held);
     }
-    let rate = render.config.rate;
     let extent = render.range.ok_or_else(|| {
         render.unranged.clone().unwrap_or_else(|| {
             refused(
@@ -123,7 +122,15 @@ pub(super) fn on_the_grid(
             )
         })
     })?;
-    let profile = &render.config.profile;
+    collapsed_over(render, node, extent)
+}
+
+fn collapsed_over(
+    render: &Render,
+    node: sva_formula::NodeId,
+    extent: sva_samples::Extent,
+) -> Result<Buffer, EngineError> {
+    let (rate, profile) = (render.config.rate, &render.config.profile);
     let written = refs::substituted_closed_form(&render.tys, node);
     let composed;
     let sum = match render.symbolic.get(&node) {
@@ -516,30 +523,26 @@ fn attributed(
     node: sva_formula::NodeId,
     depth: usize,
 ) -> Result<Vec<sva_samples::LedgerEntry>, EngineError> {
-    let edges = edges_under(render, node, depth)?;
+    let holds = |id: sva_formula::NodeId| render.buffers.contains_key(&id);
+    let edges = edges_under(render, node, depth, &holds)?;
     let under: std::collections::BTreeSet<sva_formula::NodeId> = std::iter::once(node)
         .chain(edges.iter().map(|(_, child)| *child))
         .collect();
-    let mut buffers = std::collections::BTreeMap::new();
     let mut deps = std::collections::BTreeMap::new();
     let mut kinds = std::collections::BTreeMap::new();
     for id in render.buffers.keys().filter(|id| under.contains(id)) {
         let name = render.tys.name(*id).to_string();
-        let read = refs_read(render, *id)?
+        let read = refs_read(render, *id, &holds)?
             .into_iter()
             .map(|op| render.tys.name(op).to_string())
             .collect();
         deps.insert(name.clone(), read);
-        kinds.insert(name.clone(), sva_samples::SignalKind::Audio);
-        let held = render
-            .output(*id)
-            .expect("a held buffer over a decided range");
-        buffers.insert(name, held);
+        kinds.insert(name, sva_samples::SignalKind::Audio);
     }
     let mut contributed_by = std::collections::BTreeMap::new();
-    for (parent, child) in edges {
-        if !render.tys.ty(parent).is_closed_form()
-            && !crate::render::slots::reads_held(render, parent)?
+    for (parent, child) in &edges {
+        if !render.tys.ty(*parent).is_closed_form()
+            && !crate::render::slots::reads_held(render, *parent)?
         {
             return Err(unmaterialized(
                 render,
@@ -547,8 +550,17 @@ fn attributed(
                 Representation::Ledger { depth },
             ));
         }
-        if let Some(held) = contributed(render, parent, child)? {
-            contributed_by.insert(render.tys.name(child).to_string(), held);
+        if let Some(held) = contributed(render, *parent, *child)? {
+            contributed_by.insert(render.tys.name(*child).to_string(), held);
+        }
+    }
+    // A row's own samples are read where it reads rows itself or no addend isolates it.
+    let readers: std::collections::BTreeSet<_> = edges.iter().map(|(parent, _)| *parent).collect();
+    let mut buffers = std::collections::BTreeMap::new();
+    for id in render.buffers.keys().filter(|id| under.contains(id)) {
+        let name = render.tys.name(*id);
+        if *id == node || readers.contains(id) || !contributed_by.contains_key(name) {
+            buffers.insert(name.to_string(), own_samples(render, *id)?);
         }
     }
     let len = render.range.map_or(0, |range| range.len());
@@ -561,6 +573,77 @@ fn attributed(
         0..len,
         depth,
     ))
+}
+
+/// The rows each ledger reads the own samples of over the range, as `attributed` will: its
+/// target, a row that reads rows, one no addend isolates, and any closed form a program
+/// reads, whose collapse its extent chooses. `None` where that cannot be told before a
+/// sample, and every row is read.
+pub(super) fn ledger_reads(
+    render: &Render,
+) -> Option<std::collections::BTreeSet<sva_formula::NodeId>> {
+    let materialize = &render.schedule.materialize;
+    let holds = |id: sva_formula::NodeId| {
+        materialize.contains(&id) && !matches!(render.tys.ty(id).held, Held::Frames)
+    };
+    let mut out = std::collections::BTreeSet::new();
+    for ask in &render.config.asks {
+        let Representation::Ledger { depth } = ask.representation else {
+            continue;
+        };
+        let node = render.node(&ask.node).ok()?;
+        out.insert(node);
+        for (parent, child) in edges_under(render, node, depth, &holds).ok()? {
+            out.insert(parent);
+            if !isolates(render, parent, child, &holds).ok()? {
+                out.insert(child);
+            }
+        }
+    }
+    for id in materialize {
+        if matches!(render.tys.ty(*id).held, Held::Sampled) {
+            let program = crate::render::sampled::program(render, *id).ok()?;
+            let read = program.reads.into_iter();
+            out.extend(read.filter(|r| render.tys.ty(*r).is_closed_form()));
+        }
+    }
+    Some(out)
+}
+
+fn isolates(
+    render: &Render,
+    parent: sva_formula::NodeId,
+    child: sva_formula::NodeId,
+    holds: &dyn Fn(sva_formula::NodeId) -> bool,
+) -> Result<bool, EngineError> {
+    if render.tys.ty(parent).is_closed_form() {
+        return Ok(match render.tys.value(parent) {
+            Value::ClosedForm(form) => separable(&form.body, child),
+            _ => false,
+        });
+    }
+    Ok(crate::render::slots::isolated(render, parent, child, holds)?.is_some())
+}
+
+/// A row's own samples over the range: its buffer where its extent holds them, else its
+/// collapse over the range where it is a closed form.
+fn own_samples(render: &Render, id: sva_formula::NodeId) -> Result<Buffer, EngineError> {
+    let range = render.range.expect("a ledger reads a decided range");
+    let needed = range.intersect(render.extents.support(id));
+    let held = render.extents.of(id);
+    if needed.is_empty() || held.intersect(needed) == needed {
+        return Ok(render
+            .output(id)
+            .expect("a held buffer over a decided range"));
+    }
+    match render.tys.ty(id).is_closed_form() {
+        true => collapsed_over(render, id, range),
+        false => Err(unmaterialized(
+            render,
+            id,
+            Representation::Ledger { depth: 0 },
+        )),
+    }
 }
 
 /// What every instance under `node` was lowered with, `node` first, then breadth first. The
@@ -602,13 +685,14 @@ fn edges_under(
     render: &Render,
     node: sva_formula::NodeId,
     depth: usize,
+    holds: &dyn Fn(sva_formula::NodeId) -> bool,
 ) -> Result<Vec<(sva_formula::NodeId, sva_formula::NodeId)>, EngineError> {
     let mut seen = std::collections::BTreeSet::from([node]);
     let (mut level, mut out) = (vec![node], Vec::new());
     for _ in 0..depth {
         let mut next = Vec::new();
         for parent in level {
-            for child in refs_read(render, parent)? {
+            for child in refs_read(render, parent, holds)? {
                 if seen.insert(child) {
                     out.push((parent, child));
                     next.push(child);
@@ -624,10 +708,11 @@ fn edges_under(
 fn refs_read(
     render: &Render,
     node: sva_formula::NodeId,
+    holds: &dyn Fn(sva_formula::NodeId) -> bool,
 ) -> Result<Vec<sva_formula::NodeId>, EngineError> {
     match render.tys.ty(node).is_closed_form() {
         true => Ok(crate::schedule::read_operands(&render.tys, node)),
-        false => crate::render::slots::refs_read(render, node),
+        false => crate::render::slots::refs_read(render, node, holds),
     }
 }
 

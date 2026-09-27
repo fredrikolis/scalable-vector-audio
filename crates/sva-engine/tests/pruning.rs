@@ -4,7 +4,9 @@ mod fixtures;
 
 use fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{Cache, Range, Render, RenderConfig, flops, render};
+use sva_engine::{
+    Ask, Cache, Output, Range, Render, RenderConfig, Representation, answer, flops, render,
+};
 
 const RATE: u32 = 8_000;
 
@@ -18,15 +20,31 @@ fn notes() -> Graph {
     )
 }
 
+fn sampled_notes() -> Graph {
+    graph_of(
+        "pruning-sampled",
+        &[
+            (
+                "note",
+                "crop(lowpass(sample(0.5*sin(2*pi*440*t)), cutoff=2000, q=0.7), 0s, 0.5s)\n",
+            ),
+            ("song", "@note(t) + @note(t - 2s) + @note(t - 4s)\n"),
+        ],
+    )
+}
+
 fn over(g: &Graph, target: &str, secs: f64, cache: Option<&Cache>) -> Render {
-    let config = RenderConfig {
+    render(g, target, config(secs), cache).unwrap_or_else(|e| panic!("{target}: {e}"))
+}
+
+fn config(secs: f64) -> RenderConfig {
+    RenderConfig {
         range: Range {
             start: Some(0),
             end: Some((secs * f64::from(RATE)) as i64),
         },
         ..RenderConfig::at(RATE)
-    };
-    render(g, target, config, cache).unwrap_or_else(|e| panic!("{target}: {e}"))
+    }
 }
 
 /// A range reaching further past the last note is the same stored value.
@@ -56,16 +74,7 @@ fn a_closed_form_sums_only_the_atoms_live_at_each_instant() {
 /// order from +0, and the sum pays only for the notes sounding.
 #[test]
 fn a_sampled_sum_reads_each_operand_only_where_it_is_nonzero() {
-    let g = graph_of(
-        "pruning-sampled",
-        &[
-            (
-                "note",
-                "crop(lowpass(sample(0.5*sin(2*pi*440*t)), cutoff=2000, q=0.7), 0s, 0.5s)\n",
-            ),
-            ("song", "@note(t) + @note(t - 2s) + @note(t - 4s)\n"),
-        ],
-    );
+    let g = sampled_notes();
     let held = over(&g, "song", 4.5, None);
     let song = held.output(held.root).expect("the song").plane(0).to_vec();
     let alone = over(&g, "note", 4.5, None);
@@ -91,4 +100,22 @@ fn a_sampled_sum_reads_each_operand_only_where_it_is_nonzero() {
     let note = u128::from(RATE / 2);
     let silent = song.len() as u128 - 3 * note;
     assert_eq!(flops::tree(&held).rows[0].own, (3 + 3 + 2) * note + silent);
+}
+
+#[test]
+fn a_count_prices_the_render_it_names() {
+    let g = sampled_notes();
+    let held = over(&g, "song", 4.5, None);
+    let asked = config(4.5).asking(vec![Ask {
+        node: "song".to_string(),
+        representation: Representation::Flops,
+    }]);
+    let counted = render(&g, "song", asked, None).expect("a count");
+    let Output::Flops(tree) = answer(&counted, counted.root, Representation::Flops)
+        .expect("a count")
+        .value
+    else {
+        panic!("a count");
+    };
+    assert_eq!(tree.total, held.work().priced_flops);
 }

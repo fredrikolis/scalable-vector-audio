@@ -10,14 +10,18 @@ use crate::render::sampled::{self, Program};
 use crate::typing::Value;
 
 /// Every ref a sampled node reads, one row per name however many slots carry it.
-pub(super) fn refs_read(render: &Render, node: NodeId) -> Result<Vec<NodeId>, EngineError> {
+pub(super) fn refs_read(
+    render: &Render,
+    node: NodeId,
+    holds: &dyn Fn(NodeId) -> bool,
+) -> Result<Vec<NodeId>, EngineError> {
     let Some(program) = program(render, node)? else {
         return Ok(Vec::new());
     };
     let here = render.tys.name(node);
     let mut out: Vec<NodeId> = Vec::new();
     for source in program.reads {
-        let Some(ref_node) = behind(render, here, source) else {
+        let Some(ref_node) = behind(render, here, source, holds) else {
             continue;
         };
         let name = render.tys.name(ref_node);
@@ -49,8 +53,13 @@ pub(super) fn reads_held(render: &Render, node: NodeId) -> Result<bool, EngineEr
 /// The ref one slot stands for: its source, or — where that source is a subterm written here,
 /// and so carries this node's name — the one ref it reads. A subterm summing several isolates
 /// none, and one this render never held has no row.
-fn behind(render: &Render, here: &str, source: NodeId) -> Option<NodeId> {
-    let held = |id: NodeId| render.buffers.contains_key(&id).then_some(id);
+fn behind(
+    render: &Render,
+    here: &str,
+    source: NodeId,
+    holds: &dyn Fn(NodeId) -> bool,
+) -> Option<NodeId> {
+    let held = |id: NodeId| holds(id).then_some(id);
     if render.tys.name(source) != here {
         return held(source);
     }
@@ -71,6 +80,22 @@ pub(super) fn contributed(
     parent: NodeId,
     child: NodeId,
 ) -> Result<Option<Buffer>, EngineError> {
+    let holds = |id: NodeId| render.buffers.contains_key(&id);
+    let Some((program, kept)) = isolated(render, parent, child, &holds)? else {
+        return Ok(None);
+    };
+    let held = |id: BufId| kept.contains(&id);
+    program
+        .writes(render, parent, &silenced(&program.renderer, &held))
+        .map(Some)
+}
+
+pub(super) fn isolated(
+    render: &Render,
+    parent: NodeId,
+    child: NodeId,
+    holds: &dyn Fn(NodeId) -> bool,
+) -> Result<Option<(Program, Vec<BufId>)>, EngineError> {
     let Some(program) = program(render, parent)? else {
         return Ok(None);
     };
@@ -80,17 +105,15 @@ pub(super) fn contributed(
         .iter()
         .enumerate()
         .filter(|(_, source)| {
-            behind(render, here, **source).is_some_and(|id| render.tys.name(id) == name)
+            behind(render, here, **source, holds).is_some_and(|id| render.tys.name(id) == name)
         })
         .map(|(slot, _)| BufId(slot as u32))
         .collect();
     let held = |id: BufId| kept.contains(&id);
-    if kept.is_empty() || !separable(&program.renderer, &held) {
-        return Ok(None);
+    match kept.is_empty() || !separable(&program.renderer, &held) {
+        true => Ok(None),
+        false => Ok(Some((program, kept))),
     }
-    program
-        .writes(render, parent, &silenced(&program.renderer, &held))
-        .map(Some)
 }
 
 /// Two moving operands under one product have no addend apiece; a solver moves as a slot

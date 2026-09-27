@@ -1,5 +1,7 @@
 // Concern: content-addresses one node, whatever representation it holds | Non-concern: composing a closed form across a ref (mod.rs) | IO: (NodeId) -> Hash
 
+use std::collections::BTreeMap;
+
 use sva_formula::{
     ClosedForm, Hash, NodeId, SpectralSum, Var, hash_closed_form, hash_spectral_sum,
 };
@@ -17,21 +19,39 @@ pub fn symbolic_hash(typing: &Typing, node: NodeId, want: Var) -> Result<Hash, E
 
 /// What one node is, whatever it holds: its closed form's own form, else the tree it was built from.
 pub fn identity(typing: &Typing, node: NodeId) -> Result<Hash, EngineError> {
-    identity_of(typing, node, &mut Vec::new())
+    identity_in(typing, node, &mut BTreeMap::new())
 }
 
-fn identity_of(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, EngineError> {
-    if typing.ty(node).is_closed_form() {
-        let named = closed_form_identity(
+/// The same, each node under it named once however many paths reach it.
+pub(crate) fn identity_in(
+    typing: &Typing,
+    node: NodeId,
+    named: &mut BTreeMap<NodeId, Hash>,
+) -> Result<Hash, EngineError> {
+    identity_of(typing, node, &mut Vec::new(), named)
+}
+
+fn identity_of(
+    typing: &Typing,
+    node: NodeId,
+    open: &mut Vec<NodeId>,
+    named: &mut BTreeMap<NodeId, Hash>,
+) -> Result<Hash, EngineError> {
+    if let Some(held) = named.get(&node) {
+        return Ok(*held);
+    }
+    let found = match typing.ty(node).is_closed_form() {
+        true => match closed_form_identity(
             &spectral_sum_of(typing, node, typing.var(node)),
             substituted_closed_form(typing, node).as_ref(),
-        );
-        return match named {
+        ) {
             Ok(hash) => Ok(hash),
-            Err(form) => built(typing, node, open).map_err(|tree| neither(form, tree)),
-        };
-    }
-    built(typing, node, open)
+            Err(form) => built(typing, node, open, named).map_err(|tree| neither(form, tree)),
+        },
+        false => built(typing, node, open, named),
+    }?;
+    named.insert(node, found);
+    Ok(found)
 }
 
 /// Neither form names the node. Each refusal alone reads as the whole reason, so the one
@@ -45,7 +65,12 @@ fn neither(form: EngineError, tree: EngineError) -> EngineError {
     })
 }
 
-fn built(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, EngineError> {
+fn built(
+    typing: &Typing,
+    node: NodeId,
+    open: &mut Vec<NodeId>,
+    named: &mut BTreeMap<NodeId, Hash>,
+) -> Result<Hash, EngineError> {
     if open.contains(&node) {
         return Err(cyclic(typing, node));
     }
@@ -56,16 +81,16 @@ fn built(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, 
             sink.text("closed form");
             sink.hash(hash_closed_form(form));
             for id in nodes_in(&form.body) {
-                sink.hash(identity_of(typing, id, open)?);
+                sink.hash(identity_of(typing, id, open, named)?);
             }
         }
         Value::Cast(cast, source) => {
             sink.text(cast.name());
-            sink.hash(identity_of(typing, *source, open)?);
+            sink.hash(identity_of(typing, *source, open, named)?);
         }
         Value::Read { source, at, .. } => {
             sink.text("read");
-            sink.hash(identity_of(typing, *source, open)?);
+            sink.hash(identity_of(typing, *source, open, named)?);
             match at {
                 Offset::Steps(steps) => {
                     sink.text("sp");
@@ -89,13 +114,13 @@ fn built(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, 
         } => {
             sink.text(shape.name());
             for operand in [x, cutoff, q, gain] {
-                sink.hash(identity_of(typing, *operand, open)?);
+                sink.hash(identity_of(typing, *operand, open, named)?);
             }
         }
         Value::Op { name, args } => {
             sink.text(name);
             for arg in args {
-                sink.hash(identity_of(typing, *arg, open)?);
+                sink.hash(identity_of(typing, *arg, open, named)?);
             }
         }
     }

@@ -16,6 +16,7 @@ use crate::typing::{Typing, Value};
 
 mod identity;
 
+pub(crate) use identity::identity_in;
 pub use identity::{closed_form_identity, identity, symbolic_hash};
 
 /// The spectral sum of one node read on `want`'s axis, with every ref it holds already
@@ -73,7 +74,7 @@ fn composed(
     on_axis(typing, node, held, typing.var(node), want)
 }
 
-fn cyclic(typing: &Typing, node: NodeId) -> EngineError {
+pub(crate) fn cyclic(typing: &Typing, node: NodeId) -> EngineError {
     EngineError::refused(Diagnostic {
         code: "engine.cyclic_substitution".to_string(),
         message: format!(

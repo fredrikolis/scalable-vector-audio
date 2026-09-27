@@ -113,6 +113,7 @@ pub struct Render {
     pub range: Option<Extent>,
     pub(crate) unranged: Option<EngineError>,
     pub(crate) extents: extent::Extents,
+    identities: std::cell::RefCell<BTreeMap<NodeId, sva_formula::Hash>>,
 }
 
 impl Render {
@@ -138,7 +139,13 @@ impl Render {
             range: None,
             unranged: None,
             extents: extent::Extents::default(),
+            identities: Default::default(),
         }
+    }
+
+    /// A node's content address, each node under it named once however often it is asked.
+    pub(crate) fn identity(&self, id: NodeId) -> Result<sva_formula::Hash, EngineError> {
+        refs::identity_in(&self.tys, id, &mut self.identities.borrow_mut())
     }
 
     pub fn work(&self) -> crate::flops::Work {
@@ -260,7 +267,11 @@ pub(crate) fn run(
     recording: Option<&Recording>,
 ) -> Result<Render, EngineError> {
     sampled::on_the_grid(&prepared.tys, config.rate)?;
-    let identity = prepared.identity(&config.asks).ok();
+    // Only a stored stop reads the root's identity.
+    let identity = match (recording, &config.until) {
+        (Some(_), Some(_)) => prepared.identity(&config.asks).ok(),
+        _ => None,
+    };
     let Prepared {
         instances,
         order,
@@ -269,6 +280,11 @@ pub(crate) fn run(
         target,
     } = prepared;
     let schedule = schedule::plan(&tys, &order, root, &config.asks);
+    let costed = match schedule.materialize.is_empty() && counts(&config.asks) {
+        true => schedule::plan(&tys, &order, root, &[]).materialize,
+        false => schedule.materialize.clone(),
+    };
+    let looped = order.looped();
     let forks = schedule::forks(&tys, &schedule.materialize);
     let bindings = tys
         .paths()
@@ -279,7 +295,7 @@ pub(crate) fn run(
     let volatile_root = volatile::mark(&instances, &held, &target)?
         .slot(root)
         .is_some();
-    let reached = reach::ranged(&mut held, recording, identity, volatile_root)?;
+    let reached = reach::ranged(&mut held, recording, identity, volatile_root, &costed)?;
     let lenses = Lenses {
         recording,
         volatile: volatile::mark(&instances, &held, &target)?,
@@ -288,6 +304,7 @@ pub(crate) fn run(
     };
     affordable(&held)?;
     let needed = lenses.needed(&held);
+    unlooped(&held, &needed, &looped)?;
     for id in held.schedule.materialize.clone() {
         if needed.contains(&id) {
             materialize(&mut held, id, &lenses)?;
@@ -299,6 +316,32 @@ pub(crate) fn run(
     compose_read(&mut held);
     stamp(&mut held);
     Ok(held)
+}
+
+/// A `flops` reading counts what the audio render would run, over the extents it would.
+fn counts(asks: &[Ask]) -> bool {
+    asks.iter()
+        .any(|ask| ask.representation == crate::query::Representation::Flops)
+}
+
+/// Nothing steps or substitutes a loop of refs, so a node held over one refuses.
+fn unlooped(
+    held: &Render,
+    needed: &std::collections::BTreeSet<NodeId>,
+    looped: &BTreeMap<String, String>,
+) -> Result<(), EngineError> {
+    for id in held
+        .schedule
+        .materialize
+        .iter()
+        .filter(|id| needed.contains(id))
+    {
+        if let Some(member) = looped.get(held.tys.name(*id)) {
+            let at = held.tys.id(member).expect("a loop's own path types");
+            return Err(refs::cyclic(&held.tys, at));
+        }
+    }
+    Ok(())
 }
 
 /// A reading that materializes nothing is never refused for cost: asking what a render
@@ -456,8 +499,13 @@ fn materialize(held: &mut Render, id: NodeId, lenses: &Lenses) -> Result<(), Eng
     }
     let lens = lenses.at(id);
     if matches!(held.tys.ty(id).held, Held::Sampled) {
-        let (key, samples) = sampled::key(held, id)?;
-        if let Some((hit, label)) = warm(held, id, key, samples, lens.as_ref()) {
+        let key = match lens {
+            Some(_) => Some(sampled::key(held, id)?),
+            None => None,
+        };
+        if let Some((key, samples)) = key
+            && let Some((hit, label)) = warm(held, id, key, samples, lens.as_ref())
+        {
             held.buffers.insert(id, hit);
             held.labels.insert(id, label);
             return Ok(());
@@ -465,7 +513,7 @@ fn materialize(held: &mut Render, id: NodeId, lenses: &Lenses) -> Result<(), Eng
         for read in reads(held, id) {
             materialize(held, read, lenses)?;
         }
-        return sampled::run(held, id, key, lens.as_ref());
+        return sampled::run(held, id, key.map(|(key, _)| key), lens.as_ref());
     }
     for operand in schedule::materialized_operands(&held.tys, id) {
         materialize(held, operand, lenses)?;
@@ -497,10 +545,16 @@ fn collapse_closed_form(
             }
             found
         });
-    let identity = match refs::closed_form_identity(&sum, written.as_ref()) {
-        Ok(identity) => identity,
-        Err(_) if var == sva_formula::Var::T => refs::identity(&held.tys, id)?,
-        Err(e) => return Err(e),
+    if let (Err(e), None) = (&sum, &written)
+        && var != sva_formula::Var::T
+    {
+        return Err(e.clone());
+    }
+    let identity = match cache {
+        Some(_) => Some(
+            refs::closed_form_identity(&sum, written.as_ref()).or_else(|_| held.identity(id))?,
+        ),
+        None => None,
     };
     let score = held.alias_score(id);
     let (rate, profile) = (held.config.rate, &held.config.profile);
@@ -518,15 +572,17 @@ fn collapse_closed_form(
         _ => (asked, Vec::new()),
     };
     let width = held.tys.ty(id).width as usize;
-    let key = crate::cache::mixed(
-        crate::cache::buffer_key(identity, rate, over, width, score),
-        &route,
-    );
+    let key = identity.map(|identity| {
+        crate::cache::mixed(
+            crate::cache::buffer_key(identity, rate, over, width, score),
+            &route,
+        )
+    });
     if let Ok(sum) = &sum {
         held.symbolic.insert(id, sum.clone());
     }
     // FORMAT 9.3: the label belongs to the value, so an entry without one is no value.
-    if let Some((hit, label)) = warm(held, id, key, over.len(), cache) {
+    if let Some((hit, label)) = key.and_then(|key| warm(held, id, key, over.len(), cache)) {
         held.buffers.insert(id, padded(hit, asked));
         held.labels.insert(id, label);
         return Ok(());
@@ -537,7 +593,9 @@ fn collapse_closed_form(
             .run(rate, over, profile, score)
             .map_err(|e| collapse_refused(held, id, &e))?,
     };
-    store(key, &buffer, &label, cache);
+    if let Some(key) = key {
+        store(key, &buffer, &label, cache);
+    }
     held.buffers.insert(id, padded(buffer, asked));
     held.labels.insert(id, label);
     Ok(())
@@ -621,25 +679,29 @@ fn frames_of(held: &mut Render, id: NodeId, cache: Option<&Lens>) -> Result<(), 
         .buffers
         .get(&source)
         .ok_or_else(|| not_frames(held, id))?;
-    let key = frames_key(
-        crate::cache::buffer_key(
-            refs::identity(&held.tys, source)?,
-            buffer.rate,
-            buffer.extent(),
-            buffer.width,
-            AliasScore::NotAsked,
-        ),
-        window,
-        hop,
-    );
-    if let Some(entry) = cache.and_then(|c| c.load(key, held.tys.name(id), Expected::Frames))
+    let key = match cache {
+        Some(_) => Some(frames_key(
+            crate::cache::buffer_key(
+                held.identity(source)?,
+                buffer.rate,
+                buffer.extent(),
+                buffer.width,
+                AliasScore::NotAsked,
+            ),
+            window,
+            hop,
+        )),
+        None => None,
+    };
+    if let (Some(cache), Some(key)) = (cache, key)
+        && let Some(entry) = cache.load(key, held.tys.name(id), Expected::Frames)
         && let Payload::Frames(frames) = entry.payload
     {
         held.frames.insert(id, *frames);
         return Ok(());
     }
     let frames = stft::forward(buffer, window, hop).map_err(|e| sampled::refused(held, id, &e))?;
-    if let Some(cache) = cache {
+    if let (Some(cache), Some(key)) = (cache, key) {
         cache.store(key, &Payload::Frames(Box::new(frames.clone())), None);
     }
     held.frames.insert(id, frames);

@@ -20,7 +20,7 @@ use crate::typing::{Typing, Value};
 pub fn key(held: &Render, id: NodeId) -> Result<(sva_formula::Hash, usize), EngineError> {
     let extent = held.extents.of(id);
     let key = crate::cache::buffer_key(
-        crate::refs::identity(&held.tys, id)?,
+        held.identity(id)?,
         held.config.rate,
         extent,
         held.tys.ty(id).width as usize,
@@ -32,11 +32,13 @@ pub fn key(held: &Render, id: NodeId) -> Result<(sva_formula::Hash, usize), Engi
 pub fn run(
     held: &mut Render,
     id: NodeId,
-    key: sva_formula::Hash,
+    key: Option<sva_formula::Hash>,
     cache: Option<&crate::cache::Lens>,
 ) -> Result<(), EngineError> {
     let (buffer, label) = stepped(held, id)?;
-    super::store(key, &buffer, &label, cache);
+    if let Some(key) = key {
+        super::store(key, &buffer, &label, cache);
+    }
     held.buffers.insert(id, buffer);
     held.labels.insert(id, label);
     Ok(())
