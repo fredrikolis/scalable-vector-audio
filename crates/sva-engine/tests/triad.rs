@@ -101,7 +101,7 @@ fn a_lowpass_over_a_second_long_crop_holds_its_response() {
     let held = render(&g, "voiced", RenderConfig::seconds(44_100, 0.5), None)
         .expect("a cropped pair through a pole");
     let id = held.id("voiced").expect("the root");
-    let buffer = held.buffer(id).expect("a collapsed law");
+    let buffer = held.output(id).expect("a collapsed law");
     let peak = (4_410..buffer.len())
         .map(|i| buffer.at(0, i).abs())
         .fold(0.0f64, f64::max);

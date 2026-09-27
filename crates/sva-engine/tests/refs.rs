@@ -72,7 +72,7 @@ fn an_sp_offset_read_is_an_integer_index() {
         let held = render(&g, "node", RenderConfig::seconds(22_050, 0.01), None)
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         let id = held.id("node").expect("the root");
-        held.buffer(id).expect("a rendered read").plane(0).to_vec()
+        held.output(id).expect("a rendered read").plane(0).to_vec()
     };
     let plain = rendered("plain-grid", "@grid*0.5\n");
     let moved = rendered("moved-grid", "@grid(t - 2sp)*0.5\n");
@@ -117,13 +117,11 @@ fn a_bar_offset_that_lands_on_the_grid_reads_a_sampled_ref() {
     let held = render(&g, "node", RenderConfig::seconds(8_000, 2.5), None)
         .expect("a bar offset that lands on the grid");
     let id = held.id("node").expect("the root");
-    let buffer = held.buffer(id).expect("a rendered read");
+    let buffer = held.output(id).expect("a rendered read");
     let delay = 16_000;
-    for i in 0..delay {
-        assert_eq!(buffer.at(0, i), 0.0, "sample {i} is before the read");
-    }
-    for i in delay..buffer.len() {
-        let want = 0.5 * (std::f64::consts::TAU * 220.0 * (i - delay) as f64 / 8_000.0).sin();
+    for i in 0..buffer.len() {
+        let at = i as f64 - f64::from(delay);
+        let want = 0.5 * (std::f64::consts::TAU * 220.0 * at / 8_000.0).sin();
         assert!(
             (buffer.at(0, i) - want).abs() < 1e-9,
             "sample {i}: {} against {want}",
@@ -196,13 +194,10 @@ fn a_law_read_at_a_grid_offset_renders() {
     let held = render(&g, "node", RenderConfig::seconds(8_000, 0.01), None)
         .expect("a law read on the grid");
     let id = held.id("node").expect("the root");
-    let buffer = held.buffer(id).expect("a rendered read");
+    let buffer = held.output(id).expect("a rendered read");
     assert_eq!(buffer.len(), 80);
-    for i in 0..2 {
-        assert_eq!(buffer.at(0, i), 0.0, "before the read is founded");
-    }
-    for i in 2..buffer.len() {
-        let want = 0.5 * (std::f64::consts::TAU * 220.0 * (i - 2) as f64 / 8_000.0).sin();
+    for i in 0..buffer.len() {
+        let want = 0.5 * (std::f64::consts::TAU * 220.0 * (i as f64 - 2.0) / 8_000.0).sin();
         assert!(
             (buffer.at(0, i) - want).abs() < 1e-9,
             "sample {i}: {} against {want}",
@@ -231,7 +226,7 @@ fn a_law_ref_tiled_by_modulo_point_samples() {
     let rendered =
         render(&g, "node", RenderConfig::seconds(8_000, 0.05), None).expect("a tiled read");
     let root = rendered.id("node").expect("the root");
-    let buffer = rendered.buffer(root).expect("a point-sampled law");
+    let buffer = rendered.output(root).expect("a point-sampled law");
     for i in 0..buffer.len() {
         let want = (std::f64::consts::TAU * 100.0 * ((i as f64 / 8_000.0) % 0.0037)).sin();
         assert!(
@@ -293,7 +288,7 @@ fn a_ref_that_is_not_one_number_composes_as_a_law() {
     let held = render(&g, "voiced", RenderConfig::seconds(44_100, 0.05), None)
         .expect("a series read under a product");
     let buffer = held
-        .buffer(held.id("voiced").expect("the root"))
+        .output(held.id("voiced").expect("the root"))
         .expect("a rendered series");
     let peak = (0..buffer.len()).fold(0.0f64, |m, i| m.max(buffer.at(0, i).abs()));
     assert!(peak > 1.0, "a series ref keeps its partials, peak {peak}");
@@ -330,7 +325,7 @@ fn a_per_channel_shift_on_a_law_substitutes_per_lane() {
     let held = render(&g, "taps", RenderConfig::seconds(44_100, 0.05), None)
         .expect("a law read once per component");
     let buffer = held
-        .buffer(held.id("taps").expect("the root"))
+        .output(held.id("taps").expect("the root"))
         .expect("two lanes");
     assert_eq!(buffer.width, 2);
     for i in [0usize, 441, 1000] {

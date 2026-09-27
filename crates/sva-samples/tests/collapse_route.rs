@@ -3,7 +3,7 @@
 use std::f64::consts::TAU;
 
 use sva_formula::{Body, C64, ClosedForm, Origin, Part, Unary, Var};
-use sva_samples::collapse::{self, AliasScore, Horizon};
+use sva_samples::collapse::{self, AliasScore, Extent};
 use sva_samples::{Buffer, CollapseError, Detail, Label, PSYCHOACOUSTIC_V1, Profile, Rule, Source};
 
 const RATE: u32 = 44_100;
@@ -11,10 +11,11 @@ const RATE: u32 = 44_100;
 fn render(
     form: &ClosedForm,
     rate: u32,
-    horizon: Horizon,
+    secs: (f64, f64),
     profile: &Profile,
 ) -> Result<(Buffer, Label), CollapseError> {
-    collapse::render(form, rate, horizon, profile, AliasScore::Asked)
+    let extent = Extent::secs(rate, secs.0, secs.1);
+    collapse::render(form, rate, extent, profile, AliasScore::Asked)
 }
 
 fn part(body: Body) -> Part {
@@ -29,8 +30,8 @@ fn form(body: Body) -> ClosedForm {
     }
 }
 
-fn whole_second() -> Horizon {
-    Horizon::secs(0.0, 1.0)
+fn whole_second() -> (f64, f64) {
+    (0.0, 1.0)
 }
 
 fn sine(hz: f64) -> Body {

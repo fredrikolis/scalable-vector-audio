@@ -126,8 +126,8 @@ fn a_cache_key_follows_content_not_the_path_or_spelling_it_was_written_under() {
     let cache = store_all();
     let held = all_of(&spellings, "master", &["plain", "fx/walked"], Some(&cache));
     assert_eq!(
-        held.buffer(held.id("plain").expect("plain")),
-        held.buffer(held.id("fx/walked").expect("the walked spelling")),
+        held.output(held.id("plain").expect("plain")),
+        held.output(held.id("fx/walked").expect("the walked spelling")),
         "one value, one entry, however the ref was spelled"
     );
 
@@ -161,8 +161,8 @@ fn a_cache_key_follows_content_not_the_path_or_spelling_it_was_written_under() {
     let cache = store_all();
     let held = all_of(&identical, "master", &["left", "right"], Some(&cache));
     assert_eq!(
-        held.buffer(held.id("left").expect("left")),
-        held.buffer(held.id("right").expect("right")),
+        held.output(held.id("left").expect("left")),
+        held.output(held.id("right").expect("right")),
         "one written value, one entry"
     );
 }
@@ -216,8 +216,8 @@ fn a_rate_change_keys_a_new_buffer_but_reuses_the_rate_free_law() {
         "one spectral sum answers both rates"
     );
 
-    let one = first.buffer(id).expect("a buffer");
-    let two = second.buffer(second_id).expect("a buffer");
+    let one = first.output(id).expect("a buffer");
+    let two = second.output(second_id).expect("a buffer");
     assert_eq!(two.len(), one.len() * 2, "each rate keeps its own buffer");
     assert!(
         cache.bytes() > held_at_one_rate,
@@ -298,7 +298,7 @@ fn frames_are_held_under_the_window_they_were_read_through() {
             ("chord", "sin(2*pi*256*t)\n"),
             (
                 "master",
-                "istft(stft(sample(@chord), window=256, hop=64))\n",
+                "istft(stft(sample(crop(@chord, 0s, 0.05s)), window=256, hop=64))\n",
             ),
         ],
     );
@@ -374,8 +374,7 @@ fn a_sampled_node_is_stored_and_answered_from_the_store() {
     let key = sva_engine::buffer_key(
         sva_engine::identity(&cold.tys, id).expect("acc has an identity"),
         RATE,
-        0.0,
-        (SECONDS * f64::from(RATE)).round() as usize,
+        sva_samples::Extent::secs(RATE, 0.0, SECONDS),
         cold.tys.ty(id).width as usize,
         sva_samples::AliasScore::NotAsked,
     );
@@ -447,7 +446,7 @@ fn sat_drives_a_sampled_operand_as_it_drives_a_closed_form() {
         let held = rendered(&dir, node, Some(&store));
         let id = held.id(node).expect("the root types");
         let key = sva_engine::identity(&held.tys, id).expect("an identity");
-        (held.buffer(id).expect("a buffer").plane(0).to_vec(), key)
+        (held.output(id).expect("a buffer").plane(0).to_vec(), key)
     };
     let (soft, soft_key) = root("soft");
     let (hard, hard_key) = root("hard");

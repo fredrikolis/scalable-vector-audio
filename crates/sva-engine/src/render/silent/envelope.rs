@@ -1,4 +1,4 @@
-// Concern: bounds each node's magnitude from every grid instant on, per node class | Non-concern: choosing the horizon from the bound | IO: (NodeId) -> Envelope, or the class no bound is derived for
+// Concern: bounds each node's magnitude from every grid instant on, per node class | Non-concern: choosing the range from the bound | IO: (NodeId) -> Envelope, or the class no bound is derived for
 
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -48,9 +48,10 @@ pub(super) struct Unbounded {
 /// from a little before an instant covers it, one taken from a little after may not.
 const SLOP: f64 = 1e-9;
 
+/// `points` instants `STEP` samples apart, the first at grid sample `first`.
 #[derive(Clone)]
 pub(super) struct Grid {
-    pub(super) start: f64,
+    pub(super) first: i64,
     pub(super) rate: f64,
     pub(super) points: usize,
 }
@@ -58,13 +59,22 @@ pub(super) struct Grid {
 impl Grid {
     /// Grid instant `j`, read early by the slop.
     pub(super) fn secs(&self, j: usize) -> f64 {
-        self.start + (j * STEP) as f64 / self.rate - SLOP
+        (self.first + (j * STEP) as i64) as f64 / self.rate - SLOP
     }
 
     /// The last grid instant whose bound holds from `t`, where one does.
     fn index_at(&self, t: f64) -> Option<usize> {
-        let steps = ((t + SLOP - self.start) * self.rate / STEP as f64).floor();
+        let steps = (((t + SLOP) * self.rate - self.first as f64) / STEP as f64).floor();
         (steps >= 0.0).then(|| (steps as usize).min(self.points - 1))
+    }
+
+    /// For each instant, the step of a solver started at t = 0 whose bound covers it.
+    fn solver_steps(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.points).map(|j| {
+            (self.first + (j * STEP) as i64)
+                .div_euclid(STEP as i64)
+                .max(0) as usize
+        })
     }
 
     /// The same for a sample index, which a grid read lands on exactly.
@@ -305,19 +315,30 @@ impl<'a> Bounds<'a> {
                 let (rate, points) = (self.config.rate, self.grid.points);
                 let tail = match self.live.map(|live| live.solver(id)) {
                     Some(Some(now)) => sva_samples::tail_from(now, STEP, points, self.level)
-                        .unwrap_or_else(|| Err(format!("the {} solver", params.name()))),
+                        .unwrap_or_else(|| Err(format!("the {} solver", params.name())))
+                        .map(|tail| (tail.at.first().copied().unwrap_or(0.0), tail)),
                     Some(None) => {
                         return Ok(Err(
                             self.unknown(id, "a solver the stream holds no state for")
                         ));
                     }
-                    None => sva_samples::tail(&params, rate, STEP, points, self.level),
+                    None => {
+                        let steps: Vec<usize> = self.grid.solver_steps().collect();
+                        let reach = steps.last().copied().unwrap_or(0) + 1;
+                        sva_samples::tail(&params, rate, STEP, reach, self.level).map(|tail| {
+                            let before = tail.at.first().copied().unwrap_or(0.0);
+                            let at = steps.iter().map(|q| tail.at[(*q).min(reach - 1)]);
+                            let at = at.collect();
+                            let held = tail.held;
+                            (before, sva_samples::Tail { at, held })
+                        })
+                    }
                 };
                 match tail {
-                    Ok(sva_samples::Tail { at, held }) => {
+                    Ok((before, sva_samples::Tail { at, held })) => {
                         self.held_flat |= held;
                         Ok(Ok(Envelope {
-                            before: at.first().copied().unwrap_or(0.0),
+                            before,
                             at,
                             floor: 0.0,
                         }))
@@ -568,7 +589,7 @@ impl<'a> Bounds<'a> {
 
     /// A crop's operand no bound reaches is rendered over the crop's own window instead:
     /// every sample there is known, and every sample after it is zero. A node's prefix is
-    /// the same whatever the horizon, so a longer render repeats these samples exactly.
+    /// the same whatever the range, so a longer render repeats these samples exactly.
     fn crop(&mut self, id: NodeId, args: &[NodeId]) -> Result<Found, EngineError> {
         let edge = |at: usize| args.get(at).and_then(|a| constant(self.tys, *a));
         let (Some(l), Some(r)) = (edge(1), edge(2)) else {

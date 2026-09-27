@@ -345,7 +345,7 @@ fn a_zero_fall_shoulder_is_a_hard_edge_not_a_panic() {
     let rms = |body: &str| {
         let held = rendered(body).unwrap_or_else(|e| panic!("{body}: {e}"));
         let plane = held
-            .buffer(held.id("node").expect("the root"))
+            .output(held.id("node").expect("the root"))
             .expect("a buffer")
             .plane(0)
             .to_vec();

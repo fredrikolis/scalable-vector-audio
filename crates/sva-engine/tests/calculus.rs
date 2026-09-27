@@ -4,7 +4,7 @@ mod fixtures;
 
 use fixtures::graph_of;
 use sva_engine::{Ask, Output, RenderConfig, Representation, Source, answer, render};
-use sva_samples::{AliasScore, Horizon, PSYCHOACOUSTIC_V1, of_spectral_sum};
+use sva_samples::{AliasScore, Extent, PSYCHOACOUSTIC_V1, of_spectral_sum};
 
 /// A four-times-oversampled five-point difference of the closed form itself is the reference, its
 /// own truncation error four orders below the tolerance being claimed.
@@ -29,7 +29,7 @@ fn a_symbolic_derivative_agrees_with_a_four_times_finite_difference() {
     };
 
     let rate = 4 * 44_100;
-    let horizon = Horizon::secs(0.0, 0.05);
+    let horizon = Extent::secs(rate, 0.0, 0.05);
     let (differentiated, _) = of_spectral_sum(
         &slope,
         rate,
@@ -77,7 +77,7 @@ fn a_laws_envelope_is_symbolic_and_positive() {
     let (buffer, _) = of_spectral_sum(
         &squared,
         44_100,
-        Horizon::secs(0.0, 0.05),
+        Extent::secs(44_100, 0.0, 0.05),
         &PSYCHOACOUSTIC_V1,
         AliasScore::NotAsked,
     )

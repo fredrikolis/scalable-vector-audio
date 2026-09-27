@@ -2,43 +2,31 @@
 
 use std::path::PathBuf;
 
-use sva_core::{Asked, CliError, WindowEdge};
+use sva_core::{Asked, CliError, Settings};
 
 mod reading;
 
 pub(crate) use reading::check_frame;
 use reading::{analyze_args, render_args};
 
-pub const USAGE: &str = "usage: sva-cli render [<node|expression>] [query options]\n       \
-     sva-cli analyze <file.wav> [--as <representation>[=<destination>]]... [--from <time>] \
-     [--to <time>] [--frame <secs>] [--peaks <n>]\n       \
-     sva-cli lint [<node|expression>] [--in <dir>] [--format <json|text>]\n       \
-     sva-cli trace <node|expression> [--in <dir>]\n       \
+pub const USAGE: &str = "usage: sva-cli render '<expression>' [--until '<condition>'] \
+     [--representation <r>[=<path>][,...]]... [--rate <hz>] [-c <key>=<value>]... [--confirm]\n       \
+     sva-cli analyze <file.wav> [--representation <r>[=<path>][,...]]... [-c <key>=<value>]... \
+     [--confirm]\n       \
+     sva-cli lint [<node|expression>] [--format <json|text>]\n       \
+     sva-cli trace <node|expression>\n       \
      sva-cli builtins\n       \
      sva-cli outline <expression>\n       \
      sva-cli new <name> [--idempotency-key <key>]\n\
-     query options: [--in <dir>] [--node <path>] [--from <time>] [--to <time>] \
-     [--as <representation>[=<destination>]]... [--frame <secs>] [--depth <n>] [--peaks <n>] \
-     [--sample-rate <hz>] [--oversample <n>] [--flop-budget <n>] \
-     [--brief] [--skim] [--pcm16] [--confirm]\n\
+     a render's target is one expression; `@path` reads a node in the current directory, \
+     `@/abs/path` one anywhere, and its own ref may read an interval: `@piano([0, 2b], f0=C4)`\n\
      representations: lines atoms spectrum envelope derivative samples ledger pitch formants \
      stereo bands crest loudness alias bindings arguments flops\n\
      analyses (`analyze` only): onsets trajectory masking gain-reduction\n\
-     --against <file.wav> is the second signal `--as masking` is read against\n\
-     --sample-rate <hz> is the observation rate, legal with any --as\n\
-     --node <path> names the instance a reading is taken of; required with `--as bindings`\n\
-     --flop-budget <n> is the operation count the caller means to pay; the profile's own \
-     budget refuses past it, and `--as flops` prints the tree that count came from\n\
-     --brief condenses `ledger` to the nodes that clipped\n\
-     --skim condenses `ledger`'s fields to node/channel/rms/peak/clipped\n\
-     --pcm16 quantizes a `.wav` destination to 16-bit PCM instead of 32-bit float\n\
+     -c keys: flop_budget proof_limit node depth peaks oversample frame brief skim pcm16, \
+     and against for `analyze`\n\
      destinations: a `.wav` path takes `samples` as audio; any other path takes JSON; none \
-     prints JSON to stdout\n\
-     --in <dir> names the composition `render`, `lint` and `trace` read; without it they read \
-     the current directory. `new` and `analyze` take none. Each <node|expression> names a node \
-     path or an expression in the same expression grammar a node file's body holds. A file \
-     holds structure besides that body -- `name = <expr>` defaults, a TSV grid, a bare meter \
-     such as `4/4` -- and an argument is a body alone, so `4/4` there is a division.\n\
+     puts the reading under `data.readings`\n\
      verb aliases: `validate`=lint, `list`=builtins, `create`=new, `show`=trace. `render` \
      and `analyze` take a reading, which the standard's verb list has no word for, so they \
      keep their own names.";
@@ -59,35 +47,23 @@ pub const ANALYZE_REPRESENTATIONS: [&str; 10] = [
 
 #[derive(Debug, PartialEq)]
 pub struct RenderArgs {
-    /// A node path or an expression; which one it is, only the graph can say.
-    pub target: Option<String>,
-    /// The instance a reading is taken of, where it is not the target itself.
-    pub node: Option<String>,
-    /// The composition directory `--in` named, where the caller named one.
-    pub dir: Option<String>,
-    pub sample_rate: Option<u32>,
-    pub from: Option<WindowEdge>,
-    pub to: Option<WindowEdge>,
-    /// `--to silent`: the end is where silence is proven, not a time.
-    pub silent: Option<sva_core::Silent>,
+    /// One expression; its refs name nodes from the current directory or an absolute path.
+    pub target: String,
+    pub until: Option<String>,
+    pub rate: Option<u32>,
     pub asked: Vec<Asked>,
-    pub brief: bool,
-    pub skim: bool,
-    pub pcm16: bool,
+    pub settings: Settings,
     /// The caller said a destination that already holds a file may be replaced.
     pub confirm: bool,
-    pub flop_budget: Option<u128>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct AnalyzeArgs {
     pub path: PathBuf,
-    pub from: Option<WindowEdge>,
-    pub to: Option<WindowEdge>,
     pub asked: Vec<Asked>,
     /// The readings `sva-analysis` answers, which no `Representation` names.
     pub analyses: Vec<(String, Option<PathBuf>)>,
-    pub against: Option<PathBuf>,
+    pub settings: Settings,
     /// The caller said a destination that already holds a file may be replaced.
     pub confirm: bool,
 }
@@ -102,12 +78,10 @@ pub enum Command {
     /// directory.
     Lint {
         target: Option<String>,
-        dir: Option<String>,
         format: Format,
     },
     Trace {
         target: String,
-        dir: Option<String>,
     },
     Builtins,
     /// An expression's own parse tree; it reads no composition.
@@ -222,7 +196,6 @@ fn new_args(rest: &[String]) -> Result<Command, CliError> {
 }
 
 fn lint_args(rest: &[String]) -> Result<Command, CliError> {
-    let (dir, rest) = composition_flag(rest)?;
     let mut it = rest.iter().peekable();
     let target = match it.peek() {
         Some(a) if !a.starts_with("--") => it.next().cloned(),
@@ -245,86 +218,28 @@ fn lint_args(rest: &[String]) -> Result<Command, CliError> {
             }
             extra => {
                 return Err(CliError::Usage(format!(
-                    "lint takes only [<node|expression>], `--in <dir>` and `--format \
-                     <json|text>`, not `{extra}`\n{USAGE}"
+                    "lint takes only [<node|expression>] and `--format <json|text>`, not \
+                     `{extra}`\n{USAGE}"
                 )));
             }
         }
     }
-    Ok(Command::Lint {
-        target,
-        dir,
-        format,
-    })
+    Ok(Command::Lint { target, format })
 }
 
-/// `--in <dir>` names the composition, wherever in the tail it is written; without it, the
-/// process's own directory is the one a subcommand reads.
-pub(super) fn composition_flag(rest: &[String]) -> Result<(Option<String>, Vec<String>), CliError> {
-    let mut dir = None;
-    let mut kept = Vec::with_capacity(rest.len());
-    let mut it = rest.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--in" => {
-                dir = Some(
-                    it.next()
-                        .cloned()
-                        .ok_or_else(|| CliError::Usage(format!("`--in` needs a path\n{USAGE}")))?,
-                );
-            }
-            _ => kept.push(arg.clone()),
-        }
-    }
-    Ok((dir, kept))
-}
-
-/// One positional and nothing else: a trace answers structure, which no option narrows —
-/// the rate is an observation parameter and a trace takes no observation.
+/// One positional and nothing else: a trace answers structure, which no option narrows.
 fn trace_args(rest: &[String]) -> Result<Command, CliError> {
-    let (dir, rest) = composition_flag(rest)?;
-    match rest.as_slice() {
+    match rest {
         [target] if !target.starts_with("--") => Ok(Command::Trace {
             target: target.clone(),
-            dir,
         }),
         [] => Err(CliError::Usage(format!(
             "missing <node|expression>\n{USAGE}"
         ))),
         _ => Err(CliError::Usage(format!(
-            "trace takes one <node|expression>, `--in <dir>` and nothing else\n{USAGE}"
+            "trace takes one <node|expression> and nothing else\n{USAGE}"
         ))),
     }
-}
-
-pub(crate) fn number(raw: &str, flag: &str) -> Result<f64, CliError> {
-    match raw.parse::<f64>() {
-        Ok(v) if v.is_finite() => Ok(v),
-        _ => Err(CliError::Usage(format!(
-            "{flag} needs a finite number, got `{raw}`\n{USAGE}"
-        ))),
-    }
-}
-
-pub(crate) fn positive(raw: &str, flag: &str) -> Result<f64, CliError> {
-    match number(raw, flag)? {
-        v if v > 0.0 => Ok(v),
-        _ => Err(CliError::Usage(format!(
-            "{flag} needs a positive number, got `{raw}`\n{USAGE}"
-        ))),
-    }
-}
-
-pub(crate) fn operations(raw: &str, flag: &str) -> Result<u128, CliError> {
-    raw.parse::<u128>().map_err(|_| not_a_count(raw, flag))
-}
-
-pub(crate) fn count(raw: &str, flag: &str) -> Result<usize, CliError> {
-    usize::try_from(operations(raw, flag)?).map_err(|_| not_a_count(raw, flag))
-}
-
-fn not_a_count(raw: &str, flag: &str) -> CliError {
-    CliError::Usage(format!("{flag} needs a whole count, got `{raw}`\n{USAGE}"))
 }
 
 #[cfg(test)]
@@ -340,6 +255,13 @@ mod tests {
         match parse_args(&argv(parts)) {
             Ok(Command::Render(args)) => *args,
             other => panic!("expected a render, got {other:?}"),
+        }
+    }
+
+    fn refused(parts: &[&str]) -> String {
+        match parse_args(&argv(parts)) {
+            Err(CliError::Usage(message)) => message,
+            other => panic!("expected a usage refusal, got {other:?}"),
         }
     }
 
@@ -359,7 +281,6 @@ mod tests {
             parse_args(&argv(&["validate"])).unwrap(),
             Command::Lint {
                 target: None,
-                dir: None,
                 format: Format::Json,
             }
         );
@@ -368,7 +289,6 @@ mod tests {
             parse_args(&argv(&["show", "kick"])).unwrap(),
             Command::Trace {
                 target: "kick".to_string(),
-                dir: None,
             }
         );
         assert_eq!(
@@ -380,150 +300,128 @@ mod tests {
         );
     }
 
-    /// The rate is an observation parameter, so it is legal beside any `--as` and nowhere
-    /// near a structural subcommand.
+    /// A render names its target, its readings as one comma list or several, its rate and
+    /// its settings; nothing else.
     #[test]
-    fn the_sample_rate_is_an_observation_flag_render_takes_with_any_reading() {
-        for name in ["lines", "atoms", "samples", "ledger"] {
-            let args = rendered(&["render", "--as", name, "--sample-rate", "48000"]);
-            assert_eq!(args.sample_rate, Some(48_000));
-            assert_eq!(args.asked[0].name, name);
+    fn a_render_takes_a_target_readings_a_rate_and_settings() {
+        let args = rendered(&[
+            "render",
+            "@piano([0, 2b], f0=C4)",
+            "--representation",
+            "samples=/tmp/out.wav,lines",
+            "--representation",
+            "ledger",
+            "--rate",
+            "48000",
+            "-c",
+            "depth=2",
+            "-c",
+            "pcm16=true",
+            "--until",
+            "t > 1s",
+        ]);
+        assert_eq!(args.target, "@piano([0, 2b], f0=C4)");
+        assert_eq!(args.until.as_deref(), Some("t > 1s"));
+        assert_eq!(args.rate, Some(48_000));
+        let names: Vec<&str> = args.asked.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["samples", "lines", "ledger"]);
+        assert_eq!(
+            args.asked[0].dest.as_deref(),
+            Some(Path::new("/tmp/out.wav"))
+        );
+        assert_eq!(args.settings.shape.depth, 2);
+        assert!(args.settings.pcm16);
+    }
+
+    #[test]
+    fn a_target_may_open_with_a_minus() {
+        let args = rendered(&["render", "-1*sin(2*pi*220*t)", "--representation", "lines"]);
+        assert_eq!(args.target, "-1*sin(2*pi*220*t)");
+    }
+
+    #[test]
+    fn a_render_with_no_target_or_no_reading_refuses() {
+        refused(&["render"]);
+        refused(&["render", "--representation", "lines"]);
+        refused(&["render", "@a"]);
+    }
+
+    /// Every flag the release before this one read is gone, with no alias left behind.
+    #[test]
+    fn a_retired_flag_refuses_by_name() {
+        for gone in [
+            "--in",
+            "--from",
+            "--to",
+            "--max",
+            "--sample-rate",
+            "--flop-budget",
+            "--as",
+            "--node",
+            "--frame",
+            "--depth",
+            "--peaks",
+            "--oversample",
+            "--brief",
+            "--skim",
+            "--pcm16",
+        ] {
+            let message = refused(&["render", "@a", "--representation", "lines", gone, "x"]);
+            assert!(message.contains(gone), "{gone}: {message}");
         }
-        assert!(matches!(
-            parse_args(&argv(&["trace", "kick", "--sample-rate", "48000"])),
-            Err(CliError::Usage(_))
-        ));
+    }
+
+    #[test]
+    fn a_setting_no_key_names_or_a_malformed_one_refuses() {
+        for setting in [
+            "colour=red",
+            "depth",
+            "depth=many",
+            "pcm16=yes",
+            "against=/tmp/a.wav",
+        ] {
+            refused(&["render", "@a", "--representation", "lines", "-c", setting]);
+        }
     }
 
     #[test]
     fn a_representation_that_left_the_language_names_what_replaced_it() {
         for (gone, write) in sva_core::RETIRED {
-            let Err(CliError::Usage(message)) = parse_args(&argv(&["render", "--as", gone])) else {
-                panic!("`{gone}` must refuse")
-            };
+            let message = refused(&["render", "@a", "--representation", gone]);
             assert!(message.contains(write), "{message}");
         }
     }
 
     #[test]
     fn a_wav_destination_takes_samples_and_nothing_else() {
-        let args = rendered(&["render", "--as", "samples=/tmp/out.wav", "--pcm16"]);
-        assert!(args.pcm16);
-        assert_eq!(
-            args.asked[0].dest.as_deref(),
-            Some(Path::new("/tmp/out.wav"))
-        );
-        assert!(matches!(
-            parse_args(&argv(&["render", "--as", "ledger=/tmp/out.wav"])),
-            Err(CliError::Usage(_))
-        ));
+        refused(&["render", "@a", "--representation", "ledger=/tmp/out.wav"]);
     }
 
     #[test]
-    fn render_needs_a_reading_and_bindings_needs_a_node() {
-        assert!(matches!(
-            parse_args(&argv(&["render"])),
-            Err(CliError::Usage(_))
-        ));
-        assert!(matches!(
-            parse_args(&argv(&["render", "--as", "bindings"])),
-            Err(CliError::Usage(_))
-        ));
-        let args = rendered(&["render", "--as", "bindings", "--node", "kick"]);
-        assert_eq!(args.node.as_deref(), Some("kick"));
-    }
-
-    #[test]
-    fn render_and_analyze_parse_the_same_window_flags() {
-        let args = rendered(&["render", "--as", "samples", "--from", "0.5", "--to", "2"]);
-        let window = (Some(WindowEdge::Secs(0.5)), Some(WindowEdge::Secs(2.0)));
-        assert_eq!((args.from, args.to), window);
-        let Ok(Command::Analyze(args)) = parse_args(&argv(&[
-            "analyze",
-            "/tmp/a.wav",
-            "--as",
-            "spectrum",
-            "--from",
-            "0.5",
-            "--to",
-            "2",
-        ])) else {
-            panic!("an analyze")
-        };
-        assert_eq!((args.from, args.to), window);
-    }
-
-    #[test]
-    fn to_silent_takes_bits_and_a_latest_time_and_nothing_else_does() {
-        let deep = rendered(&["render", "--as", "samples", "--to", "silent"]);
-        let bits = sva_core::DEFAULT_SILENT_BITS;
-        let max_secs = sva_core::DEFAULT_SILENT_MAX_SECS;
-        assert_eq!(deep.silent, Some(sva_core::Silent { bits, max_secs }));
-        assert_eq!(deep.to, None);
-        let timed = rendered(&["render", "--as", "samples", "--to", "silent", "--to", "3"]);
-        assert_eq!(
-            (timed.to, timed.silent),
-            (Some(WindowEdge::Secs(3.0)), None)
-        );
-        let later = rendered(&["render", "--as", "samples", "--to", "3", "--to", "silent"]);
-        assert_eq!((later.to, later.silent.map(|s| s.bits)), (None, Some(bits)));
-        let shallow = rendered(&[
+    fn bindings_needs_a_node() {
+        refused(&["render", "@a", "--representation", "bindings"]);
+        let args = rendered(&[
             "render",
-            "--as",
-            "samples",
-            "--to",
-            "silent:16",
-            "--max",
-            "8",
+            "@a",
+            "--representation",
+            "bindings",
+            "-c",
+            "node=kick",
         ]);
-        let max_secs = 8.0;
-        assert_eq!(
-            shallow.silent,
-            Some(sva_core::Silent { bits: 16, max_secs })
-        );
-        for refused in [
-            &["render", "--as", "samples", "--max", "8"][..],
-            &["render", "--as", "samples", "--to", "silent:0"],
-            &["render", "--as", "samples", "--to", "silent:54"],
-            &["render", "--as", "samples", "--to", "silently"],
-            &[
-                "analyze",
-                "/tmp/a.wav",
-                "--as",
-                "spectrum",
-                "--to",
-                "silent",
-            ],
-        ] {
-            assert!(
-                matches!(parse_args(&argv(refused)), Err(CliError::Usage(_))),
-                "{refused:?}"
-            );
-        }
+        assert_eq!(args.settings.node.as_deref(), Some("kick"));
     }
 
     #[test]
     fn lint_takes_an_optional_target_and_nothing_else() {
         assert_eq!(
-            parse_args(&argv(&["lint"])).unwrap(),
-            Command::Lint {
-                target: None,
-                dir: None,
-                format: Format::Json
-            }
-        );
-        assert_eq!(
             parse_args(&argv(&["lint", "drums/kick"])).unwrap(),
             Command::Lint {
                 target: Some("drums/kick".to_string()),
-                dir: None,
                 format: Format::Json
             }
         );
-        assert!(matches!(
-            parse_args(&argv(&["lint", "a", "b"])),
-            Err(CliError::Usage(_))
-        ));
+        refused(&["lint", "a", "b"]);
+        refused(&["lint", "--in", "x"]);
     }
 
     #[test]
@@ -535,28 +433,19 @@ mod tests {
                 idempotency_key: Some("k".to_string()),
             }
         );
-        assert!(matches!(
-            parse_args(&argv(&["new"])),
-            Err(CliError::Usage(_))
-        ));
+        refused(&["new"]);
     }
 
     #[test]
     fn builtins_takes_no_arguments() {
         assert_eq!(parse_args(&argv(&["builtins"])).unwrap(), Command::Builtins);
-        assert!(matches!(
-            parse_args(&argv(&["builtins", "x"])),
-            Err(CliError::Usage(_))
-        ));
+        refused(&["builtins", "x"]);
     }
 
     #[test]
     fn a_subcommand_this_cli_does_not_answer_refuses_by_name() {
         for gone in ["bench", "nonlinear-solve"] {
-            let Err(CliError::Usage(message)) = parse_args(&argv(&[gone])) else {
-                panic!("`{gone}` must refuse")
-            };
-            assert!(message.contains(gone), "{message}");
+            assert!(refused(&[gone]).contains(gone));
         }
     }
 }

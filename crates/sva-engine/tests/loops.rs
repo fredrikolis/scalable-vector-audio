@@ -256,7 +256,7 @@ fn a_closed_loop_renders_its_comb_and_reports_its_tail() {
     );
     let held = render(&g, "loop", RenderConfig::seconds(8_000, 0.05), None).expect("a comb");
     let id = held.id("loop").expect("the root");
-    let buffer = held.buffer(id).expect("a rendered comb");
+    let buffer = held.output(id).expect("a rendered comb");
     assert_eq!(held.labels[&id].source, Source::Exact);
     let Detail::Lines { terms, tail_db, .. } = &held.labels[&id].detail else {
         panic!(
@@ -335,7 +335,7 @@ fn two_nested_loops_expand_under_indices_of_their_own() {
     let held = render(&g, "outer", RenderConfig::seconds(44_100, 0.001), None)
         .expect("two nested Neumann series render");
     let buffer = held
-        .buffer(held.id("outer").expect("the root"))
+        .output(held.id("outer").expect("the root"))
         .expect("a rendered loop");
     let profile = sva_samples::PSYCHOACOUSTIC_V1;
     let taken = |first: f64, g: f64| {
@@ -383,7 +383,7 @@ fn a_shifted_comb_costs_its_unshifted_route() {
         let g = graph_of("shifted-window", files);
         let held = render(&g, "loop", RenderConfig::seconds(8_000, 0.05), None).expect("a comb");
         let id = held.id("loop").expect("the root");
-        let plane = held.buffer(id).expect("a rendered comb").plane(0).to_vec();
+        let plane = held.output(id).expect("a rendered comb").plane(0).to_vec();
         let at = |v: &[f64]| {
             let live: Vec<usize> = v
                 .iter()

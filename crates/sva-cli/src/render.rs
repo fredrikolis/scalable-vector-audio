@@ -3,8 +3,7 @@
 use std::path::Path;
 
 use sva_core::{
-    Answer, Asked, CliError, Horizon, Job, Output, Report, SAMPLE_LIMIT, cwd, execute, query_data,
-    window_for,
+    Answer, Asked, CliError, Job, Output, Report, SAMPLE_LIMIT, cwd, execute, query_data,
 };
 use sva_engine::{Buffer, DEFAULT_FRAME_SECS, PSYCHOACOUSTIC_V1, Representation, answer_buffer};
 
@@ -13,10 +12,10 @@ use crate::destination::{Framing, refuse_inside, refuse_replacing, write, write_
 use crate::wav::{SampleEncoding, read_channels};
 use sva_core::success_envelope;
 
-/// A target renders FROM itself, so only its dependency subtree is evaluated and its own
-/// extent decides the length.
+/// Only the nodes the target reaches are read; its interval and `--until` decide its range.
 pub fn render(args: &RenderArgs) -> Result<String, CliError> {
-    let dir = crate::composition::composition(args.dir.as_deref())?;
+    let here = crate::composition::composition()?;
+    let (dir, target) = crate::composition::located(&here, &args.target)?;
     // Judged before the first is opened: a refusal on the last leaves none of them on disk.
     for asked in &args.asked {
         if let Some(dest) = asked.dest.as_deref() {
@@ -24,39 +23,44 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
             refuse_replacing(dest, args.confirm)?;
         }
     }
+    let settings = &args.settings;
     let source = sva_ast::Dir::at(&dir);
     let rendered = execute(Job {
-        target: args.target.as_deref(),
-        from: args.from,
-        until: args.to,
-        silent: args.silent,
-        sample_rate: args.sample_rate,
-        reading: args.node.as_deref(),
+        until: args.until.as_deref(),
+        rate: args.rate,
+        reading: settings.node.as_deref(),
         representations: args.asked.iter().map(|a| a.representation).collect(),
-        // A named target pulls its own closure; nothing it never reads is parsed at all.
-        reaching: args.target.is_some(),
-        flop_budget: args.flop_budget,
-        ..Job::over(&source)
+        flop_budget: settings.flop_budget,
+        proof_limit_secs: settings.proof_limit,
+        ..Job::over(&source, &target)
     })?;
 
-    let node = args.node.clone().unwrap_or_else(|| rendered.target.clone());
+    let node = settings
+        .node
+        .clone()
+        .unwrap_or_else(|| rendered.target.clone());
+    let rate = rendered.config.rate;
+    let range = rendered
+        .render
+        .range
+        .map(|r| (r.start_secs(rate), r.end as f64 / f64::from(rate)));
     let framing = Framing {
-        target: rendered.target.clone(),
-        rate: rendered.config.rate,
-        horizon: rendered.config.horizon,
+        target: args.target.clone(),
+        rate,
+        range,
         profile: rendered.config.profile.name,
-        encoding: match args.pcm16 {
+        encoding: match settings.pcm16 {
             true => SampleEncoding::Pcm16,
             false => SampleEncoding::Float,
         },
-        skim: args.skim,
+        skim: settings.skim,
         replace: args.confirm,
     };
 
     let mut taken = Vec::with_capacity(args.asked.len());
     for asked in &args.asked {
         let answer = rendered.answer(&node, asked.representation)?;
-        taken.push(match args.brief {
+        taken.push(match settings.brief {
             true => briefed(answer),
             false => answer,
         });
@@ -65,16 +69,16 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
 
     Ok(success_envelope(
         &query_data(&Report {
-            target: &rendered.target,
-            rate: rendered.config.rate,
-            horizon: rendered.config.horizon,
+            target: &args.target,
+            rate,
+            range,
             profile: rendered.config.profile.name,
             label: rendered.label(),
             written: &written,
             answers: &answers,
             analyses: &[],
             limit: Some(SAMPLE_LIMIT),
-            skim: args.skim,
+            skim: settings.skim,
         }),
         &[],
     ))
@@ -103,7 +107,7 @@ fn routed<'a>(
     Ok((answers, written))
 }
 
-/// `--brief`: a node that did not clip is not news, so a ledger keeps only the ones that did.
+/// `-c brief=true`: a node that did not clip is not news, so a ledger keeps only the ones that did.
 fn briefed(answer: Answer) -> Answer {
     let Output::Ledger(entries) = answer.value else {
         return answer;
@@ -120,7 +124,7 @@ fn briefed(answer: Answer) -> Answer {
 }
 
 /// The same routing over a decoded external WAV instead of a rendered graph: the file's own
-/// rate stands, and its own length is the horizon.
+/// rate stands, and it is read whole.
 pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
     let dir = cwd()?;
     let composition = is_composition(&dir);
@@ -147,35 +151,13 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
             .map(|p| p.iter().map(|v| f64::from(*v)).collect())
             .collect(),
     );
-    let asked_window = window_for(args.from, args.to, None)?;
-    let duration = held.len() as f64 / f64::from(rate);
-    let horizon = Horizon::secs(
-        asked_window.start_secs,
-        match asked_window.end_secs.is_finite() {
-            true => asked_window.end_secs,
-            false => duration,
-        },
-    );
-    if horizon.span() <= 0.0 {
-        return Err(CliError::Usage(format!(
-            "a reading runs from {}s to {}s, which is no window; give --to past --from",
-            horizon.start_secs, horizon.end_secs
-        )));
-    }
-    // A window past the end asks for samples that do not exist.
-    if horizon.start_secs >= duration || horizon.end_secs > duration {
-        return Err(CliError::Usage(format!(
-            "{} is {duration}s long, and the window asked for runs to {}s",
-            args.path.display(),
-            horizon.end_secs
-        )));
-    }
     crate::args::check_frame(&args.asked, rate)?;
-    let buffer = sliced(&held, horizon);
+    let buffer = held;
+    let range = Some((0.0, buffer.len() as f64 / f64::from(rate)));
     let framing = Framing {
         target: target.clone(),
         rate,
-        horizon,
+        range,
         profile: PSYCHOACOUSTIC_V1.name,
         encoding: SampleEncoding::Float,
         skim: false,
@@ -194,7 +176,7 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
             .map_err(CliError::Engine)?,
         );
     }
-    let heard = analysed(args, &buffer, horizon)?;
+    let heard = analysed(args, &buffer)?;
     let (answers, mut written) = routed(&args.asked, taken, &framing)?;
     let mut analyses = Vec::new();
     for ((name, dest), value) in args.analyses.iter().zip(heard) {
@@ -210,7 +192,7 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
         &query_data(&Report {
             target: &target,
             rate,
-            horizon,
+            range,
             profile: PSYCHOACOUSTIC_V1.name,
             label: None,
             written: &written,
@@ -225,17 +207,13 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
 
 /// The readings `sva-analysis` answers off a buffer alone. Every field its `Request` names is
 /// taken from this one file: a `.wav` carries no tempo and no node behind it.
-fn analysed(
-    args: &AnalyzeArgs,
-    buffer: &Buffer,
-    horizon: Horizon,
-) -> Result<Vec<String>, CliError> {
+fn analysed(args: &AnalyzeArgs, buffer: &Buffer) -> Result<Vec<String>, CliError> {
     if args.analyses.is_empty() {
         return Ok(Vec::new());
     }
     let rate = f64::from(buffer.rate);
     let mono: Vec<f32> = buffer.plane(0).iter().map(|s| *s as f32).collect();
-    let against = match &args.against {
+    let against = match &args.settings.against {
         Some(path) => {
             let (planes, _) = read_channels(path)?;
             Some(planes.first().cloned().unwrap_or_default())
@@ -259,7 +237,7 @@ fn analysed(
     let request = sva_analysis::Request {
         samples: &mono,
         sample_rate: rate,
-        start_secs: horizon.start_secs,
+        start_secs: 0.0,
         frame_secs: DEFAULT_FRAME_SECS,
         tempo: None,
         envelope: &envelope,
@@ -281,19 +259,4 @@ fn analysed(
 /// Whether the next parse would walk this directory, not whether it parses cleanly today.
 fn is_composition(dir: &Path) -> bool {
     dir.join(sva_core::ROOT).is_file() || dir.join(sva_ast::VARIABLES).is_dir()
-}
-
-/// A file has no horizon of its own, so the window is taken off the samples it holds.
-fn sliced(buffer: &Buffer, horizon: Horizon) -> Buffer {
-    let rate = f64::from(buffer.rate);
-    let start = ((horizon.start_secs * rate).round().max(0.0) as usize).min(buffer.len());
-    let end = ((horizon.end_secs * rate).round().max(0.0) as usize).clamp(start, buffer.len());
-    let mut out = Buffer::of_planes(
-        buffer.rate,
-        (0..buffer.width)
-            .map(|c| buffer.plane(c)[start..end].to_vec())
-            .collect(),
-    );
-    out.origin_secs = horizon.start_secs;
-    out
 }

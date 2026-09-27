@@ -5,13 +5,10 @@
 //! `refusal` the envelope it would print.
 
 use sva_core::{
-    CliError, Diagnostic, Job, Rendered, Report, SAMPLE_LIMIT, Silent, WindowEdge, error_envelope,
-    execute, query_data, representation_for, retired, silence, stats_json, window_for, work_json,
+    Answer, CliError, Diagnostic, Job, Rendered, Report, SAMPLE_LIMIT, Settings, Shaping,
+    error_envelope, execute, query_data, representation_for, retired, stats_json, work_json,
 };
-use sva_engine::{
-    Buffer, Cache, CachePolicy, CacheStats, Horizon, PSYCHOACOUSTIC_V1, PrunePolicy,
-    Representation, answer_buffer, ledger_over,
-};
+use sva_engine::{Buffer, Cache, CachePolicy, CacheStats, PrunePolicy, Representation};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -54,45 +51,108 @@ fn refuse(message: String, help: &str) -> JsValue {
     crossed("validation_error", &message, &[diagnostic])
 }
 
-fn ending(
-    until: &JsValue,
-    bits: Option<u32>,
-    max_secs: Option<f64>,
-) -> Result<(Option<f64>, Option<Silent>), JsValue> {
-    let shaped = bits.is_some() || max_secs.is_some();
-    if let Some("silent") = until.as_string().as_deref() {
-        return silence(bits, max_secs)
-            .map(|silent| (None, Some(silent)))
-            .map_err(|e| thrown(&e));
-    }
-    if shaped {
-        return Err(refuse(
-            "`bits` and `max_secs` shape a silent render, and `until` is not \"silent\"".into(),
-            "pass \"silent\" as `until`",
-        ));
-    }
-    match until.as_f64() {
-        Some(seconds) => Ok((Some(seconds), None)),
-        None if until.is_undefined() || until.is_null() => Ok((None, None)),
-        None => Err(refuse(
-            "`until` is a number of seconds or \"silent\"".into(),
-            "pass seconds, \"silent\", or nothing",
-        )),
-    }
+#[derive(Default)]
+struct Config {
+    settings: Settings,
+    volatile: Vec<String>,
+    cache: Option<CachePolicy>,
 }
 
-fn stream_ending(
-    until: &JsValue,
-    bits: Option<u32>,
-    max_secs: Option<f64>,
-) -> Result<Option<Silent>, JsValue> {
-    match ending(until, bits, max_secs)? {
-        (None, silent) => Ok(silent),
-        (Some(_), _) => Err(refuse(
-            "a stream ends where silence is proven, or runs on; it has no stated end".into(),
-            "pass \"silent\" as `until`, or nothing",
-        )),
+/// The keys `sva-cli`'s `-c` takes for a render, read by the same parser.
+const SETTINGS: [&str; 7] = [
+    "flop_budget",
+    "proof_limit",
+    "node",
+    "depth",
+    "peaks",
+    "oversample",
+    "frame",
+];
+
+fn config_of(config: &JsValue) -> Result<Config, JsValue> {
+    let mut held = Config::default();
+    if config.is_undefined() || config.is_null() {
+        return Ok(held);
     }
+    let object = config.dyn_ref::<js_sys::Object>().ok_or_else(|| {
+        refuse(
+            "`config` is not an object".into(),
+            "pass an object, such as { flop_budget: 1e9 }",
+        )
+    })?;
+    for entry in js_sys::Object::entries(object).iter() {
+        let pair = js_sys::Array::from(&entry);
+        let key = pair.get(0).as_string().unwrap_or_default();
+        let value = pair.get(1);
+        match key.as_str() {
+            "volatile" => {
+                let names = value.dyn_ref::<js_sys::Array>().ok_or_else(|| {
+                    refuse(
+                        "`volatile` is not an array".into(),
+                        "pass an array of names",
+                    )
+                })?;
+                for name in names.iter() {
+                    held.volatile.push(name.as_string().ok_or_else(|| {
+                        refuse(
+                            "`volatile` holds something that is not a name".into(),
+                            "pass an array of names",
+                        )
+                    })?);
+                }
+            }
+            "cache" => {
+                let named = value.as_string().ok_or_else(|| {
+                    refuse(
+                        "`cache` is not a policy name".into(),
+                        "pass a policy's name",
+                    )
+                })?;
+                held.cache = Some(cache_policy(&named)?);
+            }
+            key => {
+                let raw = match (value.as_f64(), value.as_string()) {
+                    (Some(number), _) => number.to_string(),
+                    (None, Some(text)) => text,
+                    _ => {
+                        return Err(refuse(
+                            format!("`{key}` is set to neither a number nor a string"),
+                            "set it as `sva-cli`'s `-c` would",
+                        ));
+                    }
+                };
+                held.settings
+                    .set(key, &raw, &SETTINGS)
+                    .map_err(|e| thrown(&e))?;
+            }
+        }
+    }
+    Ok(held)
+}
+
+fn representations_of(
+    names: &[String],
+    shape: Shaping,
+) -> Result<Vec<(String, Representation)>, JsValue> {
+    names
+        .iter()
+        .map(|name| {
+            if let Some(write) = retired(name) {
+                return Err(refuse(
+                    format!("`{name}` left the language"),
+                    &format!("ask for `{write}`"),
+                ));
+            }
+            representation_for(name, shape)
+                .map(|representation| (name.clone(), representation))
+                .ok_or_else(|| {
+                    refuse(
+                        format!("unknown representation `{name}`"),
+                        "ask for one of the readings a render answers",
+                    )
+                })
+        })
+        .collect()
 }
 
 fn bindings_of(bindings: &JsValue) -> Result<Vec<(String, f64)>, JsValue> {
@@ -159,65 +219,64 @@ impl Composition {
         self.inner.insert(path, text);
     }
 
-    /// Unset, `target` is `master`; `until` is the horizon in seconds, or `"silent"` to end
-    /// where every later sample is provably under `2^-bits` (default the profile's own), by
-    /// `max_secs` at the latest. `rate` is the observation rate. What reads a `volatile`
-    /// parameter keeps one value in the store, its last. `cache` overrides `cache_policy`.
-    #[allow(clippy::too_many_arguments)]
+    /// `target` as `sva-cli render` takes it, `@piano([0, 2b], f0=C4)`; `until` its condition;
+    /// `representations` what `readings()` answers, `samples` where unset. `config` sets
+    /// `flop_budget`, `proof_limit`, `node`, `depth`, `peaks`, `oversample`, `frame`,
+    /// `volatile` and `cache`.
     pub fn render(
         &self,
-        target: Option<String>,
+        target: &str,
+        until: Option<String>,
+        representations: Option<Vec<String>>,
         rate: Option<u32>,
-        until: JsValue,
-        volatile: Option<Vec<String>>,
-        bits: Option<u32>,
-        max_secs: Option<f64>,
-        cache: Option<String>,
+        config: JsValue,
     ) -> Result<Rendering, JsValue> {
-        let volatile = volatile.unwrap_or_default();
-        let cache_policy = cache.as_deref().map(cache_policy).transpose()?;
-        let (seconds, silent) = ending(&until, bits, max_secs)?;
+        let config = config_of(&config)?;
+        let settings = &config.settings;
+        let names = representations.unwrap_or_else(|| vec!["samples".to_string()]);
+        let asked = representations_of(&names, settings.shape)?;
         let rendered = execute(Job {
-            target: target.as_deref(),
-            until: seconds.map(WindowEdge::Secs),
-            silent,
-            sample_rate: rate,
-            reaching: true,
+            until: until.as_deref(),
+            rate,
             cache: Some(&self.store),
-            cache_policy,
-            volatile: &volatile,
-            ..Job::over(&self.inner)
+            cache_policy: config.cache,
+            reading: settings.node.as_deref(),
+            representations: asked.iter().map(|(_, r)| *r).collect(),
+            flop_budget: settings.flop_budget,
+            proof_limit_secs: settings.proof_limit,
+            volatile: &config.volatile,
+            ..Job::over(&self.inner, target)
         });
         rendered
-            .map(|inner| Rendering { inner })
+            .map(|inner| Rendering {
+                inner,
+                asked,
+                node: settings.node.clone(),
+            })
             .map_err(|e| thrown(&e))
     }
 
-    /// A stream of `target` (`master` unset) at `rate`, `block` samples a block, each key of
-    /// `bindings` a named argument on the target. `until: "silent"` ends it at the first block
-    /// whose end proves every later sample under `2^-bits`, throwing past `max_secs`.
-    #[allow(clippy::too_many_arguments)]
+    /// `target` block by block over the extents a render takes; each key of `bindings` is a
+    /// named argument on its own ref, the ones a resume may move.
     pub fn stream(
         &self,
-        target: Option<String>,
-        rate: Option<u32>,
+        target: &str,
         block: usize,
+        until: Option<String>,
+        rate: Option<u32>,
         bindings: JsValue,
-        until: JsValue,
-        bits: Option<u32>,
-        max_secs: Option<f64>,
     ) -> Result<Stream, JsValue> {
-        let silent = stream_ending(&until, bits, max_secs)?;
         let bindings = bindings_of(&bindings)?;
         let job = Job {
-            target: target.as_deref(),
-            sample_rate: rate,
-            reaching: true,
-            silent,
-            ..Job::over(&self.inner)
+            until: until.as_deref(),
+            rate,
+            ..Job::over(&self.inner, target)
         };
         sva_core::stream(&job, block, &bindings)
-            .map(|inner| Stream { inner })
+            .map(|inner| Stream {
+                inner,
+                rate: rate.unwrap_or(sva_engine::DEFAULT_SAMPLE_RATE),
+            })
             .map_err(|e| thrown(&e))
     }
 
@@ -299,13 +358,15 @@ fn prune_policy(name: &str) -> Result<PrunePolicy, JsValue> {
 #[wasm_bindgen]
 pub struct Rendering {
     inner: Rendered,
+    asked: Vec<(String, Representation)>,
+    node: Option<String>,
 }
 
 #[wasm_bindgen]
 impl Rendering {
     #[wasm_bindgen(getter)]
     pub fn target(&self) -> String {
-        self.inner.target.clone()
+        self.inner.expression.clone()
     }
 
     #[wasm_bindgen(getter)]
@@ -314,8 +375,15 @@ impl Rendering {
     }
 
     #[wasm_bindgen(getter)]
+    pub fn start_secs(&self) -> f64 {
+        let rate = self.inner.config.rate;
+        self.inner.render.range.map_or(0.0, |r| r.start_secs(rate))
+    }
+
+    #[wasm_bindgen(getter)]
     pub fn duration_secs(&self) -> f64 {
-        self.inner.config.horizon.span()
+        let rate = self.inner.config.rate;
+        self.inner.render.range.map_or(0.0, |r| r.span_secs(rate))
     }
 
     #[wasm_bindgen(getter)]
@@ -323,33 +391,23 @@ impl Rendering {
         self.buffer().map_or(0, |b| b.width)
     }
 
-    pub fn samples(
-        &self,
-        channel: usize,
-        from_secs: Option<f64>,
-        to_secs: Option<f64>,
-    ) -> Result<Vec<f32>, JsValue> {
-        let over = self.checked(from_secs, to_secs)?;
+    pub fn samples(&self, channel: usize) -> Result<Vec<f32>, JsValue> {
         let buffer = self.buffer().ok_or_else(|| {
             refuse(
-                format!(
-                    "`{}` answered `samples` with something that is not audio",
-                    self.inner.target
-                ),
-                "ask for a node that renders to samples",
+                format!("`{}` read no samples of its root", self.inner.expression),
+                "ask for `samples` among the representations",
             )
         })?;
         if channel >= buffer.width {
             return Err(refuse(
                 format!(
                     "`{}` is {} component(s), so there is no component {channel}",
-                    self.inner.target, buffer.width
+                    self.inner.expression, buffer.width
                 ),
                 "read a component this node holds, counting from zero",
             ));
         }
-        let held = buffer.as_f32(channel);
-        Ok(held[buffer.span_of(over)].to_vec())
+        Ok(buffer.as_f32(channel))
     }
 
     /// Every lookup this render made of the composition's store, and what each came to.
@@ -364,58 +422,30 @@ impl Rendering {
         parse(&work_json(&self.inner.render.work()))
     }
 
-    /// The object `sva-cli render --as <name>` puts under `data`, arrays capped as it caps.
-    pub fn query(
-        &self,
-        representation: &str,
-        from_secs: Option<f64>,
-        to_secs: Option<f64>,
-    ) -> Result<JsValue, JsValue> {
-        let asked = self.checked(from_secs, to_secs)?;
-        if let Some(write) = retired(representation) {
-            return Err(refuse(
-                format!("`{representation}` left the language"),
-                &format!("ask for `{write}`"),
-            ));
+    /// The object `sva-cli render` puts under `data`, one reading per representation asked,
+    /// arrays capped as it caps.
+    pub fn readings(&self) -> Result<JsValue, JsValue> {
+        let node = self.node.as_deref().unwrap_or(&self.inner.target);
+        let mut answers: Vec<(String, Answer)> = Vec::with_capacity(self.asked.len());
+        for (name, representation) in &self.asked {
+            let answer = self
+                .inner
+                .answer(node, *representation)
+                .map_err(|e| thrown(&e))?;
+            answers.push((name.clone(), answer));
         }
-        let wanted =
-            representation_for(representation, sva_core::Shaping::default()).ok_or_else(|| {
-                refuse(
-                    format!("unknown representation `{representation}`"),
-                    "ask for one of the readings this rendering answers",
-                )
-            })?;
-        let whole = self.inner.config.horizon;
-        let narrowed = self.narrowed(asked);
-        let whole_horizon = narrowed.is_none();
-        let engine = |e| thrown(&CliError::Engine(e));
-        let (answer, over) = match (narrowed, wanted) {
-            (None, _) => (
-                self.inner
-                    .answer(&self.inner.target, wanted)
-                    .map_err(|e| thrown(&e))?,
-                whole,
-            ),
-            (Some((_, over)), Representation::Ledger { depth }) => {
-                let node = self.inner.render.node(&self.inner.target).map_err(engine)?;
-                (
-                    ledger_over(&self.inner.render, node, depth, over).map_err(engine)?,
-                    over,
-                )
-            }
-            (Some((buffer, over)), _) => (
-                answer_buffer(&self.inner.target, &buffer, wanted, PSYCHOACOUSTIC_V1.name)
-                    .map_err(engine)?,
-                over,
-            ),
-        };
-        let answers = [(representation.to_string(), answer)];
+        let rate = self.inner.config.rate;
+        let range = self
+            .inner
+            .render
+            .range
+            .map(|r| (r.start_secs(rate), r.end as f64 / f64::from(rate)));
         parse(&query_data(&Report {
-            target: &self.inner.target,
-            rate: self.inner.config.rate,
-            horizon: over,
+            target: &self.inner.expression,
+            rate,
+            range,
             profile: self.inner.config.profile.name,
-            label: self.inner.label().filter(|_| whole_horizon),
+            label: self.inner.label(),
             written: &[],
             answers: &answers,
             analyses: &[],
@@ -424,66 +454,8 @@ impl Rendering {
         }))
     }
 
-    /// The window a reading is narrowed to, where it narrows the render's own at all. A closed form
-    /// has no window, so it answers over the whole horizon and this is `None`.
-    fn narrowed(&self, asked: Horizon) -> Option<(Buffer, Horizon)> {
-        let whole = self.inner.config.horizon;
-        let end = match asked.end_secs.is_finite() {
-            true => asked.end_secs.min(whole.end_secs),
-            false => whole.end_secs,
-        };
-        let start = asked.start_secs.max(whole.start_secs);
-        if start <= whole.start_secs && end >= whole.end_secs {
-            return None;
-        }
-        let over = Horizon::secs(start, end);
-        let buffer = self.buffer()?;
-        let taken = buffer.span_of(over);
-        let mut held = Buffer::of_planes(
-            buffer.rate,
-            (0..buffer.width)
-                .map(|c| buffer.plane(c)[taken.clone()].to_vec())
-                .collect(),
-        );
-        held.origin_secs = over.start_secs;
-        Some((held, over))
-    }
-
-    /// The window a caller named, held to what this rendering actually covers: an inverted
-    /// one and one past the horizon are refused here exactly as they are on argv.
-    fn checked(&self, from_secs: Option<f64>, to_secs: Option<f64>) -> Result<Horizon, JsValue> {
-        let asked = window_for(
-            from_secs.map(WindowEdge::Secs),
-            to_secs.map(WindowEdge::Secs),
-            None,
-        )
-        .map_err(|e| thrown(&e))?;
-        let whole = self.inner.config.horizon;
-        let end = match asked.end_secs.is_finite() {
-            true => asked.end_secs,
-            false => whole.end_secs,
-        };
-        if end <= asked.start_secs {
-            return Err(refuse(
-                format!("a window from {}s to {end}s is no window", asked.start_secs),
-                "give an end past the start",
-            ));
-        }
-        if asked.start_secs < whole.start_secs || end > whole.end_secs {
-            return Err(refuse(
-                format!(
-                    "`{}` runs {}s to {}s, and the window asked for runs {}s to {end}s",
-                    self.inner.target, whole.start_secs, whole.end_secs, asked.start_secs
-                ),
-                "render for longer, or ask for a window inside this one",
-            ));
-        }
-        Ok(Horizon::secs(asked.start_secs, end))
-    }
-
-    fn buffer(&self) -> Option<&Buffer> {
-        let id = self.inner.render.id(&self.inner.target)?;
-        self.inner.render.buffer(id)
+    fn buffer(&self) -> Option<Buffer> {
+        self.inner.render.output(self.inner.render.root)
     }
 }
 
@@ -491,6 +463,7 @@ impl Rendering {
 #[wasm_bindgen]
 pub struct Stream {
     inner: sva_core::Stream,
+    rate: u32,
 }
 
 #[wasm_bindgen]
@@ -531,20 +504,22 @@ impl Stream {
         parse(&work_json(&self.inner.work()))
     }
 
-    /// `until` as `stream` takes it, `max_secs` counted from the checkpoint.
+    /// `until` as `stream` takes it, `sva-cli`'s default where unset.
     pub fn resume(
         &self,
         checkpoint: &Checkpoint,
         bindings: JsValue,
-        until: JsValue,
-        bits: Option<u32>,
-        max_secs: Option<f64>,
+        until: Option<String>,
     ) -> Result<Stream, JsValue> {
-        let silent = stream_ending(&until, bits, max_secs)?;
         let bindings = bindings_of(&bindings)?;
+        let text = until.unwrap_or_else(sva_core::default_until);
+        let condition = sva_core::until(&text, self.rate, None).map_err(|e| thrown(&e))?;
         self.inner
-            .resume(&checkpoint.inner, &bindings, silent)
-            .map(|inner| Stream { inner })
+            .resume(&checkpoint.inner, &bindings, Some(condition))
+            .map(|inner| Stream {
+                inner,
+                rate: self.rate,
+            })
             .map_err(|e| thrown(&CliError::Engine(e)))
     }
 
@@ -555,7 +530,7 @@ impl Stream {
 
     #[wasm_bindgen(getter)]
     pub fn sample_rate(&self) -> u32 {
-        self.inner.config().rate
+        self.rate
     }
 
     #[wasm_bindgen(getter)]

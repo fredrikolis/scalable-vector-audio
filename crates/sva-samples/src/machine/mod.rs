@@ -22,16 +22,12 @@ struct Program {
     pub width: usize,
 }
 
-/// `self_planes` is this node's own output so far, planar: component `c` owns
-/// `[c*len, (c+1)*len)`, and only the first `written` samples are founded. `run` refounds
-/// that mark every sample, so no block sizes the loop.
+/// A whole run writes `len` samples from grid sample `start`, reading each slot's window.
 pub struct Ctx<'a> {
     pub rate: u32,
-    pub origin_secs: f64,
+    pub start: i64,
     pub len: usize,
     pub reads: &'a [Window<'a>],
-    pub self_planes: &'a [f64],
-    pub written: usize,
 }
 
 impl NodeRenderer {
@@ -46,21 +42,13 @@ impl NodeRenderer {
         })
     }
 
-    /// A loop reads what this run wrote; a caller's own `self_planes` replaces it.
+    /// A loop reads what this run wrote, silent before `start`.
     pub fn run(&self, layout: &Layout, ctx: &Ctx) -> Result<Buffer, SampleError> {
-        let mut machine = Machine::open(self, layout, ctx.rate, ctx.origin_secs)?;
-        let mut own = Tape::new(machine.width(), ctx.len);
-        let past = match ctx.self_planes.is_empty() {
-            true => Past::Own,
-            false => Past::Fixed {
-                planes: ctx.self_planes,
-                len: ctx.len,
-                written: ctx.written,
-            },
-        };
-        machine.steps(ctx.len, ctx.reads, &past, &mut own)?;
+        let mut machine = Machine::open(self, layout, ctx.rate)?;
+        let mut own = Tape::new(machine.width(), ctx.len, ctx.start);
+        machine.steps(ctx.start + ctx.len as i64, ctx.reads, &mut own)?;
         let mut out = Buffer::of_planes(ctx.rate, own.into_planes());
-        out.origin_secs = ctx.origin_secs;
+        out.start = ctx.start;
         Ok(out)
     }
 }
@@ -125,15 +113,6 @@ fn part(v: &[f64], c: usize) -> f64 {
     v[c % v.len()]
 }
 
-enum Past<'a> {
-    Own,
-    Fixed {
-        planes: &'a [f64],
-        len: usize,
-        written: usize,
-    },
-}
-
 /// One compiled node and every call site's state, run over any span of the grid in order.
 /// A span continues exactly where the last ended, so blocks write the samples one run would.
 pub struct Machine {
@@ -141,7 +120,6 @@ pub struct Machine {
     states: Vec<State>,
     stack: Stack,
     rate: u32,
-    origin_secs: f64,
 }
 
 #[derive(Clone)]
@@ -155,7 +133,6 @@ impl Machine {
         renderer: &NodeRenderer,
         layout: &Layout,
         rate: u32,
-        origin_secs: f64,
     ) -> Result<Machine, SampleError> {
         let program = renderer.compile(layout)?;
         let states = open(&program, rate)?;
@@ -165,7 +142,6 @@ impl Machine {
             states,
             stack,
             rate,
-            origin_secs,
         })
     }
 
@@ -173,37 +149,24 @@ impl Machine {
         self.program.width
     }
 
-    pub fn run_to(
-        &mut self,
-        to: usize,
-        reads: &[Window],
-        own: &mut Tape,
-    ) -> Result<(), SampleError> {
+    pub fn run_to(&mut self, to: i64, reads: &[Window], own: &mut Tape) -> Result<(), SampleError> {
         for state in &mut self.states {
             if let State::Filter(filter) = state {
                 filter.forget_frames();
             }
         }
-        self.steps(to, reads, &Past::Own, own)
+        self.steps(to, reads, own)
     }
 
-    fn steps(
-        &mut self,
-        to: usize,
-        reads: &[Window],
-        past: &Past,
-        own: &mut Tape,
-    ) -> Result<(), SampleError> {
+    fn steps(&mut self, to: i64, reads: &[Window], own: &mut Tape) -> Result<(), SampleError> {
         let sr = f64::from(self.rate);
         let p = &self.program;
-        for i in own.end()..to {
-            let t = self.origin_secs + i as f64 / sr;
+        for n in own.end()..to {
             let here = Here {
                 reads,
-                past,
                 own,
-                i,
-                t,
+                n,
+                t: n as f64 / sr,
                 sr,
             };
             step(p, &here, &mut self.states, &mut self.stack)?;
@@ -271,9 +234,8 @@ impl Machine {
 
 struct Here<'a> {
     reads: &'a [Window<'a>],
-    past: &'a Past<'a>,
     own: &'a Tape,
-    i: usize,
+    n: i64,
     t: f64,
     sr: f64,
 }
@@ -315,33 +277,22 @@ fn fill(
     here: &Here,
     states: &mut [State],
 ) -> Result<(), SampleError> {
-    let (i, t, sr) = (here.i, here.t, here.sr);
+    let (n, t, sr) = (here.n, here.t, here.sr);
     let arg = |k: usize| done[srcs[k]].as_slice();
     match op {
         Op::Const(v) => result[0] = *v,
         Op::Time => result[0] = t,
         Op::Read { id, shift } => {
             let window = here.reads[id.0 as usize];
-            let at = i as i64 + shift;
+            let at = n + shift;
             for (c, slot) in result.iter_mut().enumerate() {
                 *slot = window.at(c, at);
             }
         }
         Op::SelfAt { steps } => {
-            let at = i as i64 - i64::from(*steps);
+            let at = n - i64::from(*steps);
             for (c, slot) in result.iter_mut().enumerate() {
-                *slot = match here.past {
-                    Past::Own => here.own.window().at(c, at),
-                    Past::Fixed {
-                        planes,
-                        len,
-                        written,
-                    } => usize::try_from(at)
-                        .ok()
-                        .filter(|k| k < written)
-                        .and_then(|k| planes.get(c * len + k).copied())
-                        .unwrap_or(0.0),
-                };
+                *slot = here.own.window().at(c, at);
             }
         }
         Op::Add(_) | Op::Mul(_) => {
@@ -399,7 +350,7 @@ fn fill(
             let State::Filter(filter) = &mut states[id.0 as usize] else {
                 unreachable!("a filter op names a filter site")
             };
-            filter.process(arg(0), arg(1), arg(2), arg(3), result, sr, i);
+            filter.process(arg(0), arg(1), arg(2), arg(3), result, sr, n);
         }
         Op::Physics(id) => {
             let State::Physics(solver) = &mut states[id.0 as usize] else {

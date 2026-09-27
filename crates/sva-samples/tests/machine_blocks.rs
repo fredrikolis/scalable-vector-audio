@@ -64,11 +64,9 @@ fn whole(release: f64) -> Vec<f64> {
             &layout(release),
             &Ctx {
                 rate: RATE,
-                origin_secs: 0.0,
+                start: 0,
                 len: LEN,
-                reads: &[Window::of(&read)],
-                self_planes: &[],
-                written: 0,
+                reads: &[Window::of(&read, read.extent())],
             },
         )
         .expect("one run");
@@ -76,13 +74,13 @@ fn whole(release: f64) -> Vec<f64> {
 }
 
 fn opened(release: f64) -> Machine {
-    Machine::open(&renderer(), &layout(release), RATE, 0.0).expect("a machine")
+    Machine::open(&renderer(), &layout(release), RATE).expect("a machine")
 }
 
-fn run(machine: &mut Machine, tape: &mut Tape, to: usize) {
+fn run(machine: &mut Machine, tape: &mut Tape, to: i64) {
     let read = ramp();
     machine
-        .run_to(to, &[Window::of(&read)], tape)
+        .run_to(to, &[Window::of(&read, read.extent())], tape)
         .expect("a block");
 }
 
@@ -92,9 +90,9 @@ fn blocks_of_any_size_write_the_samples_one_run_writes() {
     assert!(want.iter().any(|v| *v != 0.0), "silence tests nothing");
     for block in [1, 37, 512, LEN] {
         let mut machine = opened(f64::INFINITY);
-        let mut tape = Tape::new(1, LEN);
-        while tape.end() < LEN {
-            let to = (tape.end() + block).min(LEN);
+        let mut tape = Tape::new(1, LEN, 0);
+        while tape.end() < LEN as i64 {
+            let to = (tape.end() + block as i64).min(LEN as i64);
             run(&mut machine, &mut tape, to);
         }
         assert_eq!(tape.since(0, 0), want.as_slice(), "blocks of {block}");
@@ -105,14 +103,14 @@ fn blocks_of_any_size_write_the_samples_one_run_writes() {
 fn a_held_state_resumed_in_a_fresh_machine_writes_the_rest_of_the_run() {
     let want = whole(f64::INFINITY);
     let mut machine = opened(f64::INFINITY);
-    let mut tape = Tape::new(1, LEN);
+    let mut tape = Tape::new(1, LEN, 0);
     run(&mut machine, &mut tape, 1_234);
     let (held, mut resumed_tape) = (machine.state(), tape.clone());
-    run(&mut machine, &mut tape, LEN);
+    run(&mut machine, &mut tape, LEN as i64);
 
     let mut resumed = opened(f64::INFINITY);
     resumed.carry(&held).expect("the same sites");
-    run(&mut resumed, &mut resumed_tape, LEN);
+    run(&mut resumed, &mut resumed_tape, LEN as i64);
     assert_eq!(resumed_tape.since(0, 0), want.as_slice());
     assert_eq!(tape.since(0, 0), want.as_slice());
 }
@@ -122,16 +120,16 @@ fn a_held_state_resumed_in_a_fresh_machine_writes_the_rest_of_the_run() {
 #[test]
 fn a_string_held_unreleased_and_resumed_with_a_release_is_the_released_run() {
     let release = 0.04;
-    let landing = (release * f64::from(RATE)).ceil() as usize;
+    let landing = (release * f64::from(RATE)).ceil() as i64;
     let want = whole(release);
     assert_ne!(want, whole(f64::INFINITY), "the release changes nothing");
     let mut held = opened(f64::INFINITY);
-    let mut tape = Tape::new(1, LEN);
+    let mut tape = Tape::new(1, LEN, 0);
     run(&mut held, &mut tape, landing);
 
     let mut resumed = opened(release);
     resumed.carry(&held.state()).expect("a release alone moved");
-    run(&mut resumed, &mut tape, LEN);
+    run(&mut resumed, &mut tape, LEN as i64);
     assert_eq!(tape.since(0, 0), want.as_slice());
 }
 
@@ -145,31 +143,42 @@ fn a_state_held_for_other_parameters_is_refused() {
         ],
         ..layout(f64::INFINITY)
     };
-    let mut machine = Machine::open(&renderer(), &other, RATE, 0.0).expect("a machine");
+    let mut machine = Machine::open(&renderer(), &other, RATE).expect("a machine");
     assert_eq!(machine.carry(&held).err(), Some(SampleError::StateMismatch));
 }
 
+/// Outside what a node is nonzero over a read is zero; inside it, a sample the tape does
+/// not hold is a reader past its extent, and no value answers it.
 #[test]
-fn a_tape_forgets_what_lies_before_a_sample_and_reads_zero_off_the_grid() {
-    let mut tape = Tape::new(1, 8);
+fn a_tape_reads_zero_only_where_its_node_is_silent() {
+    let mut tape = Tape::new(1, 8, 2);
     for v in 1..=6 {
         tape.push(0, f64::from(v));
     }
-    tape.forget_before(4);
-    assert_eq!((tape.base(), tape.end()), (4, 6));
-    assert_eq!(tape.since(0, 4), &[5.0, 6.0]);
-    assert_eq!(tape.window().at(0, 5), 6.0);
-    assert_eq!(tape.window().at(0, -1), 0.0);
-    assert_eq!(tape.window().at(0, 6), 0.0);
+    tape.forget_before(6);
+    assert_eq!((tape.base(), tape.end()), (6, 8));
+    assert_eq!(tape.since(0, 6), &[5.0, 6.0]);
+    assert_eq!(tape.window().at(0, 7), 6.0);
+    assert_eq!(tape.window().at(0, 1), 0.0);
+    let ends = sva_samples::Extent::new(2, 8);
+    assert_eq!(tape.within(ends).at(0, 8), 0.0);
 }
 
 #[test]
-#[should_panic(expected = "forgotten")]
+#[should_panic(expected = "not held")]
 fn reading_a_forgotten_sample_panics() {
-    let mut tape = Tape::new(1, 8);
+    let mut tape = Tape::new(1, 8, 0);
     for v in 1..=6 {
         tape.push(0, f64::from(v));
     }
     tape.forget_before(4);
     tape.window().at(0, 3);
+}
+
+#[test]
+#[should_panic(expected = "not held")]
+fn reading_past_what_a_tape_wrote_panics() {
+    let mut tape = Tape::new(1, 8, 0);
+    tape.push(0, 1.0);
+    tape.window().at(0, 1);
 }

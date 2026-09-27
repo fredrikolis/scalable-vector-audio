@@ -6,7 +6,8 @@ use std::ops::Range;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Buffer {
     pub rate: u32,
-    pub origin_secs: f64,
+    /// The grid sample the first of these stands at; sample 0 is t = 0.
+    pub start: i64,
     pub width: usize,
     pub planes: Vec<Vec<f64>>,
 }
@@ -15,7 +16,7 @@ impl Buffer {
     pub fn silence(rate: u32, width: usize, len: usize) -> Buffer {
         Buffer {
             rate,
-            origin_secs: 0.0,
+            start: 0,
             width,
             planes: vec![vec![0.0; len]; width],
         }
@@ -24,7 +25,7 @@ impl Buffer {
     pub fn mono(rate: u32, samples: Vec<f64>) -> Buffer {
         Buffer {
             rate,
-            origin_secs: 0.0,
+            start: 0,
             width: 1,
             planes: vec![samples],
         }
@@ -34,7 +35,7 @@ impl Buffer {
         let len = planes.iter().map(Vec::len).min().unwrap_or(0);
         Buffer {
             rate,
-            origin_secs: 0.0,
+            start: 0,
             width: planes.len(),
             planes: planes
                 .into_iter()
@@ -66,18 +67,24 @@ impl Buffer {
         self.planes[c][i]
     }
 
-    /// The samples `over` covers, nearest grid point at each end, held to what this holds.
-    pub fn span_of(&self, over: crate::Horizon) -> Range<usize> {
-        let rate = f64::from(self.rate);
-        let at = |secs: f64| {
-            (((secs - self.origin_secs) * rate).round().max(0.0) as usize).min(self.len())
-        };
-        let start = at(over.start_secs);
-        let end = match over.end_secs.is_finite() {
-            true => at(over.end_secs).max(start),
-            false => self.len(),
-        };
-        start..end
+    pub fn origin_secs(&self) -> f64 {
+        self.start as f64 / f64::from(self.rate)
+    }
+
+    /// The grid samples this holds.
+    pub fn extent(&self) -> crate::Extent {
+        crate::Extent::new(self.start, self.start + self.len() as i64)
+    }
+
+    /// These samples over `over`, a node that is zero outside `support`.
+    pub fn over(&self, over: crate::Extent, support: crate::Extent) -> Buffer {
+        let window = crate::Window::of(self, support);
+        let planes = (0..self.width)
+            .map(|c| (over.start..over.end).map(|n| window.at(c, n)).collect())
+            .collect();
+        let mut out = Buffer::of_planes(self.rate, planes);
+        out.start = over.start;
+        out
     }
 
     pub fn window(&self, c: usize, range: Range<usize>) -> Cow<'_, [f64]> {

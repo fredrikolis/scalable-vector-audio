@@ -3,7 +3,7 @@
 use std::f64::consts::{PI, TAU};
 
 use sva_formula::{Body, Bound, C64, ClosedForm, Edge, IndexId, Origin, Part, Series, Unary, Var};
-use sva_samples::collapse::{self, AliasScore, Horizon};
+use sva_samples::collapse::{self, AliasScore, Extent};
 use sva_samples::{Buffer, CollapseError, Detail, Label, PSYCHOACOUSTIC_V1, Profile, Rule, Source};
 
 const RATE: u32 = 8_192;
@@ -12,10 +12,11 @@ const RATE: u32 = 8_192;
 fn render(
     form: &ClosedForm,
     rate: u32,
-    horizon: Horizon,
+    secs: (f64, f64),
     profile: &Profile,
 ) -> Result<(Buffer, Label), CollapseError> {
-    collapse::render(form, rate, horizon, profile, AliasScore::Asked)
+    let extent = Extent::secs(rate, secs.0, secs.1);
+    collapse::render(form, rate, extent, profile, AliasScore::Asked)
 }
 
 /// The terms a geometric series keeps, from a first term bound and a ratio: up to the first
@@ -58,8 +59,8 @@ fn sum(parts: Vec<Body>) -> Body {
     Body::Add(parts.into_iter().map(part).collect())
 }
 
-fn whole_second() -> Horizon {
-    Horizon::secs(0.0, 1.0)
+fn whole_second() -> (f64, f64) {
+    (0.0, 1.0)
 }
 
 /// A sinc tail thins as `1/d^2`, so past a ceiling `d` hertz off one line it integrates to
@@ -131,7 +132,7 @@ fn commensurate_and_summed_rows_agree_on_a_commensurate_case() {
         render(&law, RATE, whole_second(), &PSYCHOACOUSTIC_V1).expect("lines");
     assert_eq!(exact.rule(), Rule::LineSpectrumExact);
 
-    let awkward = Horizon::secs(0.0, 0.9);
+    let awkward = (0.0, 0.9);
     let (summed, label) = render(&law, RATE, awkward, &PSYCHOACOUSTIC_V1).expect("lines");
     assert_eq!(label.rule(), Rule::LineSpectrumSummed);
 
@@ -193,8 +194,8 @@ fn dense_series_and_direct_sum_agree() {
         })),
     );
     let (rate, horizon) = (44_100u32, 10.0);
-    let (buffer, label) = render(&law, rate, Horizon::secs(0.0, horizon), &PSYCHOACOUSTIC_V1)
-        .expect("a dense series");
+    let (buffer, label) =
+        render(&law, rate, (0.0, horizon), &PSYCHOACOUSTIC_V1).expect("a dense series");
     assert_eq!(label.rule(), Rule::LineSpectrumExact);
     let Detail::Lines {
         placed, dropped, ..
@@ -304,7 +305,7 @@ fn a_joined_collapse_scores_the_component_that_aliases_worst() {
 }
 
 #[test]
-fn a_cs_collapse_refuses_without_horizon() {
+fn a_cs_collapse_takes_the_inverse_spectrum_row() {
     let law = form(
         Var::F,
         Body::Apply(
@@ -315,16 +316,6 @@ fn a_cs_collapse_refuses_without_horizon() {
             ])),
         ),
     );
-    assert_eq!(
-        render(
-            &law,
-            RATE,
-            Horizon::secs(0.0, f64::INFINITY),
-            &PSYCHOACOUSTIC_V1
-        ),
-        Err(CollapseError::NoHorizon)
-    );
-
     let (buffer, label) =
         render(&law, RATE, whole_second(), &PSYCHOACOUSTIC_V1).expect("a closed form in f");
     assert_eq!(label.source, Source::Measured);
@@ -357,8 +348,7 @@ fn an_empty_band_refuses() {
     assert!(matches!(refused, CollapseError::EmptyBand { .. }));
 }
 
-/// The window a caller already gave is not what an empty band is about: the ceiling is, and
-/// no window and no rate bring a line back under it.
+/// The ceiling is what an empty band is about, and under 20 kHz a higher rate raises it.
 #[test]
 fn empty_band_names_the_ceiling_not_the_window() {
     let law = form(Var::T, sum(vec![cosine(6000.0, 1.0), cosine(7000.0, 0.5)]));
@@ -372,11 +362,7 @@ fn empty_band_names_the_ceiling_not_the_window() {
     let said = format!("{refused}: {}", refused.help());
     assert!(said.contains("ceiling"), "{said}");
     assert!(
-        !said.contains("--from") && !said.contains("--to"),
-        "a window is not the repair: {said}"
-    );
-    assert!(
-        said.contains("--sample-rate"),
+        said.contains("--rate"),
         "under 20 kHz the ceiling is this rate's own half, and a higher rate raises it: {said}"
     );
 }
@@ -471,13 +457,8 @@ fn a_series_under_a_nonlinearity_takes_the_terms_the_precision_leaves() {
         part(series),
         part(Body::Apply(Unary::Tanh, part(Body::Line))),
     ]);
-    let (buffer, label) = render(
-        &form(Var::T, law),
-        RATE,
-        Horizon::secs(0.0, 0.02),
-        &PSYCHOACOUSTIC_V1,
-    )
-    .expect("a series has a value once it is truncated");
+    let (buffer, label) = render(&form(Var::T, law), RATE, (0.0, 0.02), &PSYCHOACOUSTIC_V1)
+        .expect("a series has a value once it is truncated");
     assert_eq!(label.source, Source::Measured);
     let taken: f64 = (0..kept(1.0, 0.5)).map(|n| 0.5f64.powi(n)).sum();
     for i in 0..buffer.len() {
@@ -508,13 +489,8 @@ fn a_series_no_coefficient_bounds_refuses_at_a_point() {
         }))),
         part(Body::Apply(Unary::Tanh, part(Body::Line))),
     ]);
-    let refused = render(
-        &form(Var::T, law),
-        RATE,
-        Horizon::secs(0.0, 0.01),
-        &PSYCHOACOUSTIC_V1,
-    )
-    .expect_err("no coefficient bounds the count");
+    let refused = render(&form(Var::T, law), RATE, (0.0, 0.01), &PSYCHOACOUSTIC_V1)
+        .expect_err("no coefficient bounds the count");
     assert_eq!(refused.code(), "collapse.not_evaluable");
 }
 
@@ -540,13 +516,8 @@ fn a_series_no_line_reads_is_counted_off_its_coefficient() {
         }))),
         part(turning),
     ]);
-    let (buffer, _) = render(
-        &form(Var::T, law),
-        RATE,
-        Horizon::secs(0.0, 0.01),
-        &PSYCHOACOUSTIC_V1,
-    )
-    .expect("a falling coefficient counts the terms");
+    let (buffer, _) = render(&form(Var::T, law), RATE, (0.0, 0.01), &PSYCHOACOUSTIC_V1)
+        .expect("a falling coefficient counts the terms");
     let counted = kept(1.0, 0.9);
     let taken: f64 = (0..counted).map(|n| 0.9f64.powi(n)).sum();
     for i in 0..buffer.len() {
@@ -585,13 +556,8 @@ fn a_series_of_warped_terms_takes_the_point_row() {
         hi: Bound::Infinite,
         term: part(Body::Mul(vec![part(falling), part(warped)])),
     }));
-    let (buffer, label) = render(
-        &form(Var::T, law),
-        RATE,
-        Horizon::secs(0.0, 0.01),
-        &PSYCHOACOUSTIC_V1,
-    )
-    .expect("a warped series is point-sampled, not refused");
+    let (buffer, label) = render(&form(Var::T, law), RATE, (0.0, 0.01), &PSYCHOACOUSTIC_V1)
+        .expect("a warped series is point-sampled, not refused");
     assert_eq!(label.source, Source::Measured);
     assert_eq!(label.rule(), Rule::PointSampled);
     let counted = kept(1.0, 0.5);
@@ -665,13 +631,8 @@ fn nested_series_beyond_the_bound_refuse_naming_the_count() {
             ])),
         }))
     });
-    let refused = render(
-        &form(Var::T, deep),
-        RATE,
-        Horizon::secs(0.0, 0.01),
-        &PSYCHOACOUSTIC_V1,
-    )
-    .expect_err("five nested series are past the bound");
+    let refused = render(&form(Var::T, deep), RATE, (0.0, 0.01), &PSYCHOACOUSTIC_V1)
+        .expect_err("five nested series are past the bound");
     assert_eq!(refused.code(), "collapse.series_nesting");
     let CollapseError::NestedSeries {
         depth,
@@ -731,13 +692,8 @@ fn a_cropped_neumann_series_has_a_spectral_sum() {
         "the crop kept the series rather than expanding it"
     );
 
-    let (buffer, _) = render(
-        &form(Var::T, law),
-        RATE,
-        Horizon::secs(0.0, 0.01),
-        &PSYCHOACOUSTIC_V1,
-    )
-    .expect("a cropped series collapses");
+    let (buffer, _) = render(&form(Var::T, law), RATE, (0.0, 0.01), &PSYCHOACOUSTIC_V1)
+        .expect("a cropped series collapses");
     let counted = kept(1.0, 0.5);
     let taken: f64 = (0..counted).map(|n| 0.5f64.powi(n)).sum();
     for i in 0..buffer.len() {
@@ -805,8 +761,8 @@ fn tail_db_falls_as_the_window_lengthens() {
                 fall: 0.0,
             },
         );
-        let (_, label) = render(&law, RATE, Horizon::secs(0.0, 2.0), &PSYCHOACOUSTIC_V1)
-            .expect("a cropped pair");
+        let (_, label) =
+            render(&law, RATE, (0.0, 2.0), &PSYCHOACOUSTIC_V1).expect("a cropped pair");
         let Detail::Cropped { tail_db, .. } = label.detail else {
             panic!("expected a cropped label, got {:?}", label.detail);
         };
@@ -842,8 +798,7 @@ fn a_short_shoulder_has_a_finite_negative_tail() {
             fall: 0.04,
         },
     );
-    let (_, label) =
-        render(&law, RATE, Horizon::secs(0.0, 3.0), &PSYCHOACOUSTIC_V1).expect("a shouldered pair");
+    let (_, label) = render(&law, RATE, (0.0, 3.0), &PSYCHOACOUSTIC_V1).expect("a shouldered pair");
     let Detail::Cropped { tail_db, .. } = label.detail else {
         panic!("expected a cropped label, got {:?}", label.detail);
     };
@@ -872,8 +827,8 @@ fn a_cropped_tone_states_its_tail_on_either_side_of_the_ceiling() {
                 fall: 0.0,
             },
         );
-        let (_, label) = render(&law, RATE, Horizon::secs(0.0, 2.0), &PSYCHOACOUSTIC_V1)
-            .expect("a cropped pair");
+        let (_, label) =
+            render(&law, RATE, (0.0, 2.0), &PSYCHOACOUSTIC_V1).expect("a cropped pair");
         let Detail::Cropped { tail_db, .. } = label.detail else {
             panic!("expected a cropped label, got {:?}", label.detail);
         };
@@ -943,8 +898,7 @@ fn two_windows_state_one_energy_weighted_tail() {
         fall: 0.0,
     };
     let law = form(Var::T, sum(vec![segment(440.0, 1.6), segment(880.0, 0.05)]));
-    let (_, label) =
-        render(&law, RATE, Horizon::secs(0.0, 2.0), &PSYCHOACOUSTIC_V1).expect("two crops");
+    let (_, label) = render(&law, RATE, (0.0, 2.0), &PSYCHOACOUSTIC_V1).expect("two crops");
     let Detail::Cropped { tail_db, .. } = label.detail else {
         panic!("expected a cropped label, got {:?}", label.detail);
     };
@@ -1248,7 +1202,7 @@ fn a_nested_series_past_the_bound_refuses_or_labels() {
             ])),
         }))
     };
-    let horizon = Horizon::secs(0.0, 0.01);
+    let horizon = (0.0, 0.01);
     let run = |body: Body| render(&form(Var::T, body), RATE, horizon, &PSYCHOACOUSTIC_V1);
 
     let per = kept(0.82, 0.82) as usize;
@@ -1283,15 +1237,11 @@ fn a_nested_series_past_the_bound_refuses_or_labels() {
     let held = form(Var::T, nested(4));
     let (_, label) = run(nested(4)).expect("the same nesting under the bound collapses");
     let sum = sva_formula::normalize_closed_form(&held).expect("a form under the bound");
-    let planned = sva_samples::collapse::plan::of(
-        &sum,
-        RATE,
-        horizon,
-        &PSYCHOACOUSTIC_V1,
-        horizon.len(RATE).expect("a horizon"),
-    )
-    .expect("a row")
-    .rule();
+    let extent = Extent::secs(RATE, horizon.0, horizon.1);
+    let planned =
+        sva_samples::collapse::plan::of(&sum, RATE, extent, &PSYCHOACOUSTIC_V1, extent.len())
+            .expect("a row")
+            .rule();
     assert_eq!(
         label.rule(),
         planned,

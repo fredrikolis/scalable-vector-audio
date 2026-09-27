@@ -13,7 +13,7 @@ fn an_fd_node_renders_at_the_observation_rate() {
         let held = render(&g, "body", RenderConfig::seconds(rate, 0.02), None)
             .unwrap_or_else(|e| panic!("{rate}: {e}"));
         let root = held.id("body").expect("the root");
-        let buffer = held.buffer(root).expect("a rendered solver");
+        let buffer = held.output(root).expect("a rendered solver");
         assert_eq!(buffer.rate, rate);
         assert_eq!(buffer.len(), (rate as f64 * 0.02).round() as usize);
         assert!(
@@ -32,7 +32,7 @@ fn a_one_step_accumulator_renders() {
     );
     let held = render(&g, "acc", RenderConfig::seconds(1_000, 0.01), None).expect("a recurrence");
     let root = held.id("acc").expect("the root");
-    let buffer = held.buffer(root).expect("a rendered loop");
+    let buffer = held.output(root).expect("a rendered loop");
     assert_eq!(buffer.len(), 10);
     for (i, held) in buffer.plane(0).iter().enumerate() {
         let want = 0.25 * (i + 1) as f64;
@@ -52,7 +52,7 @@ fn a_filter_over_samples_runs_on_the_grid() {
     );
     let held = render(&g, "voice", RenderConfig::seconds(44_100, 0.05), None).expect("a biquad");
     let root = held.id("voice").expect("the root");
-    let buffer = held.buffer(root).expect("a rendered filter");
+    let buffer = held.output(root).expect("a rendered filter");
     let tail: f64 = buffer.plane(0)[2_000..]
         .iter()
         .map(|s| s * s)
@@ -76,7 +76,7 @@ fn a_one_pole_smoother_written_with_sp_renders_at_two_rates() {
         let held = render(&g, "smooth", RenderConfig::seconds(rate, 0.02), None)
             .unwrap_or_else(|e| panic!("{rate}: {e}"));
         let root = held.id("smooth").expect("the root");
-        held.buffer(root)
+        held.output(root)
             .expect("a rendered loop")
             .at(0, rate as usize / 100)
     };
@@ -110,7 +110,7 @@ fn a_swept_cutoff_on_samples_renders() {
     let held =
         render(&g, "filtered", RenderConfig::seconds(44_100, 0.5), None).expect("a swept filter");
     let root = held.id("filtered").expect("the root");
-    let buffer = held.buffer(root).expect("a rendered recurrence");
+    let buffer = held.output(root).expect("a rendered recurrence");
     let peak = |from: f64, to: f64| {
         let span = (from * 44_100.0) as usize..(to * 44_100.0) as usize;
         span.map(|i| buffer.at(0, i).abs()).fold(0.0f64, f64::max)
@@ -136,7 +136,7 @@ fn a_self_read_is_founded_sample_by_sample_without_a_block() {
     );
     let held = render(&g, "acc", RenderConfig::seconds(1_000, 0.01), None).expect("a recurrence");
     let root = held.id("acc").expect("the root");
-    let buffer = held.buffer(root).expect("a rendered loop");
+    let buffer = held.output(root).expect("a rendered loop");
     assert_eq!(buffer.len(), 10);
 
     let mut want = [0.0f64; 10];
@@ -158,7 +158,7 @@ fn plane(g: &sva_ast::Graph, node: &str) -> Vec<f64> {
     let held = render(g, node, RenderConfig::seconds(8_000, 0.05), None)
         .unwrap_or_else(|e| panic!("{node}: {e}"));
     let id = held.id(node).unwrap_or_else(|| panic!("{node} typed"));
-    held.buffer(id).expect("a rendered node").plane(0).to_vec()
+    held.output(id).expect("a rendered node").plane(0).to_vec()
 }
 
 /// The bug this closes: a sampled operand's crop kept its hard edges and dropped both

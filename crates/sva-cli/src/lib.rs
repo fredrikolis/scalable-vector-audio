@@ -19,7 +19,7 @@ mod windows;
 pub use args::{
     ANALYZE_REPRESENTATIONS, AnalyzeArgs, Command, Format, RenderArgs, USAGE, parse_args,
 };
-pub use composition::composition;
+pub use composition::{composition, located};
 pub use destination::{Framing, refuse_inside, write as write_destination, write_analysis};
 pub use help::help_text;
 pub use lint::{Finding, LintReport, entry_points, lint};

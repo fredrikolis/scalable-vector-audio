@@ -184,12 +184,17 @@ fn three_verbs_agree_on_an_instance_name() {
         &format!("{head}@motif(t) + @motif(t, third=16)\n"),
     );
 
-    let held = sva_core::execute(sva_core::Job {
-        target: Some("motif"),
-        ..sva_core::Job::over(&sva_ast::Dir::at(&dir))
-    })
-    .expect("`render motif` reads the file on its own terms");
-    let rendered = held.render.tys.name(held.render.root).to_string();
+    let source = sva_ast::Dir::at(&dir);
+    let held = sva_core::execute(sva_core::Job::over(&source, "@motif([0, 1s])"))
+        .expect("`render @motif` reads the file on its own terms");
+    let rendered = held
+        .render
+        .tys
+        .paths()
+        .map(|(path, _)| path)
+        .find(|path| path.starts_with("motif("))
+        .expect("the instance it read")
+        .to_string();
 
     let traced = trace(&dir, "motif")
         .expect("`trace motif` reads the same file the same way")

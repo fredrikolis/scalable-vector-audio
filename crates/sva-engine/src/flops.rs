@@ -7,6 +7,7 @@ use sva_formula::{Body, Held, NodeId};
 use crate::render::Render;
 use crate::{refs, schedule};
 
+use sva_samples::Extent;
 use sva_samples::collapse::plan;
 
 /// `subtree` is what the holder pays for this ref; `shared` marks a row priced net of a tree
@@ -146,20 +147,20 @@ fn read_as(
     let crate::typing::Value::ClosedForm(form) = render.tys.value(base) else {
         return None;
     };
-    let len = render.config.horizon.len(render.config.rate).ok()?;
-    let (rate, horizon) = (render.config.rate, render.config.horizon);
+    let extent = render.extent_of(base)?;
+    let (rate, len) = (render.config.rate, extent.len());
     let profile = &render.config.profile;
     let body = refs::fold_constants(&render.tys, &along(render, &form.body, chain)?);
     let (carried, shared) = carried_already(&body, walked, chain);
     let plan = match refs::spectral_sum_of_body(&render.tys, base, &body, form.var) {
-        Ok(sum) => plan::of(&sum, rate, horizon, profile, len).ok()?,
+        Ok(sum) => plan::of(&sum, rate, extent, profile, len).ok()?,
         Err(_) => {
             let written = sva_formula::ClosedForm {
                 var: form.var,
                 body: refs::substituted_body(&render.tys, base, &body)?,
                 origin: form.origin,
             };
-            plan::of_written(&written, rate, horizon, profile, len).ok()?
+            plan::of_written(&written, rate, extent, profile, len).ok()?
         }
     };
     Some((
@@ -250,36 +251,43 @@ fn costed(render: &Render, id: NodeId) -> (u128, &'static str) {
 }
 
 fn costed_under(render: &Render, id: NodeId, paid: &mut Carried) -> (u128, &'static str) {
-    let Ok(len) = render.config.horizon.len(render.config.rate) else {
-        return (0, "no horizon");
+    let Some(extent) = render.extent_of(id) else {
+        return (0, "no extent");
     };
-    costed_at(render, id, len, paid)
+    costed_at(render, id, extent, paid)
 }
 
-fn costed_at(render: &Render, id: NodeId, len: usize, paid: &mut Carried) -> (u128, &'static str) {
+fn costed_at(
+    render: &Render,
+    id: NodeId,
+    extent: Extent,
+    paid: &mut Carried,
+) -> (u128, &'static str) {
+    let len = extent.len();
     match render.tys.ty(id).held {
         Held::Frames => (frames_flops(render, id, len), "short-time transform"),
         Held::Sampled => (ops_of(render, id) as u128 * len as u128, "sampled program"),
-        _ => closed_form_flops(render, id, len, paid),
+        _ if extent.is_empty() => (0, "silent"),
+        _ => closed_form_flops(render, id, extent, paid),
     }
 }
 
 fn closed_form_flops(
     render: &Render,
     id: NodeId,
-    len: usize,
+    extent: Extent,
     paid: &mut Carried,
 ) -> (u128, &'static str) {
     let var = render.tys.var(id);
-    let (rate, horizon) = (render.config.rate, render.config.horizon);
+    let (rate, len) = (render.config.rate, extent.len());
     let profile = &render.config.profile;
     let sum = refs::spectral_sum_of(&render.tys, id, var)
         .ok()
-        .and_then(|sum| sva_samples::collapse::plan::of(&sum, rate, horizon, profile, len).ok());
+        .and_then(|sum| sva_samples::collapse::plan::of(&sum, rate, extent, profile, len).ok());
     // A form with no spectral sum takes the written rows, which a sum splits addend by addend.
     let plan = sum.or_else(|| {
         let form = written_closed_form(render, id)?;
-        sva_samples::collapse::plan::of_written(&form, rate, horizon, profile, len).ok()
+        sva_samples::collapse::plan::of_written(&form, rate, extent, profile, len).ok()
     });
     match plan {
         Some(plan) => (
@@ -287,7 +295,7 @@ fn closed_form_flops(
             plan.rule().as_str(),
         ),
         None => (
-            pointwise_flops(render, id, len, paid),
+            pointwise_flops(render, id, extent, paid),
             sva_samples::Rule::PointSampled.as_str(),
         ),
     }
@@ -295,15 +303,15 @@ fn closed_form_flops(
 
 /// No row of the table takes this node, so every instant walks its own tree: the written body, or
 /// the operation over each node it reads, each of those at its own price.
-fn pointwise_flops(render: &Render, id: NodeId, len: usize, paid: &mut Carried) -> u128 {
+fn pointwise_flops(render: &Render, id: NodeId, extent: Extent, paid: &mut Carried) -> u128 {
     let own = match render.tys.value(id) {
         crate::typing::Value::ClosedForm(form) => plan::point_nodes(&form.body),
         _ => ops_of(render, id),
     };
     schedule::read_operands(&render.tys, id).into_iter().fold(
-        own as u128 * len as u128,
+        own as u128 * extent.len() as u128,
         |sum, read| match paid.opens(read) {
-            true => sum + costed_at(render, read, len, paid).0,
+            true => sum + costed_at(render, read, extent, paid).0,
             false => sum,
         },
     )
@@ -314,7 +322,7 @@ fn pointwise_flops(render: &Render, id: NodeId, len: usize, paid: &mut Carried) 
 pub(crate) fn per_sample(render: &Render, id: NodeId) -> u128 {
     match render.tys.ty(id).held {
         Held::Sampled => ops_of(render, id) as u128,
-        _ => pointwise_flops(render, id, 1, &mut Carried::of(id)),
+        _ => pointwise_flops(render, id, Extent::new(0, 1), &mut Carried::of(id)),
     }
 }
 

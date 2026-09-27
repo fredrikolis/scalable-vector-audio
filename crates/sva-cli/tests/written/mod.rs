@@ -3,17 +3,16 @@
 use std::path::{Path, PathBuf};
 
 use crate::helpers::{buffer, fixture, json_of, ledger, put, scratch};
-use sva_ast::Dir;
 use sva_cli::{SampleEncoding, write_channels, write_wav};
-use sva_core::{Job, ROOT, execute, run};
+use sva_core::{PROBE, probe};
 use sva_engine::{Output, Representation};
 
 #[test]
 fn a_samples_destination_writes_float_audio_matching_the_rendered_samples() {
-    let rendered = run(&fixture("basic")).unwrap();
+    let rendered = probe(&fixture("basic"), "@master([0, 1s])").unwrap();
     let dir = scratch("wav");
     let path = dir.join("out.wav");
-    let pcm: Vec<f32> = buffer(&rendered, ROOT).as_f32(0);
+    let pcm: Vec<f32> = buffer(&rendered, PROBE).as_f32(0);
     write_wav(&pcm, rendered.config.rate, &path, SampleEncoding::Float).unwrap();
 
     let mut reader = hound::WavReader::open(&path).unwrap();
@@ -28,9 +27,9 @@ fn a_samples_destination_writes_float_audio_matching_the_rendered_samples() {
 /// components at all.
 #[test]
 fn a_stereo_composition_reports_a_channel_per_component_and_a_mono_one_reports_none() {
-    let rendered = run(&fixture("stereo")).unwrap();
-    let entries = ledger(&rendered, ROOT);
-    let master: Vec<_> = entries.iter().filter(|e| e.node == ROOT).collect();
+    let rendered = probe(&fixture("stereo"), "@master([0, 1s])").unwrap();
+    let entries = ledger(&rendered, PROBE);
+    let master: Vec<_> = entries.iter().filter(|e| e.node == PROBE).collect();
     assert_eq!(master.len(), 2, "one entry per component");
     assert_eq!(
         (master[0].channel, master[1].channel),
@@ -40,15 +39,15 @@ fn a_stereo_composition_reports_a_channel_per_component_and_a_mono_one_reports_n
     assert!(master[0].rms > master[1].rms, "p=0.3 sits left of centre");
 
     let json = json_of(&rendered, "ledger", Representation::Ledger { depth: 8 });
-    assert!(json.contains("\"node\": \"master\", \"channel\": 0,"));
+    assert!(json.contains("\"node\": \"probe\", \"channel\": 0,"));
 }
 
 #[test]
 fn a_stereo_render_writes_an_interleaved_two_channel_wav() {
-    let rendered = run(&fixture("stereo")).unwrap();
+    let rendered = probe(&fixture("stereo"), "@master([0, 1s])").unwrap();
     let dir = scratch("stereo-wav");
     let path = dir.join("out.wav");
-    let held = buffer(&rendered, ROOT);
+    let held = buffer(&rendered, PROBE);
     let owned: Vec<Vec<f32>> = (0..held.width).map(|c| held.as_f32(c)).collect();
     let planes: Vec<&[f32]> = owned.iter().map(Vec::as_slice).collect();
     write_channels(&planes, rendered.config.rate, &path, SampleEncoding::Float).unwrap();
@@ -70,13 +69,9 @@ fn a_stereo_render_writes_an_interleaved_two_channel_wav() {
 /// Each bounce lands on the other side, one `ch` crossing apart.
 #[test]
 fn the_ping_pong_fixture_bounces_side_to_side_in_the_stereo_representation() {
-    let rendered = execute(Job {
-        target: Some("pingpong"),
-        ..Job::over(&Dir::at(fixture("stereo")))
-    })
-    .unwrap();
+    let rendered = probe(&fixture("stereo"), "@pingpong([0, 2s])").unwrap();
     let Output::Stereo(image) = rendered
-        .answer("pingpong", Representation::Stereo { frame_secs: 0.05 })
+        .answer(PROBE, Representation::Stereo { frame_secs: 0.05 })
         .unwrap()
         .value
     else {
@@ -107,17 +102,17 @@ fn a_json_destination_carries_every_sample_where_stdout_caps_them() {
     let dir = scratch("destination");
     let out = scratch("destination-out");
     put(&dir, "master", "crop(sin(2*pi*220*t), 0s, 0.2s)\n");
-    let rendered = run(&dir).unwrap();
-    let answer = rendered.answer(ROOT, Representation::Samples).unwrap();
+    let rendered = probe(&dir, "@master").unwrap();
+    let answer = rendered.answer(PROBE, Representation::Samples).unwrap();
     let path: PathBuf = out.join("s.json");
     sva_cli::write_destination(
         "samples",
         &answer,
         &path,
         &sva_cli::Framing {
-            target: ROOT.to_string(),
+            target: "@master".to_string(),
             rate: rendered.config.rate,
-            horizon: rendered.config.horizon,
+            range: None,
             profile: rendered.config.profile.name,
             encoding: SampleEncoding::Float,
             skim: false,
@@ -150,10 +145,9 @@ fn a_later_reading_refusing_writes_no_earlier_destination() {
         .current_dir(&dir)
         .args([
             "render",
-            "--as",
-            &format!("samples={}", path.display()),
-            "--as",
-            "stereo",
+            "@master",
+            "--representation",
+            &format!("samples={},stereo", path.display()),
         ])
         .output()
         .expect("the binary runs");
@@ -170,7 +164,7 @@ fn a_later_reading_refusing_writes_no_earlier_destination() {
 /// A library caller passed no argv, and must read back the code argv would have given.
 #[test]
 fn a_non_audio_reading_at_a_wav_path_refuses_the_same_way_on_both_sides() {
-    let argv: Vec<String> = ["render", "--as", "lines=/tmp/out.wav"]
+    let argv: Vec<String> = ["render", "@a", "--representation", "lines=/tmp/out.wav"]
         .iter()
         .map(|s| (*s).to_string())
         .collect();
@@ -178,7 +172,12 @@ fn a_non_audio_reading_at_a_wav_path_refuses_the_same_way_on_both_sides() {
         panic!("a `.wav` path carries audio, and `lines` is not audio");
     };
 
-    let rendered = sva_core::probe(&fixture("basic"), "sin(2*pi*440*t)").expect("a probe");
+    let source = sva_ast::Dir::at(fixture("basic"));
+    let rendered = sva_core::execute(sva_core::Job {
+        representations: vec![Representation::Lines],
+        ..sva_core::Job::over(&source, "sin(2*pi*440*t)")
+    })
+    .expect("a probe");
     let answer = rendered
         .answer(sva_core::PROBE, Representation::Lines)
         .expect("lines answers");
@@ -187,9 +186,9 @@ fn a_non_audio_reading_at_a_wav_path_refuses_the_same_way_on_both_sides() {
         &answer,
         Path::new("/tmp/out.wav"),
         &sva_cli::Framing {
-            target: ROOT.to_string(),
+            target: "@master".to_string(),
             rate: rendered.config.rate,
-            horizon: rendered.config.horizon,
+            range: None,
             profile: rendered.config.profile.name,
             encoding: SampleEncoding::Float,
             skim: false,
@@ -216,10 +215,9 @@ fn a_destination_that_already_holds_a_file_refuses_until_the_caller_confirms() {
     let render = |extra: &[&str]| {
         let mut args = vec![
             "render".to_string(),
-            "--as".to_string(),
-            format!("lines={}", fresh.display()),
-            "--as".to_string(),
-            format!("atoms={}", taken.display()),
+            "@master".to_string(),
+            "--representation".to_string(),
+            format!("lines={},atoms={}", fresh.display(), taken.display()),
         ];
         args.extend(extra.iter().map(|a| (*a).to_string()));
         std::process::Command::new(env!("CARGO_BIN_EXE_sva-cli"))

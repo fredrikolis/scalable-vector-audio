@@ -47,32 +47,100 @@ pub fn eval_written_at(
     point::eval_body(body, component, t, refs)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Horizon {
-    pub start_secs: f64,
-    pub end_secs: f64,
+/// Samples `[start, end)` of the one grid every node is read on, whose sample 0 is t = 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Extent {
+    pub start: i64,
+    pub end: i64,
 }
 
-impl Horizon {
-    pub fn secs(start_secs: f64, end_secs: f64) -> Horizon {
-        Horizon {
-            start_secs,
-            end_secs,
+impl Extent {
+    /// Every sample of the grid: `i64::MIN` and `i64::MAX` stand for no edge at all.
+    pub const EVERYWHERE: Extent = Extent {
+        start: i64::MIN,
+        end: i64::MAX,
+    };
+
+    pub const NOWHERE: Extent = Extent { start: 0, end: 0 };
+
+    pub fn new(start: i64, end: i64) -> Extent {
+        assert!(start <= end, "an extent [{start}, {end}) runs backwards");
+        Extent { start, end }
+    }
+
+    pub fn from(start: i64) -> Extent {
+        Extent::new(start, i64::MAX)
+    }
+
+    pub fn is_bounded(&self) -> bool {
+        self.start != i64::MIN && self.end != i64::MAX
+    }
+
+    pub fn contains(&self, n: i64) -> bool {
+        self.start <= n && n < self.end
+    }
+
+    pub fn intersect(self, other: Extent) -> Extent {
+        let start = self.start.max(other.start);
+        let end = self.end.min(other.end);
+        match start < end {
+            true => Extent { start, end },
+            false => Extent::NOWHERE,
         }
     }
 
-    pub fn span(&self) -> f64 {
-        self.end_secs - self.start_secs
+    pub fn hull(self, other: Extent) -> Extent {
+        match (self.is_empty(), other.is_empty()) {
+            (true, _) => other,
+            (_, true) => self,
+            _ => Extent {
+                start: self.start.min(other.start),
+                end: self.end.max(other.end),
+            },
+        }
     }
 
-    /// An observation that named no window has no horizon at all, and no collapse can run
-    /// against one.
-    pub fn len(&self, rate: u32) -> Result<usize, CollapseError> {
-        let span = self.span();
-        if !span.is_finite() || span <= 0.0 {
-            return Err(CollapseError::NoHorizon);
+    /// Every sample moved `by` later; an unbounded edge stays unbounded.
+    pub fn shifted(self, by: i64) -> Extent {
+        if self.is_empty() {
+            return self;
         }
-        Ok(((span * f64::from(rate)).round() as usize).max(1))
+        let edge = |n: i64| match n {
+            i64::MIN | i64::MAX => n,
+            n => n.saturating_add(by).clamp(i64::MIN + 1, i64::MAX - 1),
+        };
+        Extent {
+            start: edge(self.start),
+            end: edge(self.end),
+        }
+    }
+
+    pub fn secs(rate: u32, start_secs: f64, end_secs: f64) -> Extent {
+        let at = |secs: f64| (secs * f64::from(rate)).round() as i64;
+        Extent::new(at(start_secs), at(end_secs))
+    }
+
+    pub fn len(&self) -> usize {
+        debug_assert!(self.is_bounded(), "an unbounded extent has no length");
+        (self.end - self.start) as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.end == self.start
+    }
+
+    pub fn start_secs(&self, rate: u32) -> f64 {
+        self.start as f64 / f64::from(rate)
+    }
+
+    pub fn span_secs(&self, rate: u32) -> f64 {
+        self.len() as f64 / f64::from(rate)
+    }
+
+    /// Sample `i` read `scale` times finer: the grid's own index times the step, so every
+    /// span of the grid reads one instant alike.
+    pub fn instant(&self, i: usize, scale: usize, step: f64) -> f64 {
+        (self.start * scale as i64 + i as i64) as f64 * step
     }
 }
 
@@ -91,13 +159,13 @@ pub enum AliasScore {
 pub fn render(
     form: &ClosedForm,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     score: AliasScore,
 ) -> Result<(Buffer, Label), CollapseError> {
     match normalize_closed_form(form) {
-        Ok(sum) => of_spectral_sum_or_point(&sum, Some(form), rate, horizon, profile, score),
-        Err(_) if form.var == Var::T => render_written(form, rate, horizon, profile, score),
+        Ok(sum) => of_spectral_sum_or_point(&sum, Some(form), rate, extent, profile, score),
+        Err(_) if form.var == Var::T => render_written(form, rate, extent, profile, score),
         Err(left) => Err(CollapseError::LeftAlgebra(left.reason.clause())),
     }
 }
@@ -106,15 +174,15 @@ pub fn render(
 pub fn render_written(
     form: &ClosedForm,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     score: AliasScore,
 ) -> Result<(Buffer, Label), CollapseError> {
-    let len = horizon.len(rate)?;
+    let len = extent.len();
     run(
-        plan::of_written(form, rate, horizon, profile, len)?,
+        plan::of_written(form, rate, extent, profile, len)?,
         rate,
-        horizon,
+        extent,
         profile,
         len,
         score,
@@ -126,22 +194,22 @@ fn point_row(
     written: &ClosedForm,
     width: usize,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     len: usize,
     score: AliasScore,
 ) -> Result<(Buffer, Label), CollapseError> {
     let planes = (0..width)
-        .map(|c| reading::sampled_body(written, c, rate, horizon, len, 1.0))
+        .map(|c| reading::sampled_body(written, c, rate, extent, len, 1))
         .collect::<Result<Vec<_>, _>>()?;
     let alias_db = match score {
-        AliasScore::Asked => Some(formula_alias(written, rate, horizon, len, &planes)?),
+        AliasScore::Asked => Some(formula_alias(written, rate, extent, len, &planes)?),
         AliasScore::NotAsked => None,
     };
     Ok(measured(
         planes,
         rate,
-        horizon,
+        extent,
         profile,
         Detail::Point {
             rule: Rule::PointSampled,
@@ -156,13 +224,13 @@ pub fn of_spectral_sum_or_point(
     sum: &SpectralSum,
     written: Option<&ClosedForm>,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     score: AliasScore,
 ) -> Result<(Buffer, Label), CollapseError> {
-    match of_spectral_sum(sum, rate, horizon, profile, score) {
+    match of_spectral_sum(sum, rate, extent, profile, score) {
         Err(e) if reaches_no_atom(&e) => match written.filter(|t| t.var == Var::T) {
-            Some(form) => render_written(form, rate, horizon, profile, score),
+            Some(form) => render_written(form, rate, extent, profile, score),
             None => Err(e),
         },
         other => other,
@@ -179,27 +247,27 @@ pub(crate) fn reaches_no_atom(e: &CollapseError) -> bool {
 pub fn of_spectral_sum(
     sum: &SpectralSum,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     score: AliasScore,
 ) -> Result<(Buffer, Label), CollapseError> {
-    let len = horizon.len(rate)?;
-    of_sum(sum, rate, horizon, profile, len, score)
+    let len = extent.len();
+    of_sum(sum, rate, extent, profile, len, score)
 }
 
 /// The row `plan` named, run: one decision, and this is the half that makes samples.
 fn of_sum(
     sum: &SpectralSum,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     len: usize,
     score: AliasScore,
 ) -> Result<(Buffer, Label), CollapseError> {
     run(
-        plan::of(sum, rate, horizon, profile, len)?,
+        plan::of(sum, rate, extent, profile, len)?,
         rate,
-        horizon,
+        extent,
         profile,
         len,
         score,
@@ -209,26 +277,26 @@ fn of_sum(
 fn run(
     plan: Plan,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     len: usize,
     score: AliasScore,
 ) -> Result<(Buffer, Label), CollapseError> {
     match plan {
-        Plan::Spectrum(sum) => spectrum_row(&sum, rate, horizon, profile, len),
-        Plan::Lines(found) => Ok(line_row(&found, rate, horizon, profile, len)),
-        Plan::Sampled(held) => sampled_row(&held, rate, horizon, profile, len, score),
+        Plan::Spectrum(sum) => spectrum_row(&sum, rate, extent, profile, len),
+        Plan::Lines(found) => Ok(line_row(&found, rate, extent, profile, len)),
+        Plan::Sampled(held) => sampled_row(&held, rate, extent, profile, len, score),
         Plan::Point { written, width, .. } => {
-            point_row(&written, width, rate, horizon, profile, len, score)
+            point_row(&written, width, rate, extent, profile, len, score)
         }
-        Plan::Added(parts) => sum::added(parts, rate, horizon, profile, len, score),
+        Plan::Added(parts) => sum::added(parts, rate, extent, profile, len, score),
     }
 }
 
 fn line_row(
     found: &plan::LinePlan,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     len: usize,
 ) -> (Buffer, Label) {
@@ -237,8 +305,8 @@ fn line_row(
         .iter()
         .zip(&found.summed)
         .map(|(placed, summed)| {
-            let mut plane = lines::transformed(placed, horizon.start_secs, found.bins, rate, len);
-            lines::add_direct(&mut plane, summed, horizon.start_secs, rate);
+            let mut plane = lines::transformed(placed, extent, found.bins, rate, len);
+            lines::add_direct(&mut plane, summed, extent, rate);
             plane
         })
         .collect();
@@ -256,31 +324,31 @@ fn line_row(
         terms: Some(placed + summed),
         tail_db: found.tail_db,
     };
-    exact(planes, rate, horizon, profile, detail)
+    exact(planes, rate, extent, profile, detail)
 }
 
 fn sampled_row(
     held: &plan::Sampled,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     len: usize,
     score: AliasScore,
 ) -> Result<(Buffer, Label), CollapseError> {
     let (sum, rule) = (&held.sum, held.rule);
-    let planes = reading::sampled_spectral_sum(sum, &held.lanes, rate, horizon, len)?;
+    let planes = reading::sampled_spectral_sum(sum, &held.lanes, rate, extent, len)?;
     match rule {
         Rule::BandLimited => Ok(exact(
             planes,
             rate,
-            horizon,
+            extent,
             profile,
             Detail::Continuous { rule },
         )),
         Rule::CroppedPair => Ok(measured(
             planes,
             rate,
-            horizon,
+            extent,
             profile,
             Detail::Cropped {
                 rule,
@@ -289,13 +357,13 @@ fn sampled_row(
         )),
         _ => {
             let alias_db = match score {
-                AliasScore::Asked => Some(spectral_sum_alias(sum, rate, horizon, len, &planes)?),
+                AliasScore::Asked => Some(spectral_sum_alias(sum, rate, extent, len, &planes)?),
                 AliasScore::NotAsked => None,
             };
             Ok(measured(
                 planes,
                 rate,
-                horizon,
+                extent,
                 profile,
                 Detail::Point { rule, alias_db },
             ))
@@ -306,7 +374,7 @@ fn sampled_row(
 fn spectrum_row(
     sum: &SpectralSum,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     len: usize,
 ) -> Result<(Buffer, Label), CollapseError> {
@@ -315,17 +383,17 @@ fn spectrum_row(
         planes.push(inverse::collapse_lane(
             sum,
             c,
-            horizon.start_secs,
-            horizon.span(),
+            extent.start_secs(rate),
+            extent.span_secs(rate),
             rate,
             len,
         )?);
     }
-    let wrap_db = inverse::wrap_db(sum, horizon.span(), rate)?;
+    let wrap_db = inverse::wrap_db(sum, extent.span_secs(rate), rate)?;
     Ok(measured(
         planes,
         rate,
-        horizon,
+        extent,
         profile,
         Detail::Spectrum {
             rule: Rule::InverseSpectrum,
@@ -338,7 +406,7 @@ fn spectrum_row(
 fn formula_alias(
     form: &ClosedForm,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     len: usize,
     planes: &[Vec<f64>],
 ) -> Result<f64, CollapseError> {
@@ -348,11 +416,11 @@ fn formula_alias(
             form,
             c,
             rate,
-            horizon,
+            extent,
             len * ALIAS_OVERSAMPLE,
-            ALIAS_OVERSAMPLE as f64,
+            ALIAS_OVERSAMPLE,
         )?;
-        scored.push(one_component(base, &high, rate, horizon));
+        scored.push(one_component(base, &high, rate, extent));
     }
     Ok(worst_of(scored))
 }
@@ -360,7 +428,7 @@ fn formula_alias(
 fn spectral_sum_alias(
     sum: &SpectralSum,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     len: usize,
     planes: &[Vec<f64>],
 ) -> Result<f64, CollapseError> {
@@ -369,10 +437,11 @@ fn spectral_sum_alias(
     for (c, base) in planes.iter().enumerate() {
         let high: Vec<f64> = (0..len * ALIAS_OVERSAMPLE)
             .map(|i| {
-                point::eval_spectral_sum(sum, c, horizon.start_secs + i as f64 * step).map(|v| v.re)
+                point::eval_spectral_sum(sum, c, extent.instant(i, ALIAS_OVERSAMPLE, step))
+                    .map(|v| v.re)
             })
             .collect::<Result<_, _>>()?;
-        scored.push(one_component(base, &high, rate, horizon));
+        scored.push(one_component(base, &high, rate, extent));
     }
     Ok(worst_of(scored))
 }
@@ -381,14 +450,14 @@ fn one_component(
     base: &[f64],
     high: &[f64],
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
 ) -> crate::measure::alias::Alias {
     crate::measure::alias::measure_alias(
         base,
         high,
         ALIAS_OVERSAMPLE,
         f64::from(rate),
-        horizon.start_secs,
+        extent.start_secs(rate),
     )
 }
 
@@ -400,32 +469,32 @@ fn worst_of(scored: Vec<crate::measure::alias::Alias>) -> f64 {
 fn exact(
     planes: Vec<Vec<f64>>,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     detail: Detail,
 ) -> (Buffer, Label) {
-    labelled(Source::Exact, planes, rate, horizon, profile, detail)
+    labelled(Source::Exact, planes, rate, extent, profile, detail)
 }
 
 fn measured(
     planes: Vec<Vec<f64>>,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     detail: Detail,
 ) -> (Buffer, Label) {
-    labelled(Source::Measured, planes, rate, horizon, profile, detail)
+    labelled(Source::Measured, planes, rate, extent, profile, detail)
 }
 
 fn labelled(
     source: Source,
     planes: Vec<Vec<f64>>,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     detail: Detail,
 ) -> (Buffer, Label) {
     let mut buffer = Buffer::of_planes(rate, planes);
-    buffer.origin_secs = horizon.start_secs;
+    buffer.start = extent.start;
     (buffer, Label::new(source, profile.name, rate, detail))
 }

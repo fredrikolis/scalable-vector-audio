@@ -502,8 +502,12 @@ impl Loading {
 }
 
 /// Resolves against the REFERENCING file's own directory, `./` and a bare path alike. A `.`
-/// or `..` normalizes anywhere, so `@a/x/../b` and `@a/b` are one node. `None` above the root.
+/// or `..` normalizes anywhere, so `@a/x/../b` and `@a/b` are one node. `None` above the root,
+/// and for an absolute path, which only a command line resolves.
 pub fn resolve_ref_path(referencing: &str, ref_path: &str) -> Option<String> {
+    if ref_path.starts_with('/') {
+        return None;
+    }
     let dir = match referencing.rsplit_once('/') {
         Some((dir, _)) => dir,
         None => "",

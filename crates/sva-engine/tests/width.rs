@@ -17,7 +17,7 @@ fn planes(name: &str, master: &str) -> (Vec<f64>, Vec<f64>) {
     let held = render(&g, "master", RenderConfig::seconds(8_000, 1.0), None)
         .unwrap_or_else(|e| panic!("{name}: {e}"));
     let id = held.id("master").expect("the root");
-    let buffer = held.buffer(id).expect("a rendered master");
+    let buffer = held.output(id).expect("a rendered master");
     assert_eq!(buffer.width, 2, "{name} is a pair");
     (buffer.plane(0).to_vec(), buffer.plane(1).to_vec())
 }

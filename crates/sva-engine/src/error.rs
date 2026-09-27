@@ -205,7 +205,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 77] = [
+pub static REGISTRY: [(&str, &str); 78] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -257,10 +257,6 @@ pub static REGISTRY: [(&str, &str); 77] = [
     ("cast.istft_needs_frames", "istft on anything but frames"),
     ("cast.missing_window", "stft without window= or hop="),
     (
-        "collapse.no_horizon",
-        "a collapse with no window to run against",
-    ),
-    (
         "collapse.empty_band",
         "every line sits at or above the ceiling",
     ),
@@ -278,7 +274,7 @@ pub static REGISTRY: [(&str, &str); 77] = [
     ),
     (
         "collapse.no_block_row",
-        "a closed form in f read span by span, which one transform over a horizon places",
+        "a closed form in f read span by span, which one transform over an extent places",
     ),
     (
         "collapse.over_budget",
@@ -468,14 +464,22 @@ pub static REGISTRY: [(&str, &str); 77] = [
     ),
     (
         "engine.never_silent",
-        "a render until silent of a node that holds a level forever",
+        "a proof under a level of a node that holds one at or over it forever",
     ),
     (
         "engine.not_silent_by",
-        "a render until silent whose bound is not under the floor by the latest time",
+        "a proof whose bound is not under its level by the proof limit",
     ),
     (
         "engine.no_tail_bound",
-        "a render until silent through a node class no tail bound is derived for",
+        "a proof through a node class no tail bound is derived for",
+    ),
+    (
+        "engine.unbounded_extent",
+        "a node read whole whose input never ends",
+    ),
+    (
+        "render.no_stop",
+        "an interval with no end and a condition no proof brings about",
     ),
 ];

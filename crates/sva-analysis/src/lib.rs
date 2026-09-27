@@ -10,7 +10,7 @@ use sva_samples::{EnvelopeFrame, StereoImage};
 
 pub use decibels::to_db;
 
-/// Every name this crate answers `--as` for, once `sva-core::REPRESENTATIONS` has said no.
+/// Every representation name this crate answers, once `sva-core::REPRESENTATIONS` has said no.
 pub const ANALYSES: [&str; 4] = ["onsets", "trajectory", "masking", "gain-reduction"];
 
 #[derive(Debug, PartialEq)]

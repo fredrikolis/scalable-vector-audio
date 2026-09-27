@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use sva_formula::{Body, C64, NodeId, SpectralSum, Var};
 use sva_samples::{
-    ALIAS_OVERSAMPLE, AliasScore, Audible, Buffer, CollapseError, Detail, Label, Refs, Rule,
-    Source, crop_gain, eval_spectral_sum_at, eval_written_at, lane_of, measure_alias,
+    ALIAS_OVERSAMPLE, AliasScore, Audible, Buffer, CollapseError, Detail, Extent, Label, Refs,
+    Rule, Source, Window, crop_gain, eval_spectral_sum_at, eval_written_at, lane_of, measure_alias,
     truncate_spectral_sum, truncate_written, unary,
 };
 
@@ -14,8 +14,8 @@ use crate::refs;
 use crate::render::Render;
 use crate::typing::Value;
 
-/// What one subterm answers with, decided once: normalizing a closed form at every instant of a
-/// horizon is the same answer as many times as there are samples.
+/// What one subterm answers with, decided once: normalizing a closed form at every instant of an
+/// extent is the same answer as many times as there are samples.
 pub(super) enum Point {
     SpectralSum(Box<SpectralSum>),
     Written {
@@ -39,20 +39,16 @@ pub fn point_sample(
 ) -> Result<(Buffer, Label), EngineError> {
     let tree = plan(held, id)?;
     let rate = held.config.rate;
-    let len = held
-        .config
-        .horizon
-        .len(rate)
-        .map_err(|e| refused(held, id, &e))?;
+    let extent = held.extents.of(id);
     let width = usize::from(held.tys.ty(id).width);
     let mut planes = Vec::with_capacity(width);
     for component in 0..width.max(1) {
-        planes.push(sweep(held, id, &tree, component, len, 1)?);
+        planes.push(sweep(held, id, &tree, component, extent, 1)?);
     }
-    let start_secs = held.config.horizon.start_secs;
     let alias_db = match score {
         AliasScore::Asked => {
-            let high = sweep(held, id, &tree, 0, len * ALIAS_OVERSAMPLE, ALIAS_OVERSAMPLE)?;
+            let high = sweep(held, id, &tree, 0, extent, ALIAS_OVERSAMPLE)?;
+            let start_secs = extent.start_secs(rate);
             Some(
                 measure_alias(
                     &planes[0],
@@ -67,7 +63,7 @@ pub fn point_sample(
         AliasScore::NotAsked => None,
     };
     let mut buffer = Buffer::of_planes(rate, planes);
-    buffer.origin_secs = held.config.horizon.start_secs;
+    buffer.start = extent.start;
     let detail = Detail::Point {
         rule: Rule::PointSampled,
         alias_db,
@@ -83,14 +79,13 @@ fn sweep(
     id: NodeId,
     tree: &Point,
     component: usize,
-    len: usize,
+    extent: Extent,
     oversample: usize,
 ) -> Result<Vec<f64>, EngineError> {
     let step = 1.0 / (f64::from(held.config.rate) * oversample as f64);
-    let origin = held.config.horizon.start_secs;
-    (0..len)
+    (0..extent.len() * oversample)
         .map(|i| {
-            value(held, tree, component, origin + i as f64 * step)
+            value(held, tree, component, extent.instant(i, oversample, step))
                 .map(|v| v.re)
                 .map_err(|e| refused(held, id, &e))
         })
@@ -148,16 +143,12 @@ impl Refs for Reads<'_> {
     }
 }
 
-/// A sampled operand has no value between its own grid points, so the nearest one answers,
-/// and none at all off either end, which is zero.
+/// A sampled operand has no value between its own grid points, so the nearest one answers.
 fn read(held: &Render, id: NodeId, component: usize, t: f64) -> C64 {
     let buffer = held.buffers.get(&id).expect("a read is materialized first");
-    let at = ((t - buffer.origin_secs) * f64::from(buffer.rate)).round();
-    if at < 0.0 {
-        return C64::ZERO;
-    }
-    let plane = buffer.plane(component.min(buffer.width.saturating_sub(1)));
-    C64::real(plane.get(at as usize).copied().unwrap_or(0.0))
+    let at = (t * f64::from(buffer.rate)).round() as i64;
+    let window = Window::of(buffer, held.extents.support(id));
+    C64::real(window.at(component.min(buffer.width.saturating_sub(1)), at))
 }
 
 fn operation(
@@ -273,6 +264,6 @@ pub(super) fn refused(held: &Render, id: NodeId, e: &CollapseError) -> EngineErr
         code: e.code().to_string(),
         message: e.to_string(),
         location: Located::at(held.tys.name(id), None),
-        help: "write the subterm inside sample(...), or give the observation a window".to_string(),
+        help: "write the subterm inside sample(...)".to_string(),
     })
 }

@@ -1,4 +1,4 @@
-// Concern: renders a target until every later sample is provably under half an LSB | Non-concern: bounding one node class (envelope.rs) | IO: (&Graph, target, bits, max) -> a Render ending at silence
+// Concern: proves from which sample on every later one of a target is under a level | Non-concern: bounding one node class (envelope.rs), where a render stops | IO: (target, level) -> a sample
 
 mod envelope;
 mod floor;
@@ -9,121 +9,77 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use sva_ast::Graph;
-use sva_formula::{Hash, NodeId};
-use sva_samples::{Buffer, Horizon, Label};
+use sva_formula::NodeId;
+use sva_samples::{Buffer, Extent};
 
 pub(crate) use envelope::Live;
 use envelope::{Bounds, Envelope, Forms, Grid, STEP, Unbounded};
 
-use super::{Lenses, Prepared, Render, RenderConfig, materialize, prepared, run};
-use crate::cache::{Cache, Expected, Lens, Payload, Recording};
+use super::{Lenses, Render, RenderConfig, materialize};
 use crate::error::{Diagnostic, EngineError, Located};
-use crate::schedule::Schedule;
+use crate::schedule::{self, Schedule};
 
-/// Silence at `bits` is every later sample under `2^-bits` of full scale, proven by `max_secs`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Silent {
-    pub bits: u32,
-    pub max_secs: f64,
+/// Where a proof found every later sample under its level, and its bound from each instant.
+pub(crate) struct Proven {
+    pub(crate) at: i64,
+    first: i64,
+    bounds: Vec<f64>,
 }
 
-impl Silent {
-    pub fn threshold(self) -> f64 {
-        2f64.powi(-(self.bits as i32))
+impl Proven {
+    pub(crate) fn from(&self, n: i64) -> f64 {
+        let j = ((n - self.first).max(0) as usize / STEP).min(self.bounds.len() - 1);
+        self.bounds[j]
     }
 }
 
-/// The horizon ends at the last sample at or over the threshold. The bound proves every sample
-/// from its grid instant on is under it, and the render between proves the rest.
-pub fn render_until_silent(
-    graph: &Graph,
-    target: &str,
-    config: RenderConfig,
-    silent: Silent,
-    cache: Option<&Cache>,
-) -> Result<Render, EngineError> {
-    let held = prepared(graph, target)?;
-    let rate = config.rate;
-    let width = held.tys.ty(held.root).width as usize;
-    let key = silent_key(held.identity(&config.asks)?, &config, silent);
-    // A volatile root keeps its one value under its buffer's key, and no silent entry beside it.
-    let volatile = super::volatile::mark(&held.instances, &held.tys, &config, &held.target)?;
-    let recording = cache.map(|c| Recording::over(c, config.cache_policy));
-    let lens = recording
-        .as_ref()
-        .filter(|_| volatile.slot(held.root).is_none())
-        .map(|r| r.at(None, false, true));
-    if let Some((buffer, label)) = recalled(lens.as_ref(), key, &held, rate, width) {
-        let config = ended(config, buffer.len());
-        let render = run(held, config, recording.as_ref(), Some((buffer, label)))?;
-        return Ok(finished(render, recording));
-    }
-    let (proven, proofs) = proven_at(&held, &config, silent)?;
-    let mut render = run(held, ended(config, proven.max(1)), recording.as_ref(), None)?;
-    render.proofs = proofs;
-    let heard = render.buffers.get(&render.root).map_or(0, |b| {
-        (0..b.len())
-            .rev()
-            .find(|&n| (0..b.width).any(|c| b.plane(c)[n].abs() >= silent.threshold()))
-            .map_or(0, |n| n + 1)
-    });
-    trimmed(&mut render, heard.max(1));
-    if let (Some(lens), Some(buffer), Some(label)) = (
-        lens.as_ref(),
-        render.buffers.get(&render.root),
-        render.labels.get(&render.root),
-    ) {
-        remember(lens, key, buffer, label);
-    }
-    Ok(finished(render, recording))
-}
-
-fn finished(mut render: Render, recording: Option<Recording>) -> Render {
-    render.cache_stats = recording.map(Recording::finish);
-    render
-}
-
-/// The first sample from which the root's bound stays under the threshold, and the proofs
-/// over the whole grid it took.
-pub(super) fn proven_at(
-    held: &Prepared,
+/// The first instant from `first` on from which the root's bound stays under `level`.
+pub(crate) fn proven_at(
+    tys: &crate::typing::Typing,
+    root: NodeId,
     config: &RenderConfig,
-    silent: Silent,
-) -> Result<(usize, u64), EngineError> {
+    first: i64,
+    level: f64,
+    limit: i64,
+) -> (Result<Proven, EngineError>, u64) {
     let rate = f64::from(config.rate);
-    let start = config.horizon.start_secs;
-    let samples = ((silent.max_secs - start) * rate).ceil().max(0.0) as usize;
     let grid = Grid {
-        start,
+        first,
         rate,
-        points: samples / STEP + 1,
+        points: (limit - first).max(0) as usize / STEP + 1,
     };
-    let rendered = |id: NodeId, end: f64| heard_alone(&held.tys, id, config, end);
-    let threshold = silent.threshold();
-    let mut level = threshold;
-    let forms = Forms::new(Cow::Borrowed(&held.tys), Cow::Borrowed(config));
+    let rendered = |id: NodeId, end: f64| heard_alone(tys, id, config, first, end);
+    let mut stepped = level;
+    let forms = Forms::new(Cow::Borrowed(tys), Cow::Borrowed(config));
     let mut proofs = 0;
     loop {
         proofs += 1;
-        let mut bounds = Bounds::new(&forms, grid.clone(), &rendered, level);
-        let envelope = bounded(&held.tys, held.root, &mut bounds, silent)?;
-        if let Some(j) = envelope.at.iter().position(|v| *v < threshold) {
-            return Ok((j * STEP, proofs));
+        let mut bounds = Bounds::new(&forms, grid.clone(), &rendered, stepped);
+        let envelope = match bounded(tys, root, &mut bounds, level) {
+            Ok(envelope) => envelope,
+            Err(e) => return (Err(e), proofs),
+        };
+        if let Some(j) = envelope.at.iter().position(|v| *v < level) {
+            let at = first + (j * STEP) as i64;
+            let bounds = envelope.at;
+            return (Ok(Proven { at, first, bounds }), proofs);
         }
         let last = envelope.at.last().copied().unwrap_or(f64::INFINITY);
         if !bounds.held_flat || !last.is_finite() {
-            return Err(not_by(held, &envelope, silent));
+            let limit_secs = limit as f64 / rate;
+            return (
+                Err(not_proven_by(tys, root, Some(last), level, limit_secs)),
+                proofs,
+            );
         }
         // Each round at least halves the level, so a held bound is stepped past, or none holds.
-        level *= threshold / last / 2.0;
+        stepped *= level / last / 2.0;
     }
 }
 
-/// What no block changes, kept across a stream's proofs under the typing and config it holds:
-/// each node rendered alone over a crop's window, and each closed form compiled.
+/// What no block changes, kept across a stream's proofs: nodes heard alone, forms compiled.
 pub(crate) struct Kept {
-    heard: RefCell<BTreeMap<(NodeId, u64), Buffer>>,
+    heard: RefCell<BTreeMap<(NodeId, i64, u64), Buffer>>,
     forms: Forms<'static>,
 }
 
@@ -140,38 +96,36 @@ impl Kept {
 pub(crate) fn bound_from(
     kept: &Kept,
     root: NodeId,
-    silent: Silent,
+    level: f64,
     live: &dyn Live,
-    now: usize,
+    now: i64,
 ) -> Result<f64, EngineError> {
     let (tys, config) = (&*kept.forms.tys, &*kept.forms.config);
     let heard = &kept.heard;
     let grid = Grid {
-        start: now as f64 / f64::from(config.rate),
+        first: now,
         rate: f64::from(config.rate),
         points: 1,
     };
     let rendered = |id: NodeId, end: f64| {
-        if let Some(buffer) = heard.borrow().get(&(id, end.to_bits())) {
+        let key = (id, now, end.to_bits());
+        if let Some(buffer) = heard.borrow().get(&key) {
             return Ok(buffer.clone());
         }
-        let buffer = heard_alone(tys, id, config, end)?;
-        heard
-            .borrow_mut()
-            .insert((id, end.to_bits()), buffer.clone());
+        let buffer = heard_alone(tys, id, config, now, end)?;
+        heard.borrow_mut().insert(key, buffer.clone());
         Ok(buffer)
     };
-    let mut bounds = Bounds::new(&kept.forms, grid, &rendered, silent.threshold());
+    let mut bounds = Bounds::new(&kept.forms, grid, &rendered, level);
     bounds.live = Some(live);
-    Ok(bounded(tys, root, &mut bounds, silent)?.at[0])
+    Ok(bounded(tys, root, &mut bounds, level)?.at[0])
 }
 
-/// The root's envelope, or the refusal no bound or a level held forever makes.
 fn bounded(
     tys: &crate::typing::Typing,
     root: NodeId,
     bounds: &mut Bounds,
-    silent: Silent,
+    level: f64,
 ) -> Result<Envelope, EngineError> {
     let envelope = match bounds.of(root)? {
         Ok(envelope) => envelope,
@@ -181,24 +135,22 @@ fn bounded(
                 root,
                 "engine.no_tail_bound",
                 format!(
-                    "`{node}` is {class}, and no bound on its tail is derived yet, so silence \
-                     is never proven for it."
+                    "`{node}` is {class}, and no bound on its tail is derived yet, so no level \
+                     is ever proven for it."
                 ),
-                "render it to a stated --to instead, or crop it to a window",
+                "give the target's interval an end, or crop it to a window",
             ));
         }
     };
-    let threshold = silent.threshold();
-    if envelope.floor >= threshold {
+    if envelope.floor >= level {
         return Err(refusal(
             tys,
             root,
             "engine.never_silent",
             format!(
-                "it returns to {} forever, at or above the {}-bit floor of {}.",
+                "it returns to {} forever, at or above {}.",
                 dbfs(envelope.floor),
-                silent.bits,
-                dbfs(threshold)
+                dbfs(level)
             ),
             "crop it, or give it a release",
         ));
@@ -206,40 +158,31 @@ fn bounded(
     Ok(envelope)
 }
 
-fn not_by(held: &Prepared, envelope: &Envelope, silent: Silent) -> EngineError {
-    let last = envelope.at.last().copied().unwrap_or(f64::INFINITY);
-    not_silent_by(&held.tys, held.root, Some(last), silent)
-}
-
 /// `last` is the bound the latest proof found, `None` where none has run.
-pub(crate) fn not_silent_by(
+pub(crate) fn not_proven_by(
     tys: &crate::typing::Typing,
     root: NodeId,
     last: Option<f64>,
-    silent: Silent,
+    level: f64,
+    limit_secs: f64,
 ) -> EngineError {
-    let floor = format!(
-        "the {}-bit floor of {}",
-        silent.bits,
-        dbfs(silent.threshold())
-    );
     let found = match last {
         Some(last) => format!(
-            "its bound at {}s is {}, not under {floor}",
-            silent.max_secs,
-            dbfs(last)
+            "its bound at {limit_secs}s is {}, not under {}",
+            dbfs(last),
+            dbfs(level)
         ),
         None => format!(
-            "no block has ended by {}s to prove it under {floor}",
-            silent.max_secs
+            "no block has ended by {limit_secs}s to prove it under {}",
+            dbfs(level)
         ),
     };
     refusal(
         tys,
         root,
         "engine.not_silent_by",
-        format!("{found}, so silence is not proven by then."),
-        "if it decays, raise --max or lower the bits",
+        format!("{found}, so it is not proven quiet by then."),
+        "if it decays, raise -c proof_limit, or give the interval an end",
     )
 }
 
@@ -265,119 +208,27 @@ fn refusal(
     })
 }
 
-fn ended(mut config: RenderConfig, samples: usize) -> RenderConfig {
-    let start = config.horizon.start_secs;
-    config.horizon = Horizon::secs(start, start + samples as f64 / f64::from(config.rate));
-    config
-}
-
-/// Every buffer this render holds, cut to the root's silence; each is causal from the
-/// window's start, so the cut is the value a shorter render of it would have written.
-fn trimmed(render: &mut Render, samples: usize) {
-    for buffer in render.buffers.values_mut() {
-        if buffer.len() > samples {
-            let origin = buffer.origin_secs;
-            *buffer = Buffer::of_planes(
-                buffer.rate,
-                (0..buffer.width)
-                    .map(|c| buffer.plane(c)[..samples].to_vec())
-                    .collect(),
-            );
-            buffer.origin_secs = origin;
-        }
-    }
-    render.config = ended(render.config.clone(), samples);
-}
-
-/// One node on its own, over the window a crop closes: nothing is kept past this bound.
+/// One node on its own from grid sample `first` to `end` seconds.
 fn heard_alone(
     tys: &crate::typing::Typing,
     id: NodeId,
     config: &RenderConfig,
+    first: i64,
     end: f64,
 ) -> Result<Buffer, EngineError> {
-    let mut held = Render {
-        root: id,
-        tys: tys.clone(),
-        buffers: BTreeMap::new(),
-        frames: BTreeMap::new(),
-        symbolic: BTreeMap::new(),
-        labels: BTreeMap::new(),
-        traces: Vec::new(),
-        config: RenderConfig {
-            horizon: Horizon::secs(config.horizon.start_secs, end),
+    let last = (end * f64::from(config.rate)).ceil() as i64;
+    let demand = Extent::new(first, last.max(first));
+    let mut held = Render::shell(
+        tys.clone(),
+        id,
+        RenderConfig {
             asks: Vec::new(),
             ..config.clone()
         },
-        schedule: Schedule::default(),
-        bindings: BTreeMap::new(),
-        cache_stats: None,
-        proofs: 0,
-    };
+        Schedule::default(),
+    );
+    let order = schedule::dependencies_first(tys, id, &mut Default::default());
+    held.extents = super::extent::decide(&held, &order, &[(id, demand)])?;
     materialize(&mut held, id, &Lenses::none())?;
-    held.buffers
-        .remove(&id)
-        .ok_or_else(|| EngineError::UnknownNode(tys.name(id).to_string()))
-}
-
-const SILENT_TAG: u64 = 0x73_69_6c_65_6e_74_00_01;
-
-/// The root at one rate and origin, silent at `bits` by `max`, scored or not: the length is
-/// the value's own.
-fn silent_key((identity, scored): (Hash, bool), config: &RenderConfig, silent: Silent) -> Hash {
-    crate::cache::mixed(
-        identity,
-        &[
-            u64::from(config.rate),
-            config.horizon.start_secs.to_bits(),
-            u64::from(silent.bits),
-            silent.max_secs.to_bits(),
-            u64::from(scored),
-            SILENT_TAG,
-        ],
-    )
-}
-
-/// The length is stored as a one-sample record under the silent key, and the samples under
-/// that key and the length together.
-fn samples_key(key: Hash, samples: usize) -> Hash {
-    crate::cache::mixed(key, &[samples as u64, SILENT_TAG])
-}
-
-fn recalled(
-    cache: Option<&Lens>,
-    key: Hash,
-    held: &Prepared,
-    rate: u32,
-    width: usize,
-) -> Option<(Buffer, Label)> {
-    let cache = cache?;
-    let name = held.tys.name(held.root);
-    let length = cache.load(
-        key,
-        name,
-        Expected::Samples {
-            rate,
-            width: 1,
-            samples: 1,
-        },
-    )?;
-    let samples = length.payload.samples()?.plane(0)[0] as usize;
-    let entry = cache.load(
-        samples_key(key, samples),
-        name,
-        Expected::Samples {
-            rate,
-            width,
-            samples,
-        },
-    )?;
-    Some((entry.payload.samples().cloned()?, entry.label?))
-}
-
-fn remember(cache: &Lens, key: Hash, buffer: &Buffer, label: &Label) {
-    let payload = Payload::Samples(Box::new(buffer.clone()));
-    cache.store(samples_key(key, buffer.len()), &payload, Some(label));
-    let length = Buffer::of_planes(buffer.rate, vec![vec![buffer.len() as f64]]);
-    cache.store(key, &Payload::Samples(Box::new(length)), None);
+    Ok(held.aligned(id, demand))
 }

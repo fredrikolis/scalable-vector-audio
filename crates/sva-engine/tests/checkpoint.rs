@@ -4,7 +4,7 @@ mod fixtures;
 
 use fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{RenderConfig, Silent, Stream, StreamConfig, render, render_until_silent};
+use sva_engine::{Range, RenderConfig, Stream, StreamConfig, Until, render};
 
 const RATE: u32 = 44_100;
 const BLOCK: usize = 1_024;
@@ -61,16 +61,22 @@ fn composition(released: f64) -> Graph {
     )
 }
 
+/// An hour from t = 0, which no test reaches the end of.
 fn config() -> StreamConfig {
     StreamConfig {
         rate: RATE,
         block: BLOCK,
-        silent: None,
+        range: Range {
+            start: Some(0),
+            end: Some(3_600 * i64::from(RATE)),
+        },
+        until: None,
     }
 }
 
 fn opened(g: &Graph, target: &str) -> Stream {
-    Stream::open(g, target, &[], config()).unwrap_or_else(|e| panic!("{e}"))
+    let target = sva_ast::parse_expr(&format!("@{target}")).expect("a ref");
+    Stream::open(g, &target, &[], config()).unwrap_or_else(|e| panic!("{e}"))
 }
 
 fn blocks(stream: &mut Stream, count: usize) -> Vec<f64> {
@@ -87,7 +93,7 @@ fn whole(g: &Graph, target: &str, samples: usize) -> Vec<f64> {
     let held = render(g, target, RenderConfig::seconds(RATE, secs), None)
         .unwrap_or_else(|e| panic!("{target}: {e}"));
     let id = held.id(target).expect("the root");
-    held.buffer(id).expect("a buffer").plane(0).to_vec()
+    held.output(id).expect("a buffer").plane(0).to_vec()
 }
 
 /// Key-up lands on the block grid at sample `k`: the held blocks up to it and the released
@@ -100,7 +106,7 @@ fn a_note_released_at_a_checkpoint_is_the_whole_render_released_there() {
     let mut held = opened(&g, "key");
     let mut heard = blocks(&mut held, 12);
     let checkpoint = held.checkpoint();
-    assert_eq!(checkpoint.position(), k);
+    assert_eq!(checkpoint.position(), k as i64);
     let mut released = held
         .resume(&checkpoint, &[("release".into(), release)], None)
         .unwrap_or_else(|e| panic!("{e}"));
@@ -177,14 +183,12 @@ fn a_checkpoint_resumed_on_another_stream_refuses() {
     assert_eq!(refused.code(), "engine.checkpoint_mismatch", "{refused}");
 }
 
-/// Held, `target` rings on unproven; released at a checkpoint, the stream proves its silence
-/// from the state it holds at each block's end and ends there. The blocks are the silent
+/// Held, `target` rings on unproven; released at a checkpoint, the stream proves it quiet
+/// from the state it holds at each block's end and ends there. The blocks are the quiet
 /// render's samples and nothing a longer render writes after the end is heard.
-fn streams_until_proven_silent(target: &str, whole_target: &str, k: usize) -> usize {
-    let silent = Silent {
-        bits: 16,
-        max_secs: 10.0,
-    };
+fn streams_until_proven_quiet(target: &str, whole_target: &str, k: usize) -> usize {
+    let level = 2f64.powi(-16);
+    let quiet = Until::quiet(level);
     let release = k as f64 / f64::from(RATE);
     let g = composition(release);
     let mut held = opened(&g, target);
@@ -193,99 +197,62 @@ fn streams_until_proven_silent(target: &str, whole_target: &str, k: usize) -> us
         .resume(
             &held.checkpoint(),
             &[("release".into(), release)],
-            Some(silent),
+            Some(quiet.clone()),
         )
         .unwrap_or_else(|e| panic!("{e}"));
     while let Some(block) = released.next_block().expect("a block") {
         heard.extend_from_slice(block.plane(0));
     }
-    assert_eq!(Some(heard.len()), released.end(), "{target}");
-    let whole_silent = render_until_silent(
-        &g,
-        whole_target,
-        RenderConfig::seconds(RATE, silent.max_secs),
-        silent,
-        None,
-    )
-    .expect("a silent render");
-    let want = whole_silent
-        .buffer(whole_silent.root)
-        .expect("a buffer")
-        .plane(0);
+    assert_eq!(Some(heard.len() as i64), released.end(), "{target}");
+    let config = RenderConfig {
+        until: Some(quiet),
+        ..RenderConfig::at(RATE)
+    };
+    let whole_quiet = render(&g, whole_target, config, None).expect("a quiet render");
+    let want = whole_quiet.output(whole_quiet.root).expect("a buffer");
+    let want = want.plane(0);
     assert!(
         want.len() > k,
-        "{target}: silence before the release tests nothing"
+        "{target}: quiet before the release tests nothing"
     );
     assert_eq!(heard[..want.len()], *want, "{target}");
     let longer = whole(&g, whole_target, heard.len() + RATE as usize);
     assert_eq!(heard[..], longer[..heard.len()], "{target}");
     let after = longer[want.len()..]
-        .iter()
-        .fold(0.0f64, |a, v| a.max(v.abs()));
-    assert!(
-        after < silent.threshold(),
-        "{target}: {after} heard after the end"
-    );
+        .chunks(2_205)
+        .map(|f| (f.iter().map(|v| v * v).sum::<f64>() / 2_205.0).sqrt())
+        .fold(0.0f64, f64::max);
+    assert!(after < level, "{target}: {after} heard after the end");
     heard.len()
 }
 
 #[test]
-fn a_string_released_at_a_checkpoint_streams_until_its_silence_is_proven() {
-    streams_until_proven_silent("string", "struck", 3 * BLOCK);
+fn a_string_released_at_a_checkpoint_streams_until_its_quiet_is_proven() {
+    streams_until_proven_quiet("string", "struck", 3 * BLOCK);
 }
 
 #[test]
-fn a_unison_released_at_a_checkpoint_streams_until_its_silence_is_proven() {
-    streams_until_proven_silent("note", "played", 22 * BLOCK);
+fn a_unison_released_at_a_checkpoint_streams_until_its_quiet_is_proven() {
+    streams_until_proven_quiet("note", "played", 22 * BLOCK);
 }
 
 /// The tail an echo adds, not the string under it, is what this proves, so the cheap single
 /// string carries it.
 #[test]
-fn an_echo_over_a_released_note_streams_until_its_silence_is_proven() {
-    streams_until_proven_silent("single_echo", "single_echoed", 3 * BLOCK);
+fn an_echo_over_a_released_note_streams_until_its_quiet_is_proven() {
+    streams_until_proven_quiet("single_echo", "single_echoed", 3 * BLOCK);
 }
 
 /// Kept on the full unison note: a bare single string's default damping does not settle
-/// under this filter's resonance within `max_secs`, where the piano's tuned damping does.
+/// under this filter's resonance in reach of a proof, where the piano's tuned damping does.
 #[test]
-fn a_filtered_released_note_streams_until_its_silence_is_proven() {
-    streams_until_proven_silent("toned", "toned_up", 22 * BLOCK);
+fn a_filtered_released_note_streams_until_its_quiet_is_proven() {
+    streams_until_proven_quiet("toned", "toned_up", 22 * BLOCK);
 }
 
 /// Reading the released node twice at an offset, not the string under it, is what this
 /// proves, so the cheap single string carries it.
 #[test]
-fn a_released_note_read_again_later_streams_until_its_silence_is_proven() {
-    streams_until_proven_silent("doubled", "doubled_up", 3 * BLOCK);
-}
-
-/// `max_secs` counts from the checkpoint, so a note held past it still proves its release.
-#[test]
-fn a_release_held_past_max_secs_proves_its_silence_from_the_checkpoint() {
-    let silent = Silent {
-        bits: 16,
-        max_secs: 0.3,
-    };
-    let g = composition(1.0);
-    let mut held = opened(&g, "fading");
-    blocks(&mut held, 22);
-    let k = 22 * BLOCK;
-    assert!(k as f64 / f64::from(RATE) > silent.max_secs);
-    let release = k as f64 / f64::from(RATE);
-    let mut released = held
-        .resume(
-            &held.checkpoint(),
-            &[("release".into(), release)],
-            Some(silent),
-        )
-        .unwrap_or_else(|e| panic!("{e}"));
-    let mut tail = Vec::new();
-    while let Some(block) = released.next_block().expect("a block") {
-        tail.extend_from_slice(block.plane(0));
-    }
-    let end = released.end().expect("a proven end");
-    assert!(end > k && (end - k) as f64 / f64::from(RATE) <= silent.max_secs);
-    assert_eq!(k + tail.len(), end);
-    assert!(tail.iter().any(|v| v.abs() >= silent.threshold()));
+fn a_released_note_read_again_later_streams_until_its_quiet_is_proven() {
+    streams_until_proven_quiet("doubled", "doubled_up", 3 * BLOCK);
 }

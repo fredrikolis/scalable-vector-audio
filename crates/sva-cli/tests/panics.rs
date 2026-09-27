@@ -62,7 +62,7 @@ fn the_binary_answers_an_envelope_where_its_worker_cannot_start() {
         .arg("-c")
         // 100 MB of address space against the 128 MB stack `main` asks its worker for.
         .arg(format!(
-            "ulimit -v 100000; exec '{}' render --as lines",
+            "ulimit -v 100000; exec '{}' render @master --representation lines",
             env!("CARGO_BIN_EXE_sva-cli")
         ))
         .output()

@@ -1,11 +1,11 @@
-// Concern: which row of the collapse table a form takes, what it costs and its direct sums' bounds | Non-concern: running the row | IO: (&SpectralSum, rate, Horizon) -> Plan, flops, bounds
+// Concern: which row of the collapse table a form takes, what it costs and its direct sums' bounds | Non-concern: running the row | IO: (&SpectralSum, rate, Extent) -> Plan, flops, bounds
 
 use sva_formula::closed_form::{Part, map_children};
 use sva_formula::spectral_sum::atom::SpectralAtom;
 use sva_formula::{Body, ClosedForm, Lane, Line, SpectralSum, Var, normalize_closed_form};
 
 use super::truncate::Audible;
-use super::{Horizon, atoms, lines, point, truncate};
+use super::{Extent, atoms, lines, point, truncate};
 use crate::error::CollapseError;
 use crate::label::Rule;
 use crate::profile::Profile;
@@ -61,7 +61,7 @@ pub enum Plan {
 pub fn of(
     sum: &SpectralSum,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     len: usize,
 ) -> Result<Plan, CollapseError> {
@@ -69,7 +69,7 @@ pub fn of(
     if sum.var == Var::F {
         return Ok(Plan::Spectrum(Box::new(sum.clone())));
     }
-    if let Some(found) = line_plan(sum, rate, horizon, profile, len, ceiling)? {
+    if let Some(found) = line_plan(sum, rate, extent, profile, len, ceiling)? {
         return Ok(Plan::Lines(Box::new(found)));
     }
     let truncated = truncate::spectral_sum(sum, Audible::of(profile, rate))?;
@@ -81,7 +81,7 @@ pub fn of(
     let lanes = truncated
         .lanes
         .iter()
-        .map(|lane| lane_plan(lane, rate, horizon, len))
+        .map(|lane| lane_plan(lane, rate, extent, len))
         .collect();
     Ok(Plan::Sampled(Box::new(Sampled {
         sum: Box::new(truncated),
@@ -94,7 +94,7 @@ pub fn of(
 pub fn of_written(
     form: &ClosedForm,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     len: usize,
 ) -> Result<Plan, CollapseError> {
@@ -103,7 +103,7 @@ pub fn of_written(
     };
     let mut parts = Vec::with_capacity(addends.len());
     for addend in &addends {
-        match of_term(addend, rate, horizon, profile, len)? {
+        match of_term(addend, rate, extent, profile, len)? {
             Plan::Added(inner) => parts.extend(inner),
             part => parts.push(part),
         }
@@ -120,16 +120,16 @@ pub fn of_written(
 fn of_term(
     form: &ClosedForm,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     len: usize,
 ) -> Result<Plan, CollapseError> {
     let Ok(sum) = normalize_closed_form(form) else {
-        return of_written(form, rate, horizon, profile, len);
+        return of_written(form, rate, extent, profile, len);
     };
-    match of(&sum, rate, horizon, profile, len) {
+    match of(&sum, rate, extent, profile, len) {
         Err(nested @ CollapseError::NestedSeries { .. }) => Err(nested),
-        Err(_) => of_written(form, rate, horizon, profile, len),
+        Err(_) => of_written(form, rate, extent, profile, len),
         held => held,
     }
 }
@@ -244,7 +244,7 @@ pub fn summed_bounds(
 fn line_plan(
     sum: &SpectralSum,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     len: usize,
     ceiling: f64,
@@ -252,7 +252,7 @@ fn line_plan(
     let Some(found) = kept_lines(sum, profile, ceiling)? else {
         return Ok(None);
     };
-    let bins = lines::grid(&found.kept, &found.grids, rate, horizon.span(), len);
+    let bins = lines::grid(&found.kept, &found.grids, rate, extent.span_secs(rate), len);
     let split: Vec<(Vec<Line>, Vec<Line>)> = found
         .kept
         .iter()
@@ -270,7 +270,7 @@ fn line_plan(
     }))
 }
 
-/// Each lane's lines under the ceiling and over it, before any horizon places them.
+/// Each lane's lines under the ceiling and over it, before any extent places them.
 pub(super) struct Kept {
     pub(super) kept: Vec<Vec<Line>>,
     dropped: Vec<Vec<Line>>,
@@ -322,11 +322,11 @@ pub(super) fn kept_lines(
     }))
 }
 
-fn lane_plan(lane: &Lane, rate: u32, horizon: Horizon, len: usize) -> LanePlan {
-    let bins = lines::bins(horizon.span(), rate);
+fn lane_plan(lane: &Lane, rate: u32, extent: Extent, len: usize) -> LanePlan {
+    let bins = lines::bins(extent.span_secs(rate), rate);
     let sweep = LanePlan::Sweep {
         atoms: lane.atoms.len(),
-        samples: super::span::nonzero(lane, horizon, rate, len)
+        samples: super::span::nonzero(lane, extent, rate)
             .iter()
             .map(|(from, to)| to - from)
             .sum(),

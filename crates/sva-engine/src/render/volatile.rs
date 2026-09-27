@@ -7,7 +7,7 @@ use sva_formula::{Hash, NodeId};
 
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Cx, Instances, Node, ScopeId};
-use crate::render::RenderConfig;
+use crate::render::Render;
 use crate::typing::{Typing, Value};
 
 /// The base of each volatile node's slot; a node absent here keeps every value it stores.
@@ -24,12 +24,8 @@ impl Volatile {
 
 /// A node is volatile when its instance reads a volatile parameter, directly or through what a
 /// caller bound, or when anything it is built from is.
-pub(super) fn mark(
-    inst: &Instances,
-    tys: &Typing,
-    config: &RenderConfig,
-    target: &str,
-) -> Result<Volatile, EngineError> {
+pub(super) fn mark(inst: &Instances, held: &Render, target: &str) -> Result<Volatile, EngineError> {
+    let (tys, config) = (&held.tys, &held.config);
     if config.volatile.is_empty() {
         return Ok(Volatile::default());
     }
@@ -53,11 +49,12 @@ pub(super) fn mark(
         }
         let mut sink = Sink::default();
         sink.text(&reach.stripped(name));
+        let extent = held.extent_of(id).unwrap_or(sva_samples::Extent::NOWHERE);
         for word in [
             *nth,
             u64::from(config.rate),
-            config.horizon.start_secs.to_bits(),
-            config.horizon.len(config.rate).unwrap_or(0) as u64,
+            extent.start as u64,
+            extent.len() as u64,
             u64::from(tys.ty(id).width),
         ] {
             sink.0.word(word);

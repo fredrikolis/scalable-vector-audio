@@ -35,15 +35,16 @@ pub use meaning::{Meaning, meaning};
 pub use offset::Offset;
 pub use query::{Answer, Ask, DEFAULT_FRAME_SECS, Output, Representation};
 pub use refs::{Read, identity, nodes_in, resolve, spectral_sum_of, symbolic_hash};
+pub use render::until::{At, Cmp, Term};
 pub use render::{
-    Block, Checkpoint, Render, RenderConfig, STREAMED, Silent, Stream, StreamConfig, answer,
-    answer_buffer, ledger_over, render, render_until_silent, sketch_atom,
+    Block, Checkpoint, DEFAULT_PROOF_LIMIT_SECS, Range, Render, RenderConfig, STREAMED, Stream,
+    StreamConfig, Until, answer, answer_buffer, render, sketch_atom,
 };
 pub use schedule::{Order, Schedule, schedule_from};
 pub use sva_formula::{C64, Codomain, Held, Line, NodeId, SpectralSum, Ty, Var};
 pub use sva_samples::{
     Alias, AliasBand, BAND_COUNT, BandCrest, BandTrack, Bands, Buffer, Cost, Crest, Detail,
-    EnvelopeFrame, FormantFrame, Frames, Horizon, Label, LedgerEntry, Loudness, LoudnessFrame,
+    EnvelopeFrame, Extent, FormantFrame, Frames, Label, LedgerEntry, Loudness, LoudnessFrame,
     MAX_PINNED_FRAME, PSYCHOACOUSTIC_V1, PitchFrame, Profile, Rule, SignalKind, Source, Spectrum,
     StereoFrame, StereoImage, measure_alias, pinned_frame,
 };

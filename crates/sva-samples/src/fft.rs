@@ -68,7 +68,7 @@ fn chirp(k: usize, n: usize) -> (f64, f64) {
     (theta.cos(), theta.sin())
 }
 
-/// Bluestein's chirp-z: any length, so no horizon is padded to a power of two.
+/// Bluestein's chirp-z: any length, so no extent is padded to a power of two.
 pub fn dft(re: &mut [f64], im: &mut [f64]) {
     let n = re.len();
     if n.is_power_of_two() {

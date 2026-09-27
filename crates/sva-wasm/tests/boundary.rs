@@ -36,40 +36,43 @@ fn page() -> Composition {
     held
 }
 
-fn render(of: &Composition, target: &str) -> Rendering {
+/// `@<node>` over its first second, read for `representations`.
+fn asking(of: &Composition, node: &str, representations: &[&str]) -> Rendering {
+    let asked = representations.iter().map(|r| (*r).to_string()).collect();
     of.render(
-        Some(target.to_string()),
+        &format!("@{node}([0, 1s])"),
+        None,
+        Some(asked),
         Some(8000),
         JsValue::UNDEFINED,
-        None,
-        None,
-        None,
-        None,
     )
-    .unwrap_or_else(|_| unreachable!("`{target}` renders"))
+    .unwrap_or_else(|_| unreachable!("`{node}` renders"))
 }
 
-fn of_default(held: &Composition) -> Rendering {
-    held.render(None, Some(8000), JsValue::UNDEFINED, None, None, None, None)
-        .unwrap_or_else(|_| unreachable!("`master` renders"))
+fn render(of: &Composition, node: &str) -> Rendering {
+    asking(of, node, &["samples"])
 }
 
 fn plane(of: &Rendering) -> Vec<f32> {
-    of.samples(0, None, None)
+    of.samples(0)
         .unwrap_or_else(|_| unreachable!("one component"))
+}
+
+fn readings(of: &Rendering) -> JsValue {
+    of.readings()
+        .unwrap_or_else(|e| unreachable!("readings answer: {}", as_text(&field(&e, "refusal"))))
 }
 
 #[wasm_bindgen_test]
 fn every_export_survives_the_boundary() {
     let held = page();
 
-    assert_eq!(
-        of_default(&held).target(),
-        "master",
-        "an unset target renders `master`"
-    );
-
     let one = render(&held, "partials/one");
+    assert_eq!(
+        one.target(),
+        "@partials/one([0, 1s])",
+        "the target as written"
+    );
     assert_eq!(one.sample_rate(), 8000);
     assert_eq!(one.channels(), 1);
     assert_eq!(one.duration_secs(), 1.0);
@@ -79,30 +82,35 @@ fn every_export_survives_the_boundary() {
     let want = (2.0 * std::f64::consts::PI * 100.0 * (2.0 / 8000.0)).sin() as f32;
     assert!((drawn[2] - want).abs() < 1e-4, "{} vs {want}", drawn[2]);
 
-    let part = one
-        .samples(0, Some(0.25), Some(0.5))
-        .unwrap_or_else(|_| unreachable!("one component"));
-    assert_eq!(part.len(), 2000, "a window narrows the array");
-
-    for (from, to) in [
-        (Some(-1.0), None),
-        (Some(0.9), Some(0.1)),
-        (Some(5.0), Some(10.0)),
-        (None, Some(9.0)),
-    ] {
-        assert!(
-            one.samples(0, from, to).is_err(),
-            "a window {from:?}..{to:?} this rendering does not cover refuses, as on argv"
-        );
-    }
-
-    let probed = render(&held, "@partials/one*0.5");
-    assert_eq!(probed.target(), "probe", "math renders as the CLI's probe");
+    let part = held
+        .render(
+            "@partials/one([0.25s, 0.5s])",
+            None,
+            None,
+            Some(8000),
+            JsValue::UNDEFINED,
+        )
+        .unwrap_or_else(|_| unreachable!("an interval renders"));
+    assert_eq!(part.start_secs(), 0.25);
+    assert_eq!(plane(&part).len(), 2000, "an interval narrows the array");
+    let read = field(&readings(&part), "readings");
+    let component = items(&field(&field(&read, "samples"), "value"), "components").get(0);
+    let paging = field(&field(&component, "values"), "pagination");
+    assert_eq!(
+        field(&paging, "count").as_f64(),
+        Some(2000.0),
+        "and the reading the CLI prints"
+    );
+    assert_eq!(
+        plane(&part)[..],
+        drawn[2000..4000],
+        "and trims the output alone"
+    );
 
     let wide = render(&held, "wide");
     assert_eq!(wide.channels(), 2);
     assert!(
-        wide.samples(2, None, None).is_err(),
+        wide.samples(2).is_err(),
         "a component that is not there refuses, and does not trap"
     );
 
@@ -111,22 +119,19 @@ fn every_export_survives_the_boundary() {
 
 #[wasm_bindgen_test]
 fn a_representation_crosses_as_the_object_the_cli_puts_under_data() {
-    let one = render(&page(), "partials/one");
+    let one = asking(&page(), "partials/one", &["envelope", "samples"]);
 
-    let asked = one
-        .query("envelope", None, None)
-        .unwrap_or_else(|_| unreachable!("envelope answers"));
+    let asked = readings(&one);
     let spelled = as_text(&asked);
     assert!(
-        spelled.contains("\"target\":\"partials/one\"") && spelled.contains("\"envelope\":"),
+        spelled.contains("\"target\":\"@partials/one([0, 1s])\"")
+            && spelled.contains("\"envelope\":"),
         "the CLI's own keys: {spelled}"
     );
     assert_eq!(field(&asked, "sample_rate").as_f64(), Some(8000.0));
 
-    let capped = one
-        .query("samples", None, None)
-        .unwrap_or_else(|_| unreachable!("samples answers"));
-    let component = items(&field(&field(&capped, "samples"), "value"), "components").get(0);
+    let read = field(&asked, "readings");
+    let component = items(&field(&field(&read, "samples"), "value"), "components").get(0);
     let values = field(&component, "values");
     assert_eq!(
         js_sys::Array::from(&field(&values, "items")).length(),
@@ -150,7 +155,7 @@ fn a_representation_crosses_as_the_object_the_cli_puts_under_data() {
 /// refuse on a mono closed form — a stereo image needs two components — but none is unknown here.
 #[wasm_bindgen_test]
 fn every_representation_name_the_cli_answers_crosses_and_the_removed_ones_refuse() {
-    let one = render(&page(), "partials/one");
+    let held = page();
     for name in [
         "lines",
         "atoms",
@@ -160,9 +165,7 @@ fn every_representation_name_the_cli_answers_crosses_and_the_removed_ones_refuse
         "envelope",
         "arguments",
     ] {
-        let answered = one
-            .query(name, None, None)
-            .unwrap_or_else(|_| unreachable!("`{name}` answers"));
+        let answered = readings(&asking(&held, "partials/one", &[name]));
         let spelled = as_text(&answered);
         assert!(spelled.contains(&format!("\"{name}\":")), "{spelled}");
         assert!(
@@ -181,7 +184,14 @@ fn every_representation_name_the_cli_answers_crosses_and_the_removed_ones_refuse
         "alias",
         "bindings",
     ] {
-        if let Err(refused) = one.query(name, None, None) {
+        let asked = held.render(
+            "@partials/one([0, 1s])",
+            None,
+            Some(vec![name.to_string()]),
+            Some(8000),
+            JsValue::UNDEFINED,
+        );
+        if let Err(refused) = asked.and_then(|one| one.readings()) {
             let spelled = as_text(&field(&refused, "refusal"));
             assert!(
                 !spelled.contains("unknown representation"),
@@ -196,37 +206,17 @@ fn every_representation_name_the_cli_answers_crosses_and_the_removed_ones_refuse
         "nonsense",
     ] {
         assert!(
-            one.query(gone, None, None).is_err(),
+            held.render(
+                "@partials/one([0, 1s])",
+                None,
+                Some(vec![gone.to_string()]),
+                Some(8000),
+                JsValue::UNDEFINED,
+            )
+            .is_err(),
             "`{gone}` is not a reading this surface answers"
         );
     }
-}
-
-/// A window narrows a reading taken off the buffer, and the envelope names the window it ran
-/// over rather than the render's own.
-#[wasm_bindgen_test]
-fn a_window_narrows_a_query_and_the_envelope_says_which_one_ran() {
-    let one = render(&page(), "partials/one");
-    let whole = one
-        .query("samples", None, None)
-        .unwrap_or_else(|_| unreachable!("samples answers"));
-    let part = one
-        .query("samples", Some(0.25), Some(0.5))
-        .unwrap_or_else(|_| unreachable!("samples answers"));
-
-    assert_eq!(
-        field(&field(&whole, "window"), "end_secs").as_f64(),
-        Some(1.0)
-    );
-    let window = field(&part, "window");
-    assert_eq!(field(&window, "start_secs").as_f64(), Some(0.25));
-    assert_eq!(field(&window, "end_secs").as_f64(), Some(0.5));
-    let count = |held: &JsValue| {
-        let component = items(&field(&field(held, "samples"), "value"), "components").get(0);
-        field(&field(&field(&component, "values"), "pagination"), "count").as_f64()
-    };
-    assert_eq!(count(&whole), Some(8000.0));
-    assert_eq!(count(&part), Some(2000.0), "the window really narrowed it");
 }
 
 /// The store is a `Mutex` over a map, and a lock is the third thing `wasm32-unknown-unknown`
@@ -307,18 +297,25 @@ fn knobbed() -> Composition {
 }
 
 fn knob(cutoff: u32) -> String {
-    format!("@tone(t, x=@note, cutoff={cutoff})")
+    format!("@tone([0, inf), x=@note, cutoff={cutoff})")
 }
 
-fn played(held: &Composition, cutoff: u32, volatile: Option<Vec<String>>) -> Rendering {
+/// `{ volatile: [..] }` as a page writes it.
+fn config(volatile: &[&str]) -> JsValue {
+    let config = js_sys::Object::new();
+    let names: js_sys::Array = volatile.iter().map(|n| JsValue::from_str(n)).collect();
+    js_sys::Reflect::set(&config, &"volatile".into(), &names)
+        .unwrap_or_else(|_| unreachable!("an object takes a key"));
+    config.into()
+}
+
+fn played(held: &Composition, cutoff: u32, volatile: &[&str]) -> Rendering {
     held.render(
-        Some(knob(cutoff)),
+        &knob(cutoff),
+        Some("t >= 0.05s".to_string()),
+        None,
         Some(8000),
-        JsValue::from(0.05),
-        volatile,
-        None,
-        None,
-        None,
+        config(volatile),
     )
     .unwrap_or_else(|_| unreachable!("the knob at {cutoff} renders"))
 }
@@ -327,12 +324,12 @@ fn stats_of(of: &Rendering) -> JsValue {
     of.stats().unwrap_or_else(|_| unreachable!("stats answer"))
 }
 
-/// The fourth argument names the parameters a player is moving: what reads one keeps one
-/// value in the store, its last, however far the knob moves, and the audio is the same.
+/// `config.volatile` names the parameters a player is moving: what reads one keeps one value
+/// in the store, its last, however far the knob moves, and the audio is the same.
 #[wasm_bindgen_test]
-fn a_volatile_knob_crosses_as_a_fourth_argument_and_keeps_one_value_per_node() {
+fn a_volatile_knob_crosses_in_the_config_and_keeps_one_value_per_node() {
     let held = knobbed();
-    let cutoff = || Some(vec!["cutoff".to_string()]);
+    let cutoff = || &["cutoff"][..];
     played(&held, 900, cutoff());
     let entries = held.cache_entries();
 
@@ -359,19 +356,17 @@ fn a_volatile_knob_crosses_as_a_fourth_argument_and_keeps_one_value_per_node() {
     assert_eq!(held.cache_entries(), entries, "one value per node");
     assert_eq!(
         plane(&next),
-        plane(&played(&knobbed(), 1300, None)),
+        plane(&played(&knobbed(), 1300, &[])),
         "the same audio as a plain render"
     );
 
     let refused = held
         .render(
-            Some(knob(500)),
+            &knob(500),
+            Some("t >= 0.05s".to_string()),
+            None,
             Some(8000),
-            JsValue::from(0.05),
-            Some(vec!["cutof".to_string()]),
-            None,
-            None,
-            None,
+            config(&["cutof"]),
         )
         .err()
         .unwrap_or_else(|| unreachable!("a name nothing binds refuses"));
@@ -394,8 +389,8 @@ fn the_cache_budget_is_the_pages_own_and_survives_a_clear() {
     assert_eq!((held.cache_bytes(), held.cache_entries()), (0.0, 0));
 }
 
-/// A cache policy crosses by name: the composition's default, and one render's own as the
-/// seventh argument.
+/// A cache policy crosses by name: the composition's default, and one render's own in its
+/// config.
 #[wasm_bindgen_test]
 fn a_cache_policy_crosses_by_name_and_per_render() {
     let held = page();
@@ -407,15 +402,10 @@ fn a_cache_policy_crosses_by_name_and_per_render() {
     assert!(held.set_cache_policy("some").is_err());
 
     let at = |policy: &str| {
-        held.render(
-            Some("master".to_string()),
-            Some(8000),
-            JsValue::UNDEFINED,
-            None,
-            None,
-            None,
-            Some(policy.to_string()),
-        )
+        let config = js_sys::Object::new();
+        js_sys::Reflect::set(&config, &"cache".into(), &policy.into())
+            .unwrap_or_else(|_| unreachable!("an object takes a key"));
+        held.render("@master([0, 1s])", None, None, Some(8000), config.into())
     };
     let target = at("target").unwrap_or_else(|_| unreachable!("target is a policy"));
     let stored = field(&stats_of(&target), "stored").as_f64();
@@ -459,7 +449,13 @@ fn a_refusal_crosses_as_data_and_the_module_keeps_working() {
     held.insert("master", "@nowhere*2\n");
 
     let refused = held
-        .render(None, Some(8000), JsValue::UNDEFINED, None, None, None, None)
+        .render(
+            "@master([0, 1s])",
+            None,
+            None,
+            Some(8000),
+            JsValue::UNDEFINED,
+        )
         .err()
         .unwrap_or_else(|| unreachable!("a dangling ref refuses"));
 
@@ -499,8 +495,8 @@ fn a_refusal_crosses_as_data_and_the_module_keeps_working() {
 
     held.insert("master", "@partials/one*0.5\n");
     assert_eq!(
-        of_default(&held).target(),
-        "master",
+        render(&held, "master").channels(),
+        1,
         "one node replaced, and the session renders again"
     );
 }
@@ -509,8 +505,13 @@ fn a_refusal_crosses_as_data_and_the_module_keeps_working() {
 /// envelope. A page branching on one has to find the other beside it.
 #[wasm_bindgen_test]
 fn a_refusal_the_page_raised_crosses_exactly_as_a_pipeline_one_does() {
-    let one = render(&page(), "partials/one");
-    let Err(raised) = one.query("nonsense", None, None) else {
+    let Err(raised) = page().render(
+        "@partials/one([0, 1s])",
+        None,
+        Some(vec!["nonsense".to_string()]),
+        Some(8000),
+        JsValue::UNDEFINED,
+    ) else {
         unreachable!("`nonsense` is no reading")
     };
     assert_eq!(
@@ -531,26 +532,26 @@ fn a_refusal_the_page_raised_crosses_exactly_as_a_pipeline_one_does() {
     );
 }
 
-/// `sva-cli render --as ledger --from --to` answers a windowed ledger, so a page asking the
-/// same window gets one too, summed over that window alone.
+/// An interval's ledger is summed over that interval alone, as `sva-cli` sums it.
 #[wasm_bindgen_test]
-fn a_ledger_narrows_to_the_window_asked_for() {
-    let held = of_default(&page());
-    let asked = held
-        .query("ledger", Some(0.25), Some(0.5))
-        .unwrap_or_else(|_| unreachable!("a windowed ledger answers"));
-    let window = field(&asked, "window");
-    assert_eq!(field(&window, "start_secs").as_f64(), Some(0.25));
-    assert_eq!(field(&window, "end_secs").as_f64(), Some(0.5));
-    let rows = items(&field(&asked, "ledger"), "value");
+fn a_ledger_is_summed_over_the_interval_asked_for() {
+    let held = page()
+        .render(
+            "@master([0.25s, 0.5s])",
+            None,
+            Some(vec!["ledger".to_string()]),
+            Some(8000),
+            JsValue::UNDEFINED,
+        )
+        .unwrap_or_else(|_| unreachable!("a ledger answers"));
+    let asked = readings(&held);
+    let range = field(&asked, "range");
+    assert_eq!(field(&range, "start_secs").as_f64(), Some(0.25));
+    assert_eq!(field(&range, "end_secs").as_f64(), Some(0.5));
+    let rows = items(&field(&field(&asked, "readings"), "ledger"), "value");
     let spelled = as_text(&asked);
     assert!(rows.length() >= 2, "the target and its ref: {spelled}");
-    let master = rows.get(0);
-    assert_eq!(
-        field(&master, "node").as_string().as_deref(),
-        Some("master")
-    );
-    let rms = field(&master, "rms").as_f64().unwrap_or(0.0);
+    let rms = field(&rows.get(0), "rms").as_f64().unwrap_or(0.0);
     assert!(
         (rms - 0.5 / 2f64.sqrt()).abs() < 1e-3,
         "a sine at 0.5 over whole periods: {spelled}"
@@ -605,37 +606,27 @@ fn builtins_cross_with_what_each_named_argument_means() {
     assert_eq!(field(&b, "part").as_string().as_deref(), Some("string"));
 }
 
-/// Echo `k` of a 50 ms burst is `0.35^k` loud; the fifteenth is the last at or over
-/// `2^-24`, and it ends at `15*0.25 + 0.05 = 3.8` seconds.
+/// Unset, `until` is every later frame under 24 bits: the fifteenth echo of a 50 ms burst
+/// is the last frame over it, ending at `15*0.25 + 0.05 = 3.8` seconds.
 #[wasm_bindgen_test]
-fn a_silent_render_ends_where_its_last_echo_is_heard() {
+fn an_open_render_ends_where_its_condition_is_proven() {
     let mut held = Composition::new(None);
     held.insert(
         "master",
         "crop(sin(2*pi*440*t), 0s, 0.05s) + 0.35*self(t - 0.25s)\n",
     );
-    let silent = held
-        .render(
-            None,
-            Some(8000),
-            JsValue::from("silent"),
-            None,
-            None,
-            Some(30.0),
-            None,
-        )
+    let quiet = held
+        .render("@master", None, None, Some(8000), JsValue::UNDEFINED)
         .unwrap_or_else(|_| unreachable!("the echo falls silent"));
-    let secs = silent.duration_secs();
+    let secs = quiet.duration_secs();
     assert!((3.75..=3.8).contains(&secs), "{secs}");
 
     let never = held.render(
-        Some("sin(2*pi*100*t)".to_string()),
+        "sin(2*pi*100*t)",
+        Some("max(envelope([t, inf))) < -96db".to_string()),
+        None,
         Some(8000),
-        JsValue::from("silent"),
-        None,
-        Some(16),
-        None,
-        None,
+        JsValue::UNDEFINED,
     );
     let refused = never
         .err()
@@ -649,17 +640,16 @@ fn a_silent_render_ends_where_its_last_echo_is_heard() {
 
 const BLOCK: usize = 256;
 
-fn opened(held: &Composition, target: &str, bindings: JsValue) -> Stream {
+/// `@<node>` over an hour, which no test reaches the end of, and no proof run to end it.
+fn opened(held: &Composition, node: &str, bindings: JsValue) -> Stream {
     held.stream(
-        Some(target.to_string()),
-        Some(8000),
+        &format!("@{node}([0, 3600s])"),
         BLOCK,
+        Some("t >= 3600s".to_string()),
+        Some(8000),
         bindings,
-        JsValue::UNDEFINED,
-        None,
-        None,
     )
-    .unwrap_or_else(|e| unreachable!("`{target}` streams: {}", as_text(&field(&e, "refusal"))))
+    .unwrap_or_else(|e| unreachable!("`{node}` streams: {}", as_text(&field(&e, "refusal"))))
 }
 
 fn blocks(stream: &mut Stream, count: usize) -> Vec<f32> {
@@ -708,14 +698,14 @@ fn a_stream_crosses_block_by_block_and_resumes_released_at_a_checkpoint() {
     js_sys::Reflect::set(&key_up, &"release".into(), &at.into())
         .unwrap_or_else(|_| unreachable!("an object takes a key"));
     let mut released = gated
-        .resume(&checkpoint, key_up.into(), JsValue::UNDEFINED, None, None)
+        .resume(&checkpoint, key_up.into(), None)
         .unwrap_or_else(|_| unreachable!("a release at the checkpoint"));
     assert!(blocks(&mut released, 2).iter().all(|v| *v == 0.0));
 
     let early = js_sys::Object::new();
     js_sys::Reflect::set(&early, &"release".into(), &(at / 2.0).into())
         .unwrap_or_else(|_| unreachable!("an object takes a key"));
-    let refused = gated.resume(&checkpoint, early.into(), JsValue::UNDEFINED, None, None);
+    let refused = gated.resume(&checkpoint, early.into(), None);
     refused_as(refused.err(), "engine.binding_not_causal");
 }
 
@@ -732,7 +722,7 @@ fn a_wide_stream_lays_each_component_a_block_apart() {
     let wide = render(&held, "wide");
     for c in 0..2 {
         let whole = wide
-            .samples(c, None, None)
+            .samples(c)
             .unwrap_or_else(|_| unreachable!("two components"));
         assert_eq!(
             out[c * BLOCK..c * BLOCK + took],
@@ -743,19 +733,12 @@ fn a_wide_stream_lays_each_component_a_block_apart() {
 }
 
 #[wasm_bindgen_test]
-fn a_stream_until_silent_ends_where_the_silent_render_proves_it() {
+fn a_stream_until_quiet_ends_where_the_quiet_render_proves_it() {
     let mut held = Composition::new(None);
     held.insert("master", "sin(2*pi*100*t)*exp(0 - 30*t)\n");
+    let quiet = || Some("max(envelope([t, inf))) < -96db".to_string());
     let mut stream = held
-        .stream(
-            None,
-            Some(8000),
-            BLOCK,
-            JsValue::UNDEFINED,
-            JsValue::from("silent"),
-            Some(16),
-            None,
-        )
+        .stream("@master", BLOCK, quiet(), Some(8000), JsValue::UNDEFINED)
         .unwrap_or_else(|_| unreachable!("a decay falls silent"));
     assert_eq!(stream.end(), None, "no block has proven silence yet");
     let mut out = vec![0.0f32; BLOCK];
@@ -773,15 +756,7 @@ fn a_stream_until_silent_ends_where_the_silent_render_proves_it() {
     assert_eq!(heard.len() as f64, end);
     assert_eq!(stream.next(&mut out).ok(), Some(0), "nothing after silence");
     let whole = held
-        .render(
-            None,
-            Some(8000),
-            JsValue::from("silent"),
-            None,
-            Some(16),
-            None,
-            None,
-        )
+        .render("@master", quiet(), None, Some(8000), JsValue::UNDEFINED)
         .unwrap_or_else(|_| unreachable!("the same decay falls silent"));
     let proven = plane(&whole);
     assert_eq!(heard[..proven.len()], proven[..]);
@@ -793,31 +768,20 @@ fn a_stream_refuses_what_it_cannot_take_at_the_boundary() {
     let mut stream = opened(&held, "partials/one", JsValue::UNDEFINED);
     let mut short = vec![0.0f32; BLOCK - 1];
     refused_as(stream.next(&mut short).err(), "wasm.bad_argument");
-    let open = |bindings: JsValue, until: JsValue| {
-        held.stream(None, Some(8000), BLOCK, bindings, until, None, None)
+    let open = |bindings: JsValue, until: Option<String>| {
+        held.stream("@master([0, 1s])", BLOCK, until, Some(8000), bindings)
             .err()
     };
+    refused_as(open(JsValue::from(3), None), "wasm.bad_argument");
     refused_as(
-        open(JsValue::from(3), JsValue::UNDEFINED),
-        "wasm.bad_argument",
-    );
-    refused_as(
-        open(JsValue::UNDEFINED, JsValue::from(2.0)),
-        "wasm.bad_argument",
+        open(JsValue::UNDEFINED, Some("2".to_string())),
+        "validation_error",
     );
     let worded = js_sys::Object::new();
     js_sys::Reflect::set(&worded, &"release".into(), &"soon".into())
         .unwrap_or_else(|_| unreachable!("an object takes a key"));
-    refused_as(open(worded.into(), JsValue::UNDEFINED), "wasm.bad_argument");
-    let empty = held.stream(
-        None,
-        Some(8000),
-        0,
-        JsValue::UNDEFINED,
-        JsValue::UNDEFINED,
-        None,
-        None,
-    );
+    refused_as(open(worded.into(), None), "wasm.bad_argument");
+    let empty = held.stream("@master([0, 1s])", 0, None, Some(8000), JsValue::UNDEFINED);
     refused_as(empty.err(), "engine.no_stream");
 }
 

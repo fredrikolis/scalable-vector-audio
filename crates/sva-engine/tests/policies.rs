@@ -40,8 +40,7 @@ fn own(render: &Render, node: &str) -> Hash {
     buffer_key(
         identity(&render.tys, id).expect("an identity"),
         RATE,
-        0.0,
-        (SECONDS * f64::from(RATE)).round() as usize,
+        sva_samples::Extent::secs(RATE, 0.0, SECONDS),
         render.tys.ty(id).width as usize,
         AliasScore::NotAsked,
     )
@@ -62,7 +61,7 @@ fn stored(render: &Render) -> BTreeSet<Hash> {
 
 fn root(render: &Render) -> Vec<f64> {
     render
-        .buffer(render.root)
+        .output(render.root)
         .expect("the root")
         .plane(0)
         .to_vec()

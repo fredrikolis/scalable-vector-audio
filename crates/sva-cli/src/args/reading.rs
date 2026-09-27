@@ -1,68 +1,52 @@
-// Concern: parses the flags a reading is asked under, for render and analyze alike | Non-concern: the subcommand dispatch (mod.rs) | IO: (argv tail) -> Command or CliError
+// Concern: parses the readings and settings a render or an analysis is asked under | Non-concern: the subcommand dispatch (mod.rs), what a target names | IO: (argv tail) -> Command or CliError
 
 use std::path::{Component, Path, PathBuf};
 
-use sva_core::{
-    Asked, CliError, Shaping, WindowEdge, is_wav, representation_for, retired, silence,
-    silent_edge, window_edge,
-};
+use sva_core::{Asked, CliError, Settings, is_wav, representation_for, retired, wav_path};
 use sva_engine::{DEFAULT_SAMPLE_RATE, MAX_PINNED_FRAME, Representation, pinned_frame};
 
-use super::{
-    ANALYZE_REPRESENTATIONS, AnalyzeArgs, Command, RenderArgs, USAGE, count, operations, positive,
-    value,
-};
+use super::{ANALYZE_REPRESENTATIONS, AnalyzeArgs, Command, RenderArgs, USAGE, value};
 
+/// What `render` and `analyze` both read: readings and settings.
+#[derive(Default)]
 struct Flags {
-    from: Option<WindowEdge>,
-    to: Option<WindowEdge>,
-    /// `--to silent`, and the bits it wrote, where it wrote any.
-    silent: Option<Option<u32>>,
-    shape: Shaping,
     asked: Vec<(String, Option<PathBuf>)>,
+    settings: Settings,
+    confirm: bool,
 }
 
 impl Flags {
-    fn new() -> Flags {
-        Flags {
-            from: None,
-            to: None,
-            silent: None,
-            shape: Shaping::default(),
-            asked: Vec::new(),
-        }
-    }
-
-    /// The flags `render` and `analyze` both read. `Ok(false)` means neither did.
+    /// `Ok(false)` means neither subcommand reads this flag here.
     fn read<'a>(
         &mut self,
         flag: &str,
         it: &mut impl Iterator<Item = &'a String>,
+        keys: &[&str],
     ) -> Result<bool, CliError> {
         match flag {
-            "--from" => self.from = Some(window_edge(&value(it, "--from")?, "--from")?),
-            "--to" => {
-                let raw = value(it, "--to")?;
-                // One end, the last written: a time or silence, never both.
-                match silent_edge(&raw) {
-                    Some(bits) => (self.silent, self.to) = (Some(bits?), None),
-                    None => (self.to, self.silent) = (Some(window_edge(&raw, "--to")?), None),
+            "--representation" => {
+                for entry in value(it, "--representation")?.split(',') {
+                    let (name, dest) = split_as(entry.trim())?;
+                    refuse_audio_dest(&name, dest.as_deref())?;
+                    self.asked.push((name, dest));
                 }
             }
-            "--frame" => {
-                self.shape.frame_secs = Some(positive(&value(it, "--frame")?, "--frame")?);
-            }
-            "--peaks" => self.shape.peaks = count(&value(it, "--peaks")?, "--peaks")?,
-            "--depth" => self.shape.depth = count(&value(it, "--depth")?, "--depth")?,
-            "--oversample" => self.shape.oversample = factor(&value(it, "--oversample")?)?,
-            "--as" => {
-                let (name, dest) = split_as(&value(it, "--as")?)?;
-                refuse_audio_dest(&name, dest.as_deref())?;
-                self.asked.push((name, dest));
-            }
+            "-c" => self.set(&value(it, "-c")?, keys)?,
+            "--confirm" => self.confirm = true,
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    fn set(&mut self, raw: &str, keys: &[&str]) -> Result<(), CliError> {
+        let Some((key, raw)) = raw.split_once('=') else {
+            return Err(CliError::Usage(format!(
+                "`-c {raw}` names no value; write `-c <key>=<value>`\n{USAGE}"
+            )));
+        };
+        self.settings
+            .set(key, raw, keys)
+            .map_err(|e| CliError::Usage(format!("-c {}\n{USAGE}", e.message())))
     }
 
     /// The asks `sva-analysis` answers, lifted out before a `Representation` is looked for:
@@ -92,9 +76,10 @@ impl Flags {
                     "`{name}` left the language; write `{write}`\n{USAGE}"
                 )));
             }
-            let representation = representation_for(name, self.shape).ok_or_else(|| {
-                CliError::Usage(format!("unknown representation `{name}`\n{USAGE}"))
-            })?;
+            let representation =
+                representation_for(name, self.settings.shape).ok_or_else(|| {
+                    CliError::Usage(format!("unknown representation `{name}`\n{USAGE}"))
+                })?;
             if allowed.is_some_and(|set| !set.contains(&name.as_str())) {
                 return Err(CliError::Usage(format!(
                     "`analyze` does not answer `{name}` — only {} need no rendered \
@@ -112,41 +97,43 @@ impl Flags {
     }
 }
 
-/// A bare word is the target; anything starting `--` is a flag.
-pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
-    let (dir, rest) = super::composition_flag(rest)?;
-    let mut peeked = rest.iter().peekable();
-    let target = match peeked.peek() {
-        Some(a) if !a.starts_with("--") => peeked.next().cloned(),
-        _ => None,
-    };
-    let mut it = peeked;
+const RENDER_KEYS: [&str; 10] = [
+    "flop_budget",
+    "proof_limit",
+    "node",
+    "depth",
+    "peaks",
+    "oversample",
+    "frame",
+    "brief",
+    "skim",
+    "pcm16",
+];
 
-    let mut flags = Flags::new();
-    let (mut brief, mut skim, mut pcm16) = (false, false, false);
-    let mut confirm = false;
-    let mut node: Option<String> = None;
-    let mut sample_rate: Option<u32> = None;
-    let mut flop_budget: Option<u128> = None;
-    let mut max: Option<f64> = None;
+const ANALYZE_KEYS: [&str; 3] = ["frame", "peaks", "against"];
+
+/// A positional, which may open with a minus as an expression does; only a flag is none.
+fn positional(arg: Option<&String>) -> Option<String> {
+    arg.filter(|a| !a.starts_with("--") && *a != "-c").cloned()
+}
+
+/// The target is the one positional; everything else is a flag.
+pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
+    let mut it = rest.iter();
+    let target = positional(it.next()).ok_or_else(|| {
+        CliError::Usage(format!(
+            "render needs a target expression, as `sva-cli render '@master([0, inf))'`\n{USAGE}"
+        ))
+    })?;
+    let mut flags = Flags::default();
+    let (mut until, mut rate) = (None, None);
     while let Some(flag) = it.next() {
-        if flags.read(flag, &mut it)? {
+        if flags.read(flag, &mut it, &RENDER_KEYS)? {
             continue;
         }
         match flag.as_str() {
-            "--max" => max = Some(positive(&value(&mut it, "--max")?, "--max")?),
-            "--brief" => brief = true,
-            "--skim" => skim = true,
-            "--pcm16" => pcm16 = true,
-            "--confirm" => confirm = true,
-            "--node" => node = Some(value(&mut it, "--node")?),
-            "--sample-rate" => sample_rate = Some(hertz(&value(&mut it, "--sample-rate")?)?),
-            "--flop-budget" => {
-                flop_budget = Some(operations(
-                    &value(&mut it, "--flop-budget")?,
-                    "--flop-budget",
-                )?);
-            }
+            "--until" => until = Some(value(&mut it, "--until")?),
+            "--rate" => rate = Some(hertz(&value(&mut it, "--rate")?)?),
             other => {
                 return Err(CliError::Usage(format!(
                     "unknown argument `{other}`\n{USAGE}"
@@ -158,71 +145,39 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
     refuse_shared_destination(asked.iter().filter_map(|a| a.dest.as_deref()))?;
     if asked.is_empty() {
         return Err(CliError::Usage(format!(
-            "render needs at least one `--as <representation>`; `--as samples=<path>.wav` \
-             writes audio\n{USAGE}"
+            "render needs at least one `--representation <r>`; `--representation \
+             samples=<path>.wav` writes audio\n{USAGE}"
         )));
     }
-    if asked.iter().any(|a| a.name == "bindings") && node.is_none() {
+    if asked.iter().any(|a| a.name == "bindings") && flags.settings.node.is_none() {
         return Err(CliError::Usage(format!(
-            "`--as bindings` needs `--node <path>`\n{USAGE}"
+            "`bindings` needs `-c node=<path>`\n{USAGE}"
         )));
     }
-    check_frame(&asked, sample_rate.unwrap_or(DEFAULT_SAMPLE_RATE))?;
-    let silent = match (flags.silent, max) {
-        (Some(bits), max) => Some(silence(bits, max)?),
-        (None, Some(_)) => {
-            return Err(CliError::Usage(format!(
-                "`--max` bounds how long `--to silent` looks; write it beside `--to silent`\n{USAGE}"
-            )));
-        }
-        (None, None) => None,
-    };
+    check_frame(&asked, rate.unwrap_or(DEFAULT_SAMPLE_RATE))?;
     Ok(Command::Render(Box::new(RenderArgs {
         target,
-        node,
-        dir,
-        sample_rate,
-        from: flags.from,
-        to: flags.to,
-        silent,
+        until,
+        rate,
         asked,
-        brief,
-        skim,
-        pcm16,
-        confirm,
-        flop_budget,
+        settings: flags.settings,
+        confirm: flags.confirm,
     })))
 }
 
-/// A file's rate is read off it, never chosen, so `analyze` has no `--sample-rate`.
+/// A file's rate is read off it, never chosen, and a file is read whole.
 pub(super) fn analyze_args(rest: &[String]) -> Result<Command, CliError> {
     let mut it = rest.iter();
-    let path = it
-        .next()
-        .filter(|a| !a.starts_with("--"))
-        .cloned()
+    let path = positional(it.next())
         .ok_or_else(|| CliError::Usage(format!("missing <file.wav>\n{USAGE}")))?;
     let path = wav_path(&path)?;
-    let mut flags = Flags::new();
-    let mut against: Option<PathBuf> = None;
-    let mut confirm = false;
+    let mut flags = Flags::default();
     while let Some(flag) = it.next() {
-        if flags.read(flag, &mut it)? {
+        if flags.read(flag, &mut it, &ANALYZE_KEYS)? {
             continue;
         }
-        match flag.as_str() {
-            "--confirm" => confirm = true,
-            "--against" => against = Some(wav_path(&value(&mut it, "--against")?)?),
-            other => {
-                return Err(CliError::Usage(format!(
-                    "unknown argument `{other}`\n{USAGE}"
-                )));
-            }
-        }
-    }
-    if flags.silent.is_some() {
         return Err(CliError::Usage(format!(
-            "`--to silent` ends a render; a file's length is its own\n{USAGE}"
+            "unknown argument `{flag}`\n{USAGE}"
         )));
     }
     let asked = flags.resolved(Some(&ANALYZE_REPRESENTATIONS))?;
@@ -235,22 +190,20 @@ pub(super) fn analyze_args(rest: &[String]) -> Result<Command, CliError> {
     )?;
     if asked.is_empty() && analyses.is_empty() {
         return Err(CliError::Usage(format!(
-            "`analyze` needs at least one `--as <representation>`\n{USAGE}"
+            "`analyze` needs at least one `--representation <r>`\n{USAGE}"
         )));
     }
     Ok(Command::Analyze(Box::new(AnalyzeArgs {
         path,
-        from: flags.from,
-        to: flags.to,
         asked,
         analyses,
-        against,
-        confirm,
+        settings: flags.settings,
+        confirm: flags.confirm,
     })))
 }
 
 /// Two readings written to one path leave one of them on disk while the envelope lists
-/// both as written. Refusing says which `--as` to move, before anything is rendered.
+/// both as written. Refusing says which reading to move, before anything is rendered.
 fn refuse_shared_destination<'a>(dests: impl Iterator<Item = &'a Path>) -> Result<(), CliError> {
     let mut taken: Vec<PathBuf> = Vec::new();
     for dest in dests {
@@ -286,31 +239,11 @@ fn lexical(path: &Path) -> PathBuf {
     out
 }
 
-fn wav_path(raw: &str) -> Result<PathBuf, CliError> {
-    match is_wav(Path::new(raw)) {
-        true => Ok(PathBuf::from(raw)),
-        false => Err(CliError::Usage(format!(
-            "analyze takes a `.wav` file, not `{raw}` — mp3 and every other format are out \
-             of scope\n{USAGE}"
-        ))),
-    }
-}
-
-/// The analysis frame is a power of two at the base rate and stays one at k times it.
-fn factor(raw: &str) -> Result<u32, CliError> {
-    match raw.parse::<u32>() {
-        Ok(k) if (2..=16).contains(&k) && k.is_power_of_two() => Ok(k),
-        _ => Err(CliError::Usage(format!(
-            "--oversample needs a power of two from 2 to 16, got `{raw}`\n{USAGE}"
-        ))),
-    }
-}
-
 fn hertz(raw: &str) -> Result<u32, CliError> {
     match raw.parse::<u32>() {
         Ok(hz) if hz > 0 => Ok(hz),
         _ => Err(CliError::Usage(format!(
-            "--sample-rate needs a whole number of hertz above zero, got `{raw}`\n{USAGE}"
+            "--rate needs a whole number of hertz above zero, got `{raw}`\n{USAGE}"
         ))),
     }
 }
@@ -319,7 +252,7 @@ fn hertz(raw: &str) -> Result<u32, CliError> {
 fn split_as(raw: &str) -> Result<(String, Option<PathBuf>), CliError> {
     match raw.split_once('=') {
         Some((name, "")) => Err(CliError::Usage(format!(
-            "`--as {name}=` names no destination; drop the `=` to print to stdout\n{USAGE}"
+            "`{name}=` names no destination; drop the `=` to read it under `data.readings`\n{USAGE}"
         ))),
         Some((name, path)) => Ok((name.to_string(), Some(PathBuf::from(path)))),
         None => Ok((raw.to_string(), None)),
@@ -350,7 +283,7 @@ pub(crate) fn check_frame(asked: &[Asked], rate: u32) -> Result<(), CliError> {
         let frame = pinned_frame(secs, sr);
         if frame > MAX_PINNED_FRAME {
             return Err(CliError::Usage(format!(
-                "--frame {secs} sizes spectrum's transform to {frame} samples at {sr} Hz, past \
+                "-c frame={secs} sizes spectrum's transform to {frame} samples at {sr} Hz, past \
                  the {MAX_PINNED_FRAME}-sample bound\n{USAGE}"
             )));
         }

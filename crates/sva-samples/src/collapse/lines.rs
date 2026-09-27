@@ -53,7 +53,7 @@ pub fn of_lane(lane: &Lane, ceiling: f64, floor_db: f64, precision: f64) -> Opti
 const MAX_TRANSFORM: usize = 1 << 21;
 
 /// The transform length placing the most lines on bin centres: a series closes over its own
-/// spacing, which the horizon need not hold whole.
+/// spacing, which the span need not hold whole.
 pub fn grid(kept: &[Vec<Line>], grids: &[f64], rate: u32, span: f64, len: usize) -> usize {
     let mut best = bins(span, rate);
     let mut placed = on_grid(kept, best, rate);
@@ -109,10 +109,10 @@ const MAX_CONVERGENTS: usize = 64;
 const TURN_EPSILON: f64 = 1e-9;
 
 fn on_grid(kept: &[Vec<Line>], n: usize, rate: u32) -> usize {
-    let horizon = n as f64 / f64::from(rate);
+    let span = n as f64 / f64::from(rate);
     kept.iter()
         .flat_map(|lane| lane.iter())
-        .filter(|l| commensurate(l.hz, horizon))
+        .filter(|l| commensurate(l.hz, span))
         .count()
 }
 
@@ -198,25 +198,32 @@ impl Direct {
     }
 }
 
-pub fn add_direct(plane: &mut [f64], kept: &[Line], start_secs: f64, rate: u32) {
+pub fn add_direct(plane: &mut [f64], kept: &[Line], extent: super::Extent, rate: u32) {
     let Some(direct) = Direct::of(kept) else {
         return;
     };
     for (i, held) in plane.iter_mut().enumerate() {
-        *held += direct.at(start_secs + i as f64 / f64::from(rate));
+        *held += direct.at((extent.start + i as i64) as f64 / f64::from(rate));
     }
 }
 
 /// Every kept line falls on a bin centre: no leakage for the exact label to hide.
-pub fn transformed(kept: &[Line], start_secs: f64, n: usize, rate: u32, len: usize) -> Vec<f64> {
+pub fn transformed(
+    kept: &[Line],
+    extent: super::Extent,
+    n: usize,
+    rate: u32,
+    len: usize,
+) -> Vec<f64> {
+    let start_secs = extent.start_secs(rate);
     if kept.is_empty() {
         return vec![0.0; len];
     }
-    let horizon = n as f64 / f64::from(rate);
+    let span = n as f64 / f64::from(rate);
     let mut re = vec![0.0; n];
     let mut im = vec![0.0; n];
     for l in kept {
-        let bin = (l.hz * horizon).round() as i64;
+        let bin = (l.hz * span).round() as i64;
         let k = bin.rem_euclid(n as i64) as usize;
         let shifted = l.amp * C64::new(0.0, TAU * l.hz * start_secs).exp();
         re[k] += shifted.re * n as f64;
@@ -228,15 +235,15 @@ pub fn transformed(kept: &[Line], start_secs: f64, n: usize, rate: u32, len: usi
     re
 }
 
-pub fn bins(horizon: f64, rate: u32) -> usize {
-    (horizon * f64::from(rate)).round().max(1.0) as usize
+pub fn bins(span: f64, rate: u32) -> usize {
+    (span * f64::from(rate)).round().max(1.0) as usize
 }
 
 /// DC is never placed: it is a constant fill, not a line the transform rounds.
 pub fn split(kept: &[Line], n: usize, rate: u32) -> (Vec<Line>, Vec<Line>) {
-    let horizon = n as f64 / f64::from(rate);
+    let span = n as f64 / f64::from(rate);
     kept.iter()
-        .partition(|l| l.hz != 0.0 && commensurate(l.hz, horizon))
+        .partition(|l| l.hz != 0.0 && commensurate(l.hz, span))
 }
 
 /// Ascending by frequency, the 64 loudest kept; `db` against amplitude 1.0, unclamped.

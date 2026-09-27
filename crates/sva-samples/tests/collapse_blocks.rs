@@ -1,9 +1,9 @@
-// Concern: states that a closed form read span by span writes the samples one whole read writes | Non-concern: which rows a horizon picks by cost (collapse.rs) | IO: (a ClosedForm) -> bit-equal samples
+// Concern: states that a closed form read span by span writes the samples one whole read writes | Non-concern: which rows an extent picks by cost (collapse.rs) | IO: (a ClosedForm) -> bit-equal samples
 
 use std::f64::consts::TAU;
 
 use sva_formula::{Body, C64, ClosedForm, Origin, Part, Unary, Var};
-use sva_samples::collapse::{self, AliasScore, Horizon};
+use sva_samples::collapse::{self, AliasScore, Extent};
 use sva_samples::{CollapseError, PSYCHOACOUSTIC_V1, Rows, Tape};
 
 const RATE: u32 = 8_000;
@@ -34,31 +34,28 @@ fn cosine(hz: f64, amp: f64) -> Body {
     ])
 }
 
-fn blocks(form: &ClosedForm, block: usize) -> Vec<f64> {
+/// Spans of `block` samples from grid sample `start` to the end.
+fn blocks(form: &ClosedForm, start: i64, block: i64) -> Vec<f64> {
     let rows = Rows::of(form, RATE, &PSYCHOACOUSTIC_V1).expect("rows");
-    let mut tape = Tape::new(rows.width(), LEN);
-    while tape.end() < LEN {
-        let to = (tape.end() + block).min(LEN);
+    let mut tape = Tape::new(rows.width(), LEN, start);
+    while tape.end() < LEN as i64 {
+        let to = (tape.end() + block).min(LEN as i64);
         rows.extend(to, &mut tape).expect("a span");
     }
-    tape.since(0, 0).to_vec()
+    tape.since(0, start).to_vec()
 }
 
-fn whole(form: &ClosedForm) -> Vec<f64> {
-    let horizon = Horizon::secs(0.0, LEN as f64 / f64::from(RATE));
-    let (buffer, _) = collapse::render(
-        form,
-        RATE,
-        horizon,
-        &PSYCHOACOUSTIC_V1,
-        AliasScore::NotAsked,
-    )
-    .expect("a whole read");
+fn whole(form: &ClosedForm, start: i64) -> Vec<f64> {
+    let extent = Extent::new(start, LEN as i64);
+    let (buffer, _) =
+        collapse::render(form, RATE, extent, &PSYCHOACOUSTIC_V1, AliasScore::NotAsked)
+            .expect("a whole read");
     buffer.plane(0).to_vec()
 }
 
 /// Three lines are summed directly by a whole read too, and `tanh` is point-sampled there:
-/// both whole rows read one instant at a time, so the spans agree with them bit for bit.
+/// both whole rows read one instant at a time, so the spans agree with them bit for bit,
+/// wherever on the grid either starts.
 #[test]
 fn a_form_whose_whole_row_reads_one_instant_at_a_time_is_the_same_in_any_span() {
     let chord = form(
@@ -71,10 +68,16 @@ fn a_form_whose_whole_row_reads_one_instant_at_a_time_is_the_same_in_any_span() 
     );
     let shaped = form(Var::T, Body::Apply(Unary::Tanh, part(cosine(110.0, 3.0))));
     for written in [chord, shaped] {
-        let want = whole(&written);
-        assert!(want.iter().any(|v| *v != 0.0), "silence tests nothing");
-        for block in [1, 128, 999, LEN] {
-            assert_eq!(blocks(&written, block), want, "blocks of {block}");
+        for start in [0, 777] {
+            let want = whole(&written, start);
+            assert!(want.iter().any(|v| *v != 0.0), "silence tests nothing");
+            for block in [1, 128, 999, LEN as i64] {
+                assert_eq!(
+                    blocks(&written, start, block),
+                    want,
+                    "blocks of {block} from {start}"
+                );
+            }
         }
     }
 }

@@ -1,6 +1,6 @@
 // Concern: runs each addend of a sum on its own row and adds the planes | Non-concern: choosing the rows (plan.rs), running one (collapse.rs) | IO: (Vec<Plan>) -> (Buffer, Label)
 
-use super::{AliasScore, Horizon, plan::Plan};
+use super::{AliasScore, Extent, plan::Plan};
 use crate::buffer::Buffer;
 use crate::error::CollapseError;
 use crate::label::{Detail, Label, Source};
@@ -10,14 +10,14 @@ use crate::profile::Profile;
 pub fn added(
     parts: Vec<Plan>,
     rate: u32,
-    horizon: Horizon,
+    extent: Extent,
     profile: &Profile,
     len: usize,
     score: AliasScore,
 ) -> Result<(Buffer, Label), CollapseError> {
     let mut collapsed = Vec::with_capacity(parts.len());
     for part in parts {
-        collapsed.push(super::run(part, rate, horizon, profile, len, score)?);
+        collapsed.push(super::run(part, rate, extent, profile, len, score)?);
     }
     let width = collapsed
         .iter()
@@ -44,7 +44,7 @@ pub fn added(
     Ok((
         Buffer {
             rate,
-            origin_secs: horizon.start_secs,
+            start: extent.start,
             width,
             planes,
         },

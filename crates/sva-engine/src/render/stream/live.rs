@@ -11,15 +11,19 @@ use crate::render::silent::Live;
 pub(super) struct View<'a> {
     nodes: &'a [Streamed],
     index: BTreeMap<NodeId, usize>,
-    /// Each call site's node, its stream node and its site within that machine.
+    /// Each call site's node, its stream node and its site within that machine, one that runs.
     sites: BTreeMap<NodeId, (usize, usize)>,
-    at: usize,
+    at: i64,
 }
 
 impl<'a> View<'a> {
-    pub(super) fn of(nodes: &'a [Streamed], at: usize) -> View<'a> {
+    pub(super) fn of(nodes: &'a [Streamed], at: i64) -> View<'a> {
         let mut sites = BTreeMap::new();
-        for (i, node) in nodes.iter().enumerate() {
+        for (i, node) in nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| !n.extent.is_empty())
+        {
             if let Kind::Machine { sites: own, .. } = &node.kind {
                 for (site, id) in own.iter().enumerate() {
                     sites.entry(*id).or_insert((i, site));
@@ -54,16 +58,17 @@ impl Live for View<'_> {
         machine.filter(site)
     }
 
-    /// Samples before the grid's first are zero; one the tape has let go is not known.
+    /// Samples before a node's first are zero; one the tape has let go is not known.
     fn history(&self, id: NodeId, back: i64) -> Option<f64> {
         let tape = &self.nodes[*self.index.get(&id)?].tape;
-        let from = (self.at as i64 + back).max(0) as usize;
+        let from = (self.at + back).max(tape.origin());
         if from >= self.at {
             return Some(0.0);
         }
         (from >= tape.base() && tape.end() >= self.at).then_some(())?;
+        let held = (self.at - from) as usize;
         let widest = (0..tape.width())
-            .flat_map(|c| tape.since(c, from)[..self.at - from].iter())
+            .flat_map(|c| tape.since(c, from)[..held].iter())
             .fold(0.0f64, |held, v| held.max(v.abs()));
         Some(widest)
     }

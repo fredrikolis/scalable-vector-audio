@@ -1,4 +1,4 @@
-// Concern: the sampled representation and what produces or measures one | Non-concern: closed forms (sva-formula), nodes and refs (sva-engine) | IO: (ClosedForm, rate, horizon) -> Buffer + Label
+// Concern: the sampled representation and what produces or measures one | Non-concern: closed forms (sva-formula), nodes and refs (sva-engine) | IO: (ClosedForm, rate, extent) -> Buffer + Label
 
 pub mod biquad;
 pub mod buffer;
@@ -17,7 +17,7 @@ pub mod stft;
 pub use biquad::Coeffs;
 pub use buffer::Buffer;
 pub use collapse::{
-    ALIAS_OVERSAMPLE, AliasScore, Audible, Horizon, Refs, Rows, crop_gain, eval_spectral_sum_at,
+    ALIAS_OVERSAMPLE, AliasScore, Audible, Extent, Refs, Rows, crop_gain, eval_spectral_sum_at,
     eval_written_at, lane_of, of_spectral_sum, of_spectral_sum_or_point, render, render_written,
     truncate_spectral_sum, truncate_written, unary,
 };

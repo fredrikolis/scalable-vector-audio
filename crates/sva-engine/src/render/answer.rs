@@ -3,9 +3,9 @@
 use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
 use sva_formula::{AUDIBLE_CEILING_HZ, Line, SpectralSum, Var, d_dt, envelope, line_atoms};
 use sva_samples::{
-    AliasScore, Buffer, Consumes, Horizon, Peak, PitchFrame, Source, measure::bands,
-    measure::crest, measure::envelope, measure::formants, measure::loudness, measure::pitch,
-    measure::spectrum, measure::stereo, measure_alias,
+    AliasScore, Buffer, Consumes, Extent, Peak, PitchFrame, Source, measure::bands, measure::crest,
+    measure::envelope, measure::formants, measure::loudness, measure::pitch, measure::spectrum,
+    measure::stereo, measure_alias,
 };
 
 use crate::error::{Diagnostic, EngineError, Located};
@@ -75,11 +75,10 @@ pub fn answer(
         }
         _ => {
             let buffer = render
-                .buffers
-                .get(&node)
+                .output(node)
                 .ok_or_else(|| unmaterialized(render, node, representation))?;
             Ok(Answer::whole(
-                measured(render, node, representation, buffer)?,
+                measured(render, node, representation, &buffer)?,
                 Source::Measured,
                 profile,
                 Some(render.config.rate),
@@ -106,11 +105,24 @@ fn measured_instead(
 
 /// The samples this node reaches: the buffer the render holds, or the collapse it would have run,
 /// down to FORMAT 9.1's row 4 over the written closed form.
-fn on_the_grid(render: &Render, node: sva_formula::NodeId) -> Result<Buffer, EngineError> {
-    if let Some(held) = render.buffers.get(&node) {
-        return Ok(held.clone());
+pub(super) fn on_the_grid(
+    render: &Render,
+    node: sva_formula::NodeId,
+) -> Result<Buffer, EngineError> {
+    if let Some(held) = render.output(node) {
+        return Ok(held);
     }
-    let (rate, horizon) = (render.config.rate, render.config.horizon);
+    let rate = render.config.rate;
+    let extent = render.range.ok_or_else(|| {
+        render.unranged.clone().unwrap_or_else(|| {
+            refused(
+                render,
+                node,
+                "engine.not_materialized",
+                "a measured envelope reads samples, and this render read none".to_string(),
+            )
+        })
+    })?;
     let profile = &render.config.profile;
     let written = refs::substituted_closed_form(&render.tys, node);
     let composed;
@@ -130,7 +142,7 @@ fn on_the_grid(render: &Render, node: sva_formula::NodeId) -> Result<Buffer, Eng
             sum,
             written.as_ref(),
             rate,
-            horizon,
+            extent,
             profile,
             AliasScore::NotAsked,
         ),
@@ -139,7 +151,7 @@ fn on_the_grid(render: &Render, node: sva_formula::NodeId) -> Result<Buffer, Eng
                 .as_ref()
                 .expect("a node with no sum answers off the closed form written above"),
             rate,
-            horizon,
+            extent,
             profile,
             AliasScore::NotAsked,
         ),
@@ -160,7 +172,7 @@ fn off_the_grid(
         Output::Envelope(envelope::trace(
             buffer.plane(0),
             f64::from(rate),
-            buffer.origin_secs,
+            buffer.origin_secs(),
             frame_secs.unwrap_or(DEFAULT_FRAME_SECS),
         )),
         Source::Measured,
@@ -230,7 +242,9 @@ fn exact(
                 .collect();
             found.sort_by(|a, b| b.db.total_cmp(&a.db));
             let frame = PitchFrame {
-                t_secs: render.config.horizon.start_secs,
+                t_secs: render
+                    .range
+                    .map_or(0.0, |range| range.start_secs(render.config.rate)),
                 notes: pitch::name_peaks(&found, max_notes),
             };
             (Output::Pitch(vec![frame]), listed)
@@ -382,7 +396,7 @@ fn not_a_line(
         code: "read.lines_need_unwindowed_lines".to_string(),
         message,
         location: at,
-        help: "`--as atoms` states each term as it stands, and `--as lines` of the node under \
+        help: "`atoms` states each term as it stands, and `lines` of the node under \
                the window or envelope lists the lines it multiplies"
             .to_string(),
     })
@@ -414,9 +428,7 @@ fn measured(
             let reference = oversampled(render, behind(render, node)?, oversample)?;
             Output::Alias(Box::new(worst_alias(buffer, &reference, oversample)))
         }
-        Representation::Ledger { depth } => {
-            Output::Ledger(attributed(render, node, depth, 0..buffer.len())?)
-        }
+        Representation::Ledger { depth } => Output::Ledger(attributed(render, node, depth)?),
         other => {
             return off_buffer(buffer, other).map_err(|fault| match fault {
                 NoReading::NeedsAGraph => not_a_reading(render, node, other),
@@ -437,7 +449,7 @@ pub enum NoReading {
 /// Every reading a buffer answers on its own, with no graph behind it.
 pub fn off_buffer(buffer: &Buffer, representation: Representation) -> Result<Output, NoReading> {
     let sr = f64::from(buffer.rate);
-    let start = buffer.origin_secs;
+    let start = buffer.origin_secs();
     let plane = buffer.plane(0);
     Ok(match representation {
         Representation::Samples => Output::Samples(Box::new(buffer.clone())),
@@ -495,19 +507,23 @@ pub fn off_buffer(buffer: &Buffer, representation: Representation) -> Result<Out
     })
 }
 
-/// Every held buffer under the target, its own refs beside it, so the reading can share the
-/// target's energy down the tree it was built from. A ref the closed form adds stands there as what
-/// it contributed to the node reading it; one no addend isolates is left unattributed.
+/// Every held buffer under the target over the root's range, its own refs beside it, so the
+/// reading can share the target's energy down the tree it was built from. A ref the closed form
+/// adds stands there as what it contributed to the node reading it; one no addend isolates is
+/// left unattributed.
 fn attributed(
     render: &Render,
     node: sva_formula::NodeId,
     depth: usize,
-    range: std::ops::Range<usize>,
 ) -> Result<Vec<sva_samples::LedgerEntry>, EngineError> {
+    let edges = edges_under(render, node, depth)?;
+    let under: std::collections::BTreeSet<sva_formula::NodeId> = std::iter::once(node)
+        .chain(edges.iter().map(|(_, child)| *child))
+        .collect();
     let mut buffers = std::collections::BTreeMap::new();
     let mut deps = std::collections::BTreeMap::new();
     let mut kinds = std::collections::BTreeMap::new();
-    for (id, buffer) in &render.buffers {
+    for id in render.buffers.keys().filter(|id| under.contains(id)) {
         let name = render.tys.name(*id).to_string();
         let read = refs_read(render, *id)?
             .into_iter()
@@ -515,10 +531,13 @@ fn attributed(
             .collect();
         deps.insert(name.clone(), read);
         kinds.insert(name.clone(), sva_samples::SignalKind::Audio);
-        buffers.insert(name, buffer.clone());
+        let held = render
+            .output(*id)
+            .expect("a held buffer over a decided range");
+        buffers.insert(name, held);
     }
     let mut contributed_by = std::collections::BTreeMap::new();
-    for (parent, child) in edges_under(render, node, depth)? {
+    for (parent, child) in edges {
         if !render.tys.ty(parent).is_closed_form()
             && !crate::render::slots::reads_held(render, parent)?
         {
@@ -532,35 +551,15 @@ fn attributed(
             contributed_by.insert(render.tys.name(child).to_string(), held);
         }
     }
+    let len = render.range.map_or(0, |range| range.len());
     Ok(sva_samples::measure::ledger::attribute(
         &buffers,
         &contributed_by,
         &deps,
         &kinds,
         render.tys.name(node),
-        range,
+        0..len,
         depth,
-    ))
-}
-
-/// The ledger over the part of a render `over` names: the same tree and the same shares,
-/// each summed over those samples alone, as a render over that window alone would sum them.
-pub fn ledger_over(
-    render: &Render,
-    node: sva_formula::NodeId,
-    depth: usize,
-    over: Horizon,
-) -> Result<Answer, EngineError> {
-    let representation = Representation::Ledger { depth };
-    let buffer = render
-        .buffers
-        .get(&node)
-        .ok_or_else(|| unmaterialized(render, node, representation))?;
-    Ok(Answer::whole(
-        Output::Ledger(attributed(render, node, depth, buffer.span_of(over))?),
-        Source::Measured,
-        render.config.profile.name,
-        Some(render.config.rate),
     ))
 }
 
@@ -641,7 +640,9 @@ fn contributed(
     child: sva_formula::NodeId,
 ) -> Result<Option<Buffer>, EngineError> {
     if !render.tys.ty(parent).is_closed_form() {
-        return crate::render::slots::contributed(render, parent, child);
+        let range = render.range.expect("a ledger reads a decided range");
+        return Ok(crate::render::slots::contributed(render, parent, child)?
+            .map(|held| held.over(range, held.extent())));
     }
     let Value::ClosedForm(form) = render.tys.value(parent) else {
         return Ok(None);
@@ -661,7 +662,7 @@ fn collapsed(
     sva_samples::collapse::of_spectral_sum(
         &sum,
         render.config.rate,
-        render.config.horizon,
+        render.range?,
         &render.config.profile,
         AliasScore::NotAsked,
     )
@@ -729,7 +730,7 @@ fn worst_alias(buffer: &Buffer, reference: &Buffer, oversample: u32) -> sva_samp
             reference.plane(c),
             oversample as usize,
             sr,
-            buffer.origin_secs,
+            buffer.origin_secs(),
         )
     }))
     .expect("a buffer holds at least one component")
@@ -742,11 +743,14 @@ fn oversampled(
     oversample: u32,
 ) -> Result<Buffer, EngineError> {
     let rate = render.config.rate * oversample;
+    let range = render.range.expect("an alias score reads a decided range");
+    let k = i64::from(oversample);
+    let extent = Extent::new(range.start * k, range.end * k);
     let taken = match refs::spectral_sum_of(&render.tys, node, Var::T) {
         Ok(sum) => sva_samples::of_spectral_sum(
             &sum,
             rate,
-            render.config.horizon,
+            extent,
             &render.config.profile,
             AliasScore::NotAsked,
         ),
@@ -754,7 +758,7 @@ fn oversampled(
             Some(form) => sva_samples::render(
                 &form,
                 rate,
-                render.config.horizon,
+                extent,
                 &render.config.profile,
                 AliasScore::NotAsked,
             ),
@@ -788,7 +792,7 @@ fn difference(buffer: &Buffer) -> Buffer {
         })
         .collect();
     let mut out = Buffer::of_planes(buffer.rate, planes);
-    out.origin_secs = buffer.origin_secs;
+    out.start = buffer.start;
     out
 }
 

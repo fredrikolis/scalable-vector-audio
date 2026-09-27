@@ -405,18 +405,17 @@ fn a_short_strike_under_a_long_shoulder_is_advised() {
     );
 }
 
-/// A typo'd target refuses under the code and message `render` answers the same input with.
+/// A typo'd target refuses under the code `render` answers a ref to it with.
 #[test]
 fn lint_of_an_undefined_target_refuses_like_render() {
     let dir = composition("undefined-target", &[("master", "sin(2*pi*300*t)\n")]);
     let Err(linted) = lint(&dir, Some("drums/kik")) else {
         panic!("a target nothing defines refuses");
     };
-    let Err(rendered) = sva_core::probe(&dir, "drums/kik") else {
-        panic!("render refuses the same input");
+    let Err(rendered) = sva_core::probe(&dir, "@drums/kik") else {
+        panic!("render refuses the ref that names it");
     };
     assert_eq!(linted.code(), rendered.code());
-    assert_eq!(linted.message(), rendered.message());
     assert_eq!(linted.exit_code(), rendered.exit_code());
 }
 

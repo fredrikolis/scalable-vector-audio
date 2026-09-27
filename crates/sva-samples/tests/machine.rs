@@ -16,11 +16,9 @@ fn silent(renderer: &NodeRenderer, layout: &Layout) -> Result<Buffer, sva_sample
         layout,
         &Ctx {
             rate: RATE,
-            origin_secs: 0.0,
+            start: 0,
             len: 0,
             reads: &[],
-            self_planes: &[],
-            written: 0,
         },
     )
 }
@@ -60,24 +58,19 @@ fn a_buffer_read_a_filter_and_a_self_recurrence_produce_the_expected_samples() {
         sites: vec![Site::Filter(sva_samples::Shape::Lowpass)],
     };
 
-    // One sample at a time, feeding back what the machine already wrote.
-    let mut history = vec![0.0; LEN];
-    for i in 0..LEN {
-        let block = renderer
-            .run(
-                &layout,
-                &Ctx {
-                    rate: RATE,
-                    origin_secs: 0.0,
-                    len: i + 1,
-                    reads: &[Window::of(&read)],
-                    self_planes: &history,
-                    written: i,
-                },
-            )
-            .expect("a mono run");
-        history[i] = block.at(0, i);
-    }
+    let history = renderer
+        .run(
+            &layout,
+            &Ctx {
+                rate: RATE,
+                start: 0,
+                len: LEN,
+                reads: &[Window::of(&read, read.extent())],
+            },
+        )
+        .expect("a mono run")
+        .plane(0)
+        .to_vec();
 
     let coeffs = design(
         sva_samples::Shape::Lowpass,
@@ -160,11 +153,9 @@ fn a_mono_operand_widens_to_its_neighbours_components_without_crossing_them() {
             &layout,
             &Ctx {
                 rate: RATE,
-                origin_secs: 0.0,
+                start: 0,
                 len: LEN,
-                reads: &[Window::of(&stereo)],
-                self_planes: &[],
-                written: 0,
+                reads: &[Window::of(&stereo, stereo.extent())],
             },
         )
         .expect("a three-wide run");

@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use sva_cli::success_envelope;
+use sva_cli::{CliError, success_envelope};
 use sva_core::{Rendered, SAMPLE_LIMIT};
 use sva_core::{Report, query_data};
 use sva_engine::{Buffer, LedgerEntry, Output, Representation};
@@ -35,19 +35,26 @@ pub fn put(dir: &Path, rel: &str, body: &str) {
     std::fs::write(full, body).expect("a node file");
 }
 
-pub fn secs(r: &Rendered) -> f64 {
-    r.config.horizon.end_secs
+/// `master` over its first second, as a render names it.
+pub fn master(dir: &Path) -> Result<Rendered, CliError> {
+    sva_core::probe(dir, "@master([0, 1s])")
 }
 
-pub fn buffer<'a>(r: &'a Rendered, node: &str) -> &'a Buffer {
+/// Where the render's range ends, in seconds.
+pub fn secs(r: &Rendered) -> f64 {
+    let range = r.render.range.expect("a render that read samples");
+    range.end as f64 / f64::from(r.config.rate)
+}
+
+pub fn buffer(r: &Rendered, node: &str) -> Buffer {
     let id = r.render.id(node).unwrap_or_else(|| panic!("{node} typed"));
     r.render
-        .buffer(id)
+        .output(id)
         .unwrap_or_else(|| panic!("{node} rendered"))
 }
 
-pub fn plane<'a>(r: &'a Rendered, node: &str) -> &'a [f64] {
-    buffer(r, node).plane(0)
+pub fn plane(r: &Rendered, node: &str) -> Vec<f64> {
+    buffer(r, node).plane(0).to_vec()
 }
 
 pub fn ledger(r: &Rendered, node: &str) -> Vec<LedgerEntry> {
@@ -73,11 +80,16 @@ pub fn json_of(r: &Rendered, name: &str, representation: Representation) -> Stri
         name.to_string(),
         r.answer(&r.target, representation).unwrap(),
     )];
+    let rate = r.config.rate;
+    let range = r
+        .render
+        .range
+        .map(|x| (x.start_secs(rate), x.end as f64 / f64::from(rate)));
     success_envelope(
         &query_data(&Report {
-            target: &r.target,
-            rate: r.config.rate,
-            horizon: r.config.horizon,
+            target: &r.expression,
+            rate,
+            range,
             profile: r.config.profile.name,
             label: r.label(),
             written: &[],

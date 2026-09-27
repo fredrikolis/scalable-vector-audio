@@ -4,14 +4,13 @@ use std::path::Path;
 
 use sva_engine::{
     Alias, AliasBand, Answer, Arguments, BandCrest, BandTrack, Bands, Binding, Buffer, CacheStats,
-    Cost, Crest, Detail, EnvelopeFrame, FormantFrame, Horizon, Label, LedgerEntry, Loudness,
-    LoudnessFrame, Outcome, Output, PayloadKind, Source, SpectralSum, Spectrum, StereoFrame,
-    StereoImage, Work,
+    Cost, Crest, Detail, EnvelopeFrame, FormantFrame, Label, LedgerEntry, Loudness, LoudnessFrame,
+    Outcome, Output, PayloadKind, Source, SpectralSum, Spectrum, StereoFrame, StereoImage, Work,
 };
 
 use crate::json::{NONE, capped, escape, list, num};
 
-/// Past this a caller reading stdout wants a narrower `--from`/`--to`, not a wall of JSON.
+/// Past this a caller reading stdout wants a later interval start, not a wall of JSON.
 pub const SAMPLE_LIMIT: usize = 4096;
 
 fn maybe(v: Option<f64>) -> String {
@@ -293,7 +292,7 @@ fn samples_json(b: &Buffer, limit: Option<usize>) -> String {
             capped(
                 plane,
                 shown,
-                |n| b.origin_secs + n as f64 / f64::from(b.rate),
+                |n| b.origin_secs() + n as f64 / f64::from(b.rate),
                 |v| num(*v)
             )
         )
@@ -302,7 +301,7 @@ fn samples_json(b: &Buffer, limit: Option<usize>) -> String {
     format!(
         "{{ \"rate\": {}, \"origin_secs\": {}, \"width\": {}, \"components\": {} }}",
         b.rate,
-        num(b.origin_secs),
+        num(b.origin_secs()),
         b.width,
         list(&components, |c| component(*c))
     )
@@ -525,7 +524,8 @@ pub fn stats_json(stats: &CacheStats) -> String {
 pub struct Report<'a> {
     pub target: &'a str,
     pub rate: u32,
-    pub horizon: Horizon,
+    /// The seconds the readings were taken over; `None` where none read samples.
+    pub range: Option<(f64, f64)>,
     pub profile: &'a str,
     pub label: Option<&'a Label>,
     pub written: &'a [(String, &'a Path)],
@@ -537,11 +537,11 @@ pub struct Report<'a> {
     pub skim: bool,
 }
 
-/// `written` names every reading that went to a file rather than into this object.
+/// `written` names every reading that went to a file rather than into `readings`.
 pub fn query_data(report: &Report) -> String {
     let written = list(report.written, |(name, path)| {
         format!(
-            "{{ \"as\": \"{}\", \"path\": \"{}\" }}",
+            "{{ \"representation\": \"{}\", \"path\": \"{}\" }}",
             escape(name),
             escape(&path.display().to_string())
         )
@@ -570,19 +570,20 @@ pub fn query_data(report: &Report) -> String {
             )
         }))
         .collect::<Vec<_>>()
-        .join(",\n  ");
-    let tail = match reads.is_empty() {
-        true => String::new(),
-        false => format!(",\n  {reads}"),
-    };
+        .join(",\n    ");
+    let range = report.range.map_or(NONE.to_string(), |(start, end)| {
+        format!(
+            "{{ \"start_secs\": {}, \"end_secs\": {} }}",
+            num(start),
+            num(end)
+        )
+    });
     format!(
         "{{\n  \"target\": \"{}\",\n  \"sample_rate\": {},\n  \"profile\": \"{}\",\n  \
-         \"window\": {{ \"start_secs\": {}, \"end_secs\": {} }},\n  \"label\": {label},\n  \
-         \"written\": {written}{tail}\n}}",
+         \"range\": {range},\n  \"label\": {label},\n  \"written\": {written},\n  \
+         \"readings\": {{\n    {reads}\n  }}\n}}",
         escape(report.target),
         report.rate,
         escape(report.profile),
-        num(report.horizon.start_secs),
-        num(report.horizon.end_secs)
     )
 }

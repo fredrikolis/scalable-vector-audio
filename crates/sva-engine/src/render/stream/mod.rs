@@ -1,16 +1,16 @@
-// Concern: renders a target block after block, each node carrying its state across blocks | Non-concern: one node's rows or machine, a whole-horizon render | IO: (&Graph, target, bindings) -> blocks
+// Concern: renders a target block after block, each node carrying its state across blocks | Non-concern: one node's rows or machine, a whole render | IO: (&Graph, target, bindings) -> blocks
 
 mod live;
 mod node;
 
-use std::collections::BTreeMap;
-
-use sva_ast::Graph;
-use sva_samples::Tape;
+use sva_ast::{Expr, Graph};
 use sva_samples::physics::chaigne_askenfelt::landing_step;
+use sva_samples::{Extent, Tape};
 
-use super::silent::{Kept, Silent, bound_from, not_silent_by};
-use super::{Render, RenderConfig, prepared};
+use super::extent::{self, Supports};
+use super::silent::{Kept, bound_from};
+use super::until::Known;
+use super::{Range, Render, RenderConfig, Until, prepared};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::flops::Work;
 use crate::instantiate::RELEASE;
@@ -19,46 +19,54 @@ use node::Streamed;
 
 pub const STREAMED: &str = "streamed";
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StreamConfig {
     pub rate: u32,
     pub block: usize,
-    /// Ends the stream where the tail bound proves silence; `None` streams on forever.
-    pub silent: Option<Silent>,
+    pub range: Range,
+    /// Ends the stream at the first sample it holds at; `None` runs to the range's end.
+    pub until: Option<Until>,
 }
 
-/// A target rendered from the grid's first sample on, one block at a time: every block is the
-/// samples a whole render over the same rows writes there, bit for bit.
+/// A target rendered from its range's start on, one block at a time, each node over the same
+/// extent a whole render gives it: every block is the samples such a render writes there.
 pub struct Stream {
     graph: Graph,
-    target: String,
+    target: Expr,
     bindings: Vec<(String, f64)>,
     config: StreamConfig,
     shell: Render,
     nodes: Vec<Streamed>,
     root: usize,
-    at: usize,
-    /// Silence to prove by `limit`, and the last bound a proof found.
-    silent: Option<(Silent, usize)>,
-    bound: Option<f64>,
+    start: i64,
+    at: i64,
     kept: Kept,
-    end: Option<usize>,
+    end: Option<i64>,
     work: Work,
 }
 
-/// The samples one `next` wrote, `[start, start + len)` of the grid.
-pub struct Block<'a> {
-    tape: &'a Tape,
-    start: usize,
+/// The samples one `next` wrote, from grid sample `start` on.
+pub struct Block {
+    planes: Vec<Vec<f64>>,
+    start: i64,
 }
 
-impl Block<'_> {
-    pub fn start(&self) -> usize {
+impl Block {
+    /// `[start, end)` of the root, silent outside its support.
+    fn of(tape: &Tape, support: Extent, start: i64, end: i64) -> Block {
+        let window = tape.within(support);
+        let planes = (0..tape.width())
+            .map(|c| (start..end).map(|n| window.at(c, n)).collect())
+            .collect();
+        Block { planes, start }
+    }
+
+    pub fn start(&self) -> i64 {
         self.start
     }
 
     pub fn len(&self) -> usize {
-        self.tape.end() - self.start
+        self.planes[0].len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -66,61 +74,45 @@ impl Block<'_> {
     }
 
     pub fn width(&self) -> usize {
-        self.tape.width()
+        self.planes.len()
     }
 
     pub fn plane(&self, c: usize) -> &[f64] {
-        self.tape.since(c, self.start)
+        &self.planes[c]
     }
 }
 
 impl Stream {
-    /// `bindings` are the named arguments `@target(t, name=value, ...)` is written with.
-    /// Proves no silence until a block has run.
+    /// `bindings` are named arguments added to `target`'s own ref.
     pub fn open(
         graph: &Graph,
-        target: &str,
+        target: &Expr,
         bindings: &[(String, f64)],
         config: StreamConfig,
-    ) -> Result<Stream, EngineError> {
-        Stream::opened_at(graph, target, bindings, config, 0)
-    }
-
-    /// Silence is proven by `max_secs` past `from`.
-    fn opened_at(
-        graph: &Graph,
-        target: &str,
-        bindings: &[(String, f64)],
-        config: StreamConfig,
-        from: usize,
     ) -> Result<Stream, EngineError> {
         if config.block == 0 {
-            return Err(refusal(target, "a block of no samples".to_string()));
+            return Err(refusal("a block of no samples".to_string()));
         }
         let wrapped = bound(graph, target, bindings)?;
         let held = prepared(&wrapped, STREAMED)?;
-        let rate = f64::from(config.rate);
-        let silent = config
-            .silent
-            .map(|silent| (silent, from + (silent.max_secs * rate).ceil() as usize));
-        // No row a stream takes reads a horizon.
-        let render_config = RenderConfig::seconds(config.rate, 1.0);
-        let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
-        let shell = Render {
-            root: held.root,
-            tys: held.tys,
-            buffers: BTreeMap::new(),
-            frames: BTreeMap::new(),
-            symbolic: BTreeMap::new(),
-            labels: BTreeMap::new(),
-            traces: Vec::new(),
-            config: render_config,
-            schedule,
-            bindings: BTreeMap::new(),
-            cache_stats: None,
-            proofs: 0,
+        let render_config = RenderConfig {
+            range: config.range,
+            until: config.until.clone(),
+            ..RenderConfig::at(config.rate)
         };
-        let nodes = node::built(&shell, config.block)?;
+        let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
+        let mut shell = Render::shell(held.tys, held.root, render_config, schedule);
+        let start = config.range.start.unwrap_or_else(|| {
+            extent::default_start(Supports::new(&shell.tys, config.rate).of(shell.root))
+        });
+        let demand = Extent::new(start, config.range.end.unwrap_or(i64::MAX).max(start));
+        let order = shell.schedule.materialize.clone();
+        shell.extents = extent::decide(&shell, &order, &[(shell.root, demand)])?;
+        if config.range.end.is_none() {
+            provable(&shell, config.until.as_ref(), start)?;
+        }
+        let keep = config.until.as_ref().map_or(0, |u| u.reach(config.rate));
+        let nodes = node::built(&shell, config.block, keep)?;
         let kept = Kept::new(shell.tys.clone(), shell.config.clone());
         let root = nodes
             .iter()
@@ -128,15 +120,14 @@ impl Stream {
             .ok_or_else(|| EngineError::UnknownNode(shell.tys.name(shell.root).to_string()))?;
         Ok(Stream {
             graph: graph.clone(),
-            target: target.to_string(),
+            target: target.clone(),
             bindings: bindings.to_vec(),
             config,
             shell,
             nodes,
             root,
-            at: 0,
-            silent,
-            bound: None,
+            start,
+            at: start,
             kept,
             end: None,
             work: Work {
@@ -146,46 +137,51 @@ impl Stream {
         })
     }
 
-    /// Ends the stream here where its states now prove every later sample under the threshold.
-    fn settle(&mut self) -> Result<(), EngineError> {
-        let (Some((silent, _)), None) = (self.silent, self.end) else {
+    /// The first sample of `[from, to]` the condition surely holds at, over the root's
+    /// samples so far and a bound on every later one.
+    fn settle(&mut self, from: i64, to: i64) -> Result<(), EngineError> {
+        if self.end.is_some() {
+            return Ok(());
+        }
+        if self.config.range.end == Some(to) {
+            self.end = Some(to);
+        }
+        let Some(until) = self.config.until.clone() else {
             return Ok(());
         };
-        let live = live::View::of(&self.nodes, self.at);
-        self.work.proofs += 1;
-        let bound = bound_from(&self.kept, self.shell.root, silent, &live, self.at)?;
-        self.bound = Some(bound);
-        if bound < silent.threshold() {
-            self.end = Some(self.at.max(1));
+        let mut levels = Vec::new();
+        until.levels(&mut levels);
+        let beyond = match levels.iter().copied().reduce(f64::min) {
+            None => f64::INFINITY,
+            Some(level) => {
+                let live = live::View::of(&self.nodes, to);
+                self.work.proofs += 1;
+                match bound_from(&self.kept, self.shell.root, level, &live, to) {
+                    Ok(bound) => bound,
+                    Err(e) if self.config.range.end.is_none() => return Err(e),
+                    Err(_) => f64::INFINITY,
+                }
+            }
+        };
+        let root = &self.nodes[self.root];
+        let base = root.tape.base().max(self.start);
+        let heard = Block::of(&root.tape, root.support, base, to);
+        let known = Known::new(heard.plane(0), base, self.start, self.config.rate, beyond);
+        if let Some(at) = until.first(&known, from, to) {
+            self.end = Some(at);
         }
         Ok(())
     }
 
-    /// No block past the limit is taken while silence is unproven.
-    fn in_time(&self) -> Result<(), EngineError> {
-        match (self.silent, self.end) {
-            (Some((silent, limit)), None) if self.at >= limit => {
-                let max_secs = limit as f64 / f64::from(self.config.rate);
-                let (tys, root) = (&self.shell.tys, self.shell.root);
-                Err(not_silent_by(
-                    tys,
-                    root,
-                    self.bound,
-                    Silent { max_secs, ..silent },
-                ))
-            }
-            _ => Ok(()),
-        }
-    }
-
-    /// The next block, cut where silence was proven; `None` from there on.
-    pub fn next_block(&mut self) -> Result<Option<Block<'_>>, EngineError> {
-        self.in_time()?;
+    /// The next block, cut where the stream ends; `None` from there on.
+    pub fn next_block(&mut self) -> Result<Option<Block>, EngineError> {
         let from = self.at;
-        let to = match self.end {
-            Some(end) if from >= end => return Ok(None),
-            Some(end) => end.min(from + self.config.block),
-            None => from + self.config.block,
+        if self.end.is_some_and(|end| from >= end) {
+            return Ok(None);
+        }
+        let to = match self.config.range.end {
+            Some(end) => end.min(from + self.config.block as i64),
+            None => from + self.config.block as i64,
         };
         for at in 0..self.nodes.len() {
             let (done, rest) = self.nodes.split_at_mut(at);
@@ -196,14 +192,13 @@ impl Stream {
         }
         self.at = to;
         self.work.samples += (to - from) as u64;
-        self.settle()?;
-        Ok(Some(Block {
-            tape: &self.nodes[self.root].tape,
-            start: from,
-        }))
+        self.settle(from, to)?;
+        let end = self.end.map_or(to, |end| end.clamp(from, to));
+        let root = &self.nodes[self.root];
+        Ok(Some(Block::of(&root.tape, root.support, from, end)))
     }
 
-    pub fn position(&self) -> usize {
+    pub fn position(&self) -> i64 {
         self.at
     }
 
@@ -212,8 +207,8 @@ impl Stream {
         self.work
     }
 
-    /// Where silence ends the stream, once proven.
-    pub fn end(&self) -> Option<usize> {
+    /// Where the stream ends, once known.
+    pub fn end(&self) -> Option<i64> {
         self.end
     }
 
@@ -221,14 +216,14 @@ impl Stream {
         self.nodes[self.root].width
     }
 
-    pub fn config(&self) -> StreamConfig {
-        self.config
+    pub fn config(&self) -> &StreamConfig {
+        &self.config
     }
 
     pub fn checkpoint(&self) -> Checkpoint {
         Checkpoint {
             at: self.at,
-            target: self.target.clone(),
+            target: sva_ast::render_expr(&self.target),
             bindings: self.bindings.clone(),
             rate: self.config.rate,
             block: self.config.block,
@@ -236,44 +231,60 @@ impl Stream {
         }
     }
 
-    /// This stream's target from `checkpoint` on, `bindings` in force, ending at `silent`
-    /// proven by `max_secs` past the checkpoint. A binding may move only where no sample
-    /// before the checkpoint can hear it: `release`, at or past it.
+    /// This stream's target from `checkpoint` on, `bindings` in force, ending where `until`
+    /// holds. A binding may move only where no sample before the checkpoint can hear it:
+    /// `release`, at or past it.
     pub fn resume(
         &self,
         checkpoint: &Checkpoint,
         bindings: &[(String, f64)],
-        silent: Option<Silent>,
+        until: Option<Until>,
     ) -> Result<Stream, EngineError> {
         let (rate, block) = (self.config.rate, self.config.block);
-        if checkpoint.target != self.target || (checkpoint.rate, checkpoint.block) != (rate, block)
-        {
-            return Err(mismatch(&self.target, "another stream"));
+        let target = sva_ast::render_expr(&self.target);
+        if checkpoint.target != target || (checkpoint.rate, checkpoint.block) != (rate, block) {
+            return Err(mismatch(&target, "another stream"));
         }
-        causal(checkpoint, bindings, rate, &self.target)?;
+        causal(checkpoint, bindings, rate, &target)?;
         let config = StreamConfig {
-            rate,
-            block,
-            silent,
+            until,
+            ..self.config.clone()
         };
-        let mut resumed =
-            Stream::opened_at(&self.graph, &self.target, bindings, config, checkpoint.at)?;
+        let mut resumed = Stream::open(&self.graph, &self.target, bindings, config)?;
         if resumed.nodes.len() != checkpoint.nodes.len() {
-            return Err(mismatch(&self.target, "a graph of another shape"));
+            return Err(mismatch(&target, "a graph of another shape"));
         }
         for (node, held) in resumed.nodes.iter_mut().zip(&checkpoint.nodes) {
             node.resume(&resumed.shell, held, checkpoint.at)?;
         }
         resumed.at = checkpoint.at;
-        resumed.settle()?;
         Ok(resumed)
     }
+}
+
+/// An open range needs a condition some proof, or `t` alone, can bring about.
+fn provable(shell: &Render, until: Option<&Until>, start: i64) -> Result<(), EngineError> {
+    let name = shell.tys.name(shell.root);
+    let held = until.and_then(|until| until.provable(start, shell.config.rate, &|_| Some(start)));
+    if held.is_some() {
+        return Ok(());
+    }
+    let condition = until.map_or("nothing".to_string(), |u| format!("`{u}`"));
+    Err(EngineError::refused(Diagnostic {
+        code: "render.no_stop".to_string(),
+        message: format!(
+            "`{name}` streams over an interval with no end, and {condition} is never proven \
+             to hold"
+        ),
+        location: Located::at(name, None),
+        help: "give the interval an end, or a condition a proof brings about".to_string(),
+    }))
 }
 
 /// Every node's state at a block's end, and what its stream was opened with.
 #[derive(Clone)]
 pub struct Checkpoint {
-    at: usize,
+    at: i64,
     target: String,
     bindings: Vec<(String, f64)>,
     rate: u32,
@@ -282,7 +293,7 @@ pub struct Checkpoint {
 }
 
 impl Checkpoint {
-    pub fn position(&self) -> usize {
+    pub fn position(&self) -> i64 {
         self.at
     }
 }
@@ -304,7 +315,7 @@ fn causal(
         }
         let lands = |v: Option<f64>| {
             landing_step(v.unwrap_or(f64::INFINITY), f64::from(rate))
-                .is_none_or(|at| at >= checkpoint.at as u64)
+                .is_none_or(|at| at as i64 >= checkpoint.at)
         };
         if name != RELEASE || !lands(was) || !lands(now) {
             return Err(EngineError::refused(Diagnostic {
@@ -337,38 +348,39 @@ fn mismatch(target: &str, what: &str) -> EngineError {
     })
 }
 
-/// The graph with `streamed` defined as the target called with `bindings`.
-fn bound(graph: &Graph, target: &str, bindings: &[(String, f64)]) -> Result<Graph, EngineError> {
-    if !graph.defines(target) {
-        return Err(EngineError::UnknownNode(target.to_string()));
-    }
-    let mut named = String::new();
+/// The graph with `streamed` defined as `target`, each of `bindings` a named argument on
+/// its own ref.
+fn bound(graph: &Graph, target: &Expr, bindings: &[(String, f64)]) -> Result<Graph, EngineError> {
+    let mut call = target.clone();
     for (name, value) in bindings {
         let word = name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
             && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
         if !word || !value.is_finite() {
-            return Err(refusal(target, format!("`{name}` bound to {value}")));
+            return Err(refusal(format!("`{name}` bound to {value}")));
         }
-        named.push_str(&format!(", {name}={value}"));
+        let Expr::Ref { binds, .. } = &mut call else {
+            return Err(refusal(format!(
+                "`{name}` binds a ref, and `{}` is no ref",
+                sva_ast::render_expr(target)
+            )));
+        };
+        binds.push((name.clone(), Expr::Lit(sva_ast::Literal::Num(*value))));
     }
-    let call = sva_ast::parse_expr(&format!("@{target}(t{named})"))
-        .map_err(|d| refusal(target, d.message))?;
     let mut wrapped = graph.clone();
     if !wrapped.define(STREAMED, call) {
-        return Err(refusal(
-            target,
-            format!("this composition already has a node named `{STREAMED}`"),
-        ));
+        return Err(refusal(format!(
+            "this composition already has a node named `{STREAMED}`"
+        )));
     }
     Ok(wrapped)
 }
 
-fn refusal(target: &str, what: String) -> EngineError {
+fn refusal(what: String) -> EngineError {
     EngineError::refused(Diagnostic {
         code: "engine.no_stream".to_string(),
-        message: format!("`{target}` opens no stream: {what}"),
-        location: Located::at(target, None),
-        help: "name a node the composition defines, and bind each name to a finite number"
+        message: format!("this target opens no stream: {what}"),
+        location: Located::at(STREAMED, None),
+        help: "stream a ref the composition defines, and bind each name to a finite number"
             .to_string(),
     })
 }

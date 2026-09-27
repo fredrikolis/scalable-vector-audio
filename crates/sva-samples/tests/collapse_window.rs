@@ -1,7 +1,7 @@
 // Concern: states that a spectrum or series under any crop costs its unwindowed route and answers the same samples | Non-concern: which row a windowed form takes | IO: (a ClosedForm) -> Buffer
 
 use sva_formula::{Body, ClosedForm, Edge, Origin, Part, Var, noise};
-use sva_samples::collapse::{self, AliasScore, Horizon};
+use sva_samples::collapse::{self, AliasScore, Extent};
 use sva_samples::{Buffer, CollapseError, Label, PSYCHOACOUSTIC_V1, Profile, Source};
 
 const RATE: u32 = 48_000;
@@ -10,10 +10,11 @@ const RATE: u32 = 48_000;
 fn render(
     form: &ClosedForm,
     rate: u32,
-    horizon: Horizon,
+    secs: (f64, f64),
     profile: &Profile,
 ) -> Result<(Buffer, Label), CollapseError> {
-    collapse::render(form, rate, horizon, profile, AliasScore::Asked)
+    let extent = Extent::secs(rate, secs.0, secs.1);
+    collapse::render(form, rate, extent, profile, AliasScore::Asked)
 }
 
 fn hiss() -> Body {
@@ -42,8 +43,9 @@ fn cropped(of: Body, to_secs: f64) -> Body {
 /// two minutes on this closed form.
 #[test]
 fn a_cropped_noise_series_costs_its_uncropped_route() {
-    let horizon = Horizon::secs(0.0, 4.0);
-    let len = horizon.len(RATE).expect("a horizon");
+    let horizon = (0.0, 4.0);
+    let extent = Extent::secs(RATE, horizon.0, horizon.1);
+    let len = extent.len();
     let law = form(cropped(hiss(), 4.0));
     let sum = sva_formula::normalize_closed_form(&law).expect("a spectral sum");
     let truncated = sva_samples::truncate_spectral_sum(
@@ -57,7 +59,7 @@ fn a_cropped_noise_series_costs_its_uncropped_route() {
         .map(|lane| lane.atoms.len())
         .sum::<usize>() as u128
         * len as u128;
-    let cost = collapse::plan::of(&sum, RATE, horizon, &PSYCHOACOUSTIC_V1, len)
+    let cost = collapse::plan::of(&sum, RATE, extent, &PSYCHOACOUSTIC_V1, len)
         .expect("a row")
         .flops(len);
     assert!(
@@ -79,8 +81,8 @@ fn a_cropped_series_is_its_own_law_inside_the_window() {
         sva_samples::Audible::of(&PSYCHOACOUSTIC_V1, RATE),
     )
     .expect("a truncated form");
-    let (held, _) = render(&law, RATE, Horizon::secs(0.0, 4.0), &PSYCHOACOUSTIC_V1)
-        .expect("a cropped noise series");
+    let (held, _) =
+        render(&law, RATE, (0.0, 4.0), &PSYCHOACOUSTIC_V1).expect("a cropped noise series");
 
     for i in [0usize, 1, 4_001, 95_999] {
         let want = sva_samples::eval_spectral_sum_at(&sum, 0, i as f64 / f64::from(RATE))
@@ -110,11 +112,12 @@ fn sine(hz: f64) -> Body {
 /// added to term by term: its own group sums directly and every other group stays placed.
 #[test]
 fn a_windowed_series_plus_a_line_keeps_its_route() {
-    let horizon = Horizon::secs(0.0, 4.0);
-    let len = horizon.len(RATE).expect("a horizon");
+    let horizon = (0.0, 4.0);
+    let extent = Extent::secs(RATE, horizon.0, horizon.1);
+    let len = extent.len();
     let counted = |body: Body| {
         let sum = sva_formula::normalize_closed_form(&form(body)).expect("a spectral sum");
-        sva_samples::collapse::plan::of(&sum, RATE, horizon, &PSYCHOACOUSTIC_V1, len)
+        sva_samples::collapse::plan::of(&sum, RATE, extent, &PSYCHOACOUSTIC_V1, len)
             .expect("a row")
             .flops(len)
     };
@@ -164,8 +167,9 @@ fn shouldered(of: Body, to_secs: f64, ramp: f64) -> Body {
 /// refusing or sweeping term by term, and the ramp shapes the samples it placed.
 #[test]
 fn a_shouldered_noise_series_places_by_its_route() {
-    let horizon = Horizon::secs(0.0, 4.0);
-    let len = horizon.len(RATE).expect("a horizon");
+    let horizon = (0.0, 4.0);
+    let extent = Extent::secs(RATE, horizon.0, horizon.1);
+    let len = extent.len();
     let law = form(shouldered(hiss(), 4.0, 1.0));
     let sum = sva_formula::normalize_closed_form(&law)
         .expect("a shouldered crop over a series has a form");
@@ -180,7 +184,7 @@ fn a_shouldered_noise_series_places_by_its_route() {
         .map(|lane| lane.atoms.len())
         .sum::<usize>() as u128
         * len as u128;
-    let cost = sva_samples::collapse::plan::of(&sum, RATE, horizon, &PSYCHOACOUSTIC_V1, len)
+    let cost = sva_samples::collapse::plan::of(&sum, RATE, extent, &PSYCHOACOUSTIC_V1, len)
         .expect("a row")
         .flops(len);
     assert!(
@@ -224,14 +228,15 @@ fn decaying(rate_per_sec: f64) -> Body {
 /// counts the window's samples, not the horizon's.
 #[test]
 fn a_swept_lane_is_read_only_inside_the_window_it_carries() {
-    let horizon = Horizon::secs(0.0, 4.0);
-    let len = horizon.len(RATE).expect("a horizon");
+    let horizon = (0.0, 4.0);
+    let extent = Extent::secs(RATE, horizon.0, horizon.1);
+    let len = extent.len();
     let law = form(cropped(
         Body::Mul(vec![Part::bare(decaying(3.0)), Part::bare(sine(440.0))]),
         1.0,
     ));
     let sum = sva_formula::normalize_closed_form(&law).expect("a spectral sum");
-    let plan = sva_samples::collapse::plan::of(&sum, RATE, horizon, &PSYCHOACOUSTIC_V1, len)
+    let plan = sva_samples::collapse::plan::of(&sum, RATE, extent, &PSYCHOACOUSTIC_V1, len)
         .expect("a row");
     let sva_samples::collapse::plan::Plan::Sampled(held) = &plan else {
         panic!("a windowed decay is sampled, not {:?}", plan.rule());

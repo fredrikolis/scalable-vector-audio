@@ -43,7 +43,6 @@ pub enum SampleError {
 /// What a collapse refuses, per FORMAT 16.3.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CollapseError {
-    NoHorizon,
     EmptyBand {
         ceiling: f64,
         lowest: f64,
@@ -59,14 +58,13 @@ pub enum CollapseError {
         bound: usize,
     },
     LeftAlgebra(&'static str),
-    /// A form in `f` reaches the grid by one transform over a whole horizon.
+    /// A form in `f` reaches the grid by one transform over a whole extent.
     NoBlockRow,
 }
 
 impl CollapseError {
     pub fn code(&self) -> &'static str {
         match self {
-            CollapseError::NoHorizon => "collapse.no_horizon",
             CollapseError::EmptyBand { .. } => "collapse.empty_band",
             CollapseError::SingularInCt { .. } => "collapse.singular_in_ct",
             CollapseError::NotEvaluable(_) => "collapse.not_evaluable",
@@ -77,21 +75,19 @@ impl CollapseError {
     }
 }
 
-/// One repair per refusal: a window is what a missing horizon wants, and no window brings a
-/// line back under a ceiling.
+/// One repair per refusal: no extent brings a line back under a ceiling.
 impl CollapseError {
     pub fn help(&self) -> &'static str {
         match self {
-            CollapseError::NoHorizon => "give the observation a window with --from and --to",
             CollapseError::EmptyBand { ceiling, .. }
                 if *ceiling < sva_formula::AUDIBLE_CEILING_HZ =>
             {
-                "this rate's own half is the ceiling: raise --sample-rate past twice the \
+                "this rate's own half is the ceiling: raise --rate past twice the \
                  lowest line"
             }
             CollapseError::EmptyBand { .. } => {
                 "the profile's 20 kHz ceiling is what no rate raises; read it with \
-                 `--as lines`, or bring the line into the band"
+                 `--representation lines`, or bring the line into the band"
             }
             CollapseError::SingularInCt { .. } => {
                 "write it inside a convolution, or sample the closed form it multiplies"
@@ -112,12 +108,6 @@ impl CollapseError {
 impl std::fmt::Display for CollapseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CollapseError::NoHorizon => {
-                write!(
-                    f,
-                    "a closed form collapses against a horizon. give --from and --to"
-                )
-            }
             CollapseError::EmptyBand { ceiling, lowest } => write!(
                 f,
                 "every line is at or above the {ceiling} Hz ceiling, the lowest at {lowest} Hz"
@@ -141,7 +131,7 @@ impl std::fmt::Display for CollapseError {
             CollapseError::LeftAlgebra(clause) => write!(f, "the closed form left A. {clause}"),
             CollapseError::NoBlockRow => write!(
                 f,
-                "a closed form in f reaches the grid by one transform over a whole horizon, \
+                "a closed form in f reaches the grid by one transform over a whole extent, \
                  so no block of it is read alone"
             ),
         }
@@ -190,23 +180,23 @@ impl std::fmt::Display for SampleError {
             } => write!(
                 f,
                 "`{model}` sizes a {nodes}-node grid at this rate, past the {ceiling} one \
-                 call may hold. ask for a higher fundamental, or a lower --sample-rate"
+                 call may hold. ask for a higher fundamental, or a lower --rate"
             ),
             SampleError::StringPastRate { model } => write!(
                 f,
                 "`{model}` has no stable grid at this rate whose first two partials ring where \
-                 asked. ask for a lower fundamental or `b`, or a higher --sample-rate"
+                 asked. ask for a lower fundamental or `b`, or a higher --rate"
             ),
             SampleError::BridgeUnstable { model } => write!(
                 f,
                 "`{model}`'s unison is not proven stable on its bridge at this rate: the mass \
                  form its bridge row leaves is not provably positive. ask for a heavier bridge, \
-                 less frequency-dependent loss, or a higher --sample-rate"
+                 less frequency-dependent loss, or a higher --rate"
             ),
             SampleError::ContactUnsettled { model, sample } => write!(
                 f,
                 "`{model}`'s contact force settled on no value at sample {sample}. ask for a \
-                 lower bow velocity or force, or a higher --sample-rate"
+                 lower bow velocity or force, or a higher --rate"
             ),
             SampleError::StateMismatch => write!(
                 f,

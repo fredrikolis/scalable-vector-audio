@@ -1,8 +1,8 @@
 // Concern: the `--help` page, each flag's default printed from its own constant | Non-concern: parsing those flags (args/), the JSON a subcommand answers (output.rs) | IO: () -> the page
 
 use sva_core::{
-    DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, DEFAULT_SILENT_BITS,
-    DEFAULT_SILENT_MAX_SECS,
+    DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, DEFAULT_PROOF_LIMIT_SECS,
+    default_until,
 };
 use sva_engine::{DEFAULT_FRAME_SECS, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1};
 
@@ -10,6 +10,7 @@ use sva_engine::{DEFAULT_FRAME_SECS, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1};
 /// from the one a render actually uses.
 pub fn help_text() -> String {
     let budget = PSYCHOACOUSTIC_V1.flop_budget;
+    let until = default_until();
     format!(
         r#"USAGE:
   sva-cli (render | analyze | lint | trace | builtins | outline | new) [arguments]
@@ -17,65 +18,85 @@ pub fn help_text() -> String {
 DESCRIPTION:
   A composition is a directory of node files, each one closed-form expression in
   `t` or `f`. sva-cli reads that composition and prints what it is and what it
-  sounds like, as JSON on stdout.
-
-  `--in <dir>` picks the composition for render, lint and trace, wherever in the
-  arguments it is written; without it they read the current directory. `new`
-  writes beside the current directory and `analyze` reads a file, so neither
-  takes `--in`.
+  sounds like, as JSON on stdout. `render`, `lint` and `trace` read the current
+  directory; `new` writes beside it and `analyze` reads a file.
 
 RENDER:
-  sva-cli render [<node|expression>] [query options]
+  sva-cli render '<expression>' [--until '<condition>'] [--representation <list>]...
+                 [--rate <hz>] [-c <key>=<value>]... [--confirm]
 
-  Renders a node, `master` by default, and prints one reading per `--as`. The
-  argument may be an expression instead, in the grammar a node file's body uses.
-  Every reading states its `source` (exact or measured), the conformance profile
-  it ran under, and its rate.
+  Renders one expression, in the grammar a node file's body uses, and prints one
+  reading per representation under `data.readings`. `@path` reads a node from
+  the current directory and `@/abs/path` one anywhere; there is no default
+  target. Every reading states its `source` (exact or measured), the
+  conformance profile it ran under, and its rate.
 
-  `--as lines` and `--as atoms` read the closed form and allocate no buffer.
-  `--as samples=<path>.wav` writes 32-bit float audio, or 16-bit PCM under
-  `--pcm16`. Any other destination path takes the same JSON, uncapped. A path
-  that already holds a file refuses unless `--confirm` is written.
+  The target's own ref may read an interval: `@piano4([0, 2b], f0=C4,
+  vel=0.5, release=1s)`. Its ends are the language's literals (`s`, `ms`, `b`,
+  `sp`, or a bare `0`); `[a, inf)` and `[a,)` leave the end open; the other
+  arguments are the node's own named ones. The start trims the output alone:
+  history before it is still computed, so a loop or a filter carries the state
+  it had there. With no interval the range starts at 0, earlier only where a
+  crop reaches before it, and its end is open.
 
-  `--from`/`--to` bound the window a collapse runs over. `--sample-rate <hz>` is
-  the observation rate and is legal with every `--as`: no expression can read it.
+  `--until '<condition>'` ends the render at the first sample the condition
+  holds at, or at the interval's end, whichever is first. A condition compares
+  (`<`, `<=`, `>`, `>=`) `t`, `envelope(t)` (the RMS of the `envelope`
+  representation's 50 ms frames), `max`/`min(envelope([a, b]))` and literals,
+  joined by `and`/`or`. A range reaching `inf` is answered by the tail proof, a
+  bound on every later sample. An open interval nothing proves an end for
+  refuses, naming the condition: a node holding a level forever as
+  `engine.never_silent`, one no bound is derived for yet (a physical solver
+  other than chaigne_askenfelt, a filter whose coefficients move) as
+  `engine.no_tail_bound`, one not quiet by `-c proof_limit` as
+  `engine.not_silent_by`, and a condition no proof brings about as
+  `render.no_stop`. A short-time transform reads its input whole, and refuses
+  one with no end as `engine.unbounded_extent`.
 
-  `--to silent[:bits]` ends the render at its last sample at or over 2^-bits of
-  full scale, once a bound on every node proves no later sample reaches it.
-  Where silence is not proven by `--max <secs>` it refuses as
-  `engine.not_silent_by` with the bound there; a node that holds a level forever
-  refuses as `engine.never_silent`, and one no bound is derived for yet (a
-  physical solver other than chaigne_askenfelt, one string or a unison, a filter
-  whose coefficients move) as `engine.no_tail_bound`.
+  `--representation <r>[=<path>][,...]` takes a comma list and may repeat. An
+  entry with `=<path>` writes a file instead, listed under `written`:
+  `samples=<path>.wav` writes 32-bit float audio, or 16-bit PCM under
+  `-c pcm16=true`; any other path takes the reading's JSON, uncapped. A path
+  that already holds a file refuses unless `--confirm` is written. `lines`,
+  `atoms`, `derivative`, `bindings`, `arguments`, and a closed form's
+  `spectrum`, `envelope` and `pitch`, read the expression and ignore the range.
 
-  `--as ledger` prints one row per node under the target. A row's `share` is the
-  part of its reader's own energy that row accounts for, so one reader's refs sum
-  to 1; a ref no addend isolates, such as one factor of a product, prints `null`.
-  Each ref carrying a share is collapsed once on its own, so a ledger costs one
-  collapse per attributed ref beyond the render, and `--depth` bounds how many.
-  `--brief` keeps only the rows that clipped, `--skim` drops the wider fields.
+  `--rate <hz>` is the sample rate; no expression can read it. `-c` sets the
+  rest, one `key=value` each: `flop_budget`, `proof_limit`, `node` (the
+  instance a reading is taken of; `bindings` requires it), `depth`, `peaks`,
+  `oversample`, `frame`, `brief`, `skim` and `pcm16`.
 
-  `--as arguments` renders nothing: for every instance under the target it
-  prints each builtin call's named arguments as the numbers the call was lowered
-  with, a solver's whole parameter set with `written: false` on each default it
-  filled in, and the operand each `min`/`max` `chosen` where a call folds one to a
-  number: in named arguments and a solver's, modal bank's or `noise`'s
-  positionals. One inside a filter's or cast's positional or `rand`'s key or
-  seed is not listed. `at` spans are bytes of the instance's
+  `ledger` prints one row per node under the target. A row's `share` is the
+  part of its reader's own energy that row accounts for, so one reader's refs
+  sum to 1; a ref no addend isolates, such as one factor of a product, prints
+  `null`. Each ref carrying a share is collapsed once on its own, so a ledger
+  costs one collapse per attributed ref beyond the render, and `depth` bounds
+  how many. `brief=true` keeps only the rows that clipped, `skim=true` drops
+  the wider fields.
+
+  `arguments` renders nothing: for every instance under the target it prints
+  each builtin call's named arguments as the numbers the call was lowered
+  with, a solver's whole parameter set with `written: false` on each default
+  it filled in, and the operand each `min`/`max` `chosen` where a call folds
+  one to a number: in named arguments and a solver's, modal bank's or
+  `noise`'s positionals. One inside a filter's or cast's positional or
+  `rand`'s key or seed is not listed. `at` spans are bytes of the instance's
   own body, as `sva-cli outline` counts them.
 
 ANALYZE:
-  sva-cli analyze <file.wav> [--as <representation>[=<destination>]]...
+  sva-cli analyze <file.wav> [--representation <list>]... [-c <key>=<value>]...
 
-  Runs the same readings over an external `.wav` at its own rate, never
+  Runs the same readings over a whole external `.wav` at its own rate, never
   resampled. Only the readings a buffer answers alone apply; the rest need the
-  graph behind it.
+  graph behind it. `-c` takes `frame`, `peaks`, and `against=<file.wav>`, the
+  second signal `masking` reads against.
 
 LINT:
-  sva-cli lint [<node|expression>] [--in <dir>] [--format <json|text>]
+  sva-cli lint [<node|expression>] [--format <json|text>]
 
-  Checks binding, ref and tempo resolution without rendering a sample. With no
-  target it checks the whole directory against `master`. With a target it checks
+  Checks binding, ref and tempo resolution in the current directory without
+  rendering a sample. With no target it checks the whole directory against
+  `master`. With a target it checks
   only the nodes that target reaches, and `entry-point` does not run, since the
   target's own reach references every node in it.
 
@@ -106,7 +127,7 @@ LINT:
            not-a-node            a filename no `@ref` can spell
 
 TRACE:
-  sva-cli trace <node|expression> [--in <dir>]
+  sva-cli trace <node|expression>
 
   Prints one node's position without rendering audio: what it reads (`down`, one
   hop), everything that reads it (`up`, transitively to an entry point), each
@@ -144,69 +165,69 @@ NEW:
 
 EXAMPLES:
   sva-cli new song1 && cd song1
-  cd ./song1 && sva-cli render --as samples=/tmp/song1.wav
-  sva-cli render master --in ./song1 --as ledger --as loudness
-  cd ./song1 && sva-cli render chord/home --as lines
-  sva-cli lint --in ./song1
-  cd ./song1 && sva-cli lint voice/note
-  cd ./song1 && sva-cli trace grid/phrase-2b
+  sva-cli render '@master' --representation samples=/tmp/song1.wav
+  sva-cli render '@master([0, 8b])' --representation ledger,loudness
+  sva-cli render '@voice/note([1s, inf), f0=C4, release=0.5s)' \
+    --until 'max(envelope([t, inf))) < -96db' --representation samples=/tmp/note.wav
+  sva-cli render '@chord/home' --representation lines --rate 48000
+  sva-cli lint
+  sva-cli trace grid/phrase-2b
   sva-cli builtins
 
 OUTPUT:
-  {{"status": "success", "data": {{"node": "master", "down": {{"items": [...]}},
-  "diagnostics": {{"items": []}}}},
-   "meta": {{"request_id": "req_...", "timestamp": 1700000000}}}}
+  {{"status": "success", "data": {{"target": "@master([0, 8b])", "sample_rate":
+  44100, "profile": "psychoacoustic-v1", "range": {{"start_secs": 0,
+  "end_secs": 16}}, "label": {{...}}, "written": {{"items": [...]}}, "readings":
+  {{"ledger": {{...}}}}, "diagnostics": {{"items": []}}}}, "meta": {{"request_id":
+  "req_...", "timestamp": 1700000000}}}}
 
-  An error adds "error": {{"code", "message", "details": {{"count", "codes"}}}}.
-  Success or error, every response carries every finding in full at
-  "data": {{"diagnostics": {{"items": [{{"code", "severity", "message",
-  "location", "help"}}], "pagination": {{"count", "has_more", "next_cursor"}}}}}},
-  empty where it found none.
+  `range` is null where no reading read samples. An error adds "error":
+  {{"code", "message", "details": {{"count", "codes"}}}}. Success or error,
+  every response carries every finding in full at "data": {{"diagnostics":
+  {{"items": [{{"code", "severity", "message", "location", "help"}}],
+  "pagination": {{"count", "has_more", "next_cursor"}}}}}}, empty where it found
+  none.
 
   Every collection carries that same {{items, pagination}} pair. `count` is the
   whole reading's, `has_more` says `items` holds less than that, and
-  `next_cursor` is a `--from` value to pass back verbatim for the rest. A framed
-  measurement restarts its state at that instant, so a second page is a second
-  reading rather than a continuation. `--as <name>=<path>` writes the whole
-  reading to a file instead, uncapped. This page is an envelope of its own, at
-  "data": {{"help"}}.
+  `next_cursor` is the interval start, as `0.5s`, the rest is read from. A
+  reading written to a file is written whole, uncapped. This page is an
+  envelope of its own, at "data": {{"help"}}.
 
 DEFAULTS:
-  --depth <n>          how deep below its target a `ledger` walks.
-                       Default {DEFAULT_LEDGER_DEPTH}.
-  --peaks <n>          peaks a `spectrum` keeps, notes a `pitch`, formants a
-                       `formants`. Default {DEFAULT_MAX_PEAKS}.
-  --oversample <n>     the multiple `alias` re-renders at to hear what folded.
-                       Default {DEFAULT_OVERSAMPLE}.
-  --frame <secs>       the step a framed reading advances by, in seconds.
-                       Default {DEFAULT_FRAME_SECS}, except `spectrum`, which
-                       sizes its own transform to the window unless this flag is
-                       given.
-  --sample-rate <hz>   the observation rate a render lays its seconds on.
+  --until <condition>  `{until}`.
+  --rate <hz>          the sample rate a render lays its seconds on.
                        Default {DEFAULT_SAMPLE_RATE}.
-  --flop-budget <n>    the operation count paid before a render refuses.
+  -c flop_budget=<n>   the operation count paid before a render refuses.
                        Default {budget}, the `psychoacoustic-v1` profile's own.
+  -c proof_limit=<s>   how far a proof looks for the condition where the
+                       interval has no end. Default {DEFAULT_PROOF_LIMIT_SECS} seconds.
+  -c depth=<n>         how deep below its target a `ledger` walks.
+                       Default {DEFAULT_LEDGER_DEPTH}.
+  -c peaks=<n>         peaks a `spectrum` keeps, notes a `pitch`, formants a
+                       `formants`. Default {DEFAULT_MAX_PEAKS}.
+  -c oversample=<n>    the multiple `alias` re-renders at to hear what folded.
+                       Default {DEFAULT_OVERSAMPLE}.
+  -c frame=<s>         the step a framed reading advances by, in seconds.
+                       Default {DEFAULT_FRAME_SECS}, except `spectrum`, which
+                       sizes its own transform to the range unless it is set.
+  -c node=<path>       the instance a reading is taken of. Defaults to the
+                       target itself; `bindings` requires it.
+  -c against=<file>    the second signal `analyze`'s `masking` reads against.
+                       No default: that one analysis requires it.
+  -c brief, skim and pcm16 are `false` unless set `true`.
   --format <json|text> how `lint` prints its findings: the envelope, or one
                        terminal line each, colored where stdout is a terminal.
                        The same objects either way. Default json.
-  --in <dir>           the composition `render`, `lint` and `trace` read.
-                       Default: the directory the process runs in.
-  --node <path>        the instance a reading is taken of. Defaults to the
-                       target itself; `--as bindings` requires it.
-  --against <file.wav> the second signal `--as masking` reads against. No
-                       default: that one analysis requires it.
-  --from <time>        default 0s; `--to <time>` defaults to the node's extent.
-  --to silent[:bits]   bits default {DEFAULT_SILENT_BITS}, the profile's precision;
-                       `--max <secs>` defaults to {DEFAULT_SILENT_MAX_SECS}.
   --confirm            replaces a destination that already holds a file. Without
                        it a path already taken refuses as `conflict` and nothing
                        is written.
-  --brief, --skim and --pcm16 are all off unless written.
 
 EXIT CODES:
   0  success (error.code absent)
   1  internal_error (a destination could not be written)
-  3  validation_error (bad arguments, or a composition that failed to parse)
+  3  validation_error (bad arguments, a composition that failed to parse, or a
+     render the engine refused)
   4  conflict (a name `new` would overwrite, or a destination already holding a
      file, without `--confirm`)
   24 not_found (a `.wav` file, or a node this composition does not define)

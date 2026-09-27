@@ -60,7 +60,7 @@ pub fn forward(x: &Buffer, window: usize, hop: usize) -> Result<Frames, SampleEr
     let samples = x.len();
     let count = frame_count(samples, window, hop);
     let mut out = Frames::silence(x.rate, window, hop, x.width, count, samples);
-    out.origin_secs = x.origin_secs;
+    out.start = x.start;
     for c in 0..x.width {
         let plane = x.plane(c);
         for frame in 0..count {
@@ -117,7 +117,7 @@ pub fn inverse(fr: &Frames, profile: &Profile) -> (Buffer, Label) {
         planes.push(y);
     }
     let mut buffer = Buffer::of_planes(fr.rate, planes);
-    buffer.origin_secs = fr.origin_secs;
+    buffer.start = fr.start;
     let source = if fr.edited {
         Source::Measured
     } else {

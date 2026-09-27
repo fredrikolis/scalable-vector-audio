@@ -35,7 +35,7 @@ pub fn num(v: f64) -> String {
 }
 
 /// The `cli` standard's collection: `count` is the whole of it, `has_more` that `items` is
-/// not, and `next_cursor` a `--from` value the caller passes back for the rest.
+/// not, and `next_cursor` the interval start the caller reads the rest from.
 pub fn collection(
     items: impl IntoIterator<Item = String>,
     held: usize,
@@ -174,7 +174,7 @@ mod tests {
         );
         assert!(
             cut.contains("\"next_cursor\": \"0.5s\""),
-            "a `--from` value: {cut}"
+            "an interval start: {cut}"
         );
     }
 }

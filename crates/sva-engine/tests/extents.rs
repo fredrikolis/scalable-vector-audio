@@ -1,0 +1,152 @@
+// Concern: proves every node is computed over its own support met with its readers' demand, whatever reads it | Non-concern: where a range ends (silent.rs) | IO: (a composition, a range) -> samples
+
+mod fixtures;
+
+use fixtures::graph_of;
+use sva_ast::Graph;
+use sva_engine::{Range, RenderConfig, Until, render};
+
+const RATE: u32 = 8_000;
+
+fn composition() -> Graph {
+    graph_of(
+        "extents",
+        &[
+            ("tone", "0.5*sin(2*pi*440*t)\n"),
+            ("held", "sample(@tone)\n"),
+            ("short", "sample(crop(@tone, 0s, 0.5s))\n"),
+            ("late", "@short(t - 1s)\n"),
+            ("early", "@short(t + 0.25s)\n"),
+            ("heard_late", "@held(t - 0.5s)\n"),
+            ("said_late", "@tone(t - 0.5s)\n"),
+            (
+                "echo",
+                "sample(crop(0.5*sin(2*pi*440*t), 0s, 0.2s)) + 0.5*self(t - 0.25s)\n",
+            ),
+            (
+                "ring",
+                "lowpass(sample(crop(0.5*sin(2*pi*220*t), 0s, 0.05s)), 220, q=30)\n",
+            ),
+            ("whole", "istft(stft(@held, window=256, hop=64))\n"),
+        ],
+    )
+}
+
+fn over(g: &Graph, target: &str, start: i64, end: i64) -> Vec<f64> {
+    let config = RenderConfig {
+        range: Range {
+            start: Some(start),
+            end: Some(end),
+        },
+        ..RenderConfig::at(RATE)
+    };
+    let held = render(g, target, config, None).unwrap_or_else(|e| panic!("{target}: {e}"));
+    held.output(held.root).expect("the root").plane(0).to_vec()
+}
+
+fn quiet(g: &Graph, target: &str, level: f64) -> Vec<f64> {
+    let config = RenderConfig {
+        until: Some(Until::quiet(level)),
+        ..RenderConfig::at(RATE)
+    };
+    let held = render(g, target, config, None).unwrap_or_else(|e| panic!("{target}: {e}"));
+    held.output(held.root).expect("the root").plane(0).to_vec()
+}
+
+fn secs(n: f64) -> i64 {
+    (n * f64::from(RATE)) as i64
+}
+
+/// Each read takes the samples its source holds there, never silence past a window.
+#[test]
+fn a_shifted_ref_reads_its_source_where_that_source_sounds() {
+    let g = composition();
+    let short = over(&g, "short", 0, secs(0.5));
+    assert!(short.iter().any(|v| *v != 0.0), "silence tests nothing");
+    let late = over(&g, "late", 0, secs(2.0));
+    let before = &late[..secs(1.0) as usize];
+    assert!(before.iter().all(|v| *v == 0.0), "silent before it starts");
+    let heard = &late[secs(1.0) as usize..secs(1.5) as usize];
+    assert_eq!(heard, &short[..], "a second late, the source's own samples");
+    let after = &late[secs(1.5) as usize..];
+    assert!(after.iter().all(|v| *v == 0.0), "silent after it ends");
+    let early = over(&g, "early", 0, secs(0.5));
+    let ahead = &early[..secs(0.25) as usize];
+    assert_eq!(
+        ahead,
+        &short[secs(0.25) as usize..],
+        "a read ahead reads ahead"
+    );
+}
+
+#[test]
+fn a_crop_inside_a_loop_or_under_a_filter_keeps_the_tail() {
+    let g = composition();
+    let echo = quiet(&g, "echo", 2f64.powi(-24));
+    let echoes = &echo[secs(0.25) as usize..secs(0.45) as usize];
+    assert!(
+        echoes.iter().any(|v| v.abs() > 0.1),
+        "the first echo sounds"
+    );
+    assert!(echo.len() > secs(4.0) as usize, "ends at {}", echo.len());
+    let ring = quiet(&g, "ring", 2f64.powi(-16));
+    assert!(ring.len() > secs(0.1) as usize, "ends at {}", ring.len());
+    let tail = &ring[secs(0.05) as usize..secs(0.1) as usize];
+    assert!(
+        tail.iter().any(|v| v.abs() > 1e-3),
+        "the ring sounds past the crop"
+    );
+}
+
+#[test]
+fn a_start_past_zero_keeps_the_state_its_history_left() {
+    let g = composition();
+    for target in ["echo", "ring"] {
+        let whole = over(&g, target, 0, secs(1.0));
+        let late = over(&g, target, secs(0.3), secs(1.0));
+        assert!(late.iter().any(|v| *v != 0.0), "{target}: silence");
+        assert_eq!(late[..], whole[secs(0.3) as usize..], "{target}");
+    }
+    let config = RenderConfig {
+        range: Range {
+            start: Some(secs(0.3)),
+            end: None,
+        },
+        until: Some(Until::quiet(2f64.powi(-24))),
+        ..RenderConfig::at(RATE)
+    };
+    let late = render(&g, "echo", config, None).expect("a late quiet echo");
+    let ended = late.range.expect("a range").end as usize;
+    assert_eq!(
+        ended,
+        quiet(&g, "echo", 2f64.powi(-24)).len(),
+        "the proof hears the history"
+    );
+}
+
+#[test]
+fn a_sampled_form_read_at_a_shift_is_its_closed_form_read_there() {
+    let g = composition();
+    let heard = over(&g, "heard_late", 0, secs(1.0));
+    let said = over(&g, "said_late", 0, secs(1.0));
+    let before = &heard[..secs(0.5) as usize];
+    assert!(
+        before.iter().any(|v| v.abs() > 0.1),
+        "not silence where no window started"
+    );
+    let worst = heard
+        .iter()
+        .zip(&said)
+        .fold(0.0f64, |held, (a, b)| held.max((a - b).abs()));
+    assert!(worst < 1e-9, "sample() moved the value by {worst}");
+}
+
+/// A short-time transform reads its input whole, so an input with no end refuses.
+#[test]
+fn a_transform_of_an_endless_input_refuses() {
+    let config = RenderConfig::seconds(RATE, 0.1);
+    let Err(refused) = render(&composition(), "whole", config, None) else {
+        panic!("a transform of an endless input rendered");
+    };
+    assert_eq!(refused.code(), "engine.unbounded_extent", "{refused}");
+}

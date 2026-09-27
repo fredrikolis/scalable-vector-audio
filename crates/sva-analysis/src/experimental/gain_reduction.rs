@@ -18,7 +18,7 @@ pub struct GainReduction {
 }
 
 /// `input` is read by index against `gain`'s own frames — matching `--frame`s over the same
-/// window, exactly as `--as envelope of @gain-node` already lines up by eye today.
+/// window, exactly as an `envelope` of `@gain-node` already lines up by eye today.
 pub fn analyze(gain: &[EnvelopeFrame], input: Option<&[EnvelopeFrame]>) -> GainReduction {
     let frames = gain
         .iter()

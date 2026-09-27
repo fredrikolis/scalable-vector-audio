@@ -14,7 +14,7 @@ fn samples(name: &str, files: &[(&str, &str)], root: &str, rate: u32, secs: f64)
     let held = render(&g, root, RenderConfig::seconds(rate, secs), None)
         .unwrap_or_else(|e| panic!("{name}: {e}"));
     let id = held.id(root).expect("the root");
-    held.buffer(id).expect("a rendered root").plane(0).to_vec()
+    held.output(id).expect("a rendered root").plane(0).to_vec()
 }
 
 /// `fourier` then `ifourier` selects one axis and then the other: no value changes.
@@ -44,7 +44,7 @@ fn stft_and_istft_round_trip_from_sample_zero() {
             ("chord", CHORD),
             (
                 "back",
-                "istft(stft(sample(@chord), window=1024, hop=256))\n",
+                "istft(stft(sample(crop(@chord, 0s, 0.25s)), window=1024, hop=256))\n",
             ),
         ],
         "back",
@@ -66,7 +66,7 @@ fn an_unedited_round_trip_is_labelled_exact() {
             ("chord", CHORD),
             (
                 "back",
-                "istft(stft(sample(@chord), window=1024, hop=256))\n",
+                "istft(stft(sample(crop(@chord, 0s, 0.25s)), window=1024, hop=256))\n",
             ),
         ],
     );
@@ -115,7 +115,7 @@ fn a_spectrum_product_under_ifourier_composes() {
         .expect("a cast inside a product composes");
     let id = held.id("voiced").expect("the root");
     assert!(held.tys.ty(id).has_dual());
-    let buffer = held.buffer(id).expect("a collapsed pair");
+    let buffer = held.output(id).expect("a collapsed pair");
     let want = (-(185.0f64 / 2400.0).powi(2)).exp();
     let peak = (0..buffer.len())
         .map(|i| buffer.at(0, i).abs())

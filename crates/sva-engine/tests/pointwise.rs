@@ -20,7 +20,7 @@ fn a_nonlinearity_over_a_filtered_pair_point_samples() {
     let held = render(&g, "body", RenderConfig::seconds(44_100, 0.05), None)
         .expect("a point-sampled nonlinearity");
     let root = held.id("body").expect("the root");
-    let buffer = held.buffer(root).expect("a rendered law");
+    let buffer = held.output(root).expect("a rendered law");
     assert_eq!(buffer.len(), 2_205);
     let peak = buffer
         .plane(0)
@@ -85,7 +85,7 @@ fn the_identity_burst_shape_renders() {
     let held = render(&g, "burst", RenderConfig::seconds(44_100, 0.05), None)
         .expect("the burst shape renders");
     let root = held.id("burst").expect("the root");
-    let buffer = held.buffer(root).expect("a rendered burst");
+    let buffer = held.output(root).expect("a rendered burst");
     assert_eq!(buffer.len(), 2_205);
     assert!(
         buffer.plane(0).iter().all(|s| s.is_finite()),
@@ -110,7 +110,7 @@ fn a_joined_pair_point_samples_each_component_it_names() {
     );
     let held = render(&g, "wide", RenderConfig::seconds(8_000, 0.01), None).expect("a join");
     let wide = held
-        .buffer(held.id("wide").expect("the root"))
+        .output(held.id("wide").expect("the root"))
         .expect("both");
     assert_eq!(wide.width, 2);
     assert!(
@@ -124,7 +124,7 @@ fn a_joined_pair_point_samples_each_component_it_names() {
 
     let held = render(&g, "picked", RenderConfig::seconds(8_000, 0.01), None).expect("a channel");
     let picked = held
-        .buffer(held.id("picked").expect("the root"))
+        .output(held.id("picked").expect("the root"))
         .expect("one component");
     assert_eq!(picked.width, 1);
     assert!(
@@ -148,7 +148,7 @@ fn a_neumann_series_under_a_product_renders() {
     let held = render(&g, "node", RenderConfig::seconds(44_100, 0.05), None)
         .expect("a series under a product");
     let root = held.id("node").expect("the root");
-    let buffer = held.buffer(root).expect("a point-sampled law");
+    let buffer = held.output(root).expect("a point-sampled law");
     let precision = sva_samples::PSYCHOACOUSTIC_V1.half_lsb();
     let taken = (0..)
         .find(|k| 0.5f64.powi(*k) / 0.5 <= precision)
@@ -178,7 +178,7 @@ fn sample_and_hold_noise_renders_measured() {
     let held = render(&g, "held", RenderConfig::seconds(44_100, 0.25), None)
         .expect("a keyed hash of a moving key renders");
     let id = held.id("held").expect("the root");
-    let buffer = held.buffer(id).expect("a rendered hold");
+    let buffer = held.output(id).expect("a rendered hold");
     let label = held.labels.get(&id).expect("a label");
     assert_eq!(label.source, Source::Measured, "point sampling is measured");
     assert!(
@@ -231,7 +231,7 @@ fn a_panned_ct_law_point_samples_both_lanes() {
     let held = render(&g, "pan", RenderConfig::seconds(44_100, 0.01), None)
         .expect("a joined law point-samples");
     let id = held.id("pan").expect("the root");
-    let buffer = held.buffer(id).expect("a rendered pan");
+    let buffer = held.output(id).expect("a rendered pan");
     assert_eq!(buffer.width, 2, "the join names two components");
     for i in [1usize, 17, 123] {
         let mono = (3.0 * (TAU * 220.0 * i as f64 / 44_100.0).sin()).tanh();
@@ -268,7 +268,7 @@ fn a_supersaw_stack_of_series_point_samples() {
     let held = render(&g, "stack", RenderConfig::seconds(44_100, 0.02), None)
         .expect("a stack of warped series reaches the grid");
     let root = held.id("stack").expect("the root");
-    let buffer = held.buffer(root).expect("a rendered stack");
+    let buffer = held.output(root).expect("a rendered stack");
     assert_eq!(buffer.len(), 882);
     assert!(
         buffer.plane(0).iter().all(|s| s.is_finite()),

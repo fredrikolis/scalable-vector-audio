@@ -1,4 +1,4 @@
-// Concern: reads a closed form onto any span of the grid by rows no horizon chooses, priced | Non-concern: rows a whole render fits to its horizon | IO: (form, rate) -> Rows; (Tape, to) -> samples, work
+// Concern: reads a closed form onto any span of the grid by rows no extent chooses, priced | Non-concern: rows a whole render fits to its extent | IO: (form, rate) -> Rows; (Tape, to) -> samples, work
 
 use sva_formula::{ClosedForm, SpectralSum, Var, normalize_closed_form};
 
@@ -22,7 +22,7 @@ enum Row {
     Lines(Vec<Option<Direct>>),
     Sweep {
         sum: Box<SpectralSum>,
-        spans: Vec<Option<Vec<(usize, usize)>>>,
+        spans: Vec<Option<Vec<(i64, i64)>>>,
     },
     Point {
         written: Box<ClosedForm>,
@@ -70,15 +70,15 @@ impl Rows {
     }
 
     /// What writing `[from, to)` of every component takes, as `(priced flops, waves)`.
-    pub fn work(&self, from: usize, to: usize) -> (u128, u128) {
+    pub fn work(&self, from: i64, to: i64) -> (u128, u128) {
         (0..self.width).fold((0, 0), |held, c| {
             let (priced, waves) = worked(&self.row, c, from, to);
             (held.0 + priced, held.1 + waves)
         })
     }
 
-    /// Appends `[tape.end(), to)` of every component, counted from the grid's start.
-    pub fn extend(&self, to: usize, tape: &mut Tape) -> Result<(), CollapseError> {
+    /// Appends `[tape.end(), to)` of every component, on the grid's own index.
+    pub fn extend(&self, to: i64, tape: &mut Tape) -> Result<(), CollapseError> {
         let step = 1.0 / f64::from(self.rate);
         for i in tape.end()..to {
             for c in 0..self.width {
@@ -91,7 +91,7 @@ impl Rows {
 
 /// `(priced flops, waves)` one component's row takes over `[from, to)`: a line, a node walked
 /// or an atom inside its spans, a sample each, as a whole render prices them.
-fn worked(row: &Row, c: usize, from: usize, to: usize) -> (u128, u128) {
+fn worked(row: &Row, c: usize, from: i64, to: i64) -> (u128, u128) {
     let n = (to - from) as u128;
     let times = |(priced, waves): (usize, usize), n: u128| (priced as u128 * n, waves as u128 * n);
     match row {
@@ -102,8 +102,8 @@ fn worked(row: &Row, c: usize, from: usize, to: usize) -> (u128, u128) {
             let inside = spans[c].as_ref().map_or(n, |spans| {
                 let held = spans
                     .iter()
-                    .map(|(a, b)| to.min(*b).saturating_sub(from.max(*a)));
-                held.sum::<usize>() as u128
+                    .map(|(a, b)| (to.min(*b) - from.max(*a)).max(0));
+                held.sum::<i64>() as u128
             });
             let atoms = sum.lanes[c].atoms.len();
             times((atoms, atoms), inside)
@@ -123,7 +123,7 @@ fn worked(row: &Row, c: usize, from: usize, to: usize) -> (u128, u128) {
     }
 }
 
-/// `plan::of` with each row a horizon picks by cost replaced by the one summed per instant.
+/// `plan::of` with each row an extent picks by cost replaced by the one summed per instant.
 fn of_sum(sum: &SpectralSum, rate: u32, profile: &Profile) -> Result<Row, CollapseError> {
     if sum.var == Var::F {
         return Err(CollapseError::NoBlockRow);
@@ -137,7 +137,7 @@ fn of_sum(sum: &SpectralSum, rate: u32, profile: &Profile) -> Result<Row, Collap
     let spans = truncated
         .lanes
         .iter()
-        .map(|lane| span::windows(lane, 0.0, rate, f64::INFINITY))
+        .map(|lane| span::windows(lane, rate))
         .collect();
     Ok(Row::Sweep {
         sum: Box::new(truncated),
@@ -202,12 +202,12 @@ fn width(row: &Row) -> usize {
 }
 
 /// Each row's arithmetic, in its whole-render row's order, so the bits agree.
-fn value(row: &Row, c: usize, i: usize, rate: u32, step: f64) -> Result<f64, CollapseError> {
+fn value(row: &Row, c: usize, i: i64, rate: u32, step: f64) -> Result<f64, CollapseError> {
     Ok(match row {
         Row::Lines(lanes) => {
             let mut held = 0.0;
             if let Some(direct) = &lanes[c] {
-                held += direct.at(0.0 + i as f64 / f64::from(rate));
+                held += direct.at(i as f64 / f64::from(rate));
             }
             held
         }
@@ -216,12 +216,12 @@ fn value(row: &Row, c: usize, i: usize, rate: u32, step: f64) -> Result<f64, Col
                 .as_ref()
                 .is_none_or(|spans| spans.iter().any(|(from, to)| (*from..*to).contains(&i)));
             match inside {
-                true => point::eval_lane(&sum.lanes[c], 0.0 + i as f64 * step)?.re,
+                true => point::eval_lane(&sum.lanes[c], i as f64 * step)?.re,
                 false => 0.0,
             }
         }
         Row::Point { written, .. } => {
-            point::eval_body(&written.body, c, 0.0 + i as f64 * step, &point::NoRefs)?.re
+            point::eval_body(&written.body, c, i as f64 * step, &point::NoRefs)?.re
         }
         Row::Added(parts) => {
             let mut sum = 0.0;

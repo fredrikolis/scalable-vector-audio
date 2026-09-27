@@ -3,13 +3,15 @@
 mod answer;
 mod builtins;
 mod cli_error;
-mod duration;
 pub mod json;
 mod lint_code;
 mod outline;
 mod output;
 mod query;
+mod settings;
+mod target;
 mod tempo;
+mod until;
 
 pub use answer::{
     Report, SAMPLE_LIMIT, answer_json, label_json, query_data, stats_json, value_json, work_json,
@@ -20,34 +22,34 @@ pub use lint_code::LintCode;
 pub use outline::outline_data;
 pub use output::{Diagnostic, Severity, diagnostics_json, error_envelope, success_envelope};
 pub use query::{
-    Asked, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, DEFAULT_SILENT_BITS,
-    DEFAULT_SILENT_MAX_SECS, REPRESENTATIONS, RETIRED, Shaping, WindowEdge, is_wav,
-    representation_for, retired, silence, silent_edge, window_edge, window_for,
+    Asked, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, REPRESENTATIONS, RETIRED,
+    Shaping, is_wav, representation_for, retired,
 };
+pub use settings::{Settings, wav_path};
+pub use target::{Edge, Target, target};
 pub use tempo::refuse_unresolved_bars;
+pub use until::{default_until, until};
 
 use std::path::Path;
 
-use sva_ast::{Dir, Graph, Refusal, Source, SpanUnit};
+use sva_ast::{Dir, Graph, Refusal, Source};
 use sva_engine::{
-    Ask, BindingFault, DEFAULT_SAMPLE_RATE, EngineError, PSYCHOACOUSTIC_V1, Render, RenderConfig,
-    StreamConfig, render, render_until_silent,
+    Ask, BindingFault, DEFAULT_SAMPLE_RATE, EngineError, Range, RenderConfig, StreamConfig, render,
 };
 
-pub use sva_engine::{Checkpoint, Silent, Stream};
+pub use sva_engine::{Checkpoint, DEFAULT_PROOF_LIMIT_SECS, Stream, Until};
 
-pub use sva_engine::{Answer, Horizon, Label, Output, Representation};
+pub use sva_engine::{Answer, Extent, Label, Output, Representation};
 pub use sva_engine::{Cache, CachePolicy, PrunePolicy};
 
 pub const ROOT: &str = "master";
 pub const PROBE: &str = "probe";
 
-pub const DEFAULT_SECONDS: f64 = 1.0;
-
 pub struct Rendered {
     pub config: RenderConfig,
+    pub expression: String,
     pub target: String,
-    pub render: Render,
+    pub render: sva_engine::Render,
     /// So a structural check needs no second parse, and an ad-hoc target is the same `probe`.
     pub graph: Graph,
 }
@@ -79,77 +81,97 @@ impl Rendered {
     }
 }
 
-/// A `target` the composition holds is that node; anything else is argv math.
+/// One render: `target` an expression over the composition `source` holds, its own ref
+/// read over an interval where it writes one.
 pub struct Job<'a> {
     pub source: &'a dyn Source,
-    pub target: Option<&'a str>,
-    pub from: Option<WindowEdge>,
-    pub until: Option<WindowEdge>,
-    pub sample_rate: Option<u32>,
+    pub target: &'a str,
+    /// The condition that ends the render; `default_until()` where `None`.
+    pub until: Option<&'a str>,
+    pub rate: Option<u32>,
     pub cache: Option<&'a Cache>,
     pub cache_policy: Option<CachePolicy>,
-    /// Only what the target reaches, so a node nothing reaches is never read or refused.
-    pub reaching: bool,
     /// The instance every reading is taken of; the target itself where this is `None`.
     pub reading: Option<&'a str>,
     pub representations: Vec<Representation>,
     /// The operation count the caller acknowledges paying; the profile's own where `None`.
     pub flop_budget: Option<u128>,
+    pub proof_limit_secs: Option<f64>,
     pub volatile: &'a [String],
-    /// Render until silence is proven, in place of `until`.
-    pub silent: Option<Silent>,
 }
 
 impl<'a> Job<'a> {
-    pub fn over(source: &'a dyn Source) -> Job<'a> {
+    pub fn over(source: &'a dyn Source, target: &'a str) -> Job<'a> {
         Job {
             source,
-            target: None,
-            from: None,
+            target,
             until: None,
-            sample_rate: None,
+            rate: None,
             cache: None,
             cache_policy: None,
-            reaching: false,
             reading: None,
             representations: Vec::new(),
             flop_budget: None,
+            proof_limit_secs: None,
             volatile: &[],
-            silent: None,
         }
     }
 }
 
-fn settle(job: &Job, asked: Option<&str>) -> Result<(Graph, String, RenderConfig), CliError> {
-    let mut graph = match job.reaching {
-        false => prepared(job.source)?,
-        true => settled(sva_ast::load_reaching(
-            job.source,
-            &roots_of(job.source, asked)?
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-        ))?,
+fn settle(job: &Job) -> Result<(Graph, RenderConfig), CliError> {
+    let Target { expr, interval } = target(job.target)?;
+    let mut graph = settled(sva_ast::load_reaching(
+        job.source,
+        &roots_of(job.source, Some(&expr))?
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    ))?;
+    let parsed = sva_ast::parse_expr(&expr).map_err(|d| {
+        CliError::BadProbe(format!(
+            "`{}` does not parse as an expression: {}",
+            job.target, d.message
+        ))
+    })?;
+    define_probe(&mut graph, parsed)?;
+    let rate = job.rate.unwrap_or(DEFAULT_SAMPLE_RATE);
+    let per_bar = graph.seconds_per_bar();
+    let range = match interval {
+        None => Range::default(),
+        Some((start, end)) => Range {
+            start: start.sample(rate, per_bar)?,
+            end: end.sample(rate, per_bar)?,
+        },
     };
-    let target = match asked {
-        None => ROOT.to_string(),
-        Some(name) if graph.defines(name) => name.to_string(),
-        Some(text) => {
-            define_probe_for(&mut graph, text)?;
-            PROBE.to_string()
-        }
+    if let Range {
+        start: Some(start),
+        end: Some(end),
+    } = range
+        && end <= start
+    {
+        return Err(CliError::Usage(format!(
+            "`{}` reads an interval from sample {start} to {end}, which holds none",
+            job.target
+        )));
+    }
+    let until = match job.until {
+        Some(text) => until(text, rate, per_bar)?,
+        None => until(&default_until(), rate, per_bar)?,
     };
-    let until = match job.silent {
-        Some(silent) => Some(WindowEdge::Secs(silent.max_secs)),
-        None => job.until,
+    let mut config = RenderConfig {
+        range,
+        until: Some(until),
+        ..RenderConfig::at(rate)
     };
-    let mut config = config_for(&graph, &target, job.from, until, job.sample_rate)?;
     if let Some(budget) = job.flop_budget {
         config.flop_budget = budget;
     }
+    if let Some(limit) = job.proof_limit_secs {
+        config.proof_limit_secs = limit;
+    }
     config.volatile = job.volatile.to_vec();
     config.cache_policy = job.cache_policy;
-    let node = job.reading.unwrap_or(&target);
+    let node = job.reading.unwrap_or(PROBE);
     config.asks = job
         .representations
         .iter()
@@ -158,7 +180,7 @@ fn settle(job: &Job, asked: Option<&str>) -> Result<(Graph, String, RenderConfig
             representation: *representation,
         })
         .collect();
-    Ok((graph, target, config))
+    Ok((graph, config))
 }
 
 /// `trace` names one instance of a parameterized file as `<path>(<name>=<value>, ..)`.
@@ -185,7 +207,7 @@ fn all_named(binds: &str) -> bool {
     named && depth == 0
 }
 
-/// The ref an instance name stands for, so `render` and `trace` answer for the same node.
+/// The ref an instance name stands for, so `lint` and `trace` answer for the same node.
 fn instance_read(graph: &Graph, text: &str) -> Option<sva_ast::Expr> {
     let (path, binds) = instance_call(text)?;
     if !graph.defines(path) {
@@ -195,23 +217,30 @@ fn instance_read(graph: &Graph, text: &str) -> Option<sva_ast::Expr> {
 }
 
 pub fn execute(job: Job) -> Result<Rendered, CliError> {
-    let (graph, target, config) = settle(&job, job.target)?;
-    let refused = match rendering(&job, &graph, &target, config) {
-        Ok(render) => {
-            return Ok(Rendered {
-                config: render.config.clone(),
-                render,
-                target,
-                graph,
-            });
-        }
-        Err(refused) => refused,
+    let (graph, config) = settle(&job)?;
+    let render = render(&graph, PROBE, config, job.cache).map_err(CliError::Engine)?;
+    Ok(Rendered {
+        config: render.config.clone(),
+        expression: job.target.to_string(),
+        target: PROBE.to_string(),
+        render,
+        graph,
+    })
+}
+
+pub fn stream(job: &Job, block: usize, bindings: &[(String, f64)]) -> Result<Stream, CliError> {
+    let (graph, config) = settle(job)?;
+    let target = graph
+        .expr(PROBE)
+        .cloned()
+        .expect("the target was defined as the probe");
+    let config = StreamConfig {
+        rate: config.rate,
+        block,
+        range: config.range,
+        until: config.until,
     };
-    match instances_behind(job.source, &target, &refused) {
-        Some(held) if held.len() == 1 => at_instance(&job, &held[0]),
-        Some(held) => Err(CliError::Engine(EngineError::AmbiguousNode(target, held))),
-        None => Err(CliError::Engine(refused)),
-    }
+    Stream::open(&graph, &target, bindings, config).map_err(CliError::Engine)
 }
 
 pub fn instances_behind(
@@ -242,51 +271,8 @@ fn instances_of(source: &dyn Source, target: &str) -> Option<Vec<String>> {
     (!held.is_empty()).then_some(held)
 }
 
-/// One instance is the node the caller meant, read as if they had named it themselves.
-fn at_instance(job: &Job, instance: &str) -> Result<Rendered, CliError> {
-    let (graph, target, config) = settle(job, Some(instance))?;
-    let render = rendering(job, &graph, &target, config).map_err(CliError::Engine)?;
-    Ok(Rendered {
-        config: render.config.clone(),
-        render,
-        target,
-        graph,
-    })
-}
-
-/// The horizon the caller named, or the one silence ends.
-fn rendering(
-    job: &Job,
-    graph: &Graph,
-    target: &str,
-    config: RenderConfig,
-) -> Result<Render, EngineError> {
-    match job.silent {
-        Some(silent) => render_until_silent(graph, target, config, silent, job.cache),
-        None => render(graph, target, config, job.cache),
-    }
-}
-
-/// `job`'s target settled as a render of it is, each of `bindings` a named argument on it.
-pub fn stream(job: &Job, block: usize, bindings: &[(String, f64)]) -> Result<Stream, CliError> {
-    let (graph, target, config) = settle(job, job.target)?;
-    let config = StreamConfig {
-        rate: config.rate,
-        block,
-        silent: job.silent,
-    };
-    Stream::open(&graph, &target, bindings, config).map_err(CliError::Engine)
-}
-
-pub fn run(dir: &Path) -> Result<Rendered, CliError> {
-    execute(Job::over(&Dir::at(dir)))
-}
-
 pub fn probe(dir: &Path, expression: &str) -> Result<Rendered, CliError> {
-    execute(Job {
-        target: Some(expression),
-        ..Job::over(&Dir::at(dir))
-    })
+    execute(Job::over(&Dir::at(dir), expression))
 }
 
 pub fn cwd() -> Result<std::path::PathBuf, CliError> {
@@ -298,8 +284,8 @@ pub fn prepared(source: &dyn Source) -> Result<Graph, CliError> {
     settled(sva_ast::load(source))
 }
 
-/// Argv math: `render`, `trace` and `lint` each refuse a target no node answers for here,
-/// under one code and one message.
+/// Argv math: `trace` and `lint` each refuse a target no node answers for here, under one
+/// code and one message.
 pub fn define_probe_for(graph: &mut Graph, text: &str) -> Result<(), CliError> {
     let expr = match instance_read(graph, text) {
         Some(read) => read,
@@ -382,50 +368,4 @@ pub fn roots_of(source: &dyn Source, target: Option<&str>) -> Result<Vec<String>
         },
     }
     Ok(roots)
-}
-
-/// The horizon a reading runs against: the window the caller named, else the node's own
-/// stated extent, reaching back to whatever a `crop` declares before zero.
-pub fn config_for(
-    graph: &Graph,
-    root: &str,
-    from: Option<WindowEdge>,
-    until: Option<WindowEdge>,
-    sample_rate: Option<u32>,
-) -> Result<RenderConfig, CliError> {
-    let declared = duration::widest_crop(graph, root);
-    let length = match graph.span(root) {
-        Some(span) if span.unit == SpanUnit::Seconds => Some(span.amount),
-        Some(span) => {
-            return Err(CliError::BadTempo(format!(
-                "`{root}`'s span is still {} bars, unresolved; give bpm/meter, or a seconds span",
-                span.amount
-            )));
-        }
-        None => declared.end,
-    };
-    let asked = window_for(from, until, graph.seconds_per_bar())?;
-    let end = match asked.end_secs.is_finite() {
-        true => asked.end_secs,
-        false => length.unwrap_or(DEFAULT_SECONDS),
-    };
-    let stated = !matches!(from, None | Some(WindowEdge::End));
-    let start = match stated {
-        true => asked.start_secs,
-        false => declared.start.unwrap_or(0.0).min(0.0),
-    };
-    if end <= start {
-        return Err(CliError::Usage(format!(
-            "a reading runs from {start}s to {end}s, which is no window; give --to past --from"
-        )));
-    }
-    Ok(RenderConfig {
-        rate: sample_rate.unwrap_or(DEFAULT_SAMPLE_RATE),
-        horizon: Horizon::secs(start, end),
-        profile: PSYCHOACOUSTIC_V1,
-        asks: Vec::new(),
-        flop_budget: PSYCHOACOUSTIC_V1.flop_budget,
-        volatile: Vec::new(),
-        cache_policy: None,
-    })
 }

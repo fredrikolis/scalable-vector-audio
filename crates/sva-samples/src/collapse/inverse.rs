@@ -13,17 +13,17 @@ use super::point::eval_lane;
 /// Ours, not a bound the table sets.
 const IMAGES_COUNTED: u32 = 3;
 
-/// Bin `j` stands for `j/T` Hz: the closed form is read at exactly the spacing the horizon names.
+/// Bin `j` stands for `j/T` Hz: the closed form is read at exactly the spacing the extent names.
 pub fn collapse_lane(
     n: &SpectralSum,
     c: usize,
     start_secs: f64,
-    horizon_secs: f64,
+    span_secs: f64,
     rate: u32,
     len: usize,
 ) -> Result<Vec<f64>, CollapseError> {
-    let count = bins(horizon_secs, rate);
-    let spacing = 1.0 / horizon_secs;
+    let count = bins(span_secs, rate);
+    let spacing = 1.0 / span_secs;
     let lane = &n.lanes[c.min(n.lanes.len() - 1)];
     let mut re = vec![0.0; count];
     let mut im = vec![0.0; count];
@@ -42,9 +42,9 @@ pub fn collapse_lane(
 }
 
 /// The energy outside `[-R/2, R/2]`, which the grid folds back in.
-pub fn wrap_db(n: &SpectralSum, horizon_secs: f64, rate: u32) -> Result<f64, CollapseError> {
-    let count = bins(horizon_secs, rate);
-    let spacing = 1.0 / horizon_secs;
+pub fn wrap_db(n: &SpectralSum, span_secs: f64, rate: u32) -> Result<f64, CollapseError> {
+    let count = bins(span_secs, rate);
+    let spacing = 1.0 / span_secs;
     let lane = &n.lanes[0];
     let (mut held, mut lost) = (0.0, 0.0);
     for j in 0..count {

@@ -4,7 +4,7 @@ mod helpers;
 
 use helpers::scratch;
 
-use sva_cli::{SampleEncoding, parse_args, write_channels, write_wav};
+use sva_cli::{SampleEncoding, parse_args, write_channels};
 use sva_engine::{Buffer, Output, PSYCHOACOUSTIC_V1, Representation, Source, answer_buffer};
 
 fn argv(parts: &[&str]) -> Vec<String> {
@@ -114,27 +114,35 @@ fn a_reading_that_needs_a_graph_refuses_off_a_file() {
 fn analyze_takes_only_the_readings_a_buffer_answers_and_needs_a_wav() {
     for name in sva_cli::ANALYZE_REPRESENTATIONS {
         assert!(
-            parse_args(&argv(&["analyze", "/tmp/a.wav", "--as", name])).is_ok(),
+            parse_args(&argv(&["analyze", "/tmp/a.wav", "--representation", name])).is_ok(),
             "`{name}` is one a buffer answers"
         );
     }
     for name in sva_analysis::ANALYSES {
         assert!(
-            parse_args(&argv(&["analyze", "/tmp/a.wav", "--as", name])).is_ok(),
+            parse_args(&argv(&["analyze", "/tmp/a.wav", "--representation", name])).is_ok(),
             "`{name}` is one `sva-analysis` answers off a buffer"
         );
         assert!(
-            parse_args(&argv(&["render", "master", "--as", name])).is_err(),
+            parse_args(&argv(&["render", "@master", "--representation", name])).is_err(),
             "`{name}` reads a rendered buffer back, and `render` has none to hand it"
         );
     }
     for name in ["ledger", "alias", "bindings", "lines", "atoms"] {
         assert!(
-            parse_args(&argv(&["analyze", "/tmp/a.wav", "--as", name])).is_err(),
+            parse_args(&argv(&["analyze", "/tmp/a.wav", "--representation", name])).is_err(),
             "`{name}` needs a rendered graph"
         );
     }
-    assert!(parse_args(&argv(&["analyze", "/tmp/a.flac", "--as", "bands"])).is_err());
+    assert!(
+        parse_args(&argv(&[
+            "analyze",
+            "/tmp/a.flac",
+            "--representation",
+            "bands"
+        ]))
+        .is_err()
+    );
 }
 
 /// Two components in, two components read: an interleaved file decodes back to the planes
@@ -173,49 +181,6 @@ fn a_two_channel_file_answers_a_stereo_image_a_mono_one_cannot() {
     assert_eq!(err.code(), "type.width_mismatch");
 }
 
-/// The same `--from`/`--to` names the same seconds on both paths: a render narrowed to a
-/// window and the file it wrote, analyzed over that window, hold the same samples.
-#[test]
-fn a_window_narrows_a_render_and_a_file_the_same_way() {
-    let dir = scratch("window-both");
-    let out = scratch("window-both-out");
-    std::fs::write(dir.join("master"), "sin(2*pi*220*t)\n").expect("a node file");
-
-    let whole = sva_core::execute(sva_core::Job {
-        until: Some(sva_core::WindowEdge::Secs(1.0)),
-        ..sva_core::Job::over(&sva_ast::Dir::at(&dir))
-    })
-    .expect("the whole second renders");
-    let path = out.join("whole.wav");
-    let held = whole
-        .render
-        .buffer(whole.render.id("master").expect("the root"))
-        .expect("a buffer");
-    write_wav(&held.as_f32(0), held.rate, &path, SampleEncoding::Float).unwrap();
-
-    let narrowed = sva_core::execute(sva_core::Job {
-        from: Some(sva_core::WindowEdge::Secs(0.25)),
-        until: Some(sva_core::WindowEdge::Secs(0.5)),
-        ..sva_core::Job::over(&sva_ast::Dir::at(&dir))
-    })
-    .expect("a quarter second renders");
-    let part = narrowed
-        .render
-        .buffer(narrowed.render.id("master").expect("the root"))
-        .expect("a buffer");
-    assert_eq!(narrowed.config.horizon.start_secs, 0.25);
-    assert_eq!(part.len(), 11_025, "a quarter second at 44.1 kHz");
-
-    let file = decoded(&path);
-    let at = (0.25 * f64::from(file.rate)) as usize;
-    for (i, s) in part.plane(0).iter().enumerate() {
-        assert!(
-            (s - file.plane(0)[at + i]).abs() < 1e-6,
-            "sample {i} of the window differs from the same second of the file"
-        );
-    }
-}
-
 /// A frame the transform cannot hold refuses on both paths rather than shrinking silently
 /// or overflowing the size it was asked for.
 #[test]
@@ -223,7 +188,14 @@ fn a_frame_past_the_transform_bound_refuses_on_both_paths() {
     for span in ["1e9", "1e300"] {
         let refused = std::process::Command::new(env!("CARGO_BIN_EXE_sva-cli"))
             .current_dir(scratch("frame-bound"))
-            .args(["render", "--as", "spectrum", "--frame", span])
+            .args([
+                "render",
+                "@master",
+                "--representation",
+                "spectrum",
+                "-c",
+                &format!("frame={span}"),
+            ])
             .output()
             .expect("the binary runs");
         let printed = String::from_utf8_lossy(&refused.stdout);
@@ -237,49 +209,16 @@ fn a_frame_past_the_transform_bound_refuses_on_both_paths() {
         .args([
             "analyze",
             &path.display().to_string(),
-            "--as",
+            "--representation",
             "spectrum",
-            "--frame",
-            "1e9",
+            "-c",
+            "frame=1e9",
         ])
         .output()
         .expect("the binary runs");
     let printed = String::from_utf8_lossy(&refused.stdout);
     assert_eq!(refused.status.code(), Some(3), "{printed}");
     assert!(printed.contains("past the"), "{printed}");
-}
-
-/// A file holds only the seconds it holds: a window past its end is refused rather than
-/// clipped behind a success envelope that still names the window asked for.
-#[test]
-fn a_window_past_the_end_of_a_file_refuses() {
-    let rate = 8_000u32;
-    let path = written("analyze-past-end", rate, &[&tone(rate, 220.0, 1.0)]);
-    let at = |from: &str, to: &str| {
-        std::process::Command::new(env!("CARGO_BIN_EXE_sva-cli"))
-            .args([
-                "analyze",
-                &path.display().to_string(),
-                "--as",
-                "loudness",
-                "--from",
-                from,
-                "--to",
-                to,
-            ])
-            .output()
-            .expect("the binary runs")
-    };
-    for (from, to) in [("0.5", "5"), ("2", "5")] {
-        let refused = at(from, to);
-        let printed = String::from_utf8_lossy(&refused.stdout);
-        assert_eq!(refused.status.code(), Some(3), "{printed}");
-        assert!(printed.contains("1s long"), "{printed}");
-    }
-    let held = at("0.25", "0.75");
-    let printed = String::from_utf8_lossy(&held.stdout);
-    assert_eq!(held.status.code(), Some(0), "{printed}");
-    assert!(printed.contains("\"end_secs\": 0.75"), "{printed}");
 }
 
 /// BRIEF section 9 gates a groove on onsets to 1 ms. A frame says which transient, never
@@ -306,7 +245,7 @@ fn onsets_of_a_grid_land_within_one_millisecond() {
     let parsed = parse_args(&argv(&[
         "analyze",
         &path.display().to_string(),
-        "--as",
+        "--representation",
         "onsets",
     ]))
     .expect("an onset request");
@@ -342,7 +281,7 @@ fn onsets_of_a_grid_land_within_one_millisecond() {
     let parsed = parse_args(&argv(&[
         "analyze",
         &path.display().to_string(),
-        "--as",
+        "--representation",
         &format!("onsets={}", dest.display()),
     ]))
     .expect("an onset request");
@@ -365,7 +304,7 @@ fn onsets_of(path: &std::path::Path) -> Vec<f64> {
     let parsed = parse_args(&argv(&[
         "analyze",
         &path.display().to_string(),
-        "--as",
+        "--representation",
         "onsets",
     ]))
     .expect("an onset request");

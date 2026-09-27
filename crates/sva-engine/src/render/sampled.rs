@@ -14,18 +14,17 @@ use crate::render::Render;
 use crate::typing::Value;
 
 /// A sampled node is the dearest kind this engine runs, so it is keyed as a collapse is: off
-/// the node's identity, the rate and the window it was stepped over. Its length rides along.
+/// the node's identity, the rate and the extent it was stepped over. Its length rides along.
 pub fn key(held: &Render, id: NodeId) -> Result<(sva_formula::Hash, usize), EngineError> {
-    let samples = super::length(held, id)?;
+    let extent = held.extents.of(id);
     let key = crate::cache::buffer_key(
         crate::refs::identity(&held.tys, id)?,
         held.config.rate,
-        held.config.horizon.start_secs,
-        samples,
+        extent,
         held.tys.ty(id).width as usize,
         sva_samples::AliasScore::NotAsked,
     );
-    Ok((key, samples))
+    Ok((key, extent.len()))
 }
 
 pub fn run(
@@ -48,7 +47,8 @@ fn stepped(held: &Render, id: NodeId) -> Result<(Buffer, Label), EngineError> {
             .frames
             .get(&source)
             .ok_or_else(|| missing(held, source))?;
-        return Ok(stft::inverse(frames, &held.config.profile));
+        let (inverse, label) = stft::inverse(frames, &held.config.profile);
+        return Ok((inverse.over(held.extents.of(id), inverse.extent()), label));
     }
     let program = program(held, id)?;
     let buffer = program.writes(held, id, &program.renderer)?;
@@ -99,7 +99,7 @@ pub(super) fn program_reading(
 }
 
 impl Program {
-    /// What one shape of this program writes over the node's own window and slots, which is
+    /// What one shape of this program writes over the node's own extent and slots, which is
     /// how a share runs it again with every slot but one silenced.
     pub(super) fn writes(
         &self,
@@ -107,23 +107,20 @@ impl Program {
         id: NodeId,
         renderer: &NodeRenderer,
     ) -> Result<Buffer, EngineError> {
-        let len = held
-            .config
-            .horizon
-            .len(held.config.rate)
-            .map_err(|e| collapse_refused(held, id, &e.to_string(), e.code()))?;
+        let extent = held.extents.of(id);
         let buffers: Vec<Window> = self
             .reads
             .iter()
-            .map(|r| Window::of(held.buffers.get(r).expect("a read is materialized first")))
+            .map(|r| {
+                let buffer = held.buffers.get(r).expect("a read is materialized first");
+                Window::of(buffer, held.extents.support(*r))
+            })
             .collect();
         let ctx = Ctx {
             rate: held.config.rate,
-            origin_secs: held.config.horizon.start_secs,
-            len,
+            start: extent.start,
+            len: extent.len(),
             reads: &buffers,
-            self_planes: &[],
-            written: 0,
         };
         renderer
             .run(&self.layout, &ctx)

@@ -45,6 +45,13 @@ pub enum TokenKind {
     Comma,
     LParen,
     RParen,
+    /// An interval's brackets and a condition's comparisons, which only a command line writes.
+    LBracket,
+    RBracket,
+    Lt,
+    Le,
+    Gt,
+    Ge,
 }
 
 /// Not `#`, which is the sharp sign, and not `//`, which keeps `/` for time signatures.
@@ -120,6 +127,12 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, Diag> {
         }
 
         let (kind, len) = match c {
+            b'<' if b.get(i + 1) == Some(&b'=') => (TokenKind::Le, 2),
+            b'>' if b.get(i + 1) == Some(&b'=') => (TokenKind::Ge, 2),
+            b'<' => (TokenKind::Lt, 1),
+            b'>' => (TokenKind::Gt, 1),
+            b'[' => (TokenKind::LBracket, 1),
+            b']' => (TokenKind::RBracket, 1),
             b'+' => (TokenKind::Plus, 1),
             b'-' => (TokenKind::Minus, 1),
             b'*' => (TokenKind::Star, 1),
@@ -255,7 +268,7 @@ pub fn whole_ref_path(path: &str) -> bool {
 }
 
 /// A `@`-prefixed path: alnum, `_`, `-`, `/` — its own lexical class, so `@lead-dry` never
-/// splits at `-` the way a subtraction would. A `.` joins the path when a digit follows it, so
+/// splits at `-` the way a subtraction would. A leading `/` is an absolute path. A `.` joins the path when a digit follows it, so
 /// `@pluck-1.5s` is one token, or when it opens a `./` or `../` segment; `@kick.lp(...)` still
 /// ends at the dot and chains.
 fn lex_ref_path(b: &[u8], mut i: usize) -> (String, usize) {
@@ -264,7 +277,7 @@ fn lex_ref_path(b: &[u8], mut i: usize) -> (String, usize) {
         if i < b.len()
             && (b[i].is_ascii_alphanumeric()
                 || matches!(b[i], b'_' | b'-')
-                || (b[i] == b'/' && i > start && opens_segment(b, i + 1)))
+                || (b[i] == b'/' && opens_segment(b, i + 1)))
         {
             i += 1;
         } else if let Some(next) = relative_segment(b, i, start) {

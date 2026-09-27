@@ -1,25 +1,24 @@
 // Concern: one node's output over a trailing span of the grid, and a view of any span | Non-concern: what writes it, how far back a reader reaches | IO: (component, index) -> f64
 
 use crate::buffer::Buffer;
+use crate::collapse::Extent;
 
-/// Samples `[base, end)` of one node's output, indexed from the grid's first sample.
+/// Samples `[base, end)` of one node's output; it is silent before `origin`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tape {
     planes: Vec<Vec<f64>>,
-    base: usize,
+    base: i64,
+    origin: i64,
 }
 
 impl Tape {
-    pub fn new(width: usize, capacity: usize) -> Tape {
-        Tape::starting_at(width, capacity, 0)
-    }
-
-    pub fn starting_at(width: usize, capacity: usize, base: usize) -> Tape {
+    pub fn new(width: usize, capacity: usize, origin: i64) -> Tape {
         Tape {
             planes: (0..width.max(1))
                 .map(|_| Vec::with_capacity(capacity))
                 .collect(),
-            base,
+            base: origin,
+            origin,
         }
     }
 
@@ -27,42 +26,51 @@ impl Tape {
         self.planes.len()
     }
 
-    pub fn base(&self) -> usize {
+    pub fn base(&self) -> i64 {
         self.base
+    }
+
+    pub fn origin(&self) -> i64 {
+        self.origin
     }
 
     pub fn capacity(&self) -> usize {
         self.planes[0].capacity()
     }
 
-    pub fn end(&self) -> usize {
-        self.base + self.planes[0].len()
+    pub fn end(&self) -> i64 {
+        self.base + self.planes[0].len() as i64
     }
 
     pub fn window(&self) -> Window<'_> {
+        self.within(Extent::from(self.origin))
+    }
+
+    pub fn within(&self, support: Extent) -> Window<'_> {
         Window {
             planes: &self.planes,
             base: self.base,
+            support,
         }
     }
 
-    pub fn since(&self, c: usize, from: usize) -> &[f64] {
-        &self.planes[c][from - self.base..]
+    pub fn since(&self, c: usize, from: i64) -> &[f64] {
+        &self.planes[c][(from - self.base) as usize..]
     }
 
     pub fn push(&mut self, c: usize, value: f64) {
         self.planes[c].push(value);
     }
 
-    pub fn forget_before(&mut self, from: usize) {
-        let gone = from.saturating_sub(self.base).min(self.planes[0].len());
+    pub fn forget_before(&mut self, from: i64) {
+        let gone = (from - self.base).clamp(0, self.planes[0].len() as i64) as usize;
         if gone == 0 {
             return;
         }
         for plane in &mut self.planes {
             plane.drain(..gone);
         }
-        self.base += gone;
+        self.base += gone as i64;
     }
 
     pub fn into_planes(self) -> Vec<Vec<f64>> {
@@ -73,28 +81,38 @@ impl Tape {
 #[derive(Clone, Copy, Debug)]
 pub struct Window<'a> {
     planes: &'a [Vec<f64>],
-    base: usize,
+    base: i64,
+    support: Extent,
 }
 
 impl<'a> Window<'a> {
-    pub fn of(buffer: &'a Buffer) -> Window<'a> {
+    pub fn of(buffer: &'a Buffer, support: Extent) -> Window<'a> {
         Window {
             planes: &buffer.planes,
-            base: 0,
+            base: buffer.start,
+            support,
         }
     }
 
-    /// A forgotten sample panics: some reader reaches further back than the tape keeps.
+    /// A sample not held inside the support is a reader past its extent: no value answers it.
     pub fn at(&self, c: usize, k: i64) -> f64 {
-        let Ok(k) = usize::try_from(k) else {
+        let plane = &self.planes[c];
+        if let Some(held) = k
+            .checked_sub(self.base)
+            .and_then(|at| usize::try_from(at).ok())
+            .and_then(|at| plane.get(at))
+        {
+            return *held;
+        }
+        if !self.support.contains(k) {
             return 0.0;
-        };
-        let j = k.checked_sub(self.base).unwrap_or_else(|| {
-            panic!(
-                "sample {k} was forgotten; this tape keeps from {}",
-                self.base
-            )
-        });
-        self.planes[c].get(j).copied().unwrap_or(0.0)
+        }
+        panic!(
+            "sample {k} is not held: this node holds [{}, {}) and is nonzero over [{}, {})",
+            self.base,
+            self.base + plane.len() as i64,
+            self.support.start,
+            self.support.end
+        )
     }
 }

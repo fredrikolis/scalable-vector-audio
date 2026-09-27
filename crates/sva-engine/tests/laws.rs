@@ -70,7 +70,7 @@ fn the_render_root_collapses_when_the_caller_asks_for_audio() {
     let g = graph_of("audio", &[("chord", CHORD)]);
     let held = render(&g, "chord", RenderConfig::seconds(8_192, 1.0), None).expect("audio");
     let root = held.id("chord").expect("the root");
-    let buffer = held.buffer(root).expect("the root is materialized");
+    let buffer = held.output(root).expect("the root is materialized");
     assert_eq!(buffer.len(), 8_192);
     assert_eq!(held.labels[&root].source, Source::Exact);
 }
@@ -83,11 +83,11 @@ fn a_warm_collapse_is_the_cold_one_byte_for_byte() {
     let config = || RenderConfig::seconds(8_192, 0.5);
     let cold = render(&g, "chord", config(), Some(&store)).expect("a cold render");
     let cold_root = cold.id("chord").expect("the root");
-    let cold_samples = cold.buffer(cold_root).expect("a buffer").clone();
+    let cold_samples = cold.output(cold_root).expect("a buffer").clone();
 
     let warm = render(&g, "chord", config(), Some(&store)).expect("a warm render");
     let warm_root = warm.id("chord").expect("the root");
-    assert_eq!(warm.buffer(warm_root).expect("a buffer"), &cold_samples);
+    assert_eq!(warm.output(warm_root).expect("a buffer"), cold_samples);
 }
 
 /// A rational factor folds into a series term by term, so filtered noise is still a pair

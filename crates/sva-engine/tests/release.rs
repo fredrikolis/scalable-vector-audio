@@ -21,7 +21,7 @@ fn samples(files: &[(&str, &str)], root: &str, secs: f64) -> Vec<f64> {
     let held = render(&g, root, RenderConfig::seconds(RATE, secs), None)
         .unwrap_or_else(|e| panic!("{root}: {e}"));
     let id = held.id(root).expect("the root");
-    held.buffer(id).expect("a buffer").plane(0).to_vec()
+    held.output(id).expect("a buffer").plane(0).to_vec()
 }
 
 fn refusal(body: &str) -> EngineError {

@@ -9,7 +9,7 @@ fn site(shape: Shape, cutoff: f64, q: f64, sr: f64) -> FilterSite {
 
 fn step(s: &mut FilterSite, x: f64, cutoff: f64, q: f64, gain: f64, sr: f64, i: usize) -> f64 {
     let mut out = [0.0];
-    s.process(&[x], &[cutoff], &[q], &[gain], &mut out, sr, i);
+    s.process(&[x], &[cutoff], &[q], &[gain], &mut out, sr, i as i64);
     out[0]
 }
 
@@ -156,7 +156,7 @@ fn a_wide_cutoff_gives_one_site_a_lane_and_a_trace_per_component() {
         .enumerate()
         .map(|(i, &x)| {
             let mut lanes = [0.0; 2];
-            s.process(&[x], &cutoff, &q, &gain, &mut lanes, sr, i);
+            s.process(&[x], &cutoff, &q, &gain, &mut lanes, sr, i as i64);
             lanes
         })
         .collect();

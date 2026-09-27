@@ -17,7 +17,7 @@ fn peak(name: &str, body: &str) -> f64 {
     let g = graph_of(name, &[("body", body)]);
     let held = render(&g, "body", RenderConfig::seconds(44_100, 0.05), None).expect("a render");
     let root = held.id("body").expect("the root");
-    held.buffer(root)
+    held.output(root)
         .expect("a rendered law")
         .plane(0)
         .iter()
@@ -141,7 +141,7 @@ fn a_crop_bound_may_be_a_constant_expression() {
         let held = render(&g, node, RenderConfig::seconds(8_192, 2.0), None)
             .unwrap_or_else(|e| panic!("{node}: {e}"));
         let id = held.id(node).unwrap_or_else(|| panic!("{node} typed"));
-        let plane = held.buffer(id).expect("a rendered law").plane(0).to_vec();
+        let plane = held.output(id).expect("a rendered law").plane(0).to_vec();
         let last = plane.iter().rposition(|s| *s != 0.0).expect("some sound");
         (last + 1) as f64 / 8_192.0
     };
@@ -174,7 +174,7 @@ fn a_filter_cutoff_may_be_a_scalar_variable() {
         let held = render(&g, node, RenderConfig::seconds(8_192, 0.05), None)
             .unwrap_or_else(|e| panic!("{node}: {e}"));
         let id = held.id(node).unwrap_or_else(|| panic!("{node} typed"));
-        held.buffer(id).expect("a rendered law").plane(0).to_vec()
+        held.output(id).expect("a rendered law").plane(0).to_vec()
     };
     assert_eq!(
         plane("read"),
@@ -187,7 +187,7 @@ fn plane_of(g: &sva_ast::Graph, node: &str) -> Vec<f64> {
     let held = render(g, node, RenderConfig::seconds(44_100, 0.02), None)
         .unwrap_or_else(|e| panic!("{node}: {e}"));
     let id = held.id(node).unwrap_or_else(|| panic!("{node} typed"));
-    held.buffer(id).expect("a rendered solve").plane(0).to_vec()
+    held.output(id).expect("a rendered solve").plane(0).to_vec()
 }
 
 /// The bug this closes: a negative whole exponent of a constant lowered to a pole atom, which
@@ -362,7 +362,7 @@ fn the_bore_reads_its_positional_as_a_length() {
     assert_eq!((first.name.as_str(), first.value), ("length", 0.3));
     let held = render(&g, "body", RenderConfig::seconds(8_000, 0.05), None).expect("a render");
     let id = held.id("body").expect("the root");
-    let rendered = held.buffer(id).expect("a solve").plane(0).to_vec();
+    let rendered = held.output(id).expect("a solve").plane(0).to_vec();
     let params = sva_samples::Params::DarabunditScavone(
         sva_samples::physics::darabundit_scavone::BoreParams::at(0.3),
     );
@@ -391,7 +391,7 @@ fn a_whole_power_past_the_order_cap_is_no_polynomial() {
         .expect("a constant base folds by powf");
     let id = held.id("constant").expect("the node");
     let peak = held
-        .buffer(id)
+        .output(id)
         .expect("a law")
         .plane(0)
         .iter()
@@ -427,7 +427,7 @@ fn a_reciprocal_power_is_the_quotient_bit_for_bit() {
             let held = render(&g, node, RenderConfig::seconds(8_000, 0.01), None)
                 .unwrap_or_else(|e| panic!("{node}: {e}"));
             let id = held.id(node).expect("the node");
-            held.buffer(id).expect("a buffer").plane(0).to_vec()
+            held.output(id).expect("a buffer").plane(0).to_vec()
         };
         assert_eq!(plane("powered"), plane("divided"), "{x}");
         assert_eq!(plane("cut_powered"), plane("cut_divided"), "{x}");

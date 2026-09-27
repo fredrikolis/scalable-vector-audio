@@ -11,7 +11,7 @@ fn rendered(name: &str, body: &str) -> Vec<f64> {
     let held = render(&g, "node", RenderConfig::seconds(8_000, 0.01), None)
         .unwrap_or_else(|e| panic!("{name} in `{body}`: {e}"));
     let root = held.id("node").expect("the root");
-    held.buffer(root)
+    held.output(root)
         .unwrap_or_else(|| panic!("{name}: a buffer"))
         .plane(0)
         .to_vec()

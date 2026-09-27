@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use sva_formula::{Held, NodeId};
-use sva_samples::{Machine, MachineState, NodeRenderer, Rows, Tape, Window};
+use sva_samples::{Extent, Machine, MachineState, NodeRenderer, Rows, Tape, Window};
 
 use super::super::pointwise::{self, Point};
 use super::super::{Render, collapse_refused, sampled};
@@ -32,11 +32,20 @@ pub(super) struct Streamed {
     pub(super) width: usize,
     /// How many samples before a block's start any reader, itself included, reaches.
     pub(super) keep: usize,
+    /// What its readers alone reach, which a checkpoint has to hold.
+    read_back: usize,
+    pub(super) extent: Extent,
+    pub(super) support: Extent,
     pub(super) tape: Tape,
 }
 
-/// Every materialized node in order, each with the reach its readers need.
-pub(super) fn built(shell: &Render, block: usize) -> Result<Vec<Streamed>, EngineError> {
+/// Every materialized node in order, each with the reach its readers need; the root keeps
+/// `root_keep` samples besides.
+pub(super) fn built(
+    shell: &Render,
+    block: usize,
+    root_keep: usize,
+) -> Result<Vec<Streamed>, EngineError> {
     let mut nodes: Vec<Streamed> = Vec::new();
     let mut index: BTreeMap<NodeId, usize> = BTreeMap::new();
     for &id in &shell.schedule.materialize {
@@ -49,23 +58,32 @@ pub(super) fn built(shell: &Render, block: usize) -> Result<Vec<Streamed>, Engin
         for (at, back) in reach {
             let read = &mut nodes[at];
             read.keep = read.keep.max(back);
+            read.read_back = read.read_back.max(back);
         }
         index.insert(id, nodes.len());
         let per_sample = match kind {
             Kind::Rows(_) => 0,
             Kind::Point(_) | Kind::Machine { .. } => crate::flops::per_sample(shell, id),
         };
+        let keep = match id == shell.root {
+            true => own.max(root_keep),
+            false => own,
+        };
+        let extent = shell.extents.of(id);
         nodes.push(Streamed {
             id,
             kind,
             per_sample,
             width,
-            keep: own,
-            tape: Tape::new(width, 0),
+            keep,
+            read_back: own,
+            extent,
+            support: shell.extents.support(id),
+            tape: Tape::new(width, 0, extent.start),
         });
     }
     for node in &mut nodes {
-        node.tape = Tape::new(node.width, node.keep + block);
+        node.tape = Tape::new(node.width, node.keep + block, node.extent.start);
     }
     Ok(nodes)
 }
@@ -113,7 +131,7 @@ fn machine(
         .map(|r| index.get(r).copied().ok_or_else(|| unheld(shell, *r)))
         .collect::<Result<_, _>>()?;
     let (mut reach, mut own, mut ahead) = (Vec::new(), 0, false);
-    leaves(&program.renderer, &mut |leaf| match leaf {
+    crate::render::extent::leaves(&program.renderer, &mut |leaf| match leaf {
         NodeRenderer::Buffer { shift, .. } if *shift > 0 => ahead = true,
         NodeRenderer::Buffer { id, shift } => {
             reach.push((reads[id.0 as usize], shift.unsigned_abs() as usize));
@@ -128,7 +146,7 @@ fn machine(
             "a read ahead of the sample it is taken at",
         ));
     }
-    let machine = Machine::open(&program.renderer, &program.layout, shell.config.rate, 0.0)
+    let machine = Machine::open(&program.renderer, &program.layout, shell.config.rate)
         .map_err(|e| sampled::refused(shell, id, &e))?;
     Ok(Built {
         width: machine.width(),
@@ -140,31 +158,6 @@ fn machine(
         reach,
         own,
     })
-}
-
-/// Every leaf under a renderer's operators: slots, its own past, constants, time, solvers.
-fn leaves(renderer: &NodeRenderer, found: &mut dyn FnMut(&NodeRenderer)) {
-    match renderer {
-        NodeRenderer::Add(parts) | NodeRenderer::Mul(parts) | NodeRenderer::Join(parts) => {
-            parts.iter().for_each(|p| leaves(p, found));
-        }
-        NodeRenderer::Sub(a, b)
-        | NodeRenderer::Div(a, b)
-        | NodeRenderer::Pow(a, b)
-        | NodeRenderer::Zip(_, a, b) => {
-            leaves(a, found);
-            leaves(b, found);
-        }
-        NodeRenderer::Map(_, x)
-        | NodeRenderer::Crop { x, .. }
-        | NodeRenderer::Channel { x, .. } => leaves(x, found),
-        NodeRenderer::Filter {
-            x, cutoff, q, gain, ..
-        } => [x, cutoff, q, gain]
-            .into_iter()
-            .for_each(|p| leaves(p, found)),
-        leaf => found(leaf),
-    }
 }
 
 /// `collapse_closed_form`'s choice between the rows and the point sampler.
@@ -202,15 +195,20 @@ fn point(shell: &Render, id: NodeId) -> Result<(Kind, usize), EngineError> {
 }
 
 impl Streamed {
-    /// Samples up to `to`, every node it reads already there; `from` is the block's start.
+    /// Samples up to `to` within its extent, every node it reads already there; `from` is the
+    /// block's start.
     pub(super) fn run(
         &mut self,
         shell: &Render,
         done: &[Streamed],
-        from: usize,
-        to: usize,
+        from: i64,
+        to: i64,
     ) -> Result<(), EngineError> {
-        self.tape.forget_before(from.saturating_sub(self.keep));
+        self.tape.forget_before(from - self.keep as i64);
+        let to = to.min(self.extent.end);
+        if self.extent.is_empty() || to <= self.tape.end() {
+            return Ok(());
+        }
         let id = self.id;
         match &mut self.kind {
             Kind::Rows(rows) => rows
@@ -218,9 +216,9 @@ impl Streamed {
                 .map_err(|e| collapse_refused(shell, id, &e)),
             Kind::Point(tree) => {
                 let step = 1.0 / f64::from(shell.config.rate);
-                for i in self.tape.end()..to {
+                for n in self.tape.end()..to {
                     for c in 0..self.width {
-                        let v = pointwise::value(shell, tree, c, 0.0 + i as f64 * step)
+                        let v = pointwise::value(shell, tree, c, n as f64 * step)
                             .map_err(|e| pointwise::refused(shell, id, &e))?;
                         self.tape.push(c, v.re);
                     }
@@ -228,7 +226,10 @@ impl Streamed {
                 Ok(())
             }
             Kind::Machine { machine, reads, .. } => {
-                let windows: Vec<Window> = reads.iter().map(|&r| done[r].tape.window()).collect();
+                let windows: Vec<Window> = reads
+                    .iter()
+                    .map(|&r| done[r].tape.within(done[r].support))
+                    .collect();
                 machine
                     .run_to(to, &windows, &mut self.tape)
                     .map_err(|e| sampled::refused(shell, id, &e))
@@ -238,12 +239,14 @@ impl Streamed {
 }
 
 impl Streamed {
-    /// `(priced flops, waves)` over `[from, to)`: a pointwise tree's waves go uncounted.
-    pub(super) fn work(&self, from: usize, to: usize) -> (u128, Option<u128>) {
-        let n = (to - from) as u128;
+    /// `(priced flops, waves)` over `[from, to)` of its extent: a pointwise tree's waves go
+    /// uncounted.
+    pub(super) fn work(&self, from: i64, to: i64) -> (u128, Option<u128>) {
+        let (from, to) = (from.max(self.extent.start), to.min(self.extent.end));
+        let n = (to - from).max(0) as u128;
         match &self.kind {
             Kind::Rows(rows) => {
-                let (priced, waves) = rows.work(from, to);
+                let (priced, waves) = rows.work(from, to.max(from));
                 (priced, Some(waves))
             }
             Kind::Point(_) => (self.per_sample * n, None),
@@ -275,14 +278,17 @@ impl Streamed {
         &mut self,
         shell: &Render,
         held: &Option<NodeState>,
-        at: usize,
+        at: i64,
     ) -> Result<(), EngineError> {
-        let from = at.saturating_sub(self.keep);
+        let from = (at - self.keep as i64).max(self.extent.start);
+        if self.extent.is_empty() {
+            return Ok(());
+        }
         match (&mut self.kind, held) {
             (Kind::Machine { machine, .. }, Some(held))
                 if held.tape.width() == self.width
-                    && held.tape.base() <= from
-                    && held.tape.end() == at =>
+                    && held.tape.base() <= (at - self.read_back as i64).max(self.extent.start)
+                    && held.tape.end() == at.min(self.extent.end) =>
             {
                 machine
                     .carry(&held.state)
@@ -291,7 +297,7 @@ impl Streamed {
                 Ok(())
             }
             (Kind::Rows(_) | Kind::Point(_), None) => {
-                self.tape = Tape::starting_at(self.width, self.tape.capacity(), from);
+                self.tape = Tape::new(self.width, self.tape.capacity(), from);
                 self.run(shell, &[], at, at)
             }
             _ => Err(EngineError::refused(Diagnostic {

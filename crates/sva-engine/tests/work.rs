@@ -4,7 +4,7 @@ mod fixtures;
 
 use fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{RenderConfig, Silent, Stream, StreamConfig, Work, render, render_until_silent};
+use sva_engine::{Range, RenderConfig, Stream, StreamConfig, Until, Work, render};
 
 const RATE: u32 = 44_100;
 
@@ -27,14 +27,24 @@ fn composition() -> Graph {
     )
 }
 
-fn streamed(g: &Graph, target: &str, block: usize, samples: usize, silent: Option<Silent>) -> Work {
+/// Unended by `until`, an hour of range, which no test reaches the end of.
+fn streamed(g: &Graph, target: &str, block: usize, samples: usize, until: Option<Until>) -> Work {
+    let range = match until {
+        Some(_) => Range::default(),
+        None => Range {
+            start: Some(0),
+            end: Some(3_600 * i64::from(RATE)),
+        },
+    };
     let config = StreamConfig {
         rate: RATE,
         block,
-        silent,
+        range,
+        until,
     };
-    let mut stream = Stream::open(g, target, &[], config).expect("a stream");
-    while stream.position() < samples {
+    let target = sva_ast::parse_expr(&format!("@{target}")).expect("a ref");
+    let mut stream = Stream::open(g, &target, &[], config).expect("a stream");
+    while stream.position() < samples as i64 {
         if stream.next_block().expect("a block").is_none() {
             break;
         }
@@ -89,20 +99,14 @@ fn a_stream_prices_each_sample_as_a_whole_render_prices_it() {
 #[test]
 fn a_proof_is_counted_at_each_block_end_and_over_a_whole_grid_once() {
     let g = composition();
-    let silent = Silent {
-        bits: 24,
-        max_secs: 10.0,
-    };
-    let work = streamed(&g, "high", 4_410, usize::MAX, Some(silent));
+    let quiet = Until::quiet(2f64.powi(-24));
+    let work = streamed(&g, "high", 4_410, usize::MAX >> 1, Some(quiet.clone()));
     assert_eq!(work.proofs, work.samples.div_ceil(4_410));
-    let whole = render_until_silent(
-        &g,
-        "high",
-        RenderConfig::seconds(RATE, silent.max_secs),
-        silent,
-        None,
-    )
-    .expect("a silent render");
+    let config = RenderConfig {
+        until: Some(quiet),
+        ..RenderConfig::at(RATE)
+    };
+    let whole = render(&g, "high", config, None).expect("a quiet render");
     assert!(whole.work().proofs >= 1);
     assert_eq!(whole.work().waves, None);
 }

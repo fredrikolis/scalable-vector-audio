@@ -5,7 +5,7 @@ mod helpers;
 use std::path::PathBuf;
 
 use helpers::{put, scratch};
-use sva_core::run;
+use sva_core::{PROBE, probe};
 use sva_engine::{Output, Representation};
 
 const GRID: &str = "; Models: two steps on the key | Neglects: dynamics | IO: t -> amplitude \
@@ -44,9 +44,10 @@ fn composition(key: &str) -> PathBuf {
 }
 
 fn lines(key: &str) -> Vec<f64> {
-    let rendered = run(&composition(key)).unwrap_or_else(|e| panic!("{key}: {e}"));
+    let rendered =
+        probe(&composition(key), "@master([0, 1s])").unwrap_or_else(|e| panic!("{key}: {e}"));
     let Output::Lines(lines) = rendered
-        .answer("master", Representation::Lines)
+        .answer(PROBE, Representation::Lines)
         .unwrap_or_else(|e| panic!("{key}: {e}"))
         .value
     else {

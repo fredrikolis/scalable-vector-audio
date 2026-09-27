@@ -111,27 +111,27 @@ pub const NEXT: [(&str, &str); 9] = [
         "what master reads, and why it is samples",
     ),
     (
-        "sva-cli render voice/tone --as lines",
+        "sva-cli render '@voice/tone' --representation lines",
         "exact off the closed form, no buffer allocated",
     ),
     (
-        "sva-cli render chord/home --as lines",
+        "sva-cli render '@chord/home' --representation lines",
         "the same triad follows variables/key",
     ),
     (
-        "sva-cli render perc/hat --as atoms",
+        "sva-cli render '@perc/hat' --representation atoms",
         "a noise is a line series, one atom per line, 2 Hz apart at period=0.5",
     ),
     (
-        "sva-cli render master --as flops",
+        "sva-cli render '@master' --representation flops",
         "what the render costs, counted before it runs",
     ),
     (
-        "sva-cli render master --as ledger --skim",
+        "sva-cli render '@master' --representation ledger -c skim=true",
         "per-node rms, peak, clipped",
     ),
     (
-        "sva-cli render master --as samples=/tmp/song.wav --sample-rate 48000",
+        "sva-cli render '@master' --representation samples=/tmp/song.wav --rate 48000",
         "the audio itself, at whatever rate you name",
     ),
 ];

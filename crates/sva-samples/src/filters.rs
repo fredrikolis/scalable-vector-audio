@@ -86,7 +86,7 @@ fn step(
     q: f64,
     gain_db: f64,
     sr: f64,
-    i: usize,
+    i: i64,
 ) -> f64 {
     if (cutoff, q, gain_db) != lane.designed_for {
         let (cc, c_clamped) = clamp_cutoff(cutoff, sr);
@@ -95,7 +95,7 @@ fn step(
         lane.designed_for = (cutoff, q, gain_db);
         *clamped |= c_clamped || q_clamped;
     }
-    if i.is_multiple_of(stride) {
+    if i.rem_euclid(stride as i64) == 0 {
         lane.frames.push(AutomationFrame {
             t_secs: i as f64 / sr,
             cutoff,
@@ -187,7 +187,7 @@ impl FilterSite {
         gain_db: &[f64],
         out: &mut [f64],
         sr: f64,
-        i: usize,
+        i: i64,
     ) {
         let (shape, stride) = (self.shape, self.stride);
         let mut clamped = self.clamped;

@@ -39,12 +39,8 @@ fn run() -> ExitCode {
         Ok(Command::Help) => Ok(success_envelope(&help_data(&help_text()), &[])),
         Ok(Command::Render(args)) => render(&args),
         Ok(Command::Analyze(args)) => analyze(&args),
-        Ok(Command::Lint {
-            target,
-            dir,
-            format,
-        }) => lint_composition(target.as_deref(), dir.as_deref(), format),
-        Ok(Command::Trace { target, dir }) => trace_node(&target, dir.as_deref()),
+        Ok(Command::Lint { target, format }) => lint_composition(target.as_deref(), format),
+        Ok(Command::Trace { target }) => trace_node(&target),
         Ok(Command::Builtins) => Ok(success_envelope(&builtins_data(&builtins()), &[])),
         Ok(Command::Outline { text }) => {
             sva_core::outline_data(&text).map(|data| success_envelope(&data, &[]))
@@ -80,12 +76,8 @@ fn run() -> ExitCode {
     }
 }
 
-fn lint_composition(
-    target: Option<&str>,
-    named: Option<&str>,
-    format: Format,
-) -> Result<String, CliError> {
-    let dir = composition(named)?;
+fn lint_composition(target: Option<&str>, format: Format) -> Result<String, CliError> {
+    let dir = composition()?;
     let report = lint(&dir, target)?;
     let found: Vec<Diagnostic> = report.findings.iter().map(Finding::diagnostic).collect();
     if format == Format::Text {
@@ -97,8 +89,8 @@ fn lint_composition(
     ))
 }
 
-fn trace_node(target: &str, named: Option<&str>) -> Result<String, CliError> {
-    let traced = trace(&composition(named)?, target)?;
+fn trace_node(target: &str) -> Result<String, CliError> {
+    let traced = trace(&composition()?, target)?;
     Ok(success_envelope(&trace_data(&traced), &[]))
 }
 
