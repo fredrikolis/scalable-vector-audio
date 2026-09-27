@@ -1,7 +1,7 @@
 // Concern: states what the shared pipeline answers a front end handing it a target and a condition | Non-concern: what a render sounds like | IO: (text) -> a target, a condition, roots
 
 use sva_core::{CliError, Edge, Job, execute, prepared, roots_of, target, until};
-use sva_engine::{At, Cmp, Term, Until};
+use sva_engine::{Cmp, Term, Until};
 
 fn composition(files: &[(&str, &str)]) -> sva_ast::Composition {
     files.iter().copied().collect()
@@ -45,13 +45,10 @@ fn an_interval_anywhere_but_the_targets_own_ref_or_without_units_refuses() {
     }
 }
 
-/// Every later frame under a level is the condition the tail proof answers.
 #[test]
 fn a_condition_reads_comparisons_over_time_and_level() {
-    let quiet = until("max(envelope([t, inf))) < -96db", 44_100, None).expect("quiet parses");
-    assert_eq!(quiet, Until::quiet(10f64.powf(-96.0 / 20.0)));
     let joined = until(
-        "t > 2s or envelope(t - 50ms) < -60db and t >= 1b",
+        "t > 2s or envelope(t) < -60db and t >= 1b",
         44_100,
         Some(2.0),
     )
@@ -65,12 +62,13 @@ fn a_condition_reads_comparisons_over_time_and_level() {
     };
     assert_eq!(
         *level,
-        Until::Holds(Term::Envelope(At::Now(-0.05)), Cmp::Lt, Term::Number(0.001))
+        Until::Holds(Term::Envelope, Cmp::Lt, Term::Number(0.001))
     );
     assert_eq!(*bars, Until::Holds(Term::Time, Cmp::Ge, Term::Number(2.0)));
     for refused in [
         "t > envelope(t)",
-        "max(envelope(t)) < 0.1",
+        "max(envelope([t, inf))) < -96db",
+        "envelope(t - 50ms) < -60db",
         "envelope([t, inf)) < 0.1",
         "t",
         "t > 1s and",
@@ -92,10 +90,7 @@ fn a_condition_reads_comparisons_over_time_and_level() {
 fn a_level_compared_with_a_bare_number_refuses_where_it_is_written() {
     for (text, at) in [
         ("envelope(t) < -60", "`-60` (at bytes 14..17)"),
-        (
-            "t > 1s or 0.001 > max(envelope([t, inf)))",
-            "`0.001` (at bytes 10..15)",
-        ),
+        ("t > 1s or 0.001 > envelope(t)", "`0.001` (at bytes 10..15)"),
     ] {
         let Err(CliError::Usage(why)) = until(text, 44_100, None) else {
             panic!("`{text}` compares a level with no unit");

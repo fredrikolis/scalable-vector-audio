@@ -4,8 +4,9 @@ use std::path::Path;
 
 use sva_engine::{
     Alias, AliasBand, Answer, Arguments, BandCrest, BandTrack, Bands, Binding, Buffer, CacheStats,
-    Cost, Crest, Detail, EnvelopeFrame, FormantFrame, Label, LedgerEntry, Loudness, LoudnessFrame,
-    Outcome, Output, PayloadKind, Source, SpectralSum, Spectrum, StereoFrame, StereoImage, Work,
+    Cost, Crest, Cuts, Detail, EnvelopeFrame, FormantFrame, Label, LedgerEntry, Loudness,
+    LoudnessFrame, Missing, Outcome, Output, PayloadKind, Source, SpectralSum, Spectrum,
+    StereoFrame, StereoImage, Work,
 };
 
 use crate::json::{NONE, capped, escape, list, num};
@@ -532,8 +533,9 @@ pub struct Printed {
 pub struct Report<'a> {
     pub target: &'a str,
     pub rate: u32,
-    /// The precision every sample was written to; `None` for a file read back.
-    pub bits: Option<i32>,
+    /// The precision every sample was written to, the floor decaying nodes were cut at and
+    /// every cut; `None` for a file read back.
+    pub cuts: Option<&'a Cuts>,
     /// The seconds the readings were taken over; `None` where none read samples.
     pub interval: Option<(f64, f64)>,
     pub profile: &'a str,
@@ -588,12 +590,46 @@ pub fn query_data(report: &Report) -> String {
         )
     });
     format!(
-        "{{\n  \"target\": \"{}\",\n  \"sample_rate\": {},\n  \"bits\": {},\n  \
+        "{{\n  \"target\": \"{}\",\n  \"sample_rate\": {},\n  {},\n  \
          \"profile\": \"{}\",\n  \"interval\": {interval},\n  \"label\": {label},\n  \
          \"written\": {written},\n  \"representations\": {{\n    {reads}\n  }}\n}}",
         escape(report.target),
         report.rate,
-        report.bits.map_or(NONE.to_string(), |b| b.to_string()),
+        cuts_json(report.cuts, report.rate),
         escape(report.profile),
+    )
+}
+
+/// `bits`, `decay_floor_db`, `cuts` and `uncut`: what a render was written at, and every node
+/// it cut or could not; `null` each for a file read back.
+pub fn cuts_json(cuts: Option<&Cuts>, rate: u32) -> String {
+    let Some(cuts) = cuts else {
+        return format!(
+            "\"bits\": {NONE},\n  \"decay_floor_db\": {NONE},\n  \"cuts\": {NONE},\n  \
+             \"uncut\": {NONE}"
+        );
+    };
+    let cut = list(&cuts.cut, |c| {
+        format!(
+            "\n    {{ \"node\": \"{}\", \"at_secs\": {} }}",
+            escape(&c.node),
+            num(c.at as f64 / f64::from(rate))
+        )
+    });
+    let uncut = list(&cuts.uncut, |u| {
+        let missing = match u.missing {
+            Missing::Bound => "bound",
+            Missing::Gain => "gain",
+        };
+        format!(
+            "\n    {{ \"node\": \"{}\", \"missing\": \"{missing}\", \"why\": \"{}\" }}",
+            escape(&u.node),
+            escape(&u.why)
+        )
+    });
+    format!(
+        "\"bits\": {},\n  \"decay_floor_db\": {},\n  \"cuts\": {cut},\n  \"uncut\": {uncut}",
+        cuts.bits,
+        num(20.0 * cuts.floor.log10())
     )
 }

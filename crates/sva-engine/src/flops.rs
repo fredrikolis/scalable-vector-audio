@@ -267,7 +267,7 @@ fn costed_at(
     match render.tys.ty(id).held {
         Held::Frames => (frames_flops(render, id, len), "short-time transform"),
         Held::Sampled => (sampled(render, id, extent), "sampled program"),
-        _ if extent.is_empty() => (0, "silent"),
+        _ if extent.is_empty() => (0, "empty"),
         _ => closed_form_flops(render, id, extent, paid),
     }
 }

@@ -1,4 +1,4 @@
-// Concern: proves a render skips only work whose result is exactly zero, writing the same bits | Non-concern: what any row computes (sva-samples) | IO: (a composition, a range) -> samples, priced work
+// Concern: proves a render skips only work that is exactly zero or cut, writing the same bits | Non-concern: what any row computes (sva-samples) | IO: (a composition, a range) -> samples, priced work
 
 mod fixtures;
 
@@ -120,10 +120,11 @@ fn a_count_prices_the_render_it_names() {
     assert_eq!(tree.total, held.work().priced_flops);
 }
 
-/// A factor the engine's own `exp` underflows, or a ramp past its foot, is exactly zero from
-/// where an open range now ends: every later instant evaluates to zero.
+/// A ramp past its foot is exactly zero from where an open range ends; a decay is cut where
+/// its bound crosses the floor, long before the engine's own `exp` underflows it, and every
+/// later instant evaluates under the floor.
 #[test]
-fn a_decay_ends_the_support_where_it_is_exactly_zero() {
+fn a_ramp_ends_where_it_is_exactly_zero_and_a_decay_where_it_is_cut() {
     let g = graph_of(
         "pruning-decay",
         &[
@@ -144,5 +145,5 @@ fn a_decay_ends_the_support_where_it_is_exactly_zero() {
     let at = |n: i64| sva_samples::eval_spectral_sum_at(sum, 0, n as f64 * step).expect("a value");
     let last = (0..end).rev().find(|n| !at(*n).is_zero()).expect("a sound");
     assert!(end - last < i64::from(RATE), "{last} {end}");
-    assert!((end..end + i64::from(RATE)).all(|n| at(n).is_zero()));
+    assert!((end..end + i64::from(RATE)).all(|n| at(n).abs() <= 2f64.powi(-24)));
 }

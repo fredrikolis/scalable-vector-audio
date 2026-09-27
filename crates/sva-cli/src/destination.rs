@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use sva_core::{CliError, Output, Printed, Report, is_wav, query_data};
+use sva_core::{CliError, Cuts, Output, Printed, Report, is_wav, query_data};
 
 use crate::wav::{SampleEncoding, write_channels};
 use sva_core::success_envelope;
@@ -48,7 +48,7 @@ fn under(dir: &Path, dest: &Path) -> bool {
 pub struct Framing {
     pub target: String,
     pub rate: u32,
-    pub bits: i32,
+    pub cuts: Option<Cuts>,
     pub interval: Option<(f64, f64)>,
     pub profile: &'static str,
     pub encoding: SampleEncoding,
@@ -85,7 +85,7 @@ pub fn write_analysis(
         &query_data(&Report {
             target: &framing.target,
             rate: framing.rate,
-            bits: None,
+            cuts: framing.cuts.as_ref(),
             interval: framing.interval,
             profile: framing.profile,
             label: None,
@@ -122,7 +122,7 @@ pub fn write(printed: &Printed, dest: &Path, framing: &Framing) -> Result<(), Cl
         &query_data(&Report {
             target: &framing.target,
             rate: framing.rate,
-            bits: Some(framing.bits),
+            cuts: framing.cuts.as_ref(),
             interval: framing.interval,
             profile: framing.profile,
             label: None,

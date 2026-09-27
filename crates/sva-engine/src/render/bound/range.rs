@@ -143,6 +143,23 @@ impl Range {
         }
     }
 
+    /// The terms one instant's bound evaluates, what reading it once costs.
+    pub(super) fn size(&self) -> usize {
+        match self {
+            Range::Add(parts)
+            | Range::Mul(parts)
+            | Range::Max(parts)
+            | Range::Min(parts)
+            | Range::Wide(parts) => 1 + parts.iter().map(Range::size).sum::<usize>(),
+            Range::Div(a, b) => 1 + a.size() + b.size(),
+            Range::Pow(a, _) | Range::Map(_, a) | Range::Crop(a, ..) | Range::Shift(a, _) => {
+                1 + a.size()
+            }
+            Range::Atoms(atoms) | Range::Run(atoms, ..) => atoms.len().max(1),
+            Range::Real(_) | Range::Line | Range::Node(_) => 1,
+        }
+    }
+
     /// A level the value returns to forever: `last` is the latest instant a tail is read
     /// from, and each operand's own tail bounds what it returns to.
     pub(super) fn floor(&self, last: f64, reads: &Reads) -> f64 {

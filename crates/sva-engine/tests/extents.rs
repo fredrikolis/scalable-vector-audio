@@ -1,10 +1,10 @@
-// Concern: proves every node is computed over its own support met with its readers' demand, whatever reads it | Non-concern: where a range ends (silent.rs) | IO: (a composition, a range) -> samples
+// Concern: proves every node is computed over its own support met with its readers' demand, whatever reads it | Non-concern: where a node is cut (cuts.rs) | IO: (a composition, a range) -> samples
 
 mod fixtures;
 
 use fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{Range, RenderConfig, Until, render};
+use sva_engine::{Range, RenderConfig, render};
 
 const RATE: u32 = 8_000;
 
@@ -53,7 +53,7 @@ fn over(g: &Graph, target: &str, start: i64, end: i64) -> Vec<f64> {
 
 fn quiet(g: &Graph, target: &str, level: f64) -> Vec<f64> {
     let config = RenderConfig {
-        until: Some(Until::quiet(level)),
+        decay_floor: Some(level),
         ..RenderConfig::at(RATE)
     };
     let held = render(g, target, config, None).unwrap_or_else(|e| panic!("{target}: {e}"));
@@ -119,15 +119,14 @@ fn a_start_past_zero_keeps_the_state_its_history_left() {
             start: Some(secs(0.3)),
             end: None,
         },
-        until: Some(Until::quiet(2f64.powi(-24))),
         ..RenderConfig::at(RATE)
     };
-    let late = render(&g, "echo", config, None).expect("a late quiet echo");
+    let late = render(&g, "echo", config, None).expect("a late echo");
     let ended = late.range.expect("a range").end as usize;
     assert_eq!(
         ended,
         quiet(&g, "echo", 2f64.powi(-24)).len(),
-        "the proof hears the history"
+        "a late start ends where the whole render is cut"
     );
 }
 

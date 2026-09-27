@@ -1,4 +1,4 @@
-// Concern: the grid samples each node is computed over, support met with demand | Non-concern: computing them, where the root's demand ends (until.rs) | IO: (&Render, demands) -> an Extent per node
+// Concern: the grid samples each node is computed over, support met with demand | Non-concern: computing them, where a node is cut (cut/) | IO: (&Render, demands) -> an Extent per node
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,19 +13,29 @@ use crate::error::{Diagnostic, EngineError, Located};
 use crate::schedule;
 use crate::typing::{Typing, Value};
 
-/// Where each node can be nonzero: outside its support a node is exactly zero.
+/// Where each node can be nonzero: outside its support a node is exactly zero, and a node
+/// cut at a sample is zero from there on.
 pub(crate) struct Supports<'a> {
     tys: &'a Typing,
     rate: u32,
+    cuts: Cuts,
     held: RefCell<BTreeMap<NodeId, Extent>>,
     open: RefCell<BTreeSet<NodeId>>,
 }
 
+/// The sample each cut node's extent ends at.
+pub(crate) type Cuts = BTreeMap<NodeId, i64>;
+
 impl<'a> Supports<'a> {
     pub(crate) fn new(tys: &'a Typing, rate: u32) -> Supports<'a> {
+        Supports::cut(tys, rate, Cuts::new())
+    }
+
+    pub(crate) fn cut(tys: &'a Typing, rate: u32, cuts: Cuts) -> Supports<'a> {
         Supports {
             tys,
             rate,
+            cuts,
             held: RefCell::default(),
             open: RefCell::default(),
         }
@@ -41,6 +51,10 @@ impl<'a> Supports<'a> {
         let found = match schedule::holds_self(self.tys, id, &mut BTreeSet::new()) {
             true => self.looped(id),
             false => self.fresh(id),
+        };
+        let found = match self.cuts.get(&id) {
+            Some(at) => found.intersect(Extent::new(i64::MIN, (*at).max(i64::MIN + 1))),
+            None => found,
         };
         self.open.borrow_mut().remove(&id);
         self.held.borrow_mut().insert(id, found);
@@ -243,7 +257,7 @@ impl Supports<'_> {
     }
 
     /// The largest magnitude `body` reaches over `[lo, hi]` seconds, where one is known.
-    fn bound(&self, body: &Body, lo: f64, hi: f64, depth: usize) -> Option<f64> {
+    pub(crate) fn bound(&self, body: &Body, lo: f64, hi: f64, depth: usize) -> Option<f64> {
         let of = |b: &Body| self.bound(b, lo, hi, depth);
         let held = match body {
             Body::Const(c) => c.re.abs() + c.im.abs(),
@@ -519,6 +533,7 @@ fn moved(support: Extent, count: f64) -> Extent {
 pub(crate) struct Extents {
     pub(crate) support: BTreeMap<NodeId, Extent>,
     pub(crate) decided: BTreeMap<NodeId, Extent>,
+    pub(crate) cuts: Cuts,
 }
 
 impl Extents {
@@ -543,8 +558,9 @@ pub(crate) fn decide(
     held: &Render,
     order: &[NodeId],
     demands: &[(NodeId, Extent)],
+    cuts: &Cuts,
 ) -> Result<Extents, EngineError> {
-    let supports = Supports::new(&held.tys, held.config.rate);
+    let supports = Supports::cut(&held.tys, held.config.rate, cuts.clone());
     let mut demand: BTreeMap<NodeId, Extent> = BTreeMap::new();
     for (id, asked) in demands {
         let slot = demand.entry(*id).or_insert(Extent::NOWHERE);
@@ -554,7 +570,7 @@ pub(crate) fn decide(
     for &id in order.iter().rev() {
         let asked = demand.get(&id).copied().unwrap_or(Extent::NOWHERE);
         let support = supports.of(id);
-        let extent = own(held, &supports, id, asked, support)?;
+        let extent = own(held, &supports, id, asked, support, cuts.get(&id).copied())?;
         decided.insert(id, extent);
         if extent.is_empty() {
             continue;
@@ -569,19 +585,24 @@ pub(crate) fn decide(
         }
     }
     let support = supports.held.into_inner();
-    Ok(Extents { support, decided })
+    Ok(Extents {
+        support,
+        decided,
+        cuts: cuts.clone(),
+    })
 }
 
 /// Demand met with support, pulled back to where the node's state starts. A short-time
 /// transform takes its whole support, which has to end. A closed form the demand meets is
-/// collapsed over the whole demand: a row is chosen by the length it runs over, and one
-/// cut to the support would take another row than the span-by-span one a stream reads.
+/// collapsed over the whole demand up to its cut: a row is chosen by the length it runs
+/// over, and one ended at the support would take another row than the one a stream reads.
 fn own(
     held: &Render,
     supports: &Supports,
     id: NodeId,
     asked: Extent,
     support: Extent,
+    cut: Option<i64>,
 ) -> Result<Extent, EngineError> {
     let met = asked.intersect(support);
     if met.is_empty() {
@@ -592,7 +613,10 @@ fn own(
             return Err(unbounded(held, id));
         }
         (Value::Cast(Cast::Stft { .. }, _), _) => support,
-        _ if held.tys.ty(id).is_closed_form() => asked,
+        _ if held.tys.ty(id).is_closed_form() => match cut {
+            Some(at) => asked.intersect(Extent::new(i64::MIN, at.max(i64::MIN + 1))),
+            None => asked,
+        },
         (_, Some(start)) if start < met.start => Extent::new(start, met.end),
         _ => met,
     };

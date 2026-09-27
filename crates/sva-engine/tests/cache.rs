@@ -371,12 +371,16 @@ fn a_sampled_node_is_stored_and_answered_from_the_store() {
         "the node under test really is sampled"
     );
     let id = cold.id("acc").expect("acc types");
-    let key = sva_engine::buffer_key(
-        sva_engine::identity(&cold.tys, id).expect("acc has an identity"),
-        RATE,
-        sva_samples::Extent::secs(RATE, 0.0, SECONDS),
-        cold.tys.ty(id).width as usize,
-        sva_samples::AliasScore::NotAsked,
+    let key = sva_engine::precise_key(
+        sva_engine::buffer_key(
+            sva_engine::identity(&cold.tys, id).expect("acc has an identity"),
+            RATE,
+            sva_samples::Extent::secs(RATE, 0.0, SECONDS),
+            cold.tys.ty(id).width as usize,
+            sva_samples::AliasScore::NotAsked,
+        ),
+        24,
+        &[],
     );
     assert!(cache.holds(key), "the sampled node is in the store");
 
@@ -384,6 +388,38 @@ fn a_sampled_node_is_stored_and_answered_from_the_store() {
     let warm = all_of(&dir, "master", &["acc"], Some(&cache));
     assert_eq!(samples(&cold), samples(&warm), "byte for byte");
     assert_eq!(cache.bytes(), filled, "and nothing was written twice");
+}
+
+/// A node cut at another instant is another value, so a render under a higher decay floor
+/// never answers from what a lower one stored.
+#[test]
+fn a_node_cut_elsewhere_is_stored_under_its_own_key() {
+    let dir = dir_of(
+        "cut-cache",
+        &[
+            ("decay", "sample(exp(-t/0.02)*sin(2*pi*220*t))\n"),
+            ("master", "lowpass(@decay, cutoff=900, q=0.7)\n"),
+        ],
+    );
+    let graph = sva_ast::parse_composition(&dir).expect("a composition that parses");
+    let cache = store_all();
+    let at = |floor: Option<f64>| {
+        let config = RenderConfig {
+            decay_floor: floor,
+            ..RenderConfig::seconds(RATE, 1.0)
+        };
+        render(&graph, "master", config, Some(&cache)).expect("a cut render")
+    };
+    let deep = at(None);
+    let loud = at(Some(2f64.powi(-8)));
+    assert_ne!(deep.cuts.cut, loud.cuts.cut, "the floors cut apart");
+    let stats = loud.cache_stats.as_ref().expect("stats");
+    let answered = stats
+        .lookups
+        .iter()
+        .filter(|l| l.kind == PayloadKind::Samples && l.outcome == sva_engine::Outcome::Hit)
+        .count();
+    assert_eq!(answered, 0, "no samples answer across a cut: {stats:?}");
 }
 
 fn over(dir: &Path, root: &str, seconds: f64, cache: &Cache) -> Render {

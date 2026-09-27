@@ -4,10 +4,11 @@ use std::path::Path;
 
 use sva_core::{
     Answer, Asked, CliError, Job, Output, Printed, Report, SAMPLE_LIMIT, cwd, execute, query_data,
+    written_cuts,
 };
 use sva_engine::{Buffer, DEFAULT_FRAME_SECS, PSYCHOACOUSTIC_V1, Representation, answer_buffer};
 
-use crate::args::{AnalyzeArgs, RenderArgs};
+use crate::args::{AnalyzeArgs, Decision, RenderArgs};
 use crate::destination::{Framing, refuse_inside, refuse_replacing, write, write_analysis};
 use crate::wav::{SampleEncoding, read_channels};
 use sva_core::success_envelope;
@@ -26,15 +27,12 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
     let source = sva_ast::Dir::at(&dir);
     let rendered = execute(Job {
         until: args.until.as_deref(),
-        rate: args.rate,
-        bits: args.bits,
         asked: &args.asked,
-        flop_budget: args.flop_budget,
-        ..Job::over(&source, &target)
+        ..args.decision.job(&source, &target)
     })?;
 
     let rate = rendered.config.rate;
-    let bits = rendered.config.profile.precision_bits;
+    let cuts = written_cuts(&rendered.render.cuts, &args.target);
     let interval = rendered
         .render
         .range
@@ -42,10 +40,10 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
     let framing = Framing {
         target: args.target.clone(),
         rate,
-        bits,
+        cuts: Some(cuts.clone()),
         interval,
         profile: rendered.config.profile.name,
-        encoding: SampleEncoding::of(bits),
+        encoding: SampleEncoding::of(cuts.bits),
         replace: args.confirm,
     };
 
@@ -64,7 +62,7 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
         &query_data(&Report {
             target: &args.target,
             rate,
-            bits: Some(bits),
+            cuts: Some(&cuts),
             interval,
             profile: rendered.config.profile.name,
             label: rendered.label(),
@@ -75,6 +73,19 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
         }),
         &[],
     ))
+}
+
+impl Decision {
+    /// A job over `target` under these, and nothing else yet.
+    pub(crate) fn job<'a>(&self, source: &'a dyn sva_ast::Source, target: &'a str) -> Job<'a> {
+        Job {
+            rate: self.rate,
+            bits: self.bits,
+            decay_floor_db: self.decay_floor_db,
+            flop_budget: self.flop_budget,
+            ..Job::over(source, target)
+        }
+    }
 }
 
 /// What stays in the envelope, and what left it for a file.
@@ -156,7 +167,7 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
     let framing = Framing {
         target: target.clone(),
         rate,
-        bits: PSYCHOACOUSTIC_V1.precision_bits,
+        cuts: None,
         interval,
         profile: PSYCHOACOUSTIC_V1.name,
         encoding: SampleEncoding::Float,
@@ -191,7 +202,7 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
         &query_data(&Report {
             target: &target,
             rate,
-            bits: None,
+            cuts: None,
             interval,
             profile: PSYCHOACOUSTIC_V1.name,
             label: None,

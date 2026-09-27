@@ -7,7 +7,8 @@ use std::collections::BTreeSet;
 use fixtures::graph_of;
 use sva_ast::Graph;
 use sva_engine::{
-    Cache, CachePolicy, Hash, Outcome, Render, RenderConfig, buffer_key, identity, render,
+    Cache, CachePolicy, Hash, Outcome, Render, RenderConfig, buffer_key, identity, precise_key,
+    render,
 };
 use sva_samples::AliasScore;
 
@@ -34,16 +35,17 @@ fn rendered(graph: &Graph, cache: Option<&Cache>, policy: Option<CachePolicy>) -
     render(graph, "master", config, cache).expect("a render")
 }
 
-/// The node's own buffer key, as the store holds it.
+/// The node's own buffer key at 24 bits with nothing cut, as the store holds it.
 fn own(render: &Render, node: &str) -> Hash {
     let id = render.id(node).expect("the node types");
-    buffer_key(
+    let buffer = buffer_key(
         identity(&render.tys, id).expect("an identity"),
         RATE,
         sva_samples::Extent::secs(RATE, 0.0, SECONDS),
         render.tys.ty(id).width as usize,
         AliasScore::NotAsked,
-    )
+    );
+    precise_key(buffer, 24, &[])
 }
 
 fn stored(render: &Render) -> BTreeSet<Hash> {

@@ -1,20 +1,17 @@
-// Concern: renders a target block after block, each node carrying its state across blocks | Non-concern: one node's rows or machine, a whole render | IO: (&Graph, target, bindings) -> blocks
+// Concern: renders a target block after block, each node carrying its state across blocks | Non-concern: one node's rows or machine, a whole render | IO: (&Graph, target) -> blocks
 
-mod live;
 mod node;
 
-use sva_ast::{Expr, Graph};
+use sva_ast::{Expr, Graph, Literal};
 use sva_samples::physics::chaigne_askenfelt::landing_step;
 use sva_samples::{Extent, Tape};
 
-use super::extent::{self, Supports};
-use super::sampled;
-use super::silent::{Kept, bound_from};
 use super::until::Known;
-use super::{Range, Render, RenderConfig, Until, prepared};
+use super::{Render, RenderConfig, prepared, reach, sampled};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::flops::Work;
 use crate::instantiate::RELEASE;
+use crate::query::DEFAULT_FRAME_SECS;
 use crate::schedule;
 use node::Streamed;
 
@@ -22,12 +19,8 @@ pub const STREAMED: &str = "streamed";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StreamConfig {
-    pub rate: u32,
     pub block: usize,
-    pub range: Range,
-    /// Ends the stream at the first sample it holds at; `None` runs to the range's end, or
-    /// where the target's support ends where the range states none.
-    pub until: Option<Until>,
+    pub render: RenderConfig,
 }
 
 /// A target rendered from its range's start on, one block at a time, each node over the same
@@ -42,11 +35,9 @@ pub struct Stream {
     root: usize,
     start: i64,
     at: i64,
-    kept: Kept,
-    /// The range's end, or where the root's support ends where the range states none.
-    last: Option<i64>,
-    /// Where the root's support ends, from where on every sample is exactly zero.
-    silent_from: Option<i64>,
+    /// The range's end, or where the root, cut, ends where the range states none.
+    last: i64,
+    frame: usize,
     end: Option<i64>,
     work: Work,
 }
@@ -89,8 +80,14 @@ impl Block {
 }
 
 impl Stream {
-    /// `bindings` are named arguments added to `target`'s own ref.
-    pub fn open(
+    /// Each named argument of `target`'s own ref written as a number is a binding a resume
+    /// may move.
+    pub fn open(graph: &Graph, target: &Expr, config: StreamConfig) -> Result<Stream, EngineError> {
+        let (bare, bindings) = bindings_of(target);
+        Stream::bound_to(graph, &bare, &bindings, config)
+    }
+
+    fn bound_to(
         graph: &Graph,
         target: &Expr,
         bindings: &[(String, f64)],
@@ -101,33 +98,28 @@ impl Stream {
         }
         let wrapped = bound(graph, target, bindings)?;
         let held = prepared(&wrapped, STREAMED)?;
-        sampled::on_the_grid(&held.tys, config.rate)?;
-        let render_config = RenderConfig {
-            range: config.range,
-            until: config.until.clone(),
-            ..RenderConfig::at(config.rate)
-        };
+        sampled::on_the_grid(&held.tys, config.render.rate)?;
         let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
-        let mut shell = Render::shell(held.tys, held.root, render_config, schedule);
-        let support = Supports::new(&shell.tys, config.rate).of(shell.root);
-        let start = config
-            .range
-            .start
-            .unwrap_or_else(|| extent::default_start(support));
-        let last = config.range.end.or(extent::default_end(support));
-        let demand = Extent::new(start, last.unwrap_or(i64::MAX).max(start));
-        let order = shell.schedule.materialize.clone();
-        shell.extents = extent::decide(&shell, &order, &[(shell.root, demand)])?;
-        if last.is_none() {
-            provable(&shell, config.until.as_ref(), start)?;
-        }
-        let keep = config.until.as_ref().map_or(0, |u| u.reach(config.rate));
+        let audio = schedule.materialize.clone();
+        let mut shell = Render::shell(held.tys, held.root, config.render.clone(), schedule);
+        reach::ranged(&mut shell, &audio, &audio)?;
+        let range = shell.range.expect("audio out decides a range");
+        let rate = config.render.rate;
+        let frame = ((DEFAULT_FRAME_SECS * f64::from(rate)).round() as usize).max(1);
+        let keep = match config.render.until {
+            Some(_) => frame,
+            None => 0,
+        };
         let nodes = node::built(&shell, config.block, keep)?;
-        let kept = Kept::new(shell.tys.clone(), shell.config.clone());
         let root = nodes
             .iter()
             .position(|n| n.id == shell.root)
             .ok_or_else(|| EngineError::UnknownNode(shell.tys.name(shell.root).to_string()))?;
+        let work = Work {
+            proofs: shell.proofs,
+            waves: Some(0),
+            ..Work::default()
+        };
         Ok(Stream {
             graph: graph.clone(),
             target: target.clone(),
@@ -136,57 +128,42 @@ impl Stream {
             shell,
             nodes,
             root,
-            start,
-            at: start,
-            kept,
-            last,
-            silent_from: extent::default_end(support),
+            start: range.start,
+            at: range.start,
+            last: range.end,
+            frame,
             end: None,
-            work: Work {
-                waves: Some(0),
-                ..Work::default()
-            },
+            work,
         })
     }
 
-    /// The first sample of `[from, to]` the condition surely holds at, over the root's
-    /// samples so far and a bound on every later one.
-    fn settle(&mut self, from: i64, to: i64) -> Result<(), EngineError> {
+    /// A level is known once its frame is whole, so it stops the stream no earlier than the
+    /// block it becomes known in.
+    fn settle(&mut self, from: i64, to: i64) {
         if self.end.is_some() {
-            return Ok(());
+            return;
         }
-        if self.last == Some(to) {
+        if self.last == to {
             self.end = Some(to);
         }
-        let Some(until) = self.config.until.clone() else {
-            return Ok(());
-        };
-        let mut levels = Vec::new();
-        until.levels(&mut levels);
-        let beyond = match levels.iter().copied().reduce(f64::min) {
-            None => f64::INFINITY,
-            Some(level) => {
-                let live = live::View::of(&self.nodes, to);
-                self.work.proofs += 1;
-                match bound_from(&self.kept, self.shell.root, level, &live, to) {
-                    Ok(bound) => bound,
-                    Err(e) if self.last.is_none() => return Err(e),
-                    Err(_) => f64::INFINITY,
-                }
-            }
-        };
-        let beyond = match self.silent_from {
-            Some(silent) if to >= silent => 0.0,
-            _ => beyond,
+        let Some(until) = &self.config.render.until else {
+            return;
         };
         let root = &self.nodes[self.root];
         let base = root.tape.base().max(self.start);
         let heard = Block::of(&root.tape, root.support, base, to);
-        let known = Known::new(heard.plane(0), base, self.start, self.config.rate, beyond);
-        if let Some(at) = until.first(&known, from, to) {
-            self.end = Some(at);
+        let rate = self.config.render.rate;
+        let known = Known::new(
+            heard.plane(0),
+            base,
+            self.start,
+            self.frame,
+            rate,
+            to == self.last,
+        );
+        if let Some(at) = until.first(&known, base, to) {
+            self.end = Some(at.max(from));
         }
-        Ok(())
     }
 
     /// The next block, cut where the stream ends; `None` from there on.
@@ -195,10 +172,7 @@ impl Stream {
         if self.end.is_some_and(|end| from >= end) {
             return Ok(None);
         }
-        let to = match self.last {
-            Some(end) => end.min(from + self.config.block as i64),
-            None => from + self.config.block as i64,
-        };
+        let to = self.last.min(from + self.config.block as i64);
         for at in 0..self.nodes.len() {
             let (done, rest) = self.nodes.split_at_mut(at);
             rest[0].run(&self.shell, done, from, to)?;
@@ -208,7 +182,7 @@ impl Stream {
         }
         self.at = to;
         self.work.samples += (to - from) as u64;
-        self.settle(from, to)?;
+        self.settle(from, to);
         let end = self.end.map_or(to, |end| end.clamp(from, to));
         let root = &self.nodes[self.root];
         Ok(Some(Block::of(&root.tape, root.support, from, end)))
@@ -241,32 +215,36 @@ impl Stream {
             at: self.at,
             target: sva_ast::render_expr(&self.target),
             bindings: self.bindings.clone(),
-            rate: self.config.rate,
+            rate: self.config.render.rate,
             block: self.config.block,
             nodes: self.nodes.iter().map(Streamed::held).collect(),
         }
     }
 
-    /// This stream's target from `checkpoint` on, `bindings` in force, ending where `until`
-    /// holds. A binding may move only where no sample before the checkpoint can hear it:
-    /// `release`, at or past it.
+    /// This stream's target from `checkpoint` on, each of `bindings` in force over the one
+    /// it replaces. A binding may move only where no sample before the checkpoint can hear
+    /// it: `release`, at or past it.
     pub fn resume(
         &self,
         checkpoint: &Checkpoint,
         bindings: &[(String, f64)],
-        until: Option<Until>,
     ) -> Result<Stream, EngineError> {
-        let (rate, block) = (self.config.rate, self.config.block);
+        let (rate, block) = (self.config.render.rate, self.config.block);
         let target = sva_ast::render_expr(&self.target);
         if checkpoint.target != target || (checkpoint.rate, checkpoint.block) != (rate, block) {
             return Err(mismatch(&target, "another stream"));
         }
-        causal(checkpoint, bindings, rate, &target)?;
-        let config = StreamConfig {
-            until,
-            ..self.config.clone()
-        };
-        let mut resumed = Stream::open(&self.graph, &self.target, bindings, config)?;
+        let mut merged = checkpoint.bindings.clone();
+        for (name, value) in bindings {
+            match merged.iter_mut().find(|(held, _)| held == name) {
+                Some(slot) => slot.1 = *value,
+                None => merged.push((name.clone(), *value)),
+            }
+        }
+        words(bindings)?;
+        causal(checkpoint, &merged, rate, &target)?;
+        let mut resumed =
+            Stream::bound_to(&self.graph, &self.target, &merged, self.config.clone())?;
         if resumed.nodes.len() != checkpoint.nodes.len() {
             return Err(mismatch(&target, "a graph of another shape"));
         }
@@ -278,30 +256,20 @@ impl Stream {
     }
 }
 
-/// An open range needs a condition some proof, or `t` alone, can bring about.
-fn provable(shell: &Render, until: Option<&Until>, start: i64) -> Result<(), EngineError> {
-    let name = shell.tys.name(shell.root);
-    let held = until.and_then(|until| until.provable(start, shell.config.rate, &|_| Some(start)));
-    if held.is_some() {
-        return Ok(());
+/// The target with every named argument its own ref writes as a number taken out, and those.
+fn bindings_of(target: &Expr) -> (Expr, Vec<(String, f64)>) {
+    let mut bare = target.clone();
+    let mut out = Vec::new();
+    if let Expr::Ref { binds, .. } = &mut bare {
+        binds.retain(|(name, value)| match value {
+            Expr::Lit(Literal::Num(v)) => {
+                out.push((name.clone(), *v));
+                false
+            }
+            _ => true,
+        });
     }
-    let message = match until {
-        Some(until) => format!(
-            "`{name}` streams over an interval with no end, and `{until}` is never proven to \
-             hold"
-        ),
-        None => {
-            format!("`{name}` streams over an interval with no end, and its support never ends")
-        }
-    };
-    Err(EngineError::refused(Diagnostic {
-        code: "render.no_stop".to_string(),
-        message,
-        location: Located::at(name, None),
-        help: "give the interval an end, as `[0, 2s]`, or an `until` condition that ends it, \
-               as `max(envelope([t, inf))) < -96db`"
-            .to_string(),
-    }))
+    (bare, out)
 }
 
 /// Every node's state at a block's end, and what its stream was opened with.
@@ -371,16 +339,24 @@ fn mismatch(target: &str, what: &str) -> EngineError {
     })
 }
 
-/// The graph with `streamed` defined as `target`, each of `bindings` a named argument on
-/// its own ref.
-fn bound(graph: &Graph, target: &Expr, bindings: &[(String, f64)]) -> Result<Graph, EngineError> {
-    let mut call = target.clone();
+/// Each binding names a word and holds a finite number.
+fn words(bindings: &[(String, f64)]) -> Result<(), EngineError> {
     for (name, value) in bindings {
         let word = name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
             && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
         if !word || !value.is_finite() {
             return Err(refusal(format!("`{name}` bound to {value}")));
         }
+    }
+    Ok(())
+}
+
+/// The graph with `streamed` defined as `target`, each of `bindings` a named argument on
+/// its own ref.
+fn bound(graph: &Graph, target: &Expr, bindings: &[(String, f64)]) -> Result<Graph, EngineError> {
+    words(bindings)?;
+    let mut call = target.clone();
+    for (name, value) in bindings {
         let Expr::Ref { binds, .. } = &mut call else {
             return Err(refusal(format!(
                 "`{name}` binds a ref, and `{}` is no ref",

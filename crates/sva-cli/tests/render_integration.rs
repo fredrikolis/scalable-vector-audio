@@ -10,14 +10,11 @@ use sva_cli::{CliError, error_envelope};
 use sva_core::{Job, PROBE, ROOT, execute, probe};
 use sva_engine::{Cache, Output, PayloadKind, Representation, Source};
 
-/// `expr` ended by `condition` rather than by a proof.
-fn until(dir: &std::path::Path, expr: &str, condition: &str) -> sva_core::Rendered {
-    let source = Dir::at(dir);
-    execute(Job {
-        until: Some(condition),
-        ..Job::over(&source, expr)
-    })
-    .unwrap_or_else(|e| panic!("`{expr}`: {e}"))
+/// `expr` over its first second, read through a node of its own.
+fn second(expr: &str) -> sva_core::Rendered {
+    let dir = scratch("second");
+    put(&dir, "x", &format!("{expr}\n"));
+    probe(&dir, "@x([0, 1s])").unwrap_or_else(|e| panic!("`{expr}`: {e}"))
 }
 
 #[test]
@@ -33,8 +30,8 @@ fn basic_fixture_renders_with_bpm_meter_and_a_repeat_desugared() {
     assert!(root.peak > 0.0 && root.peak < 1.0);
 }
 
-/// An open interval ends where the proof finds every later frame quiet: an arrangement's
-/// desugared `concat` crops its last section, so it ends where that section does.
+/// An open interval ends where the root's support does: an arrangement's desugared `concat`
+/// crops its last section, so it ends where that section does.
 #[test]
 fn an_arranged_root_ends_where_its_last_section_does() {
     let rendered = probe(&fixture("arranged"), "@master").expect("arranged fixture should render");
@@ -105,8 +102,7 @@ fn a_ledger_envelope_names_its_target_window_and_every_node_under_it() {
 /// the rate it ran at, and both name the profile they were taken under.
 #[test]
 fn every_answer_names_its_source_profile_and_rate() {
-    let dir = fixture("basic");
-    let rendered = until(&dir, "sin(2*pi*440*t)", "t >= 1s");
+    let rendered = second("sin(2*pi*440*t)");
 
     let law = rendered.answer(PROBE, Representation::Lines).unwrap();
     assert_eq!(law.source, Source::Exact);
@@ -298,9 +294,8 @@ fn a_crest_rendering_reports_the_spread_and_which_bands_it_counted() {
 /// own line spectrum is the case it must not cry wolf on.
 #[test]
 fn an_alias_rendering_separates_a_folding_law_from_one_that_does_not() {
-    let dir = fixture("basic");
     let measured = |expr: &str| {
-        let rendered = until(&dir, expr, "t >= 1s");
+        let rendered = second(expr);
         match rendered
             .answer(PROBE, Representation::Alias { oversample: 4 })
             .expect("alias measures")
@@ -339,9 +334,8 @@ fn an_alias_rendering_separates_a_folding_law_from_one_that_does_not() {
 /// counted beside the figure rather than read as pure alias.
 #[test]
 fn a_rate_dependent_instance_is_counted_beside_the_figures() {
-    let dir = fixture("basic");
     let count = |expr: &str| {
-        let rendered = until(&dir, expr, "t >= 1s");
+        let rendered = second(expr);
         sva_engine::rate_dependent(&rendered.graph, &rendered.target).unwrap()
     };
     assert!(count("sin(2*pi*440*t)").is_empty());
@@ -658,24 +652,18 @@ fn a_capped_reading_names_the_second_its_items_stop_before() {
     }
 }
 
-/// The range a reading reports is the one the condition ended, not the latest time a proof
-/// looked by.
+/// The interval a reading reports is the one the root's cut ended.
 #[test]
-fn a_render_reports_the_range_its_condition_ended() {
-    let dir = scratch("silent");
+fn a_render_reports_the_interval_its_cut_ended() {
+    let dir = scratch("cut");
     put(
         &dir,
         "echo",
         "crop(sin(2*pi*440*t), 0s, 0.05s) + 0.35*self(t - 0.25s)\n",
     );
-    let source = Dir::at(&dir);
-    let rendered = execute(Job {
-        until: Some("max(envelope([t, inf))) < -144.5db"),
-        ..Job::over(&source, "@echo")
-    })
-    .expect("the echo falls silent");
+    let rendered = probe(&dir, "@echo").expect("the echo is cut");
     let end = secs(&rendered);
-    assert!((3.79..=3.8).contains(&end), "{end}");
+    assert!((3.8..=3.81).contains(&end), "{end}");
     assert_eq!(
         plane(&rendered, PROBE).len(),
         (end * 44_100.0).round() as usize

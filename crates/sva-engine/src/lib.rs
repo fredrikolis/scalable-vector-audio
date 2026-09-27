@@ -25,7 +25,7 @@ pub use arguments::{Argument, Arguments, Called, Chosen};
 pub use bindings::Binding;
 pub use cache::{
     Cache, CachePolicy, CacheStats, DEFAULT_CACHE_BYTES, Hash, Lookup, Outcome, PayloadKind,
-    PrunePolicy, buffer_key, symbolic_key,
+    PrunePolicy, buffer_key, precise_key, symbolic_key,
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
@@ -35,10 +35,10 @@ pub use meaning::{Meaning, meaning};
 pub use offset::Offset;
 pub use query::{Answer, Ask, DEFAULT_FRAME_SECS, Output, Representation};
 pub use refs::{Read, identity, nodes_in, resolve, spectral_sum_of, symbolic_hash};
-pub use render::until::{At, Cmp, Term};
+pub use render::until::{Cmp, Term};
 pub use render::{
-    Block, Checkpoint, DEFAULT_PROOF_LIMIT_SECS, QuietTail, Range, Render, RenderConfig, STREAMED,
-    Stream, StreamConfig, Until, answer, answer_buffer, quiet_tails, render, sketch_atom,
+    Block, Checkpoint, Cut, Cuts, Missing, Range, Render, RenderConfig, STREAMED, Stream,
+    StreamConfig, Uncut, Until, answer, answer_buffer, plan, render, sketch_atom,
 };
 pub use schedule::{Order, Schedule, schedule_from};
 pub use sva_formula::{C64, Codomain, Held, Line, NodeId, SpectralSum, Ty, Var};

@@ -10,9 +10,11 @@ pub(crate) use reading::check_frame;
 use reading::{analyze_args, render_args};
 
 pub const USAGE: &str = "usage: sva-cli render '<expression>' --representation <r>[=<path>][,...] \
-     [--until '<condition>'] [--bits <n>] [--rate <hz>] [--flop-budget <n>] [--confirm]\n       \
+     [--until '<condition>'] [--bits <n>] [--decay-floor <db>] [--rate <hz>] \
+     [--flop-budget <n>] [--confirm]\n       \
      sva-cli analyze <file.wav> --representation <r>[=<path>][,...] [--confirm]\n       \
-     sva-cli lint [<node|expression>] [--format <json|text>]\n       \
+     sva-cli lint ['<expression>' [--bits <n>] [--decay-floor <db>] [--rate <hz>] \
+     [--flop-budget <n>]] [--format <json|text>]\n       \
      sva-cli trace <node|expression>\n       \
      sva-cli builtins\n       \
      sva-cli outline <expression>\n       \
@@ -43,16 +45,22 @@ pub const ANALYZE_REPRESENTATIONS: [&str; 10] = [
     "stereo",
 ];
 
+/// What decides a render's range and cuts before its first sample; each the profile's own
+/// where `None`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Decision {
+    pub rate: Option<u32>,
+    pub bits: Option<i32>,
+    pub decay_floor_db: Option<f64>,
+    pub flop_budget: Option<u128>,
+}
+
 #[derive(Debug, PartialEq)]
 pub struct RenderArgs {
     /// One expression; its refs name nodes from the current directory or an absolute path.
     pub target: String,
     pub until: Option<String>,
-    pub rate: Option<u32>,
-    /// The precision every sample is written to; the profile's own where `None`.
-    pub bits: Option<i32>,
-    /// The operation count the caller acknowledges paying; the profile's own where `None`.
-    pub flop_budget: Option<u128>,
+    pub decision: Decision,
     pub asked: Vec<Asked>,
     /// The caller said a destination that already holds a file may be replaced.
     pub confirm: bool,
@@ -82,11 +90,11 @@ pub enum Command {
     Help,
     Render(Box<RenderArgs>),
     Analyze(Box<AnalyzeArgs>),
-    /// A node path or an expression, same grammar as render's target; `None` lints the whole
-    /// directory.
+    /// One expression, as render's target; `None` lints every file under its own rules.
     Lint {
         target: Option<String>,
         format: Format,
+        decision: Decision,
     },
     Trace {
         target: String,
@@ -209,8 +217,11 @@ fn lint_args(rest: &[String]) -> Result<Command, CliError> {
         Some(a) if !a.starts_with("--") => it.next().cloned(),
         _ => None,
     };
-    let mut format = Format::default();
+    let (mut format, mut decision) = (Format::default(), Decision::default());
     while let Some(flag) = it.next() {
+        if decision.read(flag, &mut it)? {
+            continue;
+        }
         match flag.as_str() {
             "--format" => {
                 format = match it.next().map(String::as_str) {
@@ -226,13 +237,23 @@ fn lint_args(rest: &[String]) -> Result<Command, CliError> {
             }
             extra => {
                 return Err(CliError::Usage(format!(
-                    "lint takes only [<node|expression>] and `--format <json|text>`, not \
-                     `{extra}`\n{USAGE}"
+                    "lint takes only ['<expression>'], `--format <json|text>`, `--rate`, \
+                     `--bits`, `--decay-floor` and `--flop-budget`, not `{extra}`\n{USAGE}"
                 )));
             }
         }
     }
-    Ok(Command::Lint { target, format })
+    if target.is_none() && decision != Decision::default() {
+        return Err(CliError::Usage(format!(
+            "`--rate`, `--bits`, `--decay-floor` and `--flop-budget` decide a render's cuts, \
+             and a lint with no target decides none; name the target\n{USAGE}"
+        )));
+    }
+    Ok(Command::Lint {
+        target,
+        format,
+        decision,
+    })
 }
 
 /// One positional and nothing else: a trace answers structure, which no option narrows.
@@ -290,6 +311,7 @@ mod tests {
             Command::Lint {
                 target: None,
                 format: Format::Json,
+                decision: Decision::default(),
             }
         );
         assert_eq!(parse_args(&argv(&["list"])).unwrap(), Command::Builtins);
@@ -323,6 +345,8 @@ mod tests {
             "48000",
             "--bits",
             "16",
+            "--decay-floor",
+            "-96",
             "--flop-budget",
             "1000",
             "--until",
@@ -330,9 +354,15 @@ mod tests {
         ]);
         assert_eq!(args.target, "@piano([0, 2b], f0=C4)");
         assert_eq!(args.until.as_deref(), Some("t > 1s"));
-        assert_eq!(args.rate, Some(48_000));
-        assert_eq!(args.bits, Some(16));
-        assert_eq!(args.flop_budget, Some(1000));
+        assert_eq!(
+            args.decision,
+            Decision {
+                rate: Some(48_000),
+                bits: Some(16),
+                decay_floor_db: Some(-96.0),
+                flop_budget: Some(1000),
+            }
+        );
         let names: Vec<&str> = args.asked.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, ["samples", "spectrum", "ledger", "bindings"]);
         assert_eq!(
@@ -431,16 +461,21 @@ mod tests {
     }
 
     #[test]
-    fn lint_takes_an_optional_target_and_nothing_else() {
+    fn lint_takes_an_optional_target_and_what_decides_its_cuts() {
         assert_eq!(
-            parse_args(&argv(&["lint", "drums/kick"])).unwrap(),
+            parse_args(&argv(&["lint", "@drums/kick", "--bits", "16"])).unwrap(),
             Command::Lint {
-                target: Some("drums/kick".to_string()),
+                target: Some("@drums/kick".to_string()),
                 format: Format::Json,
+                decision: Decision {
+                    bits: Some(16),
+                    ..Decision::default()
+                },
             }
         );
         refused(&["lint", "a", "b"]);
         refused(&["lint", "--in", "x"]);
+        refused(&["lint", "--bits", "16"]);
     }
 
     #[test]

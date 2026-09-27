@@ -71,7 +71,20 @@ fn a_cropped_burst_echoes_where_its_recurrence_does() {
     let want: Vec<f64> = (0..series.len())
         .map(|i| echoes(i as f64 / f64::from(RATE), 0.3, 0.35, 0.35, 0.25, 17))
         .collect();
-    assert_agree(&series, &want, "the series against its echoes");
+    let cut = series
+        .iter()
+        .rposition(|v| *v != 0.0)
+        .map_or(0, |at| at + 1);
+    assert_agree(
+        &series[..cut],
+        &want[..cut],
+        "the series against its echoes",
+    );
+    let after = want[cut..].iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    assert!(
+        after <= sva_samples::PSYCHOACOUSTIC_V1.half_lsb(),
+        "cut at {cut} with {after} still to come"
+    );
 }
 
 #[test]

@@ -292,7 +292,7 @@ fn knobbed() -> Composition {
 }
 
 fn knob(cutoff: u32) -> String {
-    format!("@tone([0, inf), x=@note, cutoff={cutoff})")
+    format!("@tone([0, 1s], x=@note, cutoff={cutoff})")
 }
 
 /// `{ rate, until, volatile: [..] }` as a page writes it.
@@ -580,34 +580,27 @@ fn builtins_cross_with_what_each_named_argument_means() {
     assert_eq!(field(&b, "part").as_string().as_deref(), Some("string"));
 }
 
-/// Unset, `until` is every later frame under 24 bits: the fifteenth echo of a 50 ms burst
-/// is the last frame over it, ending at `15*0.25 + 0.05 = 3.8` seconds.
+/// An open render ends where its root is cut at the decay floor: the echoes of a 50 ms burst
+/// fall under 24 bits after the fifteenth. A held sine is never cut.
 #[wasm_bindgen_test]
-fn an_open_render_ends_where_its_condition_is_proven() {
+fn an_open_render_ends_where_its_root_is_cut() {
     let mut held = Composition::new(None);
     held.insert(
         "master",
         "crop(sin(2*pi*440*t), 0s, 0.05s) + 0.35*self(t - 0.25s)\n",
     );
-    let quiet = held
+    let cut = held
         .render("@master", None, options(&[]))
-        .unwrap_or_else(|_| unreachable!("the echo falls silent"));
-    let secs = quiet.duration_secs();
-    assert!((3.75..=3.8).contains(&secs), "{secs}");
+        .unwrap_or_else(|_| unreachable!("the echo is cut"));
+    let secs = cut.duration_secs();
+    assert!((3.75..=6.0).contains(&secs), "{secs}");
 
-    let never = held.render(
-        "sin(2*pi*100*t)",
-        None,
-        options(&[(
-            "until",
-            JsValue::from_str("max(envelope([t, inf))) < -96db"),
-        )]),
-    );
+    let never = held.render("sin(2*pi*100*t)", None, options(&[]));
     let refused = never
         .err()
-        .unwrap_or_else(|| unreachable!("a held sine never falls silent"));
+        .unwrap_or_else(|| unreachable!("a held sine is never cut"));
     assert!(
-        as_text(&field(&refused, "refusal")).contains("engine.never_silent"),
+        as_text(&field(&refused, "refusal")).contains("render.never_ends"),
         "{}",
         as_text(&refused)
     );
@@ -615,16 +608,10 @@ fn an_open_render_ends_where_its_condition_is_proven() {
 
 const BLOCK: usize = 256;
 
-/// `@<node>` over an hour, which no test reaches the end of, and no proof run to end it.
-fn opened(held: &Composition, node: &str, bindings: JsValue) -> Stream {
-    held.stream(
-        &format!("@{node}([0, 3600s])"),
-        BLOCK,
-        Some("t >= 3600s".to_string()),
-        Some(8000),
-        bindings,
-    )
-    .unwrap_or_else(|e| unreachable!("`{node}` streams: {}", as_text(&field(&e, "refusal"))))
+/// `@<node>` over four seconds, which no test reaches the end of.
+fn opened(held: &Composition, node: &str) -> Stream {
+    held.stream(&format!("@{node}([0, 4s])"), BLOCK, options(&[]))
+        .unwrap_or_else(|e| unreachable!("`{node}` streams: {}", as_text(&field(&e, "refusal"))))
 }
 
 fn blocks(stream: &mut Stream, count: usize) -> Vec<f32> {
@@ -658,13 +645,13 @@ fn a_stream_crosses_block_by_block_and_resumes_released_at_a_checkpoint() {
         "lowpass(sample(@partials/one), cutoff=300, q=0.7)\n",
     );
     held.insert("gated", "crop(@filtered, 0s, release)\n");
-    let mut stream = opened(&held, "filtered", JsValue::UNDEFINED);
+    let mut stream = opened(&held, "filtered");
     assert_eq!((stream.channels(), stream.sample_rate()), (1, 8000));
     let heard = blocks(&mut stream, 8000 / BLOCK);
     let whole = plane(&render(&held, "filtered"));
     assert_eq!(heard[..], whole[..heard.len()]);
 
-    let mut gated = opened(&held, "gated", JsValue::UNDEFINED);
+    let mut gated = opened(&held, "gated");
     blocks(&mut gated, 3);
     let checkpoint = gated.checkpoint();
     assert_eq!(checkpoint.position(), (3 * BLOCK) as f64);
@@ -673,14 +660,14 @@ fn a_stream_crosses_block_by_block_and_resumes_released_at_a_checkpoint() {
     js_sys::Reflect::set(&key_up, &"release".into(), &at.into())
         .unwrap_or_else(|_| unreachable!("an object takes a key"));
     let mut released = gated
-        .resume(&checkpoint, key_up.into(), None)
+        .resume(&checkpoint, key_up.into())
         .unwrap_or_else(|_| unreachable!("a release at the checkpoint"));
     assert!(blocks(&mut released, 2).iter().all(|v| *v == 0.0));
 
     let early = js_sys::Object::new();
     js_sys::Reflect::set(&early, &"release".into(), &(at / 2.0).into())
         .unwrap_or_else(|_| unreachable!("an object takes a key"));
-    let refused = gated.resume(&checkpoint, early.into(), None);
+    let refused = gated.resume(&checkpoint, early.into());
     refused_as(refused.err(), "engine.binding_not_causal");
 }
 
@@ -688,7 +675,7 @@ fn a_stream_crosses_block_by_block_and_resumes_released_at_a_checkpoint() {
 #[wasm_bindgen_test]
 fn a_wide_stream_lays_each_component_a_block_apart() {
     let held = page();
-    let mut stream = opened(&held, "wide", JsValue::UNDEFINED);
+    let mut stream = opened(&held, "wide");
     assert_eq!(stream.channels(), 2);
     let mut out = vec![0.0f32; 2 * BLOCK];
     let took = stream
@@ -707,15 +694,15 @@ fn a_wide_stream_lays_each_component_a_block_apart() {
     }
 }
 
+/// An open stream ends where a render of the same target is cut.
 #[wasm_bindgen_test]
-fn a_stream_until_quiet_ends_where_the_quiet_render_proves_it() {
+fn an_open_stream_ends_where_the_render_is_cut() {
     let mut held = Composition::new(None);
     held.insert("master", "sin(2*pi*100*t)*exp(0 - 30*t)\n");
-    let quiet = || Some("max(envelope([t, inf))) < -96db".to_string());
     let mut stream = held
-        .stream("@master", BLOCK, quiet(), Some(8000), JsValue::UNDEFINED)
-        .unwrap_or_else(|_| unreachable!("a decay falls silent"));
-    assert_eq!(stream.end(), None, "no block has proven silence yet");
+        .stream("@master", BLOCK, options(&[]))
+        .unwrap_or_else(|_| unreachable!("a decay is cut"));
+    assert_eq!(stream.end(), None, "no block has reached the end yet");
     let mut out = vec![0.0f32; BLOCK];
     let mut heard = Vec::new();
     loop {
@@ -727,40 +714,32 @@ fn a_stream_until_quiet_ends_where_the_quiet_render_proves_it() {
         }
         heard.extend_from_slice(&out[..took]);
     }
-    let end = stream.end().unwrap_or_else(|| unreachable!("a proven end"));
+    let end = stream.end().unwrap_or_else(|| unreachable!("an end"));
     assert_eq!(heard.len() as f64, end);
-    assert_eq!(stream.next(&mut out).ok(), Some(0), "nothing after silence");
+    assert_eq!(stream.next(&mut out).ok(), Some(0), "nothing after the end");
     let whole = held
-        .render(
-            "@master",
-            None,
-            options(&[("until", JsValue::from(quiet()))]),
-        )
-        .unwrap_or_else(|_| unreachable!("the same decay falls silent"));
-    let proven = plane(&whole);
-    assert_eq!(heard[..proven.len()], proven[..]);
+        .render("@master", None, options(&[]))
+        .unwrap_or_else(|_| unreachable!("the same decay is cut"));
+    assert_eq!(heard[..], plane(&whole)[..]);
 }
 
 #[wasm_bindgen_test]
 fn a_stream_refuses_what_it_cannot_take_at_the_boundary() {
     let held = page();
-    let mut stream = opened(&held, "partials/one", JsValue::UNDEFINED);
+    let mut stream = opened(&held, "partials/one");
     let mut short = vec![0.0f32; BLOCK - 1];
     refused_as(stream.next(&mut short).err(), "wasm.bad_argument");
-    let open = |bindings: JsValue, until: Option<String>| {
-        held.stream("@master([0, 1s])", BLOCK, until, Some(8000), bindings)
-            .err()
-    };
-    refused_as(open(JsValue::from(3), None), "wasm.bad_argument");
+    let open = |options: JsValue| held.stream("@master([0, 1s])", BLOCK, options).err();
+    refused_as(open(JsValue::from(3)), "wasm.bad_argument");
     refused_as(
-        open(JsValue::UNDEFINED, Some("2".to_string())),
+        open(self::options(&[("until", JsValue::from_str("2"))])),
         "validation_error",
     );
-    let worded = js_sys::Object::new();
-    js_sys::Reflect::set(&worded, &"release".into(), &"soon".into())
-        .unwrap_or_else(|_| unreachable!("an object takes a key"));
-    refused_as(open(worded.into(), None), "wasm.bad_argument");
-    let empty = held.stream("@master([0, 1s])", 0, None, Some(8000), JsValue::UNDEFINED);
+    refused_as(
+        open(self::options(&[("release", JsValue::from_str("soon"))])),
+        "wasm.bad_argument",
+    );
+    let empty = held.stream("@master([0, 1s])", 0, options(&[]));
     refused_as(empty.err(), "engine.no_stream");
 }
 
@@ -768,7 +747,7 @@ fn a_stream_refuses_what_it_cannot_take_at_the_boundary() {
 #[wasm_bindgen_test]
 fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
     let held = page();
-    let mut stream = opened(&held, "partials/one", JsValue::UNDEFINED);
+    let mut stream = opened(&held, "partials/one");
     blocks(&mut stream, 4);
     let work = stream
         .work()
@@ -776,7 +755,7 @@ fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
     let count = |of: &JsValue, name: &str| field(of, name).as_f64();
     let samples = (4 * BLOCK) as f64;
     assert_eq!(count(&work, "samples"), Some(samples));
-    assert_eq!(count(&work, "proofs"), Some(0.0));
+    assert!(count(&work, "proofs").is_some_and(|p| p >= 1.0));
     assert_eq!(count(&work, "waves"), Some(2.0 * samples));
     assert!(count(&work, "priced_flops").is_some_and(|f| f > 0.0));
 

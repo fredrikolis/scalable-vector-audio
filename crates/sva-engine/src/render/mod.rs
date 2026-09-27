@@ -1,12 +1,12 @@
 // Concern: holds a composition's decided types, the buffers a reading needed and each label | Non-concern: ordering the work (schedule.rs), a sampled shader (sampled.rs) | IO: (&Graph, target) -> Render
 
 mod answer;
+pub(crate) mod bound;
+mod cut;
 pub(crate) mod extent;
 mod pointwise;
-mod quiet;
 mod reach;
 mod sampled;
-mod silent;
 mod slots;
 mod stream;
 pub mod until;
@@ -34,22 +34,21 @@ use crate::typing::{self, Typing, Value};
 
 /// Where a target is read, grid samples from sample 0 at t = 0. An unstated start is where
 /// the root starts, before t = 0 only where its support reaches there; an unstated end is
-/// where `until` is proven to hold.
+/// where the root, cut at the decay floor, ends.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Range {
     pub start: Option<i64>,
     pub end: Option<i64>,
 }
 
-pub const DEFAULT_PROOF_LIMIT_SECS: f64 = 60.0;
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderConfig {
     pub rate: u32,
     pub range: Range,
-    /// Where the render ends before the range does; `None` reads the range to its end.
+    /// Where the render stops before the range ends; `None` reads the range to its end.
     pub until: Option<Until>,
-    pub proof_limit_secs: f64,
+    /// Linear; the profile's own resolution where `None`.
+    pub decay_floor: Option<f64>,
     pub profile: Profile,
     /// What the caller means to read. An empty list is audio out, which collapses the root.
     pub asks: Vec<Ask>,
@@ -67,7 +66,7 @@ impl RenderConfig {
             rate,
             range: Range::default(),
             until: None,
-            proof_limit_secs: DEFAULT_PROOF_LIMIT_SECS,
+            decay_floor: None,
             profile: PSYCHOACOUSTIC_V1,
             asks: Vec::new(),
             flop_budget: PSYCHOACOUSTIC_V1.flop_budget,
@@ -94,7 +93,7 @@ impl RenderConfig {
 }
 
 pub use answer::{answer, answer_buffer, sketch_atom};
-pub use quiet::{QuietTail, quiet_tails};
+pub use cut::{Cut, Cuts, Missing, Uncut};
 pub use stream::{Block, Checkpoint, STREAMED, Stream, StreamConfig};
 pub use until::Until;
 
@@ -110,7 +109,10 @@ pub struct Render {
     pub schedule: Schedule,
     pub bindings: BTreeMap<NodeId, Vec<Binding>>,
     pub cache_stats: Option<CacheStats>,
+    /// The bound passes the cut ran, and what they cost.
     pub proofs: u64,
+    pub proof_ops: u128,
+    pub cuts: Cuts,
     /// The samples the root was read over; `None` where no reading needed any.
     pub range: Option<Extent>,
     pub(crate) unranged: Option<EngineError>,
@@ -125,6 +127,11 @@ impl Render {
         config: RenderConfig,
         schedule: Schedule,
     ) -> Self {
+        let cuts = Cuts {
+            bits: config.profile.precision_bits,
+            floor: config.decay_floor.unwrap_or(config.profile.half_lsb()),
+            ..Cuts::default()
+        };
         Render {
             root,
             tys,
@@ -138,6 +145,8 @@ impl Render {
             bindings: BTreeMap::new(),
             cache_stats: None,
             proofs: 0,
+            proof_ops: 0,
+            cuts,
             range: None,
             unranged: None,
             extents: extent::Extents::default(),
@@ -150,6 +159,26 @@ impl Render {
         refs::identity_in(&self.tys, id, &mut self.identities.borrow_mut())
     }
 
+    /// `key` with what a node's samples read beyond its content: the precision a collapse
+    /// truncates at, and every cut under it.
+    pub(crate) fn keyed(
+        &self,
+        id: NodeId,
+        key: sva_formula::Hash,
+    ) -> Result<sva_formula::Hash, EngineError> {
+        let mut cuts = Vec::new();
+        if !self.extents.cuts.is_empty() {
+            let under = cut::under(&self.tys, id);
+            for (node, at) in &self.extents.cuts {
+                if under.contains(node) {
+                    cuts.push((self.identity(*node)?, *at));
+                }
+            }
+        }
+        let bits = self.config.profile.precision_bits;
+        Ok(crate::cache::precise_key(key, bits, &cuts))
+    }
+
     pub fn work(&self) -> crate::flops::Work {
         crate::flops::Work {
             samples: self.range.map_or(0, |range| range.len() as u64),
@@ -157,6 +186,10 @@ impl Render {
             priced_flops: crate::flops::total(self),
             waves: None,
         }
+    }
+
+    pub(crate) fn priced(&self) -> u128 {
+        crate::flops::total(self) + self.proof_ops
     }
 
     pub fn output(&self, node: NodeId) -> Option<Buffer> {
@@ -231,19 +264,6 @@ pub(crate) struct Prepared<'g> {
     pub(crate) target: String,
 }
 
-impl Prepared<'_> {
-    /// The root's content address, and whether a reading asks it for an alias score.
-    pub(crate) fn identity(&self, asks: &[Ask]) -> Result<(sva_formula::Hash, bool), EngineError> {
-        let scored = asks.iter().any(|ask| {
-            matches!(
-                ask.representation,
-                crate::query::Representation::Alias { .. }
-            ) && self.tys.resolve(&ask.node).is_ok_and(|id| id == self.root)
-        });
-        Ok((refs::identity(&self.tys, self.root)?, scored))
-    }
-}
-
 pub(crate) fn prepared<'g>(graph: &'g Graph, target: &str) -> Result<Prepared<'g>, EngineError> {
     let instances = instantiate::instantiate(graph, target)?;
     let held = instances.instance_of(target)?;
@@ -261,19 +281,41 @@ pub(crate) fn prepared<'g>(graph: &'g Graph, target: &str) -> Result<Prepared<'g
     })
 }
 
-/// The range and every extent under it are decided before the first sample, the root cut
-/// where `until` first holds after.
+/// The range and every extent under it are decided before the first sample, each node cut
+/// where it falls under the decay floor.
 pub(crate) fn run(
     prepared: Prepared,
     config: RenderConfig,
     recording: Option<&Recording>,
 ) -> Result<Render, EngineError> {
-    sampled::on_the_grid(&prepared.tys, config.rate)?;
-    // Only a stored stop reads the root's identity.
-    let identity = match (recording, &config.until) {
-        (Some(_), Some(_)) => prepared.identity(&config.asks).ok(),
-        _ => None,
+    let (mut held, instances, target, looped, costed) = planned(prepared, config)?;
+    let lenses = Lenses {
+        recording,
+        volatile: volatile::mark(&instances, &held, &target)?,
+        forks: schedule::forks(&held.tys, &held.schedule.materialize),
+        root: held.root,
     };
+    match (held.range, held.config.until.clone()) {
+        (Some(range), Some(until)) => {
+            stopping(&mut held, &lenses, &looped, &costed, range, &until)?
+        }
+        _ => computed(&mut held, &lenses, &looped)?,
+    }
+    compose_read(&mut held);
+    stamp(&mut held);
+    Ok(held)
+}
+
+type Planned<'g> = (
+    Render,
+    instantiate::Instances<'g>,
+    String,
+    BTreeMap<String, String>,
+    Vec<NodeId>,
+);
+
+fn planned(prepared: Prepared<'_>, config: RenderConfig) -> Result<Planned<'_>, EngineError> {
+    sampled::on_the_grid(&prepared.tys, config.rate)?;
     let Prepared {
         instances,
         order,
@@ -282,42 +324,99 @@ pub(crate) fn run(
         target,
     } = prepared;
     let schedule = schedule::plan(&tys, &order, root, &config.asks);
+    let audio = schedule::plan(&tys, &order, root, &[]).materialize;
     let costed = match schedule.materialize.is_empty() && counts(&config.asks) {
-        true => schedule::plan(&tys, &order, root, &[]).materialize,
+        true => audio.clone(),
         false => schedule.materialize.clone(),
     };
     let looped = order.looped();
-    let forks = schedule::forks(&tys, &schedule.materialize);
     let bindings = tys
         .paths()
         .filter_map(|(path, id)| Some((id, resolved(&instances, path)?)))
         .collect();
     let mut held = Render::shell(tys, root, config, schedule);
     held.bindings = bindings;
-    let volatile_root = volatile::mark(&instances, &held, &target)?
-        .slot(root)
-        .is_some();
-    let reached = reach::ranged(&mut held, recording, identity, volatile_root, &costed)?;
-    let lenses = Lenses {
-        recording,
-        volatile: volatile::mark(&instances, &held, &target)?,
-        forks,
-        root,
-    };
-    affordable(&held)?;
-    let needed = lenses.needed(&held);
-    unlooped(&held, &needed, &looped)?;
+    reach::ranged(&mut held, &audio, &costed)?;
+    Ok((held, instances, target, looped, costed))
+}
+
+/// The range, every extent and every cut a render of `target` decides, and no sample.
+pub fn plan(graph: &Graph, target: &str, config: RenderConfig) -> Result<Render, EngineError> {
+    planned(prepared(graph, target)?, config).map(|(held, ..)| held)
+}
+
+fn computed(
+    held: &mut Render,
+    lenses: &Lenses,
+    looped: &BTreeMap<String, String>,
+) -> Result<(), EngineError> {
+    affordable(held)?;
+    let needed = lenses.needed(held);
+    unlooped(held, &needed, looped)?;
     for id in held.schedule.materialize.clone() {
         if needed.contains(&id) {
-            materialize(&mut held, id, &lenses)?;
+            materialize(held, id, lenses)?;
         }
     }
-    if let Some(reached) = reached {
-        reach::stopped(&mut held, reached, recording);
+    Ok(())
+}
+
+/// Rendered over a first second, then twice as far each time, until `until` holds, which
+/// ends the range there, or the range ends. Each pass renders from the range's start.
+fn stopping(
+    held: &mut Render,
+    lenses: &Lenses,
+    looped: &BTreeMap<String, String>,
+    costed: &[NodeId],
+    range: Extent,
+    until: &Until,
+) -> Result<(), EngineError> {
+    let rate = held.config.rate;
+    let frame_secs = held
+        .config
+        .asks
+        .iter()
+        .find_map(|ask| match ask.representation {
+            crate::query::Representation::Envelope { frame_secs } => Some(frame_secs),
+            _ => None,
+        });
+    let frame = (frame_secs
+        .flatten()
+        .unwrap_or(crate::query::DEFAULT_FRAME_SECS)
+        * f64::from(rate))
+    .round() as usize;
+    let mut reach = i64::from(rate);
+    loop {
+        let to = range.end.min(range.start.saturating_add(reach));
+        reach::extend(held, costed, Extent::new(range.start, to))?;
+        held.buffers.clear();
+        held.frames.clear();
+        held.labels.clear();
+        held.traces.clear();
+        computed(held, lenses, looped)?;
+        let root = held
+            .output(held.root)
+            .or_else(|| answer::on_the_grid(held, held.root).ok());
+        let Some(root) = root else {
+            return Ok(());
+        };
+        let known = until::Known::new(
+            root.plane(0),
+            range.start,
+            range.start,
+            frame,
+            rate,
+            to == range.end,
+        );
+        if let Some(stop) = until.first(&known, range.start, to) {
+            held.range = Some(Extent::new(range.start, stop));
+            return Ok(());
+        }
+        if to == range.end {
+            return Ok(());
+        }
+        reach = reach.saturating_mul(2);
     }
-    compose_read(&mut held);
-    stamp(&mut held);
-    Ok(held)
 }
 
 /// A `flops` reading counts what the audio render would run, over the extents it would.
@@ -353,7 +452,7 @@ fn affordable(held: &Render) -> Result<(), EngineError> {
     if held.schedule.materialize.is_empty() {
         return Ok(());
     }
-    let total = crate::flops::total(held);
+    let total = held.priced();
     if total <= held.config.flop_budget {
         return Ok(());
     }
@@ -362,12 +461,12 @@ fn affordable(held: &Render) -> Result<(), EngineError> {
     Err(EngineError::refused(Diagnostic {
         code: "collapse.over_budget".to_string(),
         message: format!(
-            "this render counts {} operations, over the budget of {}; `{}` dominates it at \
-             {} by {}",
-            counted.total, counted.budget, over.node, over.subtree, over.route
+            "this render counts {} operations and its cuts' bounds {}, over the budget of {}; \
+             `{}` dominates it at {} by {}",
+            counted.total, held.proof_ops, counted.budget, over.node, over.subtree, over.route
         ),
         location: Located::at(held.tys.name(held.root), None),
-        help: format!("pass -c flop_budget={} to render it anyway", counted.total),
+        help: format!("pass --flop-budget {total} to render it anyway"),
     }))
 }
 
@@ -404,15 +503,6 @@ pub(crate) struct Lenses<'r> {
 }
 
 impl Lenses<'_> {
-    pub(crate) fn none() -> Lenses<'static> {
-        Lenses {
-            recording: None,
-            volatile: volatile::Volatile::default(),
-            forks: Default::default(),
-            root: NodeId(0),
-        }
-    }
-
     fn at(&self, id: NodeId) -> Option<Lens<'_>> {
         let fork = self.forks.contains(&id);
         self.recording
@@ -574,12 +664,16 @@ fn collapse_closed_form(
         _ => (asked, Vec::new()),
     };
     let width = held.tys.ty(id).width as usize;
-    let key = identity.map(|identity| {
-        crate::cache::mixed(
-            crate::cache::buffer_key(identity, rate, over, width, score),
-            &route,
-        )
-    });
+    let key = match identity {
+        Some(identity) => Some(held.keyed(
+            id,
+            crate::cache::mixed(
+                crate::cache::buffer_key(identity, rate, over, width, score),
+                &route,
+            ),
+        )?),
+        None => None,
+    };
     if let Ok(sum) = &sum {
         held.symbolic.insert(id, sum.clone());
     }
@@ -683,13 +777,16 @@ fn frames_of(held: &mut Render, id: NodeId, cache: Option<&Lens>) -> Result<(), 
         .ok_or_else(|| not_frames(held, id))?;
     let key = match cache {
         Some(_) => Some(frames_key(
-            crate::cache::buffer_key(
-                held.identity(source)?,
-                buffer.rate,
-                buffer.extent(),
-                buffer.width,
-                AliasScore::NotAsked,
-            ),
+            held.keyed(
+                source,
+                crate::cache::buffer_key(
+                    held.identity(source)?,
+                    buffer.rate,
+                    buffer.extent(),
+                    buffer.width,
+                    AliasScore::NotAsked,
+                ),
+            )?,
             window,
             hop,
         )),

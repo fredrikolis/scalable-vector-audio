@@ -26,7 +26,7 @@ pub fn key(held: &Render, id: NodeId) -> Result<(sva_formula::Hash, usize), Engi
         held.tys.ty(id).width as usize,
         sva_samples::AliasScore::NotAsked,
     );
-    Ok((key, extent.len()))
+    Ok((held.keyed(id, key)?, extent.len()))
 }
 
 pub fn run(
@@ -62,13 +62,11 @@ fn stepped(held: &Render, id: NodeId) -> Result<(Buffer, Label), EngineError> {
     ))
 }
 
-/// One node's program, the slots it reads through, the node behind each slot and behind each
-/// call site.
+/// One node's program, the slots it reads through and the node behind each slot.
 pub(super) struct Program {
     pub renderer: NodeRenderer,
     pub reads: Vec<NodeId>,
     pub layout: Layout,
-    pub site_nodes: Vec<NodeId>,
 }
 
 /// A read of samples off the grid, or a delay that moves with `t`, is known from the types
@@ -103,14 +101,13 @@ pub(super) fn program_reading(
 ) -> Result<Program, EngineError> {
     let mut build = Build {
         held,
-        supports: Supports::new(&held.tys, held.config.rate),
+        supports: Supports::cut(&held.tys, held.config.rate, held.extents.cuts.clone()),
         owner: id,
         reads: Vec::new(),
         sites: Vec::new(),
-        site_nodes: Vec::new(),
     };
     let renderer = build.of(id)?;
-    let (reads, sites, site_nodes) = (build.reads, build.sites, build.site_nodes);
+    let (reads, sites) = (build.reads, build.sites);
     let layout = Layout {
         width: held.tys.ty(id).width as usize,
         read_widths: reads.iter().map(|r| width_of(*r)).collect(),
@@ -120,7 +117,6 @@ pub(super) fn program_reading(
         renderer,
         reads,
         layout,
-        site_nodes,
     })
 }
 
@@ -206,7 +202,6 @@ struct Build<'a> {
     owner: NodeId,
     reads: Vec<NodeId>,
     sites: Vec<Site>,
-    site_nodes: Vec<NodeId>,
 }
 
 impl Build<'_> {
@@ -242,7 +237,7 @@ impl Build<'_> {
                 None => Err(varying(&self.held.tys, id)),
             },
             Value::Solver(params) => {
-                let site = self.site(Site::Physics(params), id);
+                let site = self.site(Site::Physics(params));
                 let from = self.state_start(id);
                 Ok(NodeRenderer::Physics { site, from })
             }
@@ -253,7 +248,7 @@ impl Build<'_> {
                 q,
                 gain,
             } => {
-                let site = self.site(Site::Filter(shape), id);
+                let site = self.site(Site::Filter(shape));
                 Ok(NodeRenderer::Filter {
                     site,
                     from: self.state_start(id),
@@ -293,9 +288,8 @@ impl Build<'_> {
             .unwrap_or(i64::MIN)
     }
 
-    fn site(&mut self, site: Site, id: NodeId) -> SiteId {
+    fn site(&mut self, site: Site) -> SiteId {
         self.sites.push(site);
-        self.site_nodes.push(id);
         SiteId((self.sites.len() - 1) as u32)
     }
 

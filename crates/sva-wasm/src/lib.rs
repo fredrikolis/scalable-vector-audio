@@ -55,6 +55,7 @@ fn refuse(message: String, help: &str) -> JsValue {
 struct Options {
     rate: Option<u32>,
     bits: Option<i32>,
+    decay_floor: Option<f64>,
     flop_budget: Option<u128>,
     until: Option<String>,
     volatile: Vec<String>,
@@ -86,6 +87,14 @@ fn options_of(options: &JsValue, keys: &[&str]) -> Result<Options, JsValue> {
         match key.as_str() {
             "rate" => held.rate = Some(whole(&key, &value)?),
             "bits" => held.bits = Some(whole(&key, &value)?),
+            "decay_floor" => {
+                held.decay_floor = Some(value.as_f64().ok_or_else(|| {
+                    refuse(
+                        "`decay_floor` is not a number".into(),
+                        "pass a level in dB, as -96",
+                    )
+                })?);
+            }
             "flop_budget" => held.flop_budget = Some(whole(&key, &value)?),
             "until" => held.until = Some(text(&key, &value)?),
             "cache" => held.cache = Some(cache_policy(&text(&key, &value)?)?),
@@ -216,8 +225,8 @@ impl Composition {
 
     /// `target` as `sva-cli render` takes it, `@piano([0, 2b], f0=C4)`; `representations`
     /// what `representations()` answers, `samples` where unset, each a call as
-    /// `--representation` writes it. `options` sets `rate`, `bits`, `flop_budget`, `until`,
-    /// `volatile` and `cache`.
+    /// `--representation` writes it. `options` sets `rate`, `bits`, `decay_floor` (dB),
+    /// `flop_budget`, `until`, `volatile` and `cache`.
     pub fn render(
         &self,
         target: &str,
@@ -226,7 +235,15 @@ impl Composition {
     ) -> Result<Rendering, JsValue> {
         let options = options_of(
             &options,
-            &["rate", "bits", "flop_budget", "until", "volatile", "cache"],
+            &[
+                "rate",
+                "bits",
+                "decay_floor",
+                "flop_budget",
+                "until",
+                "volatile",
+                "cache",
+            ],
         )?;
         let names = representations.unwrap_or_else(|| vec!["samples".to_string()]);
         let asked = representations_of(&names)?;
@@ -234,6 +251,7 @@ impl Composition {
             until: options.until.as_deref(),
             rate: options.rate,
             bits: options.bits,
+            decay_floor_db: options.decay_floor,
             cache: Some(&self.store),
             cache_policy: options.cache,
             asked: &asked,
@@ -246,27 +264,24 @@ impl Composition {
             .map_err(|e| thrown(&e))
     }
 
-    /// `target` block by block over the extents a render takes; each key of `bindings` is a
-    /// named argument on its own ref, the ones a resume may move.
-    pub fn stream(
-        &self,
-        target: &str,
-        block: usize,
-        until: Option<String>,
-        rate: Option<u32>,
-        bindings: JsValue,
-    ) -> Result<Stream, JsValue> {
-        let bindings = bindings_of(&bindings)?;
+    /// `target` block by block over the extents and cuts a render takes; each named argument
+    /// its own ref writes as a number is one `resume` may move. `options` sets `rate`, `bits`,
+    /// `decay_floor` (dB), `flop_budget` and `until`.
+    pub fn stream(&self, target: &str, block: usize, options: JsValue) -> Result<Stream, JsValue> {
+        let options = options_of(
+            &options,
+            &["rate", "bits", "decay_floor", "flop_budget", "until"],
+        )?;
         let job = Job {
-            until: until.as_deref(),
-            rate,
+            until: options.until.as_deref(),
+            rate: options.rate,
+            bits: options.bits,
+            decay_floor_db: options.decay_floor,
+            flop_budget: options.flop_budget,
             ..Job::over(&self.inner, target)
         };
-        sva_core::stream(&job, block, &bindings)
-            .map(|inner| Stream {
-                inner,
-                rate: rate.unwrap_or(sva_engine::DEFAULT_SAMPLE_RATE),
-            })
+        sva_core::stream(&job, block)
+            .map(|inner| Stream { inner })
             .map_err(|e| thrown(&e))
     }
 
@@ -433,10 +448,11 @@ impl Rendering {
             .render
             .range
             .map(|r| (r.start_secs(rate), r.end as f64 / f64::from(rate)));
+        let cuts = sva_core::written_cuts(&self.inner.render.cuts, &self.inner.expression);
         parse(&query_data(&Report {
             target: &self.inner.expression,
             rate,
-            bits: Some(self.inner.config.profile.precision_bits),
+            cuts: Some(&cuts),
             interval,
             profile: self.inner.config.profile.name,
             label: self.inner.label(),
@@ -456,7 +472,6 @@ impl Rendering {
 #[wasm_bindgen]
 pub struct Stream {
     inner: sva_core::Stream,
-    rate: u32,
 }
 
 #[wasm_bindgen]
@@ -497,25 +512,12 @@ impl Stream {
         parse(&work_json(&self.inner.work()))
     }
 
-    /// `until` as `stream` takes it; unset, the stream ends where its interval or its
-    /// target's support does.
-    pub fn resume(
-        &self,
-        checkpoint: &Checkpoint,
-        bindings: JsValue,
-        until: Option<String>,
-    ) -> Result<Stream, JsValue> {
+    /// Each of `bindings` in force from `checkpoint` on, over the value it replaces.
+    pub fn resume(&self, checkpoint: &Checkpoint, bindings: JsValue) -> Result<Stream, JsValue> {
         let bindings = bindings_of(&bindings)?;
-        let condition = until
-            .map(|text| sva_core::until(&text, self.rate, None))
-            .transpose()
-            .map_err(|e| thrown(&e))?;
         self.inner
-            .resume(&checkpoint.inner, &bindings, condition)
-            .map(|inner| Stream {
-                inner,
-                rate: self.rate,
-            })
+            .resume(&checkpoint.inner, &bindings)
+            .map(|inner| Stream { inner })
             .map_err(|e| thrown(&CliError::Engine(e)))
     }
 
@@ -526,7 +528,7 @@ impl Stream {
 
     #[wasm_bindgen(getter)]
     pub fn sample_rate(&self) -> u32 {
-        self.rate
+        self.inner.config().render.rate
     }
 
     #[wasm_bindgen(getter)]

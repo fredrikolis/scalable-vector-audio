@@ -274,7 +274,7 @@ pub static REGISTRY: [(&str, &str); 78] = [
     ),
     (
         "collapse.no_block_row",
-        "a closed form in f read span by span, which one transform over an extent places",
+        "a closed form in f read block by block, which one transform over an extent places",
     ),
     (
         "collapse.over_budget",
@@ -463,23 +463,23 @@ pub static REGISTRY: [(&str, &str); 78] = [
         "a checkpoint resumed on a stream or node other than the one it was taken of",
     ),
     (
-        "engine.never_silent",
-        "a proof under a level of a node that holds one at or over it forever",
-    ),
-    (
-        "engine.not_silent_by",
-        "a proof whose bound is not under its level by the proof limit",
-    ),
-    (
-        "engine.no_tail_bound",
-        "a proof through a node class no tail bound is derived for",
-    ),
-    (
         "engine.unbounded_extent",
         "a node read whole whose input never ends",
     ),
     (
-        "render.no_stop",
-        "an interval with no end and a condition no proof brings about",
+        "render.no_end",
+        "an interval with no end whose root's bound stays over the decay floor as far as the budget looks",
+    ),
+    (
+        "render.never_ends",
+        "an interval with no end over a root that returns to a level at or over the decay floor forever",
+    ),
+    (
+        "render.no_bound",
+        "an interval with no end over a root no bound is derived for",
+    ),
+    (
+        "render.floor_below_resolution",
+        "a decay floor under the resolution the render's bits write",
     ),
 ];

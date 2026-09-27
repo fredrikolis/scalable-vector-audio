@@ -4,7 +4,7 @@ mod fixtures;
 
 use fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{Range, RenderConfig, Stream, StreamConfig, Until, Work, render};
+use sva_engine::{Range, RenderConfig, Stream, StreamConfig, Work, render};
 
 const RATE: u32 = 44_100;
 
@@ -27,23 +27,20 @@ fn composition() -> Graph {
     )
 }
 
-/// Unended by `until`, an hour of range, which no test reaches the end of.
-fn streamed(g: &Graph, target: &str, block: usize, samples: usize, until: Option<Until>) -> Work {
-    let range = match until {
-        Some(_) => Range::default(),
-        None => Range {
-            start: Some(0),
-            end: Some(3_600 * i64::from(RATE)),
+/// Four seconds of range, which no test reaches the end of.
+fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Work {
+    let config = StreamConfig {
+        block,
+        render: RenderConfig {
+            range: Range {
+                start: Some(0),
+                end: Some(4 * i64::from(RATE)),
+            },
+            ..RenderConfig::at(RATE)
         },
     };
-    let config = StreamConfig {
-        rate: RATE,
-        block,
-        range,
-        until,
-    };
     let target = sva_ast::parse_expr(&format!("@{target}")).expect("a ref");
-    let mut stream = Stream::open(g, &target, &[], config).expect("a stream");
+    let mut stream = Stream::open(g, &target, config).expect("a stream");
     while stream.position() < samples as i64 {
         if stream.next_block().expect("a block").is_none() {
             break;
@@ -59,10 +56,9 @@ const C2_LINES: u128 = 2 * (304 + 307);
 fn a_stream_counts_its_samples_and_the_lines_its_runs_turn_whatever_its_blocks() {
     let g = composition();
     let samples = 441 * 64;
-    let one = streamed(&g, "low", 441, samples, None);
-    assert_eq!(one, streamed(&g, "low", 64, samples, None));
+    let one = streamed(&g, "low", 441, samples);
+    assert_eq!(one, streamed(&g, "low", 64, samples));
     assert_eq!(one.samples, samples as u64);
-    assert_eq!(one.proofs, 0);
     assert_eq!(one.waves, Some(C2_LINES * samples as u128));
 }
 
@@ -71,13 +67,13 @@ fn a_stream_counts_its_samples_and_the_lines_its_runs_turn_whatever_its_blocks()
 #[test]
 fn a_swept_or_added_row_counts_only_what_it_sums() {
     let g = composition();
-    let clipped = streamed(&g, "clipped", 441, 8_820, None);
+    let clipped = streamed(&g, "clipped", 441, 8_820);
     let atoms = 2 * (20_000 / 220);
     assert_eq!(clipped.waves, Some(atoms * 4_410));
-    assert_eq!(clipped, streamed(&g, "clipped", 1_260, 8_820, None));
-    let added = streamed(&g, "added", 441, 8_820, None);
+    assert_eq!(clipped, streamed(&g, "clipped", 1_260, 8_820));
+    let added = streamed(&g, "added", 441, 8_820);
     assert_eq!(added.waves, Some(2 * 8_820));
-    assert_eq!(added, streamed(&g, "added", 63, 8_820, None));
+    assert_eq!(added, streamed(&g, "added", 63, 8_820));
 }
 
 #[test]
@@ -91,22 +87,16 @@ fn a_stream_prices_each_sample_as_a_whole_render_prices_it() {
     assert_eq!(work.samples, samples as u64);
     assert!(work.priced_flops > 0);
     assert_eq!(
-        streamed(&g, "low", 441, samples, None).priced_flops,
+        streamed(&g, "low", 441, samples).priced_flops,
         work.priced_flops
     );
 }
 
+/// The cut's bounds are found before any sample, in passes a render counts.
 #[test]
-fn a_proof_is_counted_at_each_block_end_and_over_a_whole_grid_once() {
+fn a_cut_is_decided_in_counted_passes_before_the_render() {
     let g = composition();
-    let quiet = Until::quiet(2f64.powi(-24));
-    let work = streamed(&g, "high", 4_410, usize::MAX >> 1, Some(quiet.clone()));
-    assert_eq!(work.proofs, work.samples.div_ceil(4_410));
-    let config = RenderConfig {
-        until: Some(quiet),
-        ..RenderConfig::at(RATE)
-    };
-    let whole = render(&g, "high", config, None).expect("a quiet render");
+    let whole = render(&g, "high", RenderConfig::at(RATE), None).expect("a cut render");
     assert!(whole.work().proofs >= 1);
     assert_eq!(whole.work().waves, None);
 }

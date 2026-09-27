@@ -1,7 +1,7 @@
 // Concern: parses a stop condition into the engine's Until | Non-concern: where it holds (sva-engine), the expression grammar | IO: (text, rate, tempo) -> Until or CliError
 
 use sva_ast::{LogUnit, SpanUnit, Token, TokenKind, tokenize};
-use sva_engine::{At, Cmp, Term, Until};
+use sva_engine::{Cmp, Term, Until};
 
 use crate::cli_error::CliError;
 
@@ -127,61 +127,14 @@ impl Reading<'_> {
         if self.word("envelope") {
             self.at += 1;
             self.take(&TokenKind::LParen)?;
-            let at = self.instant()?;
-            self.take(&TokenKind::RParen)?;
-            return Ok(Term::Envelope(at));
-        }
-        for (name, make) in [("max", Term::Max as fn(At, At) -> Term), ("min", Term::Min)] {
-            if self.word(name) {
-                self.at += 1;
-                self.take(&TokenKind::LParen)?;
-                if !self.word("envelope") {
-                    return Err(self.wrong("`envelope`"));
-                }
-                self.at += 1;
-                self.take(&TokenKind::LParen)?;
-                let (from, to) = self.interval()?;
-                self.take(&TokenKind::RParen)?;
-                self.take(&TokenKind::RParen)?;
-                return Ok(make(from, to));
+            if !self.word("t") {
+                return Err(self.wrong("`t`"));
             }
+            self.at += 1;
+            self.take(&TokenKind::RParen)?;
+            return Ok(Term::Envelope);
         }
         self.number().map(Term::Number)
-    }
-
-    fn interval(&mut self) -> Result<(At, At), CliError> {
-        self.take(&TokenKind::LBracket)?;
-        let from = self.instant()?;
-        self.take(&TokenKind::Comma)?;
-        let to = match self.word("inf") {
-            true => {
-                self.at += 1;
-                At::Inf
-            }
-            false => self.instant()?,
-        };
-        match self.peek() {
-            Some(TokenKind::RBracket | TokenKind::RParen) => {
-                self.at += 1;
-                Ok((from, to))
-            }
-            _ => Err(self.wrong("`]` or `)`")),
-        }
-    }
-
-    /// `t`, `t` plus or minus a time, or a time.
-    fn instant(&mut self) -> Result<At, CliError> {
-        if !self.word("t") {
-            return self.number().map(At::Secs);
-        }
-        self.at += 1;
-        let sign = match self.peek() {
-            Some(TokenKind::Plus) => 1.0,
-            Some(TokenKind::Minus) => -1.0,
-            _ => return Ok(At::Now(0.0)),
-        };
-        self.at += 1;
-        Ok(At::Now(sign * self.number()?))
     }
 
     /// A time in seconds or a level in `db`, a minus before it allowed; `0` needs no unit.
@@ -223,23 +176,20 @@ impl Reading<'_> {
 }
 
 fn level(term: &Term) -> bool {
-    matches!(term, Term::Envelope(_) | Term::Max(..) | Term::Min(..))
+    matches!(term, Term::Envelope)
 }
 
 fn spelled(kind: &TokenKind) -> &'static str {
     match kind {
         TokenKind::LParen => "(",
         TokenKind::RParen => ")",
-        TokenKind::LBracket => "[",
-        TokenKind::Comma => ",",
         _ => "?",
     }
 }
 
 fn refused(text: &str, why: &str) -> CliError {
     CliError::Usage(format!(
-        "`{text}` is no condition: {why}. write comparisons over `t`, `envelope(t)` and \
-         `max`/`min(envelope([a, b]))`, joined by `and`/`or`, as \
-         `max(envelope([t, inf))) < -96db`"
+        "`{text}` is no condition: {why}. write comparisons over `t` and `envelope(t)`, \
+         joined by `and`/`or`, as `envelope(t) < -60db and t > 1s`"
     ))
 }

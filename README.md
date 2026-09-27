@@ -94,9 +94,10 @@ the three files above in a directory and run it there.
 sva-cli lint
 ```
 
-`lint` checks binding, ref and tempo resolution without rendering a sample, and every
-finding carries a severity. Advice and warnings exit 0. Five checks exit non-zero, all of
-them about a node's doc comment or its length.
+`lint` checks every file on its own without rendering a sample, and every finding carries a
+severity. Warnings exit 0. Six checks exit non-zero: five about a node's doc comment or its
+length, and one about a rate written as a number. `sva-cli lint '@master'` also decides what
+a render of `master` would, its interval and every node it would cut, and prints them.
 
 ```
 sva-cli trace master
@@ -121,8 +122,10 @@ sva-cli render '@master' --representation samples=/tmp/song.wav --rate 48000
 `flops` counts the render before running it, 1,243,620 operations here against the profile's
 1e10 budget; a render over that budget refuses, naming the node that dominates. The second
 line writes 48 kHz float over the two seconds `master`'s crop holds. `'@master([0, 1s])'`
-names an interval, and `--until 'max(envelope([t, inf))) < -96db'` ends the render where
-the triad is proven quiet, half a second in.
+names an interval. Before any sample, each node whose bound falls under the decay floor is
+cut there, so every cut together moves the output by less than the 24-bit resolution;
+`data.cuts` lists them. `--until 'envelope(t) < -60db'` stops the render at the first frame
+under -60 dB.
 `ledger` prints rms, peak and clipped per node.
 
 Every reading says whether it is `exact` or `measured`, under which profile and at which

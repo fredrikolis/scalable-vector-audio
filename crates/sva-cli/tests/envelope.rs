@@ -17,7 +17,7 @@ fn every_response_carries_the_diagnostics_collection_found_or_not() {
         sva_cli::version_data(NAME, VERSION),
         help_data(&help_text()),
         builtins_data(&builtins()),
-        lint_data("/tmp/song1", None, 3),
+        lint_data("/tmp/song1", None, 3, None),
     ] {
         let envelope = success_envelope(&data, &[]);
         assert!(
@@ -28,7 +28,7 @@ fn every_response_carries_the_diagnostics_collection_found_or_not() {
     }
 
     let found = success_envelope(
-        &lint_data("/tmp/song1", None, 3),
+        &lint_data("/tmp/song1", None, 3, None),
         &[
             Diagnostic::new("lint.grid_rows_per_bar", "33 rows over 4 bars")
                 .with_severity(Severity::Warning),

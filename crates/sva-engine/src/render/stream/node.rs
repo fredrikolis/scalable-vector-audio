@@ -19,8 +19,6 @@ pub(super) enum Kind {
         machine: Machine,
         /// Each slot's node, as an index into the stream's nodes.
         reads: Vec<usize>,
-        /// Each call site's node.
-        sites: Vec<NodeId>,
     },
 }
 
@@ -150,11 +148,7 @@ fn machine(
         .map_err(|e| sampled::refused(shell, id, &e))?;
     Ok(Built {
         width: machine.width(),
-        kind: Kind::Machine {
-            machine,
-            reads,
-            sites: program.site_nodes,
-        },
+        kind: Kind::Machine { machine, reads },
         reach,
         own,
     })

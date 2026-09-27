@@ -3,7 +3,7 @@
 mod helpers;
 
 use helpers::scratch;
-use sva_cli::lint;
+use sva_cli::{Decision, lint};
 use sva_core::LintCode;
 
 fn doc(models: &str) -> String {
@@ -44,7 +44,7 @@ fn a_lint_finding_names_its_line() {
     )
     .expect("a node file");
 
-    let Err(refused) = lint(&dir, None) else {
+    let Err(refused) = lint(&dir, None, &Decision::default()) else {
         panic!("a comment block over the threshold refuses")
     };
     let found = refused.diagnostics();
@@ -71,7 +71,7 @@ fn a_literal_sample_rate_refuses() {
             ("clean", "self(t - 1sp) + sample(sin(2*pi*220*t))*1sp\n"),
         ],
     );
-    let Err(sva_core::CliError::LintRefused(found)) = lint(&dir, None) else {
+    let Err(sva_core::CliError::LintRefused(found)) = lint(&dir, None, &Decision::default()) else {
         panic!("a literal rate refuses")
     };
     let refused: Vec<&str> = found
@@ -99,7 +99,8 @@ fn lint_of_one_node_sees_the_tempo() {
         .expect("a variable");
     }
 
-    let report = lint(&dir, Some("kick")).expect("one node lints under its own composition");
+    let report = lint(&dir, Some("@kick"), &Decision::default())
+        .expect("one node lints under its own composition");
     assert_eq!(codes(&report), "", "nothing to report: {}", codes(&report));
 }
 
@@ -114,8 +115,12 @@ fn lint_of_a_node_with_a_default_resolves() {
         ],
     );
 
-    assert_eq!(codes(&lint(&dir, Some("plain")).expect("a plain node")), "");
-    let report = lint(&dir, Some("voice")).expect("a node that declares a default");
+    assert_eq!(
+        codes(&lint(&dir, Some("@plain([0, 1s])"), &Decision::default()).expect("a plain node")),
+        ""
+    );
+    let report = lint(&dir, Some("@voice([0, 1s])"), &Decision::default())
+        .expect("a node that declares a default");
     assert_eq!(codes(&report), "", "{}", codes(&report));
     assert!(report.nodes > 0, "one node was checked, so one is reported");
 }
@@ -135,7 +140,7 @@ fn a_one_row_grid_gets_the_same_warning_as_a_two_row_one() {
             format!("{}@pattern-8b\n", doc("a signal")),
         )
         .expect("a root");
-        lint(&dir, None)
+        lint(&dir, None, &Decision::default())
             .unwrap_or_else(|e| panic!("{name}: {}", e.message()))
             .findings
             .iter()
@@ -155,7 +160,7 @@ fn a_one_row_grid_gets_the_same_warning_as_a_two_row_one() {
 #[test]
 fn lint_of_an_undefined_target_refuses_like_render() {
     let dir = composition("undefined-target", &[("master", "sin(2*pi*300*t)\n")]);
-    let Err(linted) = lint(&dir, Some("drums/kik")) else {
+    let Err(linted) = lint(&dir, Some("@drums/kik"), &Decision::default()) else {
         panic!("a target nothing defines refuses");
     };
     let Err(rendered) = sva_core::probe(&dir, "@drums/kik") else {

@@ -1,8 +1,6 @@
 // Concern: the `--help` page, each flag's default printed from its own constant | Non-concern: parsing those flags (args/), the JSON a subcommand answers (output.rs) | IO: () -> the page
 
-use sva_core::{
-    DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, DEFAULT_PROOF_LIMIT_SECS,
-};
+use sva_core::{DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE};
 use sva_engine::{DEFAULT_FRAME_SECS, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1};
 
 /// Read off the constants the parser itself defaults to, so a printed default cannot drift
@@ -10,6 +8,7 @@ use sva_engine::{DEFAULT_FRAME_SECS, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1};
 pub fn help_text() -> String {
     let budget = PSYCHOACOUSTIC_V1.flop_budget;
     let bits = PSYCHOACOUSTIC_V1.precision_bits;
+    let resolution = 20.0 * PSYCHOACOUSTIC_V1.half_lsb().log10();
     format!(
         r#"USAGE:
   sva-cli (render | analyze | lint | trace | builtins | outline | new) [arguments]
@@ -22,7 +21,8 @@ DESCRIPTION:
 
 RENDER:
   sva-cli render '<expression>' --representation <list> [--until '<condition>']
-                 [--bits <n>] [--rate <hz>] [--flop-budget <n>] [--confirm]
+                 [--bits <n>] [--decay-floor <db>] [--rate <hz>]
+                 [--flop-budget <n>] [--confirm]
 
   Renders one expression, in the grammar a node file's body uses, and prints one
   reading per representation under `data.representations`. `@path` reads a node
@@ -36,27 +36,32 @@ RENDER:
   arguments are the node's own named ones. The start trims the output alone:
   history before it is still computed, so a loop or a filter carries the state
   it had there. With no interval the render starts at 0, earlier only where a
-  crop reaches before it, and its end is open. A closed interval renders exactly
-  its length; an open one ends where the target's support does (a crop's end, a
-  release and its cropped tail), and refuses as `render.no_stop` where that
-  support never ends and no `--until` is written. Inside an expression a window
-  is a `crop`.
+  crop reaches before it, and its end is open. Inside an expression a window is
+  a `crop`.
 
-  `--until '<condition>'` ends the render at the first sample the condition
-  holds at, or at the interval's end, whichever is first. There is no default
-  condition, and no proof runs unless one is written. A condition compares
-  (`<`, `<=`, `>`, `>=`) `t`, `envelope(t)` (the RMS of the `envelope`
-  representation's 50 ms frames), `max`/`min(envelope([a, b]))` and literals,
-  joined by `and`/`or`. A range reaching `inf` is answered by the tail proof, a
-  bound on every later sample, which looks {DEFAULT_PROOF_LIMIT_SECS} seconds ahead. An
-  open interval over an endless support that nothing proves an end for refuses,
-  naming the condition: a node holding a level forever as
-  `engine.never_silent`, one no bound is derived for yet (a physical solver
-  other than chaigne_askenfelt, a filter whose coefficients move) as
-  `engine.no_tail_bound`, one not quiet by then as `engine.not_silent_by`, and a
-  condition no proof brings about as `render.no_stop`. A short-time transform
-  reads its input whole, and refuses one with no end as
-  `engine.unbounded_extent`.
+  Every node computed is cut before any sample is: where its bound times its
+  gain to the output stays under the decay floor's share, it computes nothing
+  more, and every cut together moves the output by the floor at most. A node
+  no bound or no gain is derived for is not cut. A closed interval renders
+  exactly its length, a cut region as exact zeros; an open one ends where the
+  root is cut or its support ends (a crop's end, or a release and the crop
+  after it). An open interval over a root never cut refuses: one no bound is
+  derived for (a physical solver other than chaigne_askenfelt, a filter whose
+  coefficients move) as `render.no_bound`, one that returns to a level over the
+  floor forever as `render.never_ends`, and one still over it where the budget
+  ends the search as `render.no_end`. A short-time transform reads its input
+  whole, and refuses one with no end as `engine.unbounded_extent`.
+  `data.cuts` lists each node cut and the second its extent ends at;
+  `data.uncut` each node left uncut, and whether its `bound` or its `gain` is
+  missing.
+
+  `--until '<condition>'` stops the render at the first sample the condition
+  holds at, or at the interval's end, whichever is first. It renders the first
+  second, then twice as far each time, until the condition holds, and never
+  past the interval. A condition compares (`<`, `<=`, `>`, `>=`) `t`,
+  `envelope(t)` (the RMS of the `envelope` representation's frame holding `t`,
+  framed by its own `frame` where one is asked) and literals, joined by
+  `and`/`or`.
 
   `--representation <list>` takes a comma list of readings and may repeat. Each
   is a call in the language's own syntax, its options its named arguments:
@@ -70,9 +75,11 @@ RENDER:
 
   `--bits <n>` is the precision every sample is written to, from 2 to 52: the
   point where a series is truncated, and the encoding of a `.wav`, integer PCM
-  at n bits up to 16 and 32-bit float above. `--rate <hz>` is the sample rate;
-  no expression can read it. `--flop-budget <n>` is the operation count paid
-  before a render refuses.
+  at n bits up to 16 and 32-bit float above. `--decay-floor <db>` is the level
+  decaying nodes are cut under, never below the resolution `--bits` writes;
+  above it is a declared loss, decays cut early at full precision. `--rate <hz>`
+  is the sample rate; no expression can read it. `--flop-budget <n>` is the
+  operation count paid before a render refuses, the cut's own search included.
 
   `ledger` prints one row per node under the target. A row's `share` is the
   part of its reader's own energy that row accounts for, so one reader's refs
@@ -100,11 +107,14 @@ ANALYZE:
   masking reads against.
 
 LINT:
-  sva-cli lint [<node|expression>] [--format <json|text>]
+  sva-cli lint ['<expression>' [--bits <n>] [--decay-floor <db>] [--rate <hz>]
+               [--flop-budget <n>]] [--format <json|text>]
 
   Checks the current directory without rendering a sample. With no target it
-  checks every file under its own rules. With a target it checks the files that
-  target reaches, and the types a render of it decides.
+  checks every file under its own rules. With a target, in render's grammar,
+  it checks the files that target reaches, and decides the range, the cuts and
+  what is left uncut as a render of it would, by the same function, reporting
+  them as a render does.
 
   Every check prints one `data.diagnostics` item. `warning` exits 0, `error`
   exits non-zero, so branch on the verdict and never on whether the array is
@@ -165,19 +175,22 @@ EXAMPLES:
   sva-cli new song1 && cd song1
   sva-cli render '@master' --representation samples=/tmp/song1.wav
   sva-cli render '@master([0, 8b])' --representation 'ledger(depth=2),loudness'
-  sva-cli render '@voice/note([1s, inf), f0=C4, release=0.5s)' \
-    --until 'max(envelope([t, inf))) < -96db' --representation samples=/tmp/note.wav
+  sva-cli render '@voice/note([1s, inf), f0=C4, release=0.5s)' --decay-floor -96 \
+    --until 'envelope(t) < -60db and t > 2s' --representation samples=/tmp/note.wav
   sva-cli render '@chord/home' --representation 'spectrum(peaks=8)' --rate 48000
   sva-cli lint
+  sva-cli lint '@master' --bits 16
   sva-cli trace grid/phrase-2b
   sva-cli builtins
 
 OUTPUT:
   {{"status": "success", "data": {{"target": "@master([0, 8b])", "sample_rate":
-  44100, "bits": 24, "profile": "psychoacoustic-v1", "interval": {{"start_secs":
-  0, "end_secs": 16}}, "label": {{...}}, "written": {{"items": [...]}},
-  "representations": {{"ledger": {{...}}}}, "diagnostics": {{"items": []}}}},
-  "meta": {{"request_id": "req_...", "timestamp": 1700000000}}}}
+  44100, "bits": 24, "decay_floor_db": -144.5, "cuts": {{"items": [{{"node",
+  "at_secs"}}]}}, "uncut": {{"items": [{{"node", "missing", "why"}}]}},
+  "profile": "psychoacoustic-v1", "interval": {{"start_secs": 0, "end_secs":
+  16}}, "label": {{...}}, "written": {{"items": [...]}}, "representations":
+  {{"ledger": {{...}}}}, "diagnostics": {{"items": []}}}}, "meta": {{"request_id":
+  "req_...", "timestamp": 1700000000}}}}
 
   `interval` is null where no reading read samples. An error adds "error":
   {{"code", "message", "details": {{"count", "codes"}}}}. Success or error,
@@ -197,6 +210,8 @@ DEFAULTS:
                        Default {DEFAULT_SAMPLE_RATE}.
   --bits <n>           the precision every sample is written to. Default {bits},
                        the `psychoacoustic-v1` profile's own.
+  --decay-floor <db>   the level decaying nodes are cut under. Default the
+                       resolution `--bits` writes, {resolution:.1} dB at {bits}.
   --flop-budget <n>    the operation count paid before a render refuses.
                        Default {budget}, the `psychoacoustic-v1` profile's own.
   ledger(depth=<n>)    how deep below its target a `ledger` walks.
