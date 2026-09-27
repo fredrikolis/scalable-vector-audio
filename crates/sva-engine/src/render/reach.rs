@@ -36,7 +36,7 @@ pub(super) fn ranged(
         if !envelope {
             return Ok(false);
         }
-        return match decided(held, audio, costed, Ends::Refused) {
+        return match decided(held, audio, costed) {
             Ok(()) => Ok(true),
             Err(refused) => {
                 held.unranged = Some(refused);
@@ -44,25 +44,10 @@ pub(super) fn ranged(
             }
         };
     }
-    decided(held, audio, costed, Ends::Refused).map(|()| true)
+    decided(held, audio, costed).map(|()| true)
 }
 
-/// A root never cut streams for as long as it is pulled.
-pub(super) fn streamed(held: &mut Render, audio: &[NodeId]) -> Result<(), EngineError> {
-    decided(held, audio, audio, Ends::Pulled)
-}
-
-enum Ends {
-    Refused,
-    Pulled,
-}
-
-fn decided(
-    held: &mut Render,
-    audio: &[NodeId],
-    costed: &[NodeId],
-    ends: Ends,
-) -> Result<(), EngineError> {
+fn decided(held: &mut Render, audio: &[NodeId], costed: &[NodeId]) -> Result<(), EngineError> {
     let (rate, root) = (held.config.rate, held.root);
     let support = Supports::new(&held.tys, rate).of(root);
     let start = held
@@ -74,15 +59,13 @@ fn decided(
     let cut_support = Supports::cut(&held.tys, rate, decision.at.clone()).of(root);
     let end = match held.config.range.end.or(extent::default_end(cut_support)) {
         Some(end) => end,
-        None => match ends {
-            Ends::Pulled => i64::MAX,
-            Ends::Refused => return Err(decision.endless.unwrap_or_else(|| endless(held))),
-        },
+        None => return Err(decision.endless.unwrap_or_else(|| endless(held))),
     };
     held.proofs = decision.passes;
     held.proof_ops = decision.ops;
     held.cuts = decision.report;
     held.extents.cuts = decision.at;
+    held.played = decision.played;
     extend(held, costed, Extent::new(start, end.max(start)))
 }
 

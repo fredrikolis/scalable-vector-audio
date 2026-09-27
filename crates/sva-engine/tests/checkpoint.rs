@@ -143,6 +143,25 @@ fn a_checkpoint_resumed_with_the_same_bindings_is_the_stream_it_was_taken_of() {
     assert_eq!(resumed, on);
 }
 
+/// A stream decides each grid instant's cuts, 256 samples apart, as it reaches it: opened, or
+/// resumed at key-up, it has decided none past where it stands, and a block only those it
+/// reached. No bound is looked ahead of the stream for.
+#[test]
+fn a_stream_decides_each_cut_only_as_it_reaches_it() {
+    let decided = |at: i64| (at / 256 + 1) as u64;
+    let g = composition(1.0);
+    let mut held = opened_to(&g, "note", None);
+    assert_eq!(held.work().proofs, decided(0));
+    blocks(&mut held, 40);
+    let at = held.position();
+    assert_eq!(held.work().proofs, decided(at));
+    let release = at as f64 / f64::from(RATE);
+    let released = held
+        .resume(&held.checkpoint(), &[("release".into(), release)])
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(released.work().proofs, decided(at));
+}
+
 /// A crop's end at `release` is the other causal use: the envelope closes at key-up.
 #[test]
 fn a_closed_form_released_at_a_checkpoint_closes_there() {

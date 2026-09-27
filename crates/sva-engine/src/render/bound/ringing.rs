@@ -8,6 +8,8 @@ const MAX_PERIOD: usize = 1 << 20;
 
 const MAX_STEPPED: usize = 1 << 20;
 
+const MAX_REACH: usize = 1 << 14;
+
 /// `|h(n)| <= scale * ratio^((n - 2) / period)` for `n >= 2`; `sum` bounds `sum |h(n)|`,
 /// `windows[g]` any `STEP` consecutive `|h(n)|` from lag `g * STEP + 1` on.
 pub(crate) struct Ringing {
@@ -116,6 +118,27 @@ impl Ringing {
             Some(held) => held.min(loose),
             None => loose,
         }
+    }
+
+    /// The first lag block from which all later ones sum under `negligible`, and that sum:
+    /// past the stepped blocks, `period / STEP + 1` blocks to each power of `ratio`.
+    pub(crate) fn reach(&self, negligible: f64) -> (usize, f64) {
+        let stepped = self.windows.len();
+        let mut suffix = vec![0.0f64; stepped + 1];
+        for i in (0..stepped).rev() {
+            suffix[i] = suffix[i + 1] + self.window(i);
+        }
+        let beyond = |g: usize| {
+            let from = g.max(stepped).max(1);
+            let power = (from * STEP - 1) / self.period;
+            let ratio = self.ratio.powi(i32::try_from(power).unwrap_or(i32::MAX));
+            let run = self.scale * (self.period + STEP) as f64 * ratio / (1.0 - self.ratio);
+            (suffix[g.min(stepped)] + run) * (1.0 + 1e-9)
+        };
+        let g = (0..MAX_REACH)
+            .find(|g| beyond(*g) <= negligible)
+            .unwrap_or(MAX_REACH);
+        (g, beyond(g))
     }
 
     pub(crate) fn from(&self, n: usize) -> f64 {

@@ -264,9 +264,9 @@ impl Composition {
             .map_err(|e| thrown(&e))
     }
 
-    /// `target` block by block over the extents and cuts a render takes, a root never cut
-    /// streamed on for as long as it is pulled; each named argument its own ref writes as a
-    /// number is one `resume` may move. `options` sets `rate`, `bits`,
+    /// `target` block by block over the extents and cuts a render takes, each cut decided when
+    /// reached, a root never cut pulled on; each named argument its own ref writes as a number
+    /// is one `resume` may move. `options` sets `rate`, `bits`,
     /// `decay_floor` (dB), `flop_budget` and `until`.
     pub fn stream(&self, target: &str, block: usize, options: JsValue) -> Result<Stream, JsValue> {
         let options = options_of(

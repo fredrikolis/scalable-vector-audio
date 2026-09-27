@@ -7,6 +7,7 @@ pub mod bound;
 pub mod chaigne_askenfelt;
 pub mod chaigne_doutaut;
 mod chaigne_tail;
+pub use chaigne_tail::Walk;
 pub mod darabundit_scavone;
 pub mod hammer;
 pub mod rhaouti_chaigne_joly;

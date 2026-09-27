@@ -334,8 +334,7 @@ fn sampled(render: &Render, id: NodeId, extent: Extent) -> u128 {
 }
 
 /// What a stream or a render did, counted exactly and alike on every machine: the samples
-/// written, the silence proofs run, the price of the work, and the lines and atoms summed
-/// where they are counted.
+/// written, the instants its cuts were decided at, the price, and the waves summed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Work {
     pub samples: u64,

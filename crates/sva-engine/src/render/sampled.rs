@@ -29,13 +29,33 @@ pub fn key(held: &Render, id: NodeId) -> Result<(sva_formula::Hash, usize), Engi
     Ok((held.keyed(id, key)?, extent.len()))
 }
 
+/// A solver its cut already played from rest continues that playing rather than stepping
+/// its string again.
 pub fn run(
     held: &mut Render,
     id: NodeId,
     key: Option<sva_formula::Hash>,
     cache: Option<&crate::cache::Lens>,
+    played: Option<super::bound::Played>,
 ) -> Result<(), EngineError> {
-    let (buffer, label) = stepped(held, id)?;
+    let extent = held.extents.of(id);
+    let (buffer, label) = match played.filter(|p| p.tape.base() == extent.start) {
+        Some(mut played) => {
+            let (tape, machine) = (&mut played.tape, &mut played.machine);
+            if tape.end() < extent.end {
+                machine
+                    .run_to(extent.end, &[], tape)
+                    .map_err(|e| refused(held, id, &e))?;
+            }
+            let rate = held.config.rate;
+            let mut planes = played.tape.into_planes();
+            planes.iter_mut().for_each(|p| p.truncate(extent.len()));
+            let mut buffer = Buffer::of_planes(rate, planes);
+            buffer.start = extent.start;
+            (buffer, Label::measured(held.config.profile.name, rate))
+        }
+        None => stepped(held, id)?,
+    };
     if let Some(key) = key {
         super::store(key, &buffer, &label, cache);
     }
@@ -62,11 +82,12 @@ fn stepped(held: &Render, id: NodeId) -> Result<(Buffer, Label), EngineError> {
     ))
 }
 
-/// One node's program, the slots it reads through and the node behind each slot.
+/// One node's program, the slots it reads through and the node behind each slot and site.
 pub(super) struct Program {
     pub renderer: NodeRenderer,
     pub reads: Vec<NodeId>,
     pub layout: Layout,
+    pub site_nodes: Vec<NodeId>,
 }
 
 /// A read of samples off the grid, or a delay that moves with `t`, is known from the types
@@ -105,9 +126,10 @@ pub(super) fn program_reading(
         owner: id,
         reads: Vec::new(),
         sites: Vec::new(),
+        site_nodes: Vec::new(),
     };
     let renderer = build.of(id)?;
-    let (reads, sites) = (build.reads, build.sites);
+    let (reads, sites, site_nodes) = (build.reads, build.sites, build.site_nodes);
     let layout = Layout {
         width: held.tys.ty(id).width as usize,
         read_widths: reads.iter().map(|r| width_of(*r)).collect(),
@@ -117,6 +139,7 @@ pub(super) fn program_reading(
         renderer,
         reads,
         layout,
+        site_nodes,
     })
 }
 
@@ -202,6 +225,7 @@ struct Build<'a> {
     owner: NodeId,
     reads: Vec<NodeId>,
     sites: Vec<Site>,
+    site_nodes: Vec<NodeId>,
 }
 
 impl Build<'_> {
@@ -236,8 +260,9 @@ impl Build<'_> {
                 Some(steps) => Ok(NodeRenderer::SelfAt { steps }),
                 None => Err(varying(&self.held.tys, id)),
             },
+            Value::Solver(_) if id != self.owner => Ok(self.buffer(id, 0)),
             Value::Solver(params) => {
-                let site = self.site(Site::Physics(params));
+                let site = self.site(id, Site::Physics(params));
                 let from = self.state_start(id);
                 Ok(NodeRenderer::Physics { site, from })
             }
@@ -248,7 +273,7 @@ impl Build<'_> {
                 q,
                 gain,
             } => {
-                let site = self.site(Site::Filter(shape));
+                let site = self.site(id, Site::Filter(shape));
                 Ok(NodeRenderer::Filter {
                     site,
                     from: self.state_start(id),
@@ -288,8 +313,9 @@ impl Build<'_> {
             .unwrap_or(i64::MIN)
     }
 
-    fn site(&mut self, site: Site) -> SiteId {
+    fn site(&mut self, id: NodeId, site: Site) -> SiteId {
         self.sites.push(site);
+        self.site_nodes.push(id);
         SiteId((self.sites.len() - 1) as u32)
     }
 

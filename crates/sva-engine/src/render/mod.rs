@@ -109,7 +109,7 @@ pub struct Render {
     pub schedule: Schedule,
     pub bindings: BTreeMap<NodeId, Vec<Binding>>,
     pub cache_stats: Option<CacheStats>,
-    /// The bound passes the cut ran, and what they cost.
+    /// The grid instants the cut decided, and what they cost.
     pub proofs: u64,
     pub proof_ops: u128,
     pub cuts: Cuts,
@@ -117,6 +117,7 @@ pub struct Render {
     pub range: Option<Extent>,
     pub(crate) unranged: Option<EngineError>,
     pub(crate) extents: extent::Extents,
+    pub(crate) played: BTreeMap<NodeId, bound::Played>,
     identities: std::cell::RefCell<BTreeMap<NodeId, sva_formula::Hash>>,
 }
 
@@ -150,6 +151,7 @@ impl Render {
             range: None,
             unranged: None,
             extents: extent::Extents::default(),
+            played: BTreeMap::new(),
             identities: Default::default(),
         }
     }
@@ -605,7 +607,8 @@ fn materialize(held: &mut Render, id: NodeId, lenses: &Lenses) -> Result<(), Eng
         for read in reads(held, id) {
             materialize(held, read, lenses)?;
         }
-        return sampled::run(held, id, key.map(|(key, _)| key), lens.as_ref());
+        let played = held.played.remove(&id);
+        return sampled::run(held, id, key.map(|(key, _)| key), lens.as_ref(), played);
     }
     for operand in schedule::materialized_operands(&held.tys, id) {
         materialize(held, operand, lenses)?;

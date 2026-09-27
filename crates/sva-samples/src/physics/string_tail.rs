@@ -220,6 +220,7 @@ pub(crate) fn settling(grid: &StringGrid, felt: &[Felt]) -> Result<Settling, Unr
     })
 }
 
+#[derive(Clone, Debug)]
 pub(crate) struct Ringdown {
     terms: Vec<(f64, f64)>,
     slack: f64,
@@ -292,23 +293,39 @@ impl Ringdown {
         })
     }
 
-    pub(crate) fn along(&self, first: usize, step: usize, count: usize) -> Vec<f64> {
-        let mut out = vec![0.0f64; count];
-        let widen = 1.0 + 4.0 * U;
-        let mut add = |scale: f64, r: f64| {
+    /// Its bound at every `step`th step from now on, one at a time.
+    pub(crate) fn rung(&self, step: usize) -> Rung {
+        let term = |scale: f64, r: f64| {
             let per = r.powi(step as i32) * (1.0 + gamma(4.0 * step as f64));
-            let mut held = scale * r.powf(first as f64) * (1.0 + gamma(4.0));
-            for slot in out.iter_mut() {
-                *slot += held;
-                held = held * per * widen;
-            }
+            (scale * (1.0 + gamma(4.0)), per)
         };
-        for &(scale, r) in &self.terms {
-            add(scale, r);
+        let mut terms: Vec<(f64, f64)> = self.terms.iter().map(|&(s, r)| term(s, r)).collect();
+        terms.push(term(self.slack, self.rate));
+        Rung {
+            terms,
+            summed: 1.0 + gamma(self.terms.len() as f64 + 2.0),
         }
-        add(self.slack, self.rate);
-        let summed = 1.0 + gamma(self.terms.len() as f64 + 2.0);
-        out.iter().map(|v| v * summed).collect()
+    }
+}
+
+/// A ringdown's bound read on, `step` steps a reading.
+#[derive(Clone, Debug)]
+pub(crate) struct Rung {
+    terms: Vec<(f64, f64)>,
+    summed: f64,
+}
+
+impl Iterator for Rung {
+    type Item = f64;
+
+    fn next(&mut self) -> Option<f64> {
+        let widen = 1.0 + 4.0 * U;
+        let mut sum = 0.0;
+        for (held, per) in &mut self.terms {
+            sum += *held;
+            *held = *held * *per * widen;
+        }
+        Some(sum * self.summed)
     }
 }
 

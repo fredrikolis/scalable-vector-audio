@@ -27,7 +27,7 @@ pub use frames::Frames;
 pub use label::{Cost, Detail, Dropped, Label, Rule, Source};
 pub use machine::renderer::{Binary, BufId, NodeRenderer, Site, SiteId, Unary};
 pub use machine::tape::{Tape, Window};
-pub use machine::{Ctx, Machine, MachineState};
+pub use machine::{Ctx, Heard, Machine, MachineState};
 pub use measure::Consumes;
 pub use measure::alias::{
     AUDIBLE_NMR_DB, Alias, AliasBand, PLAYBACK_DB_SPL, measure_alias, worst as worst_alias,
@@ -43,6 +43,6 @@ pub use measure::spectrum::{
     Band, MAX_PINNED_FRAME, Peak, Spectrum, db, magnitudes, pinned_frame, third_octave_edges,
 };
 pub use measure::stereo::{StereoFrame, StereoImage};
-pub use physics::{Params, Solver, Tail, site, tail, tail_from};
+pub use physics::{Params, Solver, Tail, Walk, site, tail, tail_from};
 pub use profile::{PSYCHOACOUSTIC_V1, Profile};
 pub use sva_formula::Shape;

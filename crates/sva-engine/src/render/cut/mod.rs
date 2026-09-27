@@ -1,15 +1,16 @@
-// Concern: where each node's extent ends at the declared decay floor, before any sample | Non-concern: each class's bound (bound/), what a cut node's readers compute | IO: (&Render, nodes) -> Cuts
+// Concern: where each node's extent ends at the decay floor, decided instant by instant | Non-concern: each class's bound (bound/), what a cut node's readers compute | IO: (&Render, nodes) -> Cuts
 
 mod gain;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use sva_formula::NodeId;
 use sva_samples::Extent;
 
 use super::Render;
-use super::bound::{Bounds, Envelope, Forms, Found, Grid, STEP};
+use super::bound::{Bounds, Forms, Grid, Played, Reach, STEP};
 use super::extent::{self, Supports};
 use crate::error::{Diagnostic, EngineError, Located};
 use gain::{Gain, Gains};
@@ -52,120 +53,398 @@ pub(crate) struct Decided {
     pub(crate) passes: u64,
     pub(crate) ops: u128,
     pub(crate) endless: Option<EngineError>,
+    pub(crate) played: BTreeMap<NodeId, Played>,
 }
 
-/// A node whose bound times gain is under `floor / N` from T on ends at T, `N` the count that
-/// could be cut. With no end, the bounds look twice as far each pass until the root is cut.
-pub(crate) fn decide(held: &Render, nodes: &[NodeId], start: i64) -> Result<Decided, EngineError> {
-    let (tys, config, root) = (&held.tys, &held.config, held.root);
-    let rate = config.rate;
-    let resolution = config.profile.half_lsb();
-    let floor = config.decay_floor.unwrap_or(resolution);
-    if !(floor >= resolution && floor.is_finite()) {
-        return Err(below_resolution(held, floor, resolution));
-    }
-    let supports = Supports::new(tys, rate);
-    let root_end = config.range.end.unwrap_or(supports.of(root).end);
-    let endless = root_end == i64::MAX;
-    let demand = Extent::new(start, root_end.max(start));
-    let uncut = extent::decide(held, nodes, &[(root, demand)], &extent::Cuts::new())?;
-    let extents: Vec<Extent> = nodes
-        .iter()
-        .map(|id| uncut.of(*id))
-        .filter(|e| !e.is_empty())
-        .collect();
-    let first = extents.iter().map(|e| e.start).fold(start, i64::min);
-    let reach = |extents: &[Extent]| {
-        extents
+/// The grid cuts are decided on, from the root's demand with nothing cut.
+pub(crate) struct Span {
+    pub(crate) first: i64,
+    pub(crate) root_end: i64,
+    /// The latest sample any node is read at.
+    pub(crate) horizon: i64,
+    /// The latest second a factor's peak is taken over.
+    window_end: f64,
+}
+
+impl Span {
+    pub(crate) fn of(held: &Render, nodes: &[NodeId], start: i64) -> Result<Span, EngineError> {
+        let (rate, root) = (held.config.rate, held.root);
+        let supports = Supports::new(&held.tys, rate);
+        let root_end = held.config.range.end.unwrap_or(supports.of(root).end);
+        let demand = Extent::new(start, root_end.max(start));
+        let uncut = extent::decide(held, nodes, &[(root, demand)], &extent::Cuts::new())?;
+        let extents: Vec<Extent> = nodes
             .iter()
-            .map(|e| e.end)
-            .filter(|end| *end != i64::MAX)
-            .fold(first + 1, i64::max)
-    };
-    let mut horizon = match endless {
-        true => reach(&extents).max(first.saturating_add(i64::from(rate))),
-        false => reach(&extents),
-    };
-    let forms = Forms::new(Cow::Borrowed(tys), Cow::Borrowed(config));
-    let level = floor / nodes.len().max(1) as f64;
-    let (mut ops, mut passes) = (0u128, 0u64);
-    loop {
-        passes += 1;
+            .map(|id| uncut.of(*id))
+            .filter(|e| !e.is_empty())
+            .collect();
+        let first = extents.iter().map(|e| e.start).fold(start, i64::min);
+        let reach = reach(first, &extents);
+        let endless = root_end == i64::MAX;
+        let horizon = match endless {
+            true => reach.max(first.saturating_add(i64::from(rate))),
+            false => reach,
+        };
         let grid = Grid {
             first,
             rate: f64::from(rate),
-            points: ((horizon - first) as usize).div_ceil(STEP) + 1,
         };
-        let measure = |levels: BTreeMap<NodeId, f64>| {
-            measured(held, nodes, &forms, &grid, &supports, level, levels)
+        let window_end = match endless {
+            true => i64::MAX as f64 / f64::from(rate),
+            false => grid.secs(points(first, horizon) - 1),
         };
-        let (mut found, mut gains, spent) = measure(BTreeMap::new())?;
-        ops += spent;
-        let share = floor / candidates(&found, &gains).max(1) as f64;
-        let solvers: BTreeMap<NodeId, f64> = gains
-            .iter()
-            .filter(|(id, _)| matches!(tys.value(**id), crate::typing::Value::Solver(_)))
-            .filter_map(|(id, g)| Some((*id, share / *g.as_ref().ok().filter(|g| **g > 1.0)?)))
-            .collect();
-        if !solvers.is_empty() {
-            let spent;
-            (found, gains, spent) = measure(solvers)?;
-            ops += spent;
+        Ok(Span {
+            first,
+            root_end,
+            horizon,
+            window_end,
+        })
+    }
+
+    pub(crate) fn endless(&self) -> bool {
+        self.root_end == i64::MAX
+    }
+}
+
+fn points(first: i64, horizon: i64) -> usize {
+    ((horizon - first) as usize).div_ceil(STEP) + 1
+}
+
+fn reach(first: i64, extents: &[Extent]) -> i64 {
+    extents
+        .iter()
+        .map(|e| e.end)
+        .filter(|end| *end != i64::MAX)
+        .fold(first + 1, i64::max)
+}
+
+/// A node whose bound times gain is under `floor / N` from T on ends at T, `N` the count
+/// that could be cut, decided one grid instant after another: an instant decided never
+/// changes, so a stream that decides as it plays cuts where a whole render does.
+pub(crate) struct Search<'a> {
+    pub(crate) bounds: Bounds<'a>,
+    audio: Vec<NodeId>,
+    root: NodeId,
+    floor: f64,
+    window: (f64, f64),
+    ready: bool,
+    gains: BTreeMap<NodeId, Gain>,
+    share: f64,
+    /// Each node with a bound and a gain, and where its support ends.
+    candidates: Vec<(NodeId, f64, i64)>,
+    crossed: BTreeSet<NodeId>,
+    pub(crate) decided: usize,
+    pub(crate) cuts: extent::Cuts,
+    budget: u128,
+    pub(crate) exhausted: bool,
+}
+
+impl<'a> Search<'a> {
+    pub(crate) fn new(
+        forms: Rc<Forms<'a>>,
+        audio: &[NodeId],
+        root: NodeId,
+        span: &Span,
+    ) -> Result<Search<'a>, EngineError> {
+        let config = &forms.config;
+        let resolution = config.profile.half_lsb();
+        let floor = config.decay_floor.unwrap_or(resolution);
+        if !(floor >= resolution && floor.is_finite()) {
+            let name = forms.tys.name(root).to_string();
+            let bits = config.profile.precision_bits;
+            return Err(below_resolution(&name, bits, floor, resolution));
         }
-        let chosen = Chosen::of(nodes, &found, &gains, &supports, &grid, floor);
-        let exhausted = ops > config.flop_budget;
-        let root_cut = chosen.at.get(&root).copied();
-        let grown = match (endless, root_cut) {
-            (false, _) => None,
-            (true, Some(end)) => {
-                let over = Extent::new(start, end.max(start));
-                let decided = extent::decide(held, nodes, &[(root, over)], &chosen.at)?;
-                let needed: Vec<Extent> = nodes.iter().map(|id| decided.of(*id)).collect();
-                Some(reach(&needed)).filter(|need| *need > horizon)
+        let grid = Grid {
+            first: span.first,
+            rate: f64::from(config.rate),
+        };
+        let budget = config.flop_budget;
+        let level = floor / audio.len().max(1) as f64;
+        let window = (grid.secs(0), span.window_end);
+        Ok(Search {
+            bounds: Bounds::new(forms, grid, level),
+            audio: audio.to_vec(),
+            root,
+            floor,
+            window,
+            ready: false,
+            gains: BTreeMap::new(),
+            share: floor,
+            candidates: Vec::new(),
+            crossed: BTreeSet::new(),
+            decided: 0,
+            cuts: extent::Cuts::new(),
+            budget,
+            exhausted: false,
+        })
+    }
+
+    /// Each node's first instant states its bound over all time, which gains read.
+    fn prepare(&mut self) -> Result<Reach, EngineError> {
+        let mut reached = Vec::new();
+        gain::topological(
+            self.bounds.tys(),
+            self.root,
+            &mut BTreeSet::new(),
+            &mut reached,
+        );
+        for id in self.audio.iter().chain(&reached) {
+            if let Reach::Wait(node, chunk) = self.bounds.extend(*id, 1)? {
+                return Ok(Reach::Wait(node, chunk));
             }
-            (true, None) => {
-                let root_found = &found[&root];
-                let hopeless =
-                    root_found.is_err() || never(root_found, floor / chosen.count.max(1) as f64);
-                match exhausted || hopeless {
-                    true => None,
-                    false => Some(first + (horizon - first).saturating_mul(2)),
+        }
+        let perturbable: BTreeSet<NodeId> = self
+            .audio
+            .iter()
+            .filter(|id| self.bounds.peak(**id).is_some() && **id != self.root)
+            .copied()
+            .collect();
+        let (tys, rate) = (self.bounds.tys(), self.bounds.config().rate);
+        let supports = Supports::new(tys, rate);
+        let gains =
+            Gains::new(tys, &self.bounds, &supports, &perturbable, self.window).from(self.root)?;
+        let candidates = self
+            .audio
+            .iter()
+            .filter(|id| self.bounds.peak(**id).is_some())
+            .filter_map(|id| {
+                let gain = *gains.get(id)?.as_ref().ok()?;
+                Some((*id, gain, supports.of(*id).end))
+            })
+            .collect();
+        self.candidates = candidates;
+        self.share = self.floor / self.candidates.len().max(1) as f64;
+        for id in self.bounds.solvers() {
+            let level = match gains.get(&id) {
+                Some(Ok(g)) if *g > 1.0 => self.share / g,
+                _ => self.bounds.level,
+            };
+            if let Some(tail) = self.bounds.solver_mut(id) {
+                tail.walk.set_level(level);
+            }
+        }
+        self.gains = gains;
+        self.ready = true;
+        Ok(Reach::Ready)
+    }
+
+    /// Nothing is left to decide.
+    pub(crate) fn done(&self) -> bool {
+        self.exhausted || (self.ready && self.crossed.len() == self.candidates.len())
+    }
+
+    /// Every grid instant through `through`, until the budget is spent: the one way a render,
+    /// a stream and lint decide a cut. A walk waits on its solver's machine, from `sites`.
+    pub(crate) fn decide(&mut self, through: usize, sites: &dyn Sites) -> Result<(), EngineError> {
+        loop {
+            match self.advance(through)? {
+                Reach::Ready => return Ok(()),
+                Reach::Wait(solver, chunk) => {
+                    let fresh = || sites.player(solver);
+                    self.bounds.play(solver, chunk, &fresh);
                 }
             }
-        };
-        if let Some(next) = grown.filter(|_| !exhausted && next_fits(first, horizon)) {
-            horizon = next;
-            continue;
         }
-        let endless = (endless && root_cut.is_none()).then(|| {
-            no_end(
-                held,
-                &found[&root],
-                &grid,
-                floor / chosen.count.max(1) as f64,
-            )
-        });
-        let report = Cuts {
+    }
+
+    pub(crate) fn played(&mut self) -> BTreeMap<NodeId, Played> {
+        self.bounds
+            .solvers()
+            .into_iter()
+            .filter_map(|id| Some((id, self.bounds.played(id)?)))
+            .collect()
+    }
+
+    /// A node past its crossing is read on only where another node reads it.
+    fn advance(&mut self, through: usize) -> Result<Reach, EngineError> {
+        if !self.ready
+            && let Reach::Wait(node, chunk) = self.prepare()?
+        {
+            return Ok(Reach::Wait(node, chunk));
+        }
+        while self.decided <= through && !self.done() {
+            let j = self.decided;
+            for &(id, ..) in &self.candidates {
+                if self.crossed.contains(&id) {
+                    continue;
+                }
+                if let Reach::Wait(node, chunk) = self.bounds.extend(id, j + 1)? {
+                    return Ok(Reach::Wait(node, chunk));
+                }
+            }
+            for &(id, gain, end) in &self.candidates {
+                let crossed = self.crossed.contains(&id) || self.bounds.len(id) <= j;
+                if crossed || self.bounds.at(id, j) * gain > self.share {
+                    continue;
+                }
+                self.crossed.insert(id);
+                let at = self.bounds.grid.sample(j);
+                if at < end {
+                    self.cuts.insert(id, at);
+                }
+            }
+            self.decided += 1;
+            self.exhausted = self.bounds.ops > self.budget;
+        }
+        Ok(Reach::Ready)
+    }
+
+    pub(crate) fn report(&self) -> Cuts {
+        let tys = self.bounds.tys();
+        let config = self.bounds.config();
+        let mut uncut: Vec<Uncut> = self
+            .audio
+            .iter()
+            .filter_map(|id| {
+                let node = tys.name(*id).to_string();
+                match (self.bounds.unbounded(*id), self.gains.get(id)) {
+                    (Some(unbounded), _) => Some(Uncut {
+                        node,
+                        missing: Missing::Bound,
+                        why: format!("`{}` is {}", unbounded.node, unbounded.class),
+                    }),
+                    (None, Some(Err(why))) => Some(Uncut {
+                        node,
+                        missing: Missing::Gain,
+                        why: why.clone(),
+                    }),
+                    _ => None,
+                }
+            })
+            .collect();
+        uncut.sort_by(|a, b| a.node.cmp(&b.node));
+        Cuts {
             bits: config.profile.precision_bits,
-            floor,
-            cut: chosen
-                .at
+            floor: self.floor,
+            cut: self
+                .cuts
                 .iter()
                 .map(|(id, at)| Cut {
                     node: tys.name(*id).to_string(),
                     at: *at,
                 })
                 .collect(),
-            uncut: uncut_of(held, nodes, &found, &gains),
-        };
-        return Ok(Decided {
-            at: chosen.at,
-            report,
-            passes,
-            ops,
-            endless,
-        });
+            uncut,
+        }
     }
+
+    fn hopeless(&self) -> bool {
+        self.bounds.unbounded(self.root).is_some() || self.bounds.floor(self.root) >= self.share
+    }
+
+    /// Why an endless root has no end: no bound on it, a level it holds forever, or a bound
+    /// still over the floor where the search stopped.
+    fn no_end(&self) -> EngineError {
+        let name = self.bounds.tys().name(self.root).to_string();
+        let (code, message, help) = match self.bounds.unbounded(self.root) {
+            Some(unbounded) => (
+                "render.no_bound",
+                format!(
+                    "`{}` is {}, and no bound is derived for it, so `{name}` is never shown \
+                     to end",
+                    unbounded.node, unbounded.class
+                ),
+                "give the interval an end, as `[0, 2s]`, or crop it",
+            ),
+            None if !self.bounds.tail(self.root).is_finite() => (
+                "render.no_bound",
+                format!("`{name}` has no finite bound, so it is never shown to end"),
+                "give the interval an end, as `[0, 2s]`, or crop it",
+            ),
+            None if self.bounds.floor(self.root) >= self.share => (
+                "render.never_ends",
+                format!(
+                    "`{name}` returns to {} forever, at or above the decay floor's share {}",
+                    dbfs(self.bounds.floor(self.root)),
+                    dbfs(self.share)
+                ),
+                "crop it, give it a release, or give the interval an end",
+            ),
+            None => (
+                "render.no_end",
+                format!(
+                    "`{name}`'s bound at {:.3}s is {}, over the decay floor's share {}, and \
+                     the budget ends the search there",
+                    self.bounds.grid.secs(self.decided.saturating_sub(1)),
+                    dbfs(self.bounds.tail(self.root)),
+                    dbfs(self.share)
+                ),
+                "raise --flop-budget to look further, raise --decay-floor, or give the \
+                 interval an end",
+            ),
+        };
+        EngineError::refused(Diagnostic {
+            code: code.to_string(),
+            message,
+            location: Located::at(&name, None),
+            help: help.to_string(),
+        })
+    }
+}
+
+/// Where each solver's own machine stands, to play on from.
+pub(crate) trait Sites {
+    fn player(&self, solver: NodeId) -> Option<Played>;
+}
+
+/// No sample yet: each solver's machine plays from rest, and plays its samples.
+struct Rest<'r>(&'r Render);
+
+impl Sites for Rest<'_> {
+    fn player(&self, solver: NodeId) -> Option<Played> {
+        let held = self.0;
+        let program = super::sampled::program(held, solver).ok()?;
+        let rate = held.config.rate;
+        let mut machine =
+            sva_samples::Machine::open(&program.renderer, &program.layout, rate).ok()?;
+        machine.hear(STEP as u64);
+        let tape = sva_samples::Tape::new(machine.width(), 0, 0);
+        Some(Played { machine, tape })
+    }
+}
+
+/// Every instant through the horizon decided before any sample, since a render prices,
+/// keys and computes each node over its whole extent before its readers. With no end, the
+/// search looks twice as far each pass until the root is cut and every node read before its
+/// end is decided there, the root is shown never to fall, or the budget is spent.
+pub(crate) fn decide(held: &Render, nodes: &[NodeId], start: i64) -> Result<Decided, EngineError> {
+    let span = Span::of(held, nodes, start)?;
+    let forms = Rc::new(Forms::new(
+        Cow::Borrowed(&held.tys),
+        Cow::Borrowed(&held.config),
+    ));
+    let mut search = Search::new(forms, nodes, held.root, &span)?;
+    let (root, first) = (held.root, span.first);
+    let mut horizon = span.horizon;
+    loop {
+        search.decide(points(first, horizon) - 1, &Rest(held))?;
+        if !span.endless() || search.exhausted {
+            break;
+        }
+        let next = match search.cuts.get(&root) {
+            Some(end) => {
+                let over = Extent::new(start, (*end).max(start));
+                let decided = extent::decide(held, nodes, &[(root, over)], &search.cuts)?;
+                let needed: Vec<Extent> = nodes.iter().map(|id| decided.of(*id)).collect();
+                Some(reach(first, &needed)).filter(|need| *need > horizon)
+            }
+            None if search.hopeless() || search.done() => None,
+            None => Some(first + (horizon - first).saturating_mul(2)),
+        };
+        match next.filter(|_| next_fits(first, horizon)) {
+            Some(next) => horizon = next,
+            None => break,
+        }
+    }
+    let endless = (span.endless() && !search.cuts.contains_key(&root)).then(|| search.no_end());
+    Ok(Decided {
+        at: search.cuts.clone(),
+        report: search.report(),
+        passes: search.decided as u64,
+        ops: search.bounds.ops,
+        endless,
+        played: search.played(),
+    })
 }
 
 pub(crate) fn under(tys: &crate::typing::Typing, id: NodeId) -> BTreeSet<NodeId> {
@@ -178,45 +457,6 @@ pub(crate) fn under(tys: &crate::typing::Typing, id: NodeId) -> BTreeSet<NodeId>
     seen
 }
 
-/// Each node's bound, its gain, and what finding them cost.
-type Measured = (BTreeMap<NodeId, Found>, BTreeMap<NodeId, Gain>, u128);
-
-/// Every node's bound on one grid, and its gain to the output. A solver's bound is stepped
-/// down to `level`, or to its own in `levels` where its gain asks for a lower one.
-fn measured(
-    held: &Render,
-    nodes: &[NodeId],
-    forms: &Forms,
-    grid: &Grid,
-    supports: &Supports,
-    level: f64,
-    levels: BTreeMap<NodeId, f64>,
-) -> Result<Measured, EngineError> {
-    let mut bounds = Bounds::new(forms, grid.clone(), level);
-    bounds.levels = levels;
-    let mut found = BTreeMap::new();
-    for &id in nodes {
-        found.insert(id, bounds.of(id)?);
-    }
-    let perturbable: BTreeSet<NodeId> = found
-        .iter()
-        .filter(|(id, f)| f.is_ok() && **id != held.root)
-        .map(|(id, _)| *id)
-        .collect();
-    let window = (grid.secs(0), grid.secs(grid.points - 1));
-    let gains =
-        Gains::new(&held.tys, &mut bounds, supports, &perturbable, window).from(held.root)?;
-    Ok((found, gains, bounds.ops))
-}
-
-/// Every node a bound and a gain are derived for: what a cut's share divides the floor among.
-fn candidates(found: &BTreeMap<NodeId, Found>, gains: &BTreeMap<NodeId, Gain>) -> usize {
-    found
-        .iter()
-        .filter(|(id, f)| f.is_ok() && gains.get(id).is_some_and(|g| g.is_ok()))
-        .count()
-}
-
 /// The most instants one grid holds, a few hours at any audio rate.
 const MAX_POINTS: i64 = 1 << 22;
 
@@ -224,137 +464,13 @@ fn next_fits(first: i64, horizon: i64) -> bool {
     (horizon - first) / STEP as i64 <= MAX_POINTS / 2
 }
 
-/// The cut chosen at one grid: each node's first instant under its share of the floor.
-/// `count` is every node a bound and a gain are derived for, which no interval changes, so a
-/// node is cut at one instant however long a render or a stream of it reads.
-struct Chosen {
-    at: extent::Cuts,
-    count: usize,
-}
-
-impl Chosen {
-    fn of(
-        nodes: &[NodeId],
-        found: &BTreeMap<NodeId, Found>,
-        gains: &BTreeMap<NodeId, Gain>,
-        supports: &Supports,
-        grid: &Grid,
-        floor: f64,
-    ) -> Chosen {
-        let candidates: Vec<(NodeId, &Envelope, f64)> = nodes
-            .iter()
-            .filter_map(|id| {
-                let envelope = found.get(id)?.as_ref().ok()?;
-                let gain = *gains.get(id)?.as_ref().ok()?;
-                Some((*id, envelope, gain))
-            })
-            .collect();
-        let count = candidates.len();
-        let share = floor / count.max(1) as f64;
-        let at = candidates
-            .iter()
-            .filter_map(|(id, envelope, gain)| {
-                let j = envelope.at.iter().position(|b| b * gain <= share)?;
-                let at = grid.first + (j * STEP) as i64;
-                (at < supports.of(*id).end).then_some((*id, at))
-            })
-            .collect();
-        Chosen { at, count }
-    }
-}
-
-/// A level the root returns to forever, over its share; an infinite bound may yet fall.
-fn never(root: &Found, share: f64) -> bool {
-    root.as_ref().is_ok_and(|e| e.floor >= share)
-}
-
-/// Every node the render holds whose bound, or whose gain to the output, is not derived.
-fn uncut_of(
-    held: &Render,
-    nodes: &[NodeId],
-    found: &BTreeMap<NodeId, Found>,
-    gains: &BTreeMap<NodeId, Gain>,
-) -> Vec<Uncut> {
-    let mut out: Vec<Uncut> = nodes
-        .iter()
-        .filter_map(|id| {
-            let node = held.tys.name(*id).to_string();
-            match (&found[id], gains.get(id)) {
-                (Err(unbounded), _) => Some(Uncut {
-                    node,
-                    missing: Missing::Bound,
-                    why: format!("`{}` is {}", unbounded.node, unbounded.class),
-                }),
-                (Ok(_), Some(Err(why))) => Some(Uncut {
-                    node,
-                    missing: Missing::Gain,
-                    why: why.clone(),
-                }),
-                _ => None,
-            }
-        })
-        .collect();
-    out.sort_by(|a, b| a.node.cmp(&b.node));
-    out
-}
-
-/// Why an endless root has no end: no bound on it, a level it holds forever, or a bound
-/// still over the floor where the budget ran out.
-fn no_end(held: &Render, root: &Found, grid: &Grid, share: f64) -> EngineError {
-    let name = held.tys.name(held.root);
-    let (code, message, help) = match root {
-        Err(unbounded) => (
-            "render.no_bound",
-            format!(
-                "`{}` is {}, and no bound is derived for it, so `{name}` is never shown to end",
-                unbounded.node, unbounded.class
-            ),
-            "give the interval an end, as `[0, 2s]`, or crop it",
-        ),
-        Ok(envelope) if !envelope.at.last().is_some_and(|v| v.is_finite()) => (
-            "render.no_bound",
-            format!("`{name}` has no finite bound, so it is never shown to end"),
-            "give the interval an end, as `[0, 2s]`, or crop it",
-        ),
-        Ok(envelope) if envelope.floor >= share => (
-            "render.never_ends",
-            format!(
-                "`{name}` returns to {} forever, at or above the decay floor's share {}",
-                dbfs(envelope.floor),
-                dbfs(share)
-            ),
-            "crop it, give it a release, or give the interval an end",
-        ),
-        Ok(envelope) => (
-            "render.no_end",
-            format!(
-                "`{name}`'s bound at {:.3}s is {}, over the decay floor's share {}, and the \
-                 budget ends the search there",
-                grid.secs(grid.points - 1),
-                dbfs(envelope.at.last().copied().unwrap_or(envelope.before)),
-                dbfs(share)
-            ),
-            "raise --flop-budget to look further, raise --decay-floor, or give the interval \
-             an end",
-        ),
-    };
-    EngineError::refused(Diagnostic {
-        code: code.to_string(),
-        message,
-        location: Located::at(name, None),
-        help: help.to_string(),
-    })
-}
-
-fn below_resolution(held: &Render, floor: f64, resolution: f64) -> EngineError {
-    let name = held.tys.name(held.root);
+fn below_resolution(name: &str, bits: i32, floor: f64, resolution: f64) -> EngineError {
     EngineError::refused(Diagnostic {
         code: "render.floor_below_resolution".to_string(),
         message: format!(
-            "the decay floor {} is under the {} a {}-bit sample resolves",
+            "the decay floor {} is under the {} a {bits}-bit sample resolves",
             dbfs(floor),
             dbfs(resolution),
-            held.config.profile.precision_bits
         ),
         location: Located::at(name, None),
         help: "raise --decay-floor to the resolution or above, or raise --bits".to_string(),

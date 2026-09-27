@@ -20,8 +20,8 @@ pub(super) type Gain = Result<f64, String>;
 /// since the other factors' own peaks are what bound it. `window` is the seconds a factor's
 /// peak is taken over.
 pub(super) struct Gains<'b, 'a> {
-    pub(super) tys: &'a Typing,
-    pub(super) bounds: &'b mut Bounds<'a>,
+    pub(super) tys: &'b Typing,
+    pub(super) bounds: &'b Bounds<'a>,
     pub(super) supports: &'b Supports<'a>,
     pub(super) perturbable: &'b BTreeSet<NodeId>,
     pub(super) window: (f64, f64),
@@ -30,8 +30,8 @@ pub(super) struct Gains<'b, 'a> {
 
 impl<'b, 'a> Gains<'b, 'a> {
     pub(super) fn new(
-        tys: &'a Typing,
-        bounds: &'b mut Bounds<'a>,
+        tys: &'b Typing,
+        bounds: &'b Bounds<'a>,
         supports: &'b Supports<'a>,
         perturbable: &'b BTreeSet<NodeId>,
         window: (f64, f64),
@@ -95,10 +95,10 @@ impl<'b, 'a> Gains<'b, 'a> {
     }
 
     fn peak(&mut self, id: NodeId) -> Result<Gain, EngineError> {
-        Ok(match self.bounds.of(id)? {
-            Ok(envelope) => Ok(envelope.peak()),
-            Err(_) => Err("a factor with no bound".to_string()),
-        })
+        Ok(self
+            .bounds
+            .peak(id)
+            .ok_or_else(|| "a factor with no bound".to_string()))
     }
 
     /// What `id` does to each operand's change, on its own.
@@ -114,7 +114,7 @@ impl<'b, 'a> Gains<'b, 'a> {
             }
             Value::Cast(Cast::Sample, source) => one(&[source], Ok(1.0)),
             Value::Cast(_, source) => one(&[source], Err("a transform of the whole signal".into())),
-            Value::Read { source, at, .. } => match at.steps_at(self.bounds.config.rate) {
+            Value::Read { source, at, .. } => match at.steps_at(self.bounds.config().rate) {
                 Ok(_) => one(&[source], Ok(1.0)),
                 Err(_) => one(&[source], Err("a read between two samples".into())),
             },
@@ -126,7 +126,7 @@ impl<'b, 'a> Gains<'b, 'a> {
                 gain,
             } => {
                 let numbers = [cutoff, q, gain].map(|p| constant(self.tys, p));
-                let rate = f64::from(self.bounds.config.rate);
+                let rate = f64::from(self.bounds.config().rate);
                 let summed = match numbers {
                     [Some(c), Some(q), Some(g)] => {
                         let coeffs = design(shape, clamp_cutoff(c, rate).0, clamp_q(q).0, g, rate);
@@ -362,7 +362,12 @@ pub(super) fn operands(tys: &Typing, id: NodeId) -> Vec<NodeId> {
 }
 
 /// Operands before readers.
-fn topological(tys: &Typing, id: NodeId, seen: &mut BTreeSet<NodeId>, out: &mut Vec<NodeId>) {
+pub(super) fn topological(
+    tys: &Typing,
+    id: NodeId,
+    seen: &mut BTreeSet<NodeId>,
+    out: &mut Vec<NodeId>,
+) {
     if !seen.insert(id) {
         return;
     }

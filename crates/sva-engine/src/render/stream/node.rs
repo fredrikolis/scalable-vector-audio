@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 
 use sva_formula::{Held, NodeId};
-use sva_samples::{Extent, Machine, MachineState, NodeRenderer, Rows, Tape, Window};
+use sva_samples::{Extent, Machine, MachineState, NodeRenderer, Rows, Tape, Walk, Window};
 
+use super::super::bound::{Played, STEP};
 use super::super::pointwise::{self, Point};
 use super::super::{Render, collapse_refused, sampled};
 use crate::cast::Cast;
@@ -19,6 +20,8 @@ pub(super) enum Kind {
         machine: Machine,
         /// Each slot's node, as an index into the stream's nodes.
         reads: Vec<usize>,
+        /// The node each call site steps.
+        sites: Vec<NodeId>,
     },
 }
 
@@ -144,11 +147,16 @@ fn machine(
             "a read ahead of the sample it is taken at",
         ));
     }
-    let machine = Machine::open(&program.renderer, &program.layout, shell.config.rate)
+    let mut machine = Machine::open(&program.renderer, &program.layout, shell.config.rate)
         .map_err(|e| sampled::refused(shell, id, &e))?;
+    machine.hear(STEP as u64);
     Ok(Built {
         width: machine.width(),
-        kind: Kind::Machine { machine, reads },
+        kind: Kind::Machine {
+            machine,
+            reads,
+            sites: program.site_nodes,
+        },
         reach,
         own,
     })
@@ -304,6 +312,35 @@ impl Streamed {
                 help: "resume a checkpoint on the stream it was taken of".to_string(),
             })),
         }
+    }
+}
+
+impl Streamed {
+    /// A solver's own machine, its one site stepping the solver itself.
+    fn own_site(&self) -> Option<&Machine> {
+        match &self.kind {
+            Kind::Machine { machine, sites, .. } if sites.as_slice() == [self.id] => Some(machine),
+            _ => None,
+        }
+    }
+
+    pub(super) fn hear(&self, walk: &mut Walk) {
+        if let Some(machine) = self.own_site() {
+            super::super::bound::hear(machine, walk);
+        }
+    }
+
+    /// Every chunk this solver's machine has stepped, where it stands `at`.
+    pub(super) fn heard_to(&self, at: i64) -> Option<Vec<f64>> {
+        let heard = self.own_site()?.heard(0)?;
+        (heard.count() == at as u64).then(|| heard.chunks().to_vec())
+    }
+
+    /// A copy of this solver's machine to play on ahead of the stream.
+    pub(super) fn played(&self) -> Option<Played> {
+        let machine = self.own_site()?.clone();
+        let tape = Tape::new(self.width, 0, self.tape.end());
+        Some(Played { machine, tape })
     }
 }
 
