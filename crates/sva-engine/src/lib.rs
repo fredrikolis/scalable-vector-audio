@@ -37,9 +37,8 @@ pub use query::{Answer, Ask, DEFAULT_FRAME_SECS, Output, Representation};
 pub use refs::{Read, identity, nodes_in, resolve, spectral_sum_of, symbolic_hash};
 pub use render::until::{Cmp, Term};
 pub use render::{
-    Block, Checkpoint, QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, Range, Render, RenderConfig,
-    STREAMED, Stream, StreamConfig, Until, answer, answer_buffer, plan, quiet_tails, render,
-    sketch_atom,
+    Block, QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, Range, Render, RenderConfig, STREAMED, Stream,
+    StreamConfig, Until, answer, answer_buffer, plan, quiet_tails, render, sketch_atom,
 };
 pub use schedule::{Order, Schedule, schedule_from};
 pub use sva_formula::{C64, Codomain, Held, Line, NodeId, SpectralSum, Ty, Var};

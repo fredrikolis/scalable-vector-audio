@@ -233,6 +233,14 @@ impl ChaigneDoutautSite {
 }
 
 impl Solver for ChaigneDoutautSite {
+    fn bytes(&self) -> usize {
+        let bar = &self.bar;
+        size_of::<Self>()
+            + super::floats(&bar.u_now)
+            + super::floats(&bar.u_prev)
+            + super::floats(&bar.u_next)
+    }
+
     fn step(&mut self) -> Result<f64, SampleError> {
         Ok(self.advance())
     }

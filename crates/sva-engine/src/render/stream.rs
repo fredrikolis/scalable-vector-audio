@@ -1,14 +1,14 @@
-// Concern: opens a target as a stream, and resumes one from a checkpoint under moved bindings | Non-concern: pulling its blocks (drive/), a whole render | IO: (&Graph, target, bindings) -> a Stream
+// Concern: opens a target as a stream and edits its expression as it plays | Non-concern: pulling its blocks (drive/), what an edit carries on (edit.rs) | IO: (&Graph, target) -> a Stream; (expr) -> ()
 
-use sva_ast::{Expr, Graph, Literal};
-use sva_samples::physics::chaigne_askenfelt::landing_step;
+use std::collections::BTreeMap;
 
-use super::drive::node::{self, Driven, Hold, NodeState};
-use super::drive::{self, Block, Driver};
+use sva_ast::{Expr, Graph};
+
+use super::drive::node::{self, Driven, Hold};
+use super::drive::{self, Block, Driver, edit};
 use super::{Render, RenderConfig, prepared, reach, sampled};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::flops::Work;
-use crate::instantiate::RELEASE;
 use crate::schedule;
 
 pub const STREAMED: &str = "streamed";
@@ -19,89 +19,72 @@ pub struct StreamConfig {
     pub render: RenderConfig,
 }
 
-/// A target rendered from its range's start on, one block at a time, each node over the same
-/// extent a whole render gives it: every block is the samples such a render writes there.
+/// A target rendered block by block, each node over the extent a whole render gives it; an
+/// edit replaces the expression from the next block on.
 pub struct Stream {
-    graph: Graph,
-    target: Expr,
-    bindings: Vec<(String, f64)>,
     config: StreamConfig,
     shell: Render,
     driver: Driver,
 }
 
 impl Stream {
-    /// Each named argument of `target`'s own ref written as a number is a binding a resume
-    /// may move.
     pub fn open(graph: &Graph, target: &Expr, config: StreamConfig) -> Result<Stream, EngineError> {
-        let (bare, bindings) = bindings_of(target);
-        Stream::bound_to(graph, &bare, &bindings, config, None)
-    }
-
-    fn bound_to(
-        graph: &Graph,
-        target: &Expr,
-        bindings: &[(String, f64)],
-        config: StreamConfig,
-        from: Option<&Checkpoint>,
-    ) -> Result<Stream, EngineError> {
         if config.block == 0 {
             return Err(refusal("a block of no samples".to_string()));
         }
-        let wrapped = bound(graph, target, bindings)?;
-        let held = prepared(&wrapped, STREAMED)?;
-        let rate = config.render.rate;
-        sampled::on_the_grid(&held.tys, rate)?;
-        let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
-        let audio = schedule.materialize.clone();
-        let mut shell = Render::shell(held.tys, held.root, config.render.clone(), schedule);
-        reach::streamed(&mut shell, &audio)?;
+        let shell = shelled(graph, target, &config.render)?;
         let range = shell.range.expect("audio out decides a range");
-        let root_keep = match config.render.until {
-            Some(_) => drive::frame(&shell.config),
-            None => 0,
-        };
-        let hold = Hold::Trailing {
-            block: config.block,
-            root_keep,
-        };
-        let order = shell.schedule.materialize.clone();
-        let mut nodes = node::built(&shell, &order, hold)?;
-        let root = nodes
-            .iter()
-            .position(|n| n.id == shell.root)
-            .ok_or_else(|| EngineError::UnknownNode(shell.tys.name(shell.root).to_string()))?;
-        let at = match from {
-            Some(checkpoint) => {
-                if nodes.len() != checkpoint.nodes.len() {
-                    let target = sva_ast::render_expr(target);
-                    return Err(mismatch(&target, "a graph of another shape"));
-                }
-                for (node, held) in nodes.iter_mut().zip(&checkpoint.nodes) {
-                    node.resume(&shell, held, checkpoint.at)?;
-                }
-                checkpoint.at
-            }
-            None => range.start,
-        };
-        let until = config.render.until.clone();
-        let driver = Driver::new(
-            nodes,
-            Some(root),
-            range,
-            at,
-            config.block,
-            until,
-            &shell.config,
-        );
-        Ok(Stream {
-            graph: graph.clone(),
-            target: target.clone(),
-            bindings: bindings.to_vec(),
+        let mut stream = Stream {
+            driver: Driver::new(
+                Vec::new(),
+                None,
+                range,
+                config.block,
+                config.render.until.clone(),
+                &shell.config,
+                true,
+            ),
             config,
             shell,
-            driver,
-        })
+        };
+        let nodes = node::built(&stream.shell, &order(&stream.shell), stream.hold())?;
+        let root = root_of(&stream.shell, &nodes)?;
+        stream.driver.replace(nodes, Some(root), range.end);
+        Ok(stream)
+    }
+
+    /// Unchanged nodes carry on; a changed one read where its predecessor was, at the same
+    /// shift, takes its state where its kind, width and call sites do; the rest start now.
+    pub fn edit(&mut self, graph: &Graph, target: &Expr) -> Result<(), EngineError> {
+        let mut render = self.config.render.clone();
+        render.range.start = Some(self.driver.start);
+        let shell = shelled(graph, target, &render)?;
+        let range = shell.range.expect("audio out decides a range");
+        let order = order(&shell);
+        let mut kept: BTreeMap<sva_formula::Hash, usize> = BTreeMap::new();
+        for (at, node) in self.driver.nodes.iter().enumerate() {
+            if let Ok(identity) = self.shell.identity(node.id) {
+                kept.insert(identity, at);
+            }
+        }
+        let mut same: Vec<Option<usize>> = Vec::with_capacity(order.len());
+        for id in &order {
+            let identity = shell.identity(*id).ok();
+            same.push(identity.and_then(|identity| kept.remove(&identity)));
+        }
+        let mut nodes = node::built(&shell, &order, self.hold())?;
+        let root = root_of(&shell, &nodes)?;
+        let old_root = self.driver.root;
+        edit::carried(
+            &mut nodes,
+            &mut self.driver.nodes,
+            &same,
+            (Some(root), old_root),
+            self.driver.at,
+        );
+        self.driver.replace(nodes, Some(root), range.end);
+        self.shell = shell;
+        Ok(())
     }
 
     /// The next block, cut where the stream ends; `None` from there on.
@@ -113,9 +96,13 @@ impl Stream {
         self.driver.at
     }
 
-    /// Since this stream opened, or since the checkpoint it resumed from.
     pub fn work(&self) -> Work {
         self.driver.work
+    }
+
+    /// The bytes its nodes hold, samples and state.
+    pub fn held_bytes(&self) -> usize {
+        self.driver.bytes()
     }
 
     /// Where the stream ends, once known.
@@ -131,160 +118,44 @@ impl Stream {
         &self.config
     }
 
-    pub fn checkpoint(&self) -> Checkpoint {
-        Checkpoint {
-            at: self.driver.at,
-            target: sva_ast::render_expr(&self.target),
-            bindings: self.bindings.clone(),
-            rate: self.config.render.rate,
+    fn hold(&self) -> Hold {
+        let root_keep = match self.config.render.until {
+            Some(_) => drive::frame(&self.shell.config),
+            None => 0,
+        };
+        Hold::Trailing {
             block: self.config.block,
-            nodes: self.driver.nodes.iter().map(Driven::held).collect(),
+            root_keep,
         }
     }
-
-    /// This stream's target from `checkpoint` on, each of `bindings` in force over the one
-    /// it replaces. A binding may move only where no sample before the checkpoint can hear
-    /// it: `release`, at or past it.
-    pub fn resume(
-        &self,
-        checkpoint: &Checkpoint,
-        bindings: &[(String, f64)],
-    ) -> Result<Stream, EngineError> {
-        let (rate, block) = (self.config.render.rate, self.config.block);
-        let target = sva_ast::render_expr(&self.target);
-        if checkpoint.target != target || (checkpoint.rate, checkpoint.block) != (rate, block) {
-            return Err(mismatch(&target, "another stream"));
-        }
-        let mut merged = checkpoint.bindings.clone();
-        for (name, value) in bindings {
-            match merged.iter_mut().find(|(held, _)| held == name) {
-                Some(slot) => slot.1 = *value,
-                None => merged.push((name.clone(), *value)),
-            }
-        }
-        words(bindings)?;
-        causal(checkpoint, &merged, rate, &target)?;
-        let config = self.config.clone();
-        Stream::bound_to(&self.graph, &self.target, &merged, config, Some(checkpoint))
-    }
 }
 
-/// The target with every named argument its own ref writes as a number taken out, and those.
-fn bindings_of(target: &Expr) -> (Expr, Vec<(String, f64)>) {
-    let mut bare = target.clone();
-    let mut out = Vec::new();
-    if let Expr::Ref { binds, .. } = &mut bare {
-        binds.retain(|(name, value)| match value {
-            Expr::Lit(Literal::Num(v)) => {
-                out.push((name.clone(), *v));
-                false
-            }
-            _ => true,
-        });
-    }
-    (bare, out)
-}
-
-/// Every node's state at a block's end, and what its stream was opened with.
-#[derive(Clone)]
-pub struct Checkpoint {
-    at: i64,
-    target: String,
-    bindings: Vec<(String, f64)>,
-    rate: u32,
-    block: usize,
-    nodes: Vec<Option<NodeState>>,
-}
-
-impl Checkpoint {
-    pub fn position(&self) -> i64 {
-        self.at
-    }
-}
-
-/// A moved `release` changes nothing before the step a felt released then lands on.
-fn causal(
-    checkpoint: &Checkpoint,
-    bindings: &[(String, f64)],
-    rate: u32,
-    target: &str,
-) -> Result<(), EngineError> {
-    let value =
-        |set: &[(String, f64)], name: &str| set.iter().find(|(n, _)| n == name).map(|(_, v)| *v);
-    let names = checkpoint.bindings.iter().chain(bindings).map(|(n, _)| n);
-    for name in names {
-        let (was, now) = (value(&checkpoint.bindings, name), value(bindings, name));
-        if was == now {
-            continue;
-        }
-        let lands = |v: Option<f64>| {
-            landing_step(v.unwrap_or(f64::INFINITY), f64::from(rate))
-                .is_none_or(|at| at as i64 >= checkpoint.at)
-        };
-        if name != RELEASE || !lands(was) || !lands(now) {
-            return Err(EngineError::refused(Diagnostic {
-                code: "engine.binding_not_causal".to_string(),
-                message: format!(
-                    "`{name}` moves from {} to {} at sample {}, and a sample before it can \
-                     hear that",
-                    shown(was),
-                    shown(now),
-                    checkpoint.at
-                ),
-                location: Located::at(target, None),
-                help: "move only release, to a key-up at or past the checkpoint".to_string(),
-            }));
-        }
-    }
-    Ok(())
-}
-
-fn shown(value: Option<f64>) -> String {
-    value.map_or("unbound".to_string(), |v| v.to_string())
-}
-
-fn mismatch(target: &str, what: &str) -> EngineError {
-    EngineError::refused(Diagnostic {
-        code: "engine.checkpoint_mismatch".to_string(),
-        message: format!("this checkpoint was taken of {what}, not of this `{target}` stream"),
-        location: Located::at(target, None),
-        help: "resume a checkpoint on the stream it was taken of".to_string(),
-    })
-}
-
-/// Each binding names a word and holds a finite number.
-fn words(bindings: &[(String, f64)]) -> Result<(), EngineError> {
-    for (name, value) in bindings {
-        let word = name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-        if !word || !value.is_finite() {
-            return Err(refusal(format!("`{name}` bound to {value}")));
-        }
-    }
-    Ok(())
-}
-
-/// The graph with `streamed` defined as `target`, each of `bindings` a named argument on
-/// its own ref.
-fn bound(graph: &Graph, target: &Expr, bindings: &[(String, f64)]) -> Result<Graph, EngineError> {
-    words(bindings)?;
-    let mut call = target.clone();
-    for (name, value) in bindings {
-        let Expr::Ref { binds, .. } = &mut call else {
-            return Err(refusal(format!(
-                "`{name}` binds a ref, and `{}` is no ref",
-                sva_ast::render_expr(target)
-            )));
-        };
-        binds.push((name.clone(), Expr::Lit(sva_ast::Literal::Num(*value))));
-    }
+/// The graph with `streamed` defined as `target`, typed, scheduled and ranged.
+fn shelled(graph: &Graph, target: &Expr, config: &RenderConfig) -> Result<Render, EngineError> {
     let mut wrapped = graph.clone();
-    if !wrapped.define(STREAMED, call) {
+    if !wrapped.define(STREAMED, target.clone()) {
         return Err(refusal(format!(
             "this composition already has a node named `{STREAMED}`"
         )));
     }
-    Ok(wrapped)
+    let held = prepared(&wrapped, STREAMED)?;
+    sampled::on_the_grid(&held.tys, config.rate)?;
+    let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
+    let audio = schedule.materialize.clone();
+    let mut shell = Render::shell(held.tys, held.root, config.clone(), schedule);
+    reach::streamed(&mut shell, &audio)?;
+    Ok(shell)
+}
+
+fn order(shell: &Render) -> Vec<sva_formula::NodeId> {
+    shell.schedule.materialize.clone()
+}
+
+fn root_of(shell: &Render, nodes: &[Driven]) -> Result<usize, EngineError> {
+    nodes
+        .iter()
+        .position(|n| n.id == shell.root)
+        .ok_or_else(|| EngineError::UnknownNode(shell.tys.name(shell.root).to_string()))
 }
 
 fn refusal(what: String) -> EngineError {
@@ -292,7 +163,6 @@ fn refusal(what: String) -> EngineError {
         code: "engine.no_stream".to_string(),
         message: format!("this target opens no stream: {what}"),
         location: Located::at(STREAMED, None),
-        help: "stream a ref the composition defines, and bind each name to a finite number"
-            .to_string(),
+        help: "stream an expression over the nodes the composition defines".to_string(),
     })
 }

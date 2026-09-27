@@ -150,32 +150,6 @@ fn representations_of(names: &[String]) -> Result<Vec<Asked>, JsValue> {
         .collect()
 }
 
-fn bindings_of(bindings: &JsValue) -> Result<Vec<(String, f64)>, JsValue> {
-    if bindings.is_undefined() || bindings.is_null() {
-        return Ok(Vec::new());
-    }
-    let object = bindings.dyn_ref::<js_sys::Object>().ok_or_else(|| {
-        refuse(
-            "`bindings` is not an object".into(),
-            "pass an object of numbers, such as { release: 1.5 }",
-        )
-    })?;
-    js_sys::Object::entries(object)
-        .iter()
-        .map(|entry| {
-            let pair = js_sys::Array::from(&entry);
-            let name = pair.get(0).as_string().unwrap_or_default();
-            match pair.get(1).as_f64() {
-                Some(value) => Ok((name, value)),
-                None => Err(refuse(
-                    format!("`{name}` is bound to something that is not a number"),
-                    "bind each name to a number",
-                )),
-            }
-        })
-        .collect()
-}
-
 /// Nothing in a browser pushes back when a store grows inside the tab's own address space.
 const DEFAULT_CACHE_BYTES: u64 = 256 << 20;
 
@@ -246,9 +220,7 @@ impl Composition {
             .map_err(|e| thrown(&e))
     }
 
-    /// `target` block by block over the extents a render takes, a root whose support never
-    /// ends pulled on; each named argument its own ref writes as a number is one `resume` may
-    /// move. `options` sets `rate`, `bits` and `until`.
+    /// `target` block by block over the nodes held now. `options`: `rate`, `bits`, `until`.
     pub fn stream(&self, target: &str, block: usize, options: JsValue) -> Result<Stream, JsValue> {
         let options = options_of(&options, &["rate", "bits", "until"])?;
         let job = Job {
@@ -258,7 +230,10 @@ impl Composition {
             ..Job::over(&self.inner, target)
         };
         sva_core::stream(&job, block)
-            .map(|inner| Stream { inner })
+            .map(|inner| Stream {
+                inner,
+                source: self.inner.clone(),
+            })
             .map_err(|e| thrown(&e))
     }
 
@@ -448,6 +423,7 @@ impl Rendering {
 #[wasm_bindgen]
 pub struct Stream {
     inner: sva_core::Stream,
+    source: sva_ast::Composition,
 }
 
 #[wasm_bindgen]
@@ -477,24 +453,19 @@ impl Stream {
         Ok(held.len())
     }
 
-    pub fn checkpoint(&self) -> Checkpoint {
-        Checkpoint {
-            inner: self.inner.checkpoint(),
-        }
+    /// `expr` in place of what plays from the next block on; its `t` is the stream's own.
+    pub fn edit(&mut self, expr: &str) -> Result<(), JsValue> {
+        sva_core::edit(&mut self.inner, &self.source, expr).map_err(|e| thrown(&e))
     }
 
-    /// `{ samples, priced_flops, waves }` since it opened or resumed.
+    /// `{ samples, priced_flops, waves }` since it opened.
     pub fn work(&self) -> Result<JsValue, JsValue> {
         parse(&work_json(&self.inner.work()))
     }
 
-    /// Each of `bindings` in force from `checkpoint` on, over the value it replaces.
-    pub fn resume(&self, checkpoint: &Checkpoint, bindings: JsValue) -> Result<Stream, JsValue> {
-        let bindings = bindings_of(&bindings)?;
-        self.inner
-            .resume(&checkpoint.inner, &bindings)
-            .map(|inner| Stream { inner })
-            .map_err(|e| thrown(&CliError::Engine(e)))
+    #[wasm_bindgen(getter)]
+    pub fn held_bytes(&self) -> f64 {
+        self.inner.held_bytes() as f64
     }
 
     #[wasm_bindgen(getter)]
@@ -520,18 +491,5 @@ impl Stream {
     #[wasm_bindgen(getter)]
     pub fn end(&self) -> Option<f64> {
         self.inner.end().map(|end| end as f64)
-    }
-}
-
-#[wasm_bindgen]
-pub struct Checkpoint {
-    inner: sva_core::Checkpoint,
-}
-
-#[wasm_bindgen]
-impl Checkpoint {
-    #[wasm_bindgen(getter)]
-    pub fn position(&self) -> f64 {
-        self.inner.position() as f64
     }
 }

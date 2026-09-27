@@ -176,7 +176,7 @@ fn pulled(
         nodes.push(node::whole(held.root, root, range, support));
     }
     let root = nodes.iter().position(|n| n.id == held.root);
-    let mut driver = Driver::new(nodes, root, pulled, range.start, BLOCK, until, &held.config);
+    let mut driver = Driver::new(nodes, root, pulled, BLOCK, until, &held.config, false);
     while driver.pull(held)? {}
     let stop = recalled.or(driver.stop().filter(|stop| *stop < range.end));
     let mut driven = Vec::new();

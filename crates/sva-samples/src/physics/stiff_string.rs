@@ -14,6 +14,15 @@ pub(crate) struct StringGrid {
     pub(crate) damp_b: f64,
 }
 
+impl StringGrid {
+    pub(crate) fn bytes(&self) -> usize {
+        size_of::<Self>()
+            + super::floats(&self.y_now)
+            + super::floats(&self.y_prev)
+            + super::floats(&self.y_next)
+    }
+}
+
 /// The ghost a biharmonic stencil reads past either end.
 pub(crate) fn ghost_pinned(y: &[f64], n: usize, idx: isize, pin: f64) -> f64 {
     if idx < 0 {

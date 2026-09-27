@@ -268,6 +268,11 @@ impl WillemsenBilbaoSerafinSite {
 }
 
 impl Solver for WillemsenBilbaoSerafinSite {
+    fn bytes(&self) -> usize {
+        let grids: usize = self.strings.iter().map(StringGrid::bytes).sum();
+        size_of::<Self>() + grids + super::floats(&self.bow)
+    }
+
     fn step(&mut self) -> Result<f64, SampleError> {
         let dt = self.dt;
         let coupling_prev = (self.z, self.r_prev);

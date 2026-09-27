@@ -238,22 +238,6 @@ fn a_stream_from_a_later_start_is_the_whole_render_over_the_same_range() {
     }
 }
 
-/// A named argument the target writes as a number is a binding the stream holds, the same
-/// note as the node that binds it.
-#[test]
-fn a_named_argument_of_the_target_is_a_binding_the_stream_holds() {
-    let g = composition();
-    let target = sva_ast::parse_expr("@piano3(t, f0=261.63, vel=4.5)").expect("a ref");
-    let mut stream = Stream::open(&g, &target, config(2_000, four())).expect("a stream");
-    let first = stream.next_block().expect("a block").expect("no end");
-    assert_eq!(first.plane(0), &whole(&g, "note", 2_000)[..]);
-    let refused = stream
-        .resume(&stream.checkpoint(), &[("2x".into(), 1.0)])
-        .err()
-        .expect("a name that is no word refuses");
-    assert_eq!(refused.code(), "engine.no_stream", "{refused}");
-}
-
 #[test]
 fn a_node_no_block_reads_alone_refuses_the_stream() {
     let g = composition();

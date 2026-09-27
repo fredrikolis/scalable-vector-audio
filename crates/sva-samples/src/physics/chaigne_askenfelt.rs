@@ -311,6 +311,13 @@ impl Solver for ChaigneAskenfeltSite {
         Ok(self.advance())
     }
 
+    fn bytes(&self) -> usize {
+        let grids: usize = self.strings.iter().map(StringGrid::bytes).sum();
+        let strike: usize = self.strike.iter().map(|w| super::floats(w)).sum();
+        let felt: usize = self.felt.iter().map(std::mem::size_of_val).sum();
+        size_of::<Self>() + grids + strike + felt + super::floats(&self.tensions)
+    }
+
     /// Strings, hammer, bridge and step count move; the felt, landing and proof stay this site's.
     fn take_motion(&mut self, held: &dyn Solver) -> bool {
         let Some(held) = held.as_any().downcast_ref::<ChaigneAskenfeltSite>() else {

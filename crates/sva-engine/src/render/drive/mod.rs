@@ -1,5 +1,6 @@
-// Concern: pulls a target's nodes block by block until its range ends or `until` holds | Non-concern: what one node computes, bindings and checkpoints (stream.rs) | IO: (&Render) -> the root's blocks
+// Concern: pulls a target's nodes block by block until its range ends or `until` holds, dropping what ended | Non-concern: what one node computes, what an edit keeps | IO: (&Render) -> the root's blocks
 
+pub(super) mod edit;
 pub(super) mod node;
 
 use sva_samples::{Extent, Tape};
@@ -16,7 +17,7 @@ pub(super) struct Driver {
     pub(super) nodes: Vec<Driven>,
     /// `None` where only the nodes under it are pulled.
     pub(super) root: Option<usize>,
-    start: i64,
+    pub(super) start: i64,
     pub(super) at: i64,
     last: i64,
     block: usize,
@@ -24,6 +25,8 @@ pub(super) struct Driver {
     frame: usize,
     stop: Option<i64>,
     end: Option<i64>,
+    /// Each node past its extent and its readers' reach is dropped.
+    prunes: bool,
     pub(super) work: Work,
 }
 
@@ -81,26 +84,37 @@ impl Driver {
         nodes: Vec<Driven>,
         root: Option<usize>,
         range: Extent,
-        at: i64,
         block: usize,
         until: Option<Until>,
         config: &RenderConfig,
+        prunes: bool,
     ) -> Driver {
         Driver {
             nodes,
             root,
             start: range.start,
-            at,
+            at: range.start,
             last: range.end,
             block,
             until,
             frame: frame(config),
             stop: None,
             end: None,
+            prunes,
             work: Work {
                 waves: Some(0),
                 ..Work::default()
             },
+        }
+    }
+
+    /// An edit's nodes, from where it stands.
+    pub(super) fn replace(&mut self, nodes: Vec<Driven>, root: Option<usize>, last: i64) {
+        self.nodes = nodes;
+        self.root = root;
+        self.last = last;
+        if self.stop.is_none() {
+            self.end = None;
         }
     }
 
@@ -126,15 +140,27 @@ impl Driver {
             .max(from);
         for n in 0..self.nodes.len() {
             let (done, rest) = self.nodes.split_at_mut(n);
-            rest[0].run(shell, done, from, to)?;
-            let (priced, waves) = rest[0].work(from, to);
+            let lag = rest[0].lag;
+            let (ran, until) = rest[0].run(shell, done, from - lag, to - lag)?;
+            let (priced, waves) = rest[0].work(ran, until);
             self.work.priced_flops += priced;
             self.work.waves = self.work.waves.zip(waves).map(|(held, more)| held + more);
         }
         self.at = to;
         self.work.samples += (to - from) as u64;
         self.settle(shell, from, to);
+        if self.prunes {
+            for (at, node) in self.nodes.iter_mut().enumerate() {
+                if Some(at) != self.root && node.spent(to - node.lag) {
+                    node.end();
+                }
+            }
+        }
         Ok(true)
+    }
+
+    pub(super) fn bytes(&self) -> usize {
+        self.nodes.iter().map(Driven::bytes).sum()
     }
 
     /// The one place `until` is checked. A level is known once its frame is whole, so only the

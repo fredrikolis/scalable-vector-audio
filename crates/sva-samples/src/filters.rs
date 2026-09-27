@@ -216,6 +216,16 @@ impl FilterSite {
     }
 
     /// A stream reads no trace, so each block drops the last one's and keeps the room.
+    /// What one copy of this site holds.
+    pub fn bytes(&self) -> usize {
+        let frames: usize = self
+            .lanes
+            .iter()
+            .map(|l| std::mem::size_of_val(l.frames.as_slice()))
+            .sum();
+        size_of::<Self>() + std::mem::size_of_val(self.lanes.as_slice()) + frames
+    }
+
     pub fn forget_frames(&mut self) {
         for lane in &mut self.lanes {
             lane.frames.clear();

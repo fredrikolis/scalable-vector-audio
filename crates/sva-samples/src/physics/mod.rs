@@ -32,6 +32,9 @@ use willemsen_bilbao_serafin::{WillemsenBilbaoSerafinParams, WillemsenBilbaoSera
 pub trait Solver: Held {
     fn step(&mut self) -> Result<f64, SampleError>;
 
+    /// What one copy of this site holds, its grids and parameters alike.
+    fn bytes(&self) -> usize;
+
     /// `held`'s motion under this site's own parameters, where the two share one.
     fn take_motion(&mut self, _held: &dyn Solver) -> bool {
         false
@@ -127,6 +130,11 @@ pub fn site(p: &Params, rate: u32) -> Result<Box<dyn Solver>, SampleError> {
             Box::new(BotteldoorenSite::new(p, sr))
         }
     })
+}
+
+/// A slice's own heap share.
+pub(crate) fn floats(held: &[f64]) -> usize {
+    std::mem::size_of_val(held)
 }
 
 fn under_ceiling(model: &'static str, nodes: f64, ceiling: usize) -> Result<(), SampleError> {

@@ -66,6 +66,14 @@ impl Tape {
         self.planes[c].push(value);
     }
 
+    /// Everything from `end` on dropped.
+    pub fn cut(&mut self, end: i64) {
+        let kept = (end - self.base).clamp(0, self.planes[0].len() as i64) as usize;
+        for plane in &mut self.planes {
+            plane.truncate(kept);
+        }
+    }
+
     pub fn forget_before(&mut self, from: i64) {
         let gone = (from - self.base).clamp(0, self.planes[0].len() as i64) as usize;
         if gone == 0 {

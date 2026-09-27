@@ -377,6 +377,20 @@ impl BoreSite {
 }
 
 impl Solver for BoreSite {
+    fn bytes(&self) -> usize {
+        let duct = &self.duct;
+        size_of::<Self>()
+            + super::floats(&duct.psi)
+            + super::floats(&duct.v)
+            + super::floats(&duct.s_half)
+            + super::floats(&duct.bar_s)
+            + std::mem::size_of_val(duct.loss_v.as_slice())
+            + std::mem::size_of_val(duct.loss_v_state.as_slice())
+            + std::mem::size_of_val(duct.loss_t.as_slice())
+            + std::mem::size_of_val(duct.loss_t_state.as_slice())
+            + std::mem::size_of_val(duct.toneholes.as_slice())
+    }
+
     fn step(&mut self) -> Result<f64, SampleError> {
         Ok(self.advance())
     }

@@ -326,6 +326,16 @@ impl RhaoutiChaigneJolySite {
 }
 
 impl Solver for RhaoutiChaigneJolySite {
+    fn bytes(&self) -> usize {
+        let (grid, patch) = (&self.grid, &self.contact_patch);
+        size_of::<Self>()
+            + super::floats(&grid.u_now)
+            + super::floats(&grid.u_prev)
+            + super::floats(&grid.u_next)
+            + std::mem::size_of_val(patch.nodes.as_slice())
+            + super::floats(&patch.weights)
+    }
+
     fn step(&mut self) -> Result<f64, SampleError> {
         Ok(self.advance())
     }

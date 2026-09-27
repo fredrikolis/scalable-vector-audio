@@ -205,7 +205,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 75] = [
+pub static REGISTRY: [(&str, &str); 73] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -452,15 +452,7 @@ pub static REGISTRY: [(&str, &str); 75] = [
     ),
     (
         "engine.no_stream",
-        "a stream over a node no block reads alone, or a target or binding it cannot open",
-    ),
-    (
-        "engine.binding_not_causal",
-        "a binding moved at a checkpoint where a sample before it could hear the move",
-    ),
-    (
-        "engine.checkpoint_mismatch",
-        "a checkpoint resumed on a stream or node other than the one it was taken of",
+        "a stream over a node no block reads alone, or a target it cannot open",
     ),
     (
         "engine.unbounded_extent",

@@ -133,6 +133,23 @@ pub struct MachineState {
     states: Vec<State>,
 }
 
+impl State {
+    fn bytes(&self) -> usize {
+        match self {
+            State::Filter(filter) => filter.bytes(),
+            State::Physics(solver) => solver.bytes(),
+        }
+    }
+}
+
+impl MachineState {
+    /// What one copy of this state holds.
+    pub fn bytes(&self) -> usize {
+        let states: usize = self.states.iter().map(State::bytes).sum();
+        size_of::<Self>() + std::mem::size_of_val(self.sites.as_slice()) + states
+    }
+}
+
 impl Machine {
     pub fn open(
         renderer: &NodeRenderer,
@@ -171,6 +188,16 @@ impl Machine {
 
     pub fn width(&self) -> usize {
         self.program.width
+    }
+
+    /// Whether any call site holds state of its own.
+    pub fn stateful(&self) -> bool {
+        !self.program.sites.is_empty()
+    }
+
+    /// What its call sites hold.
+    pub fn bytes(&self) -> usize {
+        self.states.iter().map(State::bytes).sum()
     }
 
     pub fn run_to(&mut self, to: i64, reads: &[Window], own: &mut Tape) -> Result<(), SampleError> {
@@ -243,6 +270,21 @@ impl Machine {
             sites: self.program.sites.clone(),
             states: self.states.clone(),
         }
+    }
+
+    /// Whether `carry` takes `held`: the same sites, a solver's release alone aside.
+    pub fn accepts(&self, held: &MachineState) -> bool {
+        held.sites.len() == self.program.sites.len()
+            && self
+                .program
+                .sites
+                .iter()
+                .zip(&held.sites)
+                .all(|pair| match pair {
+                    (mine, theirs) if mine == theirs => true,
+                    (Site::Physics(a), Site::Physics(b)) => a.differs_in_release_alone(b),
+                    _ => false,
+                })
     }
 
     /// Takes `held`'s state site by site. A solver whose release alone moved keeps its own

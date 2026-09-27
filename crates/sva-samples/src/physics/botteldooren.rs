@@ -320,6 +320,16 @@ impl BotteldoorenSite {
 }
 
 impl Solver for BotteldoorenSite {
+    fn bytes(&self) -> usize {
+        let (grid, patch) = (&self.grid, &self.source_patch);
+        size_of::<Self>()
+            + super::floats(&grid.p_now)
+            + super::floats(&grid.p_prev)
+            + super::floats(&grid.p_next)
+            + std::mem::size_of_val(patch.nodes.as_slice())
+            + super::floats(&patch.weights)
+    }
+
     fn step(&mut self) -> Result<f64, SampleError> {
         Ok(self.advance())
     }

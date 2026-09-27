@@ -36,7 +36,7 @@ use sva_engine::{
     Ask, DEFAULT_SAMPLE_RATE, EngineError, Range, RenderConfig, StreamConfig, render,
 };
 
-pub use sva_engine::{Checkpoint, QuietTail, Stream, Until};
+pub use sva_engine::{QuietTail, Stream, Until};
 
 pub use sva_engine::{Answer, Extent, Label, Output, Representation};
 pub use sva_engine::{Cache, CachePolicy, PrunePolicy};
@@ -248,6 +248,24 @@ pub fn stream(job: &Job, block: usize) -> Result<Stream, CliError> {
         render: config,
     };
     Stream::open(&graph, &target, config).map_err(|e| CliError::Engine(as_written(e, job.target)))
+}
+
+/// `target`, an expression over `source` with no interval of its own, in place of what
+/// `stream` plays from its next block on.
+pub fn edit(stream: &mut Stream, source: &dyn Source, target: &str) -> Result<(), CliError> {
+    let (graph, config) = settle(&Job::over(source, target))?;
+    if config.range != Range::default() {
+        return Err(CliError::Usage(format!(
+            "`{target}` reads an interval, and an edit keeps the stream's own"
+        )));
+    }
+    let expr = graph
+        .expr(PROBE)
+        .cloned()
+        .expect("the target was defined as the probe");
+    stream
+        .edit(&graph, &expr)
+        .map_err(|e| CliError::Engine(as_written(e, target)))
 }
 
 /// A double holds no bit past its own mantissa, and one bit writes only zero.

@@ -636,10 +636,10 @@ fn refused_as(refused: Option<JsValue>, code: &str) {
     );
 }
 
-/// A sampled filter over a closed form: the stream's blocks are the render's samples, and a
-/// release bound at a checkpoint closes the envelope there.
+/// A sampled filter over a closed form: the stream's blocks are the render's samples, and an
+/// edit binding `release` at the stream's position closes the envelope there.
 #[wasm_bindgen_test]
-fn a_stream_crosses_block_by_block_and_resumes_released_at_a_checkpoint() {
+fn a_stream_crosses_block_by_block_and_an_edit_releases_it() {
     let mut held = page();
     held.insert(
         "filtered",
@@ -653,23 +653,13 @@ fn a_stream_crosses_block_by_block_and_resumes_released_at_a_checkpoint() {
     assert_eq!(heard[..], whole[..heard.len()]);
 
     let mut gated = opened(&held, "gated");
-    blocks(&mut gated, 3);
-    let checkpoint = gated.checkpoint();
-    assert_eq!(checkpoint.position(), (3 * BLOCK) as f64);
-    let key_up = js_sys::Object::new();
-    let at = (3 * BLOCK) as f64 / 8000.0;
-    js_sys::Reflect::set(&key_up, &"release".into(), &at.into())
-        .unwrap_or_else(|_| unreachable!("an object takes a key"));
-    let mut released = gated
-        .resume(&checkpoint, key_up.into())
-        .unwrap_or_else(|_| unreachable!("a release at the checkpoint"));
-    assert!(blocks(&mut released, 2).iter().all(|v| *v == 0.0));
-
-    let early = js_sys::Object::new();
-    js_sys::Reflect::set(&early, &"release".into(), &(at / 2.0).into())
-        .unwrap_or_else(|_| unreachable!("an object takes a key"));
-    let refused = gated.resume(&checkpoint, early.into());
-    refused_as(refused.err(), "engine.binding_not_causal");
+    assert!(blocks(&mut gated, 3).iter().any(|v| *v != 0.0));
+    let at = gated.position() / 8000.0;
+    gated
+        .edit(&format!("@gated(t, release={at})"))
+        .unwrap_or_else(|e| unreachable!("{}", as_text(&field(&e, "refusal"))));
+    assert!(blocks(&mut gated, 2).iter().all(|v| *v == 0.0));
+    refused_as(gated.edit("@gated([0, 1s])").err(), "validation_error");
 }
 
 /// Component `c` of a block starts at `c * block` in the array a page hands over.
