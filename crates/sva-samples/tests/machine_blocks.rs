@@ -23,6 +23,7 @@ fn renderer() -> NodeRenderer {
     NodeRenderer::Add(vec![
         NodeRenderer::Filter {
             site: SiteId(0),
+            from: 0,
             x: Box::new(NodeRenderer::Buffer {
                 id: BufId(0),
                 shift: -2,
@@ -37,7 +38,10 @@ fn renderer() -> NodeRenderer {
         ]),
         NodeRenderer::Mul(vec![
             NodeRenderer::Const(40.0),
-            NodeRenderer::Physics { site: SiteId(1) },
+            NodeRenderer::Physics {
+                site: SiteId(1),
+                from: 0,
+            },
         ]),
     ])
 }

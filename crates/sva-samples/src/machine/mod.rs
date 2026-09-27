@@ -70,8 +70,8 @@ impl Clone for Box<dyn Solver> {
 fn open(p: &Program, rate: u32) -> Result<Vec<State>, SampleError> {
     let mut lanes = vec![1usize; p.sites.len()];
     for (slot, op) in p.ops.iter().enumerate() {
-        if let Op::Filter(id) = op {
-            lanes[id.0 as usize] = p.widths[slot];
+        if let Op::Filter { site, .. } = op {
+            lanes[site.0 as usize] = p.widths[slot];
         }
     }
     p.sites
@@ -261,11 +261,11 @@ fn step(
 
 fn arity_of(op: &Op) -> usize {
     match op {
-        Op::Const(_) | Op::Time | Op::Read { .. } | Op::SelfAt { .. } | Op::Physics(_) => 0,
+        Op::Const(_) | Op::Time | Op::Read { .. } | Op::SelfAt { .. } | Op::Physics { .. } => 0,
         Op::Map(_) | Op::Crop { .. } | Op::Channel(_) => 1,
         Op::Sub | Op::Div | Op::Pow | Op::Zip(_) => 2,
         Op::Add(n) | Op::Mul(n) | Op::Join(n) => *n,
-        Op::Filter(_) => 4,
+        Op::Filter { .. } => 4,
     }
 }
 
@@ -346,14 +346,15 @@ fn fill(
             }
         }
         Op::Channel(k) => result[0] = arg(0)[*k],
-        Op::Filter(id) => {
-            let State::Filter(filter) = &mut states[id.0 as usize] else {
+        Op::Filter { from, .. } | Op::Physics { from, .. } if n < *from => result.fill(0.0),
+        Op::Filter { site, .. } => {
+            let State::Filter(filter) = &mut states[site.0 as usize] else {
                 unreachable!("a filter op names a filter site")
             };
             filter.process(arg(0), arg(1), arg(2), arg(3), result, sr, n);
         }
-        Op::Physics(id) => {
-            let State::Physics(solver) = &mut states[id.0 as usize] else {
+        Op::Physics { site, .. } => {
+            let State::Physics(solver) = &mut states[site.0 as usize] else {
                 unreachable!("a physics op names a physics site")
             };
             result[0] = solver.step()?;

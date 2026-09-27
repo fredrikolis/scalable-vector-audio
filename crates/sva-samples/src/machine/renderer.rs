@@ -62,8 +62,10 @@ pub enum NodeRenderer {
         x: Box<NodeRenderer>,
         k: usize,
     },
+    /// Zero, stepping nothing, before `from`, where its state starts.
     Filter {
         site: SiteId,
+        from: i64,
         x: Box<NodeRenderer>,
         cutoff: Box<NodeRenderer>,
         q: Box<NodeRenderer>,
@@ -71,6 +73,7 @@ pub enum NodeRenderer {
     },
     Physics {
         site: SiteId,
+        from: i64,
     },
 }
 

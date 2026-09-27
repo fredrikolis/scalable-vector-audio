@@ -28,6 +28,13 @@ fn composition() -> Graph {
                 "lowpass(sample(crop(0.5*sin(2*pi*220*t), 0s, 0.05s)), 220, q=30)\n",
             ),
             ("whole", "istft(stft(@held, window=256, hop=64))\n"),
+            ("smoothed", "lp(crop(4, 0s, 2s), cutoff=8)\n"),
+            ("steps", "0.5 + 0.5*rand(t - t % 0.125, seed=17)\n"),
+            (
+                "drift",
+                "0.5*(1 - cos(2*pi*0)) + 0.5*lp(sample(@steps), cutoff=55)\n",
+            ),
+            ("drift_late", "@drift(t - 0.5s)\n"),
         ],
     )
 }
@@ -139,6 +146,39 @@ fn a_sampled_form_read_at_a_shift_is_its_closed_form_read_there() {
         .zip(&said)
         .fold(0.0f64, |held, (a, b)| held.max((a - b).abs()));
     assert!(worst < 1e-9, "sample() moved the value by {worst}");
+}
+
+/// A range may start before 0, and then holds what one from 0 holds where they meet.
+#[test]
+fn a_range_from_before_zero_reads_a_filtered_crop_where_it_sounds() {
+    let g = composition();
+    let from_zero = over(&g, "smoothed", 0, secs(1.0));
+    assert!(from_zero.iter().any(|v| *v != 0.0), "silence tests nothing");
+    let early = over(&g, "smoothed", -secs(0.5), secs(1.0));
+    assert!(early[..secs(0.5) as usize].iter().all(|v| *v == 0.0));
+    assert_eq!(early[secs(0.5) as usize..], from_zero[..]);
+}
+
+/// A filter of an input with no start starts at t = 0 however it is read, earlier or late,
+/// here where it runs inside its reader's own program.
+#[test]
+fn a_filter_starts_where_its_support_does_whatever_reads_it() {
+    let g = composition();
+    let from_zero = over(&g, "drift", 0, secs(1.0));
+    assert!(from_zero.iter().any(|v| *v != 0.0), "silence tests nothing");
+    let early = over(&g, "drift", -secs(0.5), secs(1.0));
+    let late = over(&g, "drift_late", 0, secs(1.5));
+    for (read, what) in [
+        (early, "read from before 0"),
+        (late, "read half a second late"),
+    ] {
+        let (before, after) = read.split_at(secs(0.5) as usize);
+        assert!(
+            before.iter().all(|v| *v == 0.0),
+            "{what}: sounds before t = 0"
+        );
+        assert_eq!(after, &from_zero[..], "{what}");
+    }
 }
 
 /// A short-time transform reads its input whole, so an input with no end refuses.

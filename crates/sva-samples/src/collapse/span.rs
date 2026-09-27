@@ -10,7 +10,7 @@ pub(super) fn nonzero(lane: &Lane, extent: Extent, rate: u32) -> Vec<(usize, usi
     let Some(spans) = windows(lane, rate) else {
         return vec![(0, len)];
     };
-    let within = |n: i64| (n - extent.start).clamp(0, len as i64) as usize;
+    let within = |n: i64| n.saturating_sub(extent.start).clamp(0, len as i64) as usize;
     spans
         .into_iter()
         .map(|(from, to)| (within(from), within(to)))

@@ -29,8 +29,14 @@ pub(crate) enum Op {
     },
     Join(usize),
     Channel(usize),
-    Filter(SiteId),
-    Physics(SiteId),
+    Filter {
+        site: SiteId,
+        from: i64,
+    },
+    Physics {
+        site: SiteId,
+        from: i64,
+    },
 }
 
 /// What the engine already knows from typing: how wide the node is, how wide each collapsed
@@ -145,6 +151,7 @@ pub(crate) fn lower(
         }
         NodeRenderer::Filter {
             site,
+            from,
             x,
             cutoff,
             q,
@@ -154,9 +161,19 @@ pub(crate) fn lower(
             for arg in [cutoff, q, gain] {
                 width = meet(width, lower(arg, layout, ops, widths)?)?;
             }
-            push(Op::Filter(*site), width, ops, widths)
+            let op = Op::Filter {
+                site: *site,
+                from: *from,
+            };
+            push(op, width, ops, widths)
         }
-        NodeRenderer::Physics { site } => push(Op::Physics(*site), 1, ops, widths),
+        NodeRenderer::Physics { site, from } => {
+            let op = Op::Physics {
+                site: *site,
+                from: *from,
+            };
+            push(op, 1, ops, widths)
+        }
     };
     Ok(w)
 }

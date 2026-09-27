@@ -33,6 +33,7 @@ fn renderer() -> NodeRenderer {
     NodeRenderer::Add(vec![
         NodeRenderer::Filter {
             site: SiteId(0),
+            from: 0,
             x: Box::new(NodeRenderer::Buffer {
                 id: sva_samples::BufId(0),
                 shift: 0,

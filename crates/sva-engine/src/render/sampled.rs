@@ -11,6 +11,7 @@ use crate::error::{Diagnostic, EngineError, Located};
 use crate::loops::Delay;
 use crate::offset::Offset;
 use crate::render::Render;
+use crate::render::extent::Supports;
 use crate::typing::Value;
 
 /// A sampled node is the dearest kind this engine runs, so it is keyed as a collapse is: off
@@ -79,6 +80,8 @@ pub(super) fn program_reading(
 ) -> Result<Program, EngineError> {
     let mut build = Build {
         held,
+        supports: Supports::new(&held.tys, held.config.rate),
+        owner: id,
         reads: Vec::new(),
         sites: Vec::new(),
         site_nodes: Vec::new(),
@@ -130,6 +133,8 @@ impl Program {
 
 struct Build<'a> {
     held: &'a Render,
+    supports: Supports<'a>,
+    owner: NodeId,
     reads: Vec<NodeId>,
     sites: Vec<Site>,
     site_nodes: Vec<NodeId>,
@@ -169,7 +174,8 @@ impl Build<'_> {
             },
             Value::Solver(params) => {
                 let site = self.site(Site::Physics(params), id);
-                Ok(NodeRenderer::Physics { site })
+                let from = self.state_start(id);
+                Ok(NodeRenderer::Physics { site, from })
             }
             Value::Filter {
                 shape,
@@ -181,6 +187,7 @@ impl Build<'_> {
                 let site = self.site(Site::Filter(shape), id);
                 Ok(NodeRenderer::Filter {
                     site,
+                    from: self.state_start(id),
                     x: Box::new(self.of(x)?),
                     cutoff: Box::new(self.of(cutoff)?),
                     q: Box::new(self.of(q)?),
@@ -207,6 +214,14 @@ impl Build<'_> {
         let id = BufId(self.reads.len() as u32);
         self.reads.push(source);
         NodeRenderer::Buffer { id, shift }
+    }
+
+    /// Where call site `id`'s state starts: its own support's start, never where the run
+    /// reading it starts.
+    fn state_start(&self, id: NodeId) -> i64 {
+        self.supports
+            .state_start(id, self.owner)
+            .unwrap_or(i64::MIN)
     }
 
     fn site(&mut self, site: Site, id: NodeId) -> SiteId {

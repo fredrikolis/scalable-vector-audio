@@ -162,12 +162,14 @@ fn silenced(r: &NodeRenderer, kept: &dyn Fn(BufId) -> bool) -> NodeRenderer {
         },
         NodeRenderer::Filter {
             site,
+            from,
             x,
             cutoff,
             q,
             gain,
         } => NodeRenderer::Filter {
             site: *site,
+            from: *from,
             x: one(x, kept),
             cutoff: one(cutoff, kept),
             q: one(q, kept),
