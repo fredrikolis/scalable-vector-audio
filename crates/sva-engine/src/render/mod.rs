@@ -2,8 +2,10 @@
 
 mod answer;
 pub(crate) mod bound;
+mod drive;
 pub(crate) mod extent;
 mod pointwise;
+mod pull;
 mod quiet;
 mod reach;
 mod sampled;
@@ -90,8 +92,9 @@ impl RenderConfig {
 }
 
 pub use answer::{answer, answer_buffer, sketch_atom};
+pub use drive::Block;
 pub use quiet::{QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, quiet_tails};
-pub use stream::{Block, Checkpoint, STREAMED, Stream, StreamConfig};
+pub use stream::{Checkpoint, STREAMED, Stream, StreamConfig};
 pub use until::Until;
 
 pub struct Render {
@@ -247,7 +250,6 @@ pub(crate) fn prepared<'g>(graph: &'g Graph, target: &str) -> Result<Prepared<'g
     })
 }
 
-/// The range and every extent under it are decided before the first sample.
 pub(crate) fn run(
     prepared: Prepared,
     config: RenderConfig,
@@ -260,12 +262,7 @@ pub(crate) fn run(
         forks: schedule::forks(&held.tys, &held.schedule.materialize),
         root: held.root,
     };
-    match (held.range, held.config.until.clone()) {
-        (Some(range), Some(until)) => {
-            stopping(&mut held, &lenses, &looped, &costed, range, &until)?
-        }
-        _ => computed(&mut held, &lenses, &looped)?,
-    }
+    pull::computed(&mut held, &lenses, &looped, &costed)?;
     compose_read(&mut held);
     stamp(&mut held);
     Ok(held)
@@ -310,80 +307,6 @@ pub fn plan(graph: &Graph, target: &str, config: RenderConfig) -> Result<Render,
     planned(prepared(graph, target)?, config).map(|(held, ..)| held)
 }
 
-fn computed(
-    held: &mut Render,
-    lenses: &Lenses,
-    looped: &BTreeMap<String, String>,
-) -> Result<(), EngineError> {
-    affordable(held)?;
-    let needed = lenses.needed(held);
-    unlooped(held, &needed, looped)?;
-    for id in held.schedule.materialize.clone() {
-        if needed.contains(&id) {
-            materialize(held, id, lenses)?;
-        }
-    }
-    Ok(())
-}
-
-/// Rendered over a first second, then twice as far each time, until `until` holds, which
-/// ends the range there, or the range ends. Each pass renders from the range's start.
-fn stopping(
-    held: &mut Render,
-    lenses: &Lenses,
-    looped: &BTreeMap<String, String>,
-    costed: &[NodeId],
-    range: Extent,
-    until: &Until,
-) -> Result<(), EngineError> {
-    let rate = held.config.rate;
-    let frame_secs = held
-        .config
-        .asks
-        .iter()
-        .find_map(|ask| match ask.representation {
-            crate::query::Representation::Envelope { frame_secs } => Some(frame_secs),
-            _ => None,
-        });
-    let frame = (frame_secs
-        .flatten()
-        .unwrap_or(crate::query::DEFAULT_FRAME_SECS)
-        * f64::from(rate))
-    .round() as usize;
-    let mut reach = i64::from(rate);
-    loop {
-        let to = range.end.min(range.start.saturating_add(reach));
-        reach::extend(held, costed, Extent::new(range.start, to))?;
-        held.buffers.clear();
-        held.frames.clear();
-        held.labels.clear();
-        held.traces.clear();
-        computed(held, lenses, looped)?;
-        let root = held
-            .output(held.root)
-            .or_else(|| answer::on_the_grid(held, held.root).ok());
-        let Some(root) = root else {
-            return Ok(());
-        };
-        let known = until::Known::new(
-            root.plane(0),
-            range.start,
-            range.start,
-            frame,
-            rate,
-            to == range.end,
-        );
-        if let Some(stop) = until.first(&known, range.start, to) {
-            held.range = Some(Extent::new(range.start, stop));
-            return Ok(());
-        }
-        if to == range.end {
-            return Ok(());
-        }
-        reach = reach.saturating_mul(2);
-    }
-}
-
 /// A `flops` reading counts what the audio render would run, over the extents it would.
 fn counts(asks: &[Ask]) -> bool {
     asks.iter()
@@ -391,7 +314,7 @@ fn counts(asks: &[Ask]) -> bool {
 }
 
 /// Nothing steps or substitutes a loop of refs, so a node held over one refuses.
-fn unlooped(
+pub(super) fn unlooped(
     held: &Render,
     needed: &std::collections::BTreeSet<NodeId>,
     looped: &BTreeMap<String, String>,
@@ -413,7 +336,7 @@ fn unlooped(
 /// A reading that materializes nothing is never refused for cost: asking what a render
 /// would cost is not paying for it. Anything that runs is counted first, and a count past
 /// the budget refuses before a sample is computed.
-fn affordable(held: &Render) -> Result<(), EngineError> {
+pub(super) fn affordable(held: &Render) -> Result<(), EngineError> {
     if held.schedule.materialize.is_empty() {
         return Ok(());
     }
@@ -461,14 +384,18 @@ fn compose_read(held: &mut Render) {
 }
 
 pub(crate) struct Lenses<'r> {
-    recording: Option<&'r Recording<'r>>,
+    pub(super) recording: Option<&'r Recording<'r>>,
     volatile: volatile::Volatile,
     forks: std::collections::BTreeSet<NodeId>,
     root: NodeId,
 }
 
 impl Lenses<'_> {
-    fn at(&self, id: NodeId) -> Option<Lens<'_>> {
+    pub(super) fn slot(&self, id: NodeId) -> Option<sva_formula::Hash> {
+        self.volatile.slot(id)
+    }
+
+    pub(super) fn at(&self, id: NodeId) -> Option<Lens<'_>> {
         let fork = self.forks.contains(&id);
         self.recording
             .map(|r| r.at(self.volatile.slot(id), fork, id == self.root))
@@ -476,7 +403,7 @@ impl Lenses<'_> {
 
     /// What a reading asks for, what the policy keeps, and what those read that the store
     /// does not answer. A ledger holds them all.
-    fn needed(&self, held: &Render) -> std::collections::BTreeSet<NodeId> {
+    pub(super) fn needed(&self, held: &Render) -> std::collections::BTreeSet<NodeId> {
         let materialize = &held.schedule.materialize;
         let ledger = held.config.asks.iter().any(|ask| {
             matches!(
@@ -504,7 +431,7 @@ impl Lenses<'_> {
         needed
     }
 
-    fn answered(&self, held: &Render, id: NodeId) -> bool {
+    pub(super) fn answered(&self, held: &Render, id: NodeId) -> bool {
         let (Some(recording), Held::Sampled) = (self.recording, held.tys.ty(id).held) else {
             return false;
         };
@@ -527,7 +454,7 @@ pub(crate) fn sampled_ops(held: &Render, id: NodeId, extent: Option<Extent>) -> 
 }
 
 /// What the schedule orders before `id`, and every buffer its program reads behind those.
-fn reads(held: &Render, id: NodeId) -> Vec<NodeId> {
+pub(super) fn reads(held: &Render, id: NodeId) -> Vec<NodeId> {
     let mut out = schedule::materialized_operands(&held.tys, id);
     if matches!(held.tys.ty(id).held, Held::Sampled)
         && let Ok(program) = sampled::program(held, id)
@@ -540,7 +467,11 @@ fn reads(held: &Render, id: NodeId) -> Vec<NodeId> {
 
 /// A sampled node found in the store answers for everything under it, so what it reads is
 /// held here only where it missed.
-fn materialize(held: &mut Render, id: NodeId, lenses: &Lenses) -> Result<(), EngineError> {
+pub(super) fn materialize(
+    held: &mut Render,
+    id: NodeId,
+    lenses: &Lenses,
+) -> Result<(), EngineError> {
     if held.buffers.contains_key(&id) || held.frames.contains_key(&id) {
         return Ok(());
     }
@@ -703,7 +634,7 @@ fn remembered(
 
 /// A warm entry is the same bytes the cold run would write, so a hit is returned as it
 /// stands rather than checked against a second collapse.
-fn warm(
+pub(super) fn warm(
     held: &Render,
     id: NodeId,
     key: sva_formula::Hash,
@@ -719,7 +650,7 @@ fn warm(
     Some((entry.payload.samples().cloned()?, entry.label?))
 }
 
-fn store(key: sva_formula::Hash, buffer: &Buffer, label: &Label, cache: Option<&Lens>) {
+pub(super) fn store(key: sva_formula::Hash, buffer: &Buffer, label: &Label, cache: Option<&Lens>) {
     if let Some(cache) = cache {
         cache.store(
             key,

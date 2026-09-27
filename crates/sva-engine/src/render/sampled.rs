@@ -18,7 +18,14 @@ use crate::typing::{Typing, Value};
 /// A sampled node is the dearest kind this engine runs, so it is keyed as a collapse is: off
 /// the node's identity, the rate and the extent it was stepped over. Its length rides along.
 pub fn key(held: &Render, id: NodeId) -> Result<(sva_formula::Hash, usize), EngineError> {
-    let extent = held.extents.of(id);
+    key_over(held, id, held.extents.of(id))
+}
+
+pub(super) fn key_over(
+    held: &Render,
+    id: NodeId,
+    extent: Extent,
+) -> Result<(sva_formula::Hash, usize), EngineError> {
     let key = crate::cache::buffer_key(
         held.identity(id)?,
         held.config.rate,
@@ -141,7 +148,10 @@ impl Program {
         let live: Vec<Extent> = self
             .reads
             .iter()
-            .map(|r| live(&held.buffers[r], held.extents.support(*r)))
+            .map(|r| {
+                let buffer = &held.buffers[r];
+                live(&buffer.planes, buffer.start, held.extents.support(*r))
+            })
             .collect();
         let ctx = Ctx {
             rate: held.config.rate,
@@ -181,9 +191,9 @@ impl Program {
 
 /// Where a read can answer anything but +0.0: a held sample that is not +0.0, and any of
 /// its support the buffer does not hold, which no value answers.
-fn live(buffer: &Buffer, support: Extent) -> Extent {
-    let held = buffer.extent();
-    let nonzero = |n: &usize| buffer.planes.iter().any(|p| p[*n].to_bits() != 0);
+pub(super) fn live(planes: &[Vec<f64>], start: i64, support: Extent) -> Extent {
+    let held = Extent::new(start, start + planes.first().map_or(0, Vec::len) as i64);
+    let nonzero = |n: &usize| planes.iter().any(|p| p[*n].to_bits() != 0);
     let inner = match (0..held.len()).find(nonzero) {
         None => Extent::NOWHERE,
         Some(first) => {

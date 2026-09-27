@@ -34,6 +34,10 @@ impl Tape {
         self.origin
     }
 
+    pub fn planes(&self) -> &[Vec<f64>] {
+        &self.planes
+    }
+
     pub fn capacity(&self) -> usize {
         self.planes[0].capacity()
     }
@@ -75,6 +79,23 @@ impl Tape {
 
     pub fn into_planes(self) -> Vec<Vec<f64>> {
         self.planes
+    }
+
+    pub fn into_buffer(self, rate: u32) -> Buffer {
+        let mut out = Buffer::of_planes(rate, self.planes);
+        out.start = self.base;
+        out
+    }
+}
+
+/// A buffer held whole, silent before it starts.
+impl From<Buffer> for Tape {
+    fn from(buffer: Buffer) -> Tape {
+        Tape {
+            planes: buffer.planes,
+            base: buffer.start,
+            origin: buffer.start,
+        }
     }
 }
 

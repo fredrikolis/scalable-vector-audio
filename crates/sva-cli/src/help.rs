@@ -49,13 +49,15 @@ RENDER:
   reads its input whole, and refuses one with no end as
   `engine.unbounded_extent`.
 
-  `--until '<condition>'` stops the render at the first sample the condition
-  holds at, or at the interval's end, whichever is first. It renders the first
-  second, then twice as far each time, until the condition holds, and never
-  past the interval. A condition compares (`<`, `<=`, `>`, `>=`) `t`,
-  `envelope(t)` (the RMS of the `envelope` representation's frame holding `t`,
-  framed by its own `frame` where one is asked) and literals, joined by
-  `and`/`or`.
+  A render is a stream pulled to its end: a closed form, a short-time
+  transform and what either reads are computed over their whole extent first,
+  and every other node block by block. `--until '<condition>'` stops the render
+  at the first sample the condition holds at, or at the interval's end,
+  whichever is first. It is checked as each block is pulled, so no node driven
+  block by block runs past the block it holds in. A condition compares (`<`,
+  `<=`, `>`, `>=`) `t`, `envelope(t)` (the RMS of the `envelope`
+  representation's frame holding `t`, framed by its own `frame` where one is
+  asked) and literals, joined by `and`/`or`.
 
   `--representation <list>` takes a comma list of readings and may repeat. Each
   is a call in the language's own syntax, its options its named arguments:

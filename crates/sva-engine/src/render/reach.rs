@@ -30,7 +30,7 @@ pub(super) fn ranged(held: &mut Render, costed: &[NodeId]) -> Result<bool, Engin
         if !envelope {
             return Ok(false);
         }
-        return match decided(held, costed, Ends::Refused) {
+        return match ranged_by(held, costed, Ends::Refused) {
             Ok(()) => Ok(true),
             Err(refused) => {
                 held.unranged = Some(refused);
@@ -38,12 +38,12 @@ pub(super) fn ranged(held: &mut Render, costed: &[NodeId]) -> Result<bool, Engin
             }
         };
     }
-    decided(held, costed, Ends::Refused).map(|()| true)
+    ranged_by(held, costed, Ends::Refused).map(|()| true)
 }
 
 /// A root whose support never ends streams for as long as it is pulled.
 pub(super) fn streamed(held: &mut Render, audio: &[NodeId]) -> Result<(), EngineError> {
-    decided(held, audio, Ends::Pulled)
+    ranged_by(held, audio, Ends::Pulled)
 }
 
 enum Ends {
@@ -52,7 +52,7 @@ enum Ends {
 }
 
 /// An unstated end is where the root's support ends.
-fn decided(held: &mut Render, costed: &[NodeId], ends: Ends) -> Result<(), EngineError> {
+fn ranged_by(held: &mut Render, costed: &[NodeId], ends: Ends) -> Result<(), EngineError> {
     let support = Supports::new(&held.tys, held.config.rate).of(held.root);
     let start = held
         .config
@@ -74,6 +74,17 @@ pub(super) fn extend(
     costed: &[NodeId],
     range: Extent,
 ) -> Result<(), EngineError> {
+    held.extents = decided(held, costed, range)?;
+    held.range = Some(range);
+    Ok(())
+}
+
+/// Every extent a range asks for, decided as the render's own.
+pub(super) fn decided(
+    held: &Render,
+    costed: &[NodeId],
+    range: Extent,
+) -> Result<extent::Extents, EngineError> {
     let mut demands = vec![(held.root, range)];
     let rows = &held.schedule.rows;
     let measured = match rows.is_empty() {
@@ -87,9 +98,7 @@ pub(super) fn extend(
             .filter(|id| !rows.contains(id) || measured.as_ref().is_none_or(|m| m.contains(id)))
             .map(|id| (*id, range)),
     );
-    held.extents = extent::decide(held, costed, &demands)?;
-    held.range = Some(range);
-    Ok(())
+    extent::decide(held, costed, &demands)
 }
 
 fn endless(held: &Render) -> EngineError {

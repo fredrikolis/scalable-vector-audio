@@ -1,19 +1,15 @@
-// Concern: renders a target block after block, each node carrying its state across blocks | Non-concern: one node's rows or machine, a whole render | IO: (&Graph, target) -> blocks
-
-mod node;
+// Concern: opens a target as a stream, and resumes one from a checkpoint under moved bindings | Non-concern: pulling its blocks (drive/), a whole render | IO: (&Graph, target, bindings) -> a Stream
 
 use sva_ast::{Expr, Graph, Literal};
 use sva_samples::physics::chaigne_askenfelt::landing_step;
-use sva_samples::{Extent, Tape};
 
-use super::until::Known;
+use super::drive::node::{self, Driven, Hold, NodeState};
+use super::drive::{self, Block, Driver};
 use super::{Render, RenderConfig, prepared, reach, sampled};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::flops::Work;
 use crate::instantiate::RELEASE;
-use crate::query::DEFAULT_FRAME_SECS;
 use crate::schedule;
-use node::Streamed;
 
 pub const STREAMED: &str = "streamed";
 
@@ -31,53 +27,7 @@ pub struct Stream {
     bindings: Vec<(String, f64)>,
     config: StreamConfig,
     shell: Render,
-    nodes: Vec<Streamed>,
-    root: usize,
-    start: i64,
-    at: i64,
-    /// The range's end, or where the root's support ends where the range states none;
-    /// `i64::MAX` where neither does, pulled on until its consumer stops.
-    last: i64,
-    frame: usize,
-    end: Option<i64>,
-    work: Work,
-}
-
-/// The samples one `next` wrote, from grid sample `start` on.
-pub struct Block {
-    planes: Vec<Vec<f64>>,
-    start: i64,
-}
-
-impl Block {
-    /// `[start, end)` of the root, silent outside its support.
-    fn of(tape: &Tape, support: Extent, start: i64, end: i64) -> Block {
-        let window = tape.within(support);
-        let planes = (0..tape.width())
-            .map(|c| (start..end).map(|n| window.at(c, n)).collect())
-            .collect();
-        Block { planes, start }
-    }
-
-    pub fn start(&self) -> i64 {
-        self.start
-    }
-
-    pub fn len(&self) -> usize {
-        self.planes[0].len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn width(&self) -> usize {
-        self.planes.len()
-    }
-
-    pub fn plane(&self, c: usize) -> &[f64] {
-        &self.planes[c]
-    }
+    driver: Driver,
 }
 
 impl Stream {
@@ -107,13 +57,16 @@ impl Stream {
         let mut shell = Render::shell(held.tys, held.root, config.render.clone(), schedule);
         reach::streamed(&mut shell, &audio)?;
         let range = shell.range.expect("audio out decides a range");
-        let (start, last) = (range.start, range.end);
-        let frame = ((DEFAULT_FRAME_SECS * f64::from(rate)).round() as usize).max(1);
-        let keep = match config.render.until {
-            Some(_) => frame,
+        let root_keep = match config.render.until {
+            Some(_) => drive::frame(&shell.config),
             None => 0,
         };
-        let mut nodes = node::built(&shell, config.block, keep)?;
+        let hold = Hold::Trailing {
+            block: config.block,
+            root_keep,
+        };
+        let order = shell.schedule.materialize.clone();
+        let mut nodes = node::built(&shell, &order, hold)?;
         let root = nodes
             .iter()
             .position(|n| n.id == shell.root)
@@ -129,95 +82,49 @@ impl Stream {
                 }
                 checkpoint.at
             }
-            None => start,
+            None => range.start,
         };
+        let until = config.render.until.clone();
+        let driver = Driver::new(
+            nodes,
+            Some(root),
+            range,
+            at,
+            config.block,
+            until,
+            &shell.config,
+        );
         Ok(Stream {
             graph: graph.clone(),
             target: target.clone(),
             bindings: bindings.to_vec(),
             config,
             shell,
-            nodes,
-            root,
-            start,
-            at,
-            last,
-            frame,
-            end: None,
-            work: Work {
-                waves: Some(0),
-                ..Work::default()
-            },
+            driver,
         })
-    }
-
-    /// A level is known once its frame is whole, so it stops the stream no earlier than the
-    /// block it becomes known in.
-    fn settle(&mut self, from: i64, to: i64) {
-        if self.end.is_some() {
-            return;
-        }
-        if self.last <= to {
-            self.end = Some(to);
-        }
-        let Some(until) = &self.config.render.until else {
-            return;
-        };
-        let root = &self.nodes[self.root];
-        let base = root.tape.base().max(self.start);
-        let heard = Block::of(&root.tape, root.support, base, to);
-        let rate = self.config.render.rate;
-        let known = Known::new(
-            heard.plane(0),
-            base,
-            self.start,
-            self.frame,
-            rate,
-            to == self.last,
-        );
-        if let Some(at) = until.first(&known, base, to) {
-            self.end = Some(at.max(from));
-        }
     }
 
     /// The next block, cut where the stream ends; `None` from there on.
     pub fn next_block(&mut self) -> Result<Option<Block>, EngineError> {
-        let from = self.at;
-        if self.end.is_some_and(|end| from >= end) {
-            return Ok(None);
-        }
-        let to = self.last.min(from + self.config.block as i64).max(from);
-        for n in 0..self.nodes.len() {
-            let (done, rest) = self.nodes.split_at_mut(n);
-            rest[0].run(&self.shell, done, from, to)?;
-            let (priced, waves) = rest[0].work(from, to);
-            self.work.priced_flops += priced;
-            self.work.waves = self.work.waves.zip(waves).map(|(held, more)| held + more);
-        }
-        self.at = to;
-        self.work.samples += (to - from) as u64;
-        self.settle(from, to);
-        let end = self.end.map_or(to, |end| end.clamp(from, to));
-        let root = &self.nodes[self.root];
-        Ok(Some(Block::of(&root.tape, root.support, from, end)))
+        self.driver.next_block(&self.shell)
     }
 
     pub fn position(&self) -> i64 {
-        self.at
+        self.driver.at
     }
 
     /// Since this stream opened, or since the checkpoint it resumed from.
     pub fn work(&self) -> Work {
-        self.work
+        self.driver.work
     }
 
     /// Where the stream ends, once known.
     pub fn end(&self) -> Option<i64> {
-        self.end
+        self.driver.end()
     }
 
     pub fn width(&self) -> usize {
-        self.nodes[self.root].width
+        self.driver.nodes[self.driver.root.expect("a stream reads its root")].width
     }
 
     pub fn config(&self) -> &StreamConfig {
@@ -226,12 +133,12 @@ impl Stream {
 
     pub fn checkpoint(&self) -> Checkpoint {
         Checkpoint {
-            at: self.at,
+            at: self.driver.at,
             target: sva_ast::render_expr(&self.target),
             bindings: self.bindings.clone(),
             rate: self.config.render.rate,
             block: self.config.block,
-            nodes: self.nodes.iter().map(Streamed::held).collect(),
+            nodes: self.driver.nodes.iter().map(Driven::held).collect(),
         }
     }
 
@@ -286,7 +193,7 @@ pub struct Checkpoint {
     bindings: Vec<(String, f64)>,
     rate: u32,
     block: usize,
-    nodes: Vec<Option<node::NodeState>>,
+    nodes: Vec<Option<NodeState>>,
 }
 
 impl Checkpoint {

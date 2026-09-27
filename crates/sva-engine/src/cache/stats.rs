@@ -170,6 +170,15 @@ impl Lens<'_> {
         found
     }
 
+    /// A value looked up under `looked` and computed over less than it named.
+    pub(crate) fn rekey(&self, looked: Hash, now: Hash) {
+        for lookup in self.recording.held().iter_mut() {
+            if lookup.key == looked && lookup.outcome == Outcome::ComputedNotStored {
+                lookup.key = now;
+            }
+        }
+    }
+
     pub(crate) fn store(&self, key: Hash, payload: &Payload, label: Option<&Label>) {
         if !self.stores {
             return;

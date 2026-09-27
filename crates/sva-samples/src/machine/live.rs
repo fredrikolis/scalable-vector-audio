@@ -3,7 +3,7 @@
 use super::ops::{Layout, lower};
 use super::renderer::{BufId, NodeRenderer};
 use super::tape::Tape;
-use super::{Ctx, Machine, Stack};
+use super::{Ctx, Machine};
 use crate::buffer::Buffer;
 use crate::collapse::Extent;
 use crate::error::SampleError;
@@ -24,14 +24,10 @@ impl NodeRenderer {
         ctx: &Ctx,
         live: &[Extent],
     ) -> Result<Buffer, SampleError> {
-        let mut machine = Machine::open(self, layout, ctx.rate)?;
+        let end = ctx.start + ctx.len as i64;
+        let mut machine = Machine::live(self, layout, ctx.rate, (ctx.start, end), live)?;
         let mut own = Tape::new(machine.width(), ctx.len, ctx.start);
-        for span in self.spans(layout, (ctx.start, ctx.start + ctx.len as i64), live)? {
-            let program = span.renderer.compile(layout)?;
-            machine.stack = Stack::of(&program.widths);
-            machine.program = program;
-            machine.steps(span.to, ctx.reads, &mut own)?;
-        }
+        machine.steps(end, ctx.reads, &mut own)?;
         let mut out = Buffer::of_planes(ctx.rate, own.into_planes());
         out.start = ctx.start;
         Ok(out)

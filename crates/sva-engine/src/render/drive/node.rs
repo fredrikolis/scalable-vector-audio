@@ -1,9 +1,9 @@
-// Concern: builds one streamed node, how far back its readers reach, and runs it over a block | Non-concern: the order nodes run in, bindings | IO: (NodeId) -> Streamed; (to) -> its tape
+// Concern: builds one driven node, how far back its readers reach, and runs it over a block | Non-concern: the order nodes run in, bindings | IO: (NodeId) -> Driven; (to) -> its tape
 
 use std::collections::BTreeMap;
 
 use sva_formula::{Held, NodeId};
-use sva_samples::{Extent, Machine, MachineState, NodeRenderer, Rows, Tape, Window};
+use sva_samples::{Buffer, Extent, Machine, MachineState, NodeRenderer, Rows, Tape, Window};
 
 use super::super::pointwise::{self, Point};
 use super::super::{Render, collapse_refused, sampled};
@@ -12,41 +12,60 @@ use crate::error::{Diagnostic, EngineError, Located};
 use crate::refs;
 use crate::typing::Value;
 
-pub(super) enum Kind {
+pub(in crate::render) enum Kind {
+    /// Held whole before any reader ran.
+    Whole,
     Rows(Rows),
     Point(Box<Point>),
     Machine {
         machine: Machine,
-        /// Each slot's node, as an index into the stream's nodes.
+        /// Each slot's node, as an index into the driver's nodes.
         reads: Vec<usize>,
     },
 }
 
-pub(super) struct Streamed {
-    pub(super) id: NodeId,
-    pub(super) kind: Kind,
+pub(in crate::render) struct Driven {
+    pub(in crate::render) id: NodeId,
+    pub(in crate::render) kind: Kind,
     /// A sample's price where no row prices it.
     per_sample: u128,
-    pub(super) width: usize,
-    /// How many samples before a block's start any reader, itself included, reaches.
-    pub(super) keep: usize,
+    pub(in crate::render) width: usize,
+    /// How many samples before a block's start any reader, itself included, reaches; `None`
+    /// keeps every one.
+    pub(in crate::render) keep: Option<usize>,
     /// What its readers alone reach, which a checkpoint has to hold.
     read_back: usize,
-    pub(super) extent: Extent,
-    pub(super) support: Extent,
-    pub(super) tape: Tape,
+    pub(in crate::render) extent: Extent,
+    pub(in crate::render) support: Extent,
+    pub(in crate::render) tape: Tape,
 }
 
-/// Every materialized node in order, each with the reach its readers need; the root keeps
-/// `root_keep` samples besides.
-pub(super) fn built(
+/// How a driver holds its nodes' samples.
+pub(in crate::render) enum Hold {
+    /// A block, and as far back as its readers reach; the root `root_keep` samples besides.
+    Trailing { block: usize, root_keep: usize },
+    /// Every sample, the nodes held here whole before any reader runs.
+    Every(BTreeMap<NodeId, Buffer>),
+}
+
+/// Each of `order`, with the reach its readers need.
+pub(in crate::render) fn built(
     shell: &Render,
-    block: usize,
-    root_keep: usize,
-) -> Result<Vec<Streamed>, EngineError> {
-    let mut nodes: Vec<Streamed> = Vec::new();
+    order: &[NodeId],
+    mut hold: Hold,
+) -> Result<Vec<Driven>, EngineError> {
+    let mut nodes: Vec<Driven> = Vec::new();
     let mut index: BTreeMap<NodeId, usize> = BTreeMap::new();
-    for &id in &shell.schedule.materialize {
+    for &id in order {
+        let extent = shell.extents.of(id);
+        let support = shell.extents.support(id);
+        if let Hold::Every(held) = &mut hold
+            && let Some(buffer) = held.remove(&id)
+        {
+            index.insert(id, nodes.len());
+            nodes.push(whole(id, buffer, extent, support));
+            continue;
+        }
         let Built {
             kind,
             width,
@@ -55,20 +74,20 @@ pub(super) fn built(
         } = kind(shell, id, &nodes, &index)?;
         for (at, back) in reach {
             let read = &mut nodes[at];
-            read.keep = read.keep.max(back);
+            read.keep = read.keep.map(|keep| keep.max(back));
             read.read_back = read.read_back.max(back);
         }
         index.insert(id, nodes.len());
         let per_sample = match kind {
-            Kind::Rows(_) => 0,
+            Kind::Whole | Kind::Rows(_) => 0,
             Kind::Point(_) | Kind::Machine { .. } => crate::flops::per_sample(shell, id),
         };
-        let keep = match id == shell.root {
-            true => own.max(root_keep),
-            false => own,
+        let (keep, capacity) = match &hold {
+            Hold::Trailing { root_keep, .. } if id == shell.root => (Some(own.max(*root_keep)), 0),
+            Hold::Trailing { .. } => (Some(own), 0),
+            Hold::Every(_) => (None, extent.len()),
         };
-        let extent = shell.extents.of(id);
-        nodes.push(Streamed {
+        nodes.push(Driven {
             id,
             kind,
             per_sample,
@@ -76,14 +95,37 @@ pub(super) fn built(
             keep,
             read_back: own,
             extent,
-            support: shell.extents.support(id),
-            tape: Tape::new(width, 0, extent.start),
+            support,
+            tape: Tape::new(width, capacity, extent.start),
         });
     }
-    for node in &mut nodes {
-        node.tape = Tape::new(node.width, node.keep + block, node.extent.start);
+    if let Hold::Trailing { block, .. } = hold {
+        for node in &mut nodes {
+            let keep = node.keep.unwrap_or(0);
+            node.tape = Tape::new(node.width, keep + block, node.extent.start);
+        }
     }
     Ok(nodes)
+}
+
+/// A node held whole before any reader runs.
+pub(in crate::render) fn whole(
+    id: NodeId,
+    buffer: Buffer,
+    extent: Extent,
+    support: Extent,
+) -> Driven {
+    Driven {
+        id,
+        kind: Kind::Whole,
+        per_sample: 0,
+        width: buffer.planes.len().max(1),
+        keep: None,
+        read_back: 0,
+        extent,
+        support,
+        tape: Tape::from(buffer),
+    }
 }
 
 /// A node, how far back it reads each earlier node, and how far back it reads itself.
@@ -97,7 +139,7 @@ struct Built {
 fn kind(
     shell: &Render,
     id: NodeId,
-    nodes: &[Streamed],
+    nodes: &[Driven],
     index: &BTreeMap<NodeId, usize>,
 ) -> Result<Built, EngineError> {
     match shell.tys.ty(id).held {
@@ -115,13 +157,14 @@ fn kind(
 fn machine(
     shell: &Render,
     id: NodeId,
-    nodes: &[Streamed],
+    nodes: &[Driven],
     index: &BTreeMap<NodeId, usize>,
 ) -> Result<Built, EngineError> {
     if let Value::Cast(Cast::Istft, _) = shell.tys.value(id) {
         return Err(no_stream(shell, id, "an inverse short-time transform"));
     }
     let width_of = |r: NodeId| index.get(&r).map_or(1, |at| nodes[*at].width);
+    let extent = shell.extents.of(id);
     let program = sampled::program_reading(shell, id, &width_of)?;
     let reads: Vec<usize> = program
         .reads
@@ -144,7 +187,19 @@ fn machine(
             "a read ahead of the sample it is taken at",
         ));
     }
-    let machine = Machine::open(&program.renderer, &program.layout, shell.config.rate)
+    let live: Vec<Extent> = reads
+        .iter()
+        .map(|&r| match nodes[r].kind {
+            Kind::Whole => {
+                let tape = &nodes[r].tape;
+                sampled::live(tape.planes(), tape.base(), nodes[r].support)
+            }
+            _ => nodes[r].support,
+        })
+        .collect();
+    let rate = shell.config.rate;
+    let span = (extent.start, extent.end);
+    let machine = Machine::live(&program.renderer, &program.layout, rate, span, &live)
         .map_err(|e| sampled::refused(shell, id, &e))?;
     Ok(Built {
         width: machine.width(),
@@ -188,23 +243,26 @@ fn point(shell: &Render, id: NodeId) -> Result<(Kind, usize), EngineError> {
     Ok((Kind::Point(Box::new(tree)), width))
 }
 
-impl Streamed {
+impl Driven {
     /// Samples up to `to` within its extent, every node it reads already there; `from` is the
     /// block's start.
-    pub(super) fn run(
+    pub(in crate::render) fn run(
         &mut self,
         shell: &Render,
-        done: &[Streamed],
+        done: &[Driven],
         from: i64,
         to: i64,
     ) -> Result<(), EngineError> {
-        self.tape.forget_before(from - self.keep as i64);
+        if let Some(keep) = self.keep {
+            self.tape.forget_before(from - keep as i64);
+        }
         let to = to.min(self.extent.end);
         if self.extent.is_empty() || to <= self.tape.end() {
             return Ok(());
         }
         let id = self.id;
         match &mut self.kind {
+            Kind::Whole => Ok(()),
             Kind::Rows(rows) => rows
                 .extend(to, &mut self.tape)
                 .map_err(|e| collapse_refused(shell, id, &e)),
@@ -232,10 +290,10 @@ impl Streamed {
     }
 }
 
-impl Streamed {
+impl Driven {
     /// `(priced flops, waves)` over `[from, to)` of its extent: a pointwise tree's waves go
     /// uncounted.
-    pub(super) fn work(&self, from: i64, to: i64) -> (u128, Option<u128>) {
+    pub(in crate::render) fn work(&self, from: i64, to: i64) -> (u128, Option<u128>) {
         let (from, to) = (from.max(self.extent.start), to.min(self.extent.end));
         let n = (to - from).max(0) as u128;
         match &self.kind {
@@ -244,20 +302,20 @@ impl Streamed {
                 (priced, Some(waves))
             }
             Kind::Point(_) => (self.per_sample * n, None),
-            Kind::Machine { .. } => (self.per_sample * n, Some(0)),
+            Kind::Whole | Kind::Machine { .. } => (self.per_sample * n, Some(0)),
         }
     }
 }
 
 /// A sampled node's state and the samples its readers reach back to; a closed form holds none.
 #[derive(Clone)]
-pub(super) struct NodeState {
+pub(in crate::render) struct NodeState {
     tape: Tape,
     state: MachineState,
 }
 
-impl Streamed {
-    pub(super) fn held(&self) -> Option<NodeState> {
+impl Driven {
+    pub(in crate::render) fn held(&self) -> Option<NodeState> {
         match &self.kind {
             Kind::Machine { machine, .. } => Some(NodeState {
                 tape: self.tape.clone(),
@@ -268,13 +326,13 @@ impl Streamed {
     }
 
     /// Takes `held` at sample `at`; a closed form reads its own past again instead.
-    pub(super) fn resume(
+    pub(in crate::render) fn resume(
         &mut self,
         shell: &Render,
         held: &Option<NodeState>,
         at: i64,
     ) -> Result<(), EngineError> {
-        let from = (at - self.keep as i64).max(self.extent.start);
+        let from = (at - self.keep.unwrap_or(0) as i64).max(self.extent.start);
         if self.extent.is_empty() {
             return Ok(());
         }
@@ -307,7 +365,7 @@ impl Streamed {
     }
 }
 
-pub(super) fn no_stream(shell: &Render, id: NodeId, class: &str) -> EngineError {
+pub(in crate::render) fn no_stream(shell: &Render, id: NodeId, class: &str) -> EngineError {
     EngineError::refused(Diagnostic {
         code: "engine.no_stream".to_string(),
         message: format!(

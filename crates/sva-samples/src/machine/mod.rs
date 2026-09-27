@@ -123,6 +123,8 @@ pub struct Machine {
     states: Vec<State>,
     stack: Stack,
     rate: u32,
+    /// Each later span's first sample and the program it runs, the next one last.
+    ahead: Vec<(i64, Program)>,
 }
 
 #[derive(Clone)]
@@ -145,7 +147,26 @@ impl Machine {
             states,
             stack,
             rate,
+            ahead: Vec::new(),
         })
+    }
+
+    /// Runs `[from, to)` span by span, each span's program without the reads dead there.
+    pub fn live(
+        renderer: &NodeRenderer,
+        layout: &Layout,
+        rate: u32,
+        (from, to): (i64, i64),
+        live: &[crate::collapse::Extent],
+    ) -> Result<Machine, SampleError> {
+        let mut machine = Machine::open(renderer, layout, rate)?;
+        machine.ahead = renderer
+            .spans(layout, (from, to), live)?
+            .into_iter()
+            .rev()
+            .map(|span| Ok((span.from, span.renderer.compile(layout)?)))
+            .collect::<Result<_, SampleError>>()?;
+        Ok(machine)
     }
 
     pub fn width(&self) -> usize {
@@ -162,6 +183,23 @@ impl Machine {
     }
 
     fn steps(&mut self, to: i64, reads: &[Window], own: &mut Tape) -> Result<(), SampleError> {
+        loop {
+            while let Some((from, _)) = self.ahead.last()
+                && *from <= own.end()
+            {
+                let (_, program) = self.ahead.pop().expect("a span ahead");
+                self.stack = Stack::of(&program.widths);
+                self.program = program;
+            }
+            let until = self.ahead.last().map_or(to, |(from, _)| (*from).min(to));
+            self.stepped(until, reads, own)?;
+            if own.end() >= to {
+                return Ok(());
+            }
+        }
+    }
+
+    fn stepped(&mut self, to: i64, reads: &[Window], own: &mut Tape) -> Result<(), SampleError> {
         let sr = f64::from(self.rate);
         let p = &self.program;
         for n in own.end()..to {
