@@ -1,5 +1,6 @@
 // Concern: runs one node renderer a sample at a time, whole or span after span | Non-concern: the op array's own shape (ops.rs), the tree the engine hands over | IO: (NodeRenderer, Ctx) -> Buffer
 
+mod live;
 pub mod ops;
 pub mod renderer;
 pub mod tape;
@@ -11,6 +12,8 @@ use crate::physics::{Solver, site};
 use ops::{Layout, Op, lower};
 use renderer::{NodeRenderer, Site};
 use tape::{Tape, Window};
+
+pub use live::Span;
 
 pub use ops::Layout as MachineLayout;
 

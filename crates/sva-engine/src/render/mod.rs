@@ -412,6 +412,20 @@ impl Lenses<'_> {
     }
 }
 
+/// The operations a sampled node's program runs over `extent`, where one lowers it; with
+/// no extent, the whole program's for one sample.
+pub(crate) fn sampled_ops(held: &Render, id: NodeId, extent: Option<Extent>) -> Option<u128> {
+    let program = sampled::program(held, id).ok()?;
+    match extent {
+        Some(extent) => program.priced(held, extent),
+        None => program
+            .renderer
+            .ops(&program.layout)
+            .ok()
+            .map(|ops| ops as u128),
+    }
+}
+
 /// What the schedule orders before `id`, and every buffer its program reads behind those.
 fn reads(held: &Render, id: NodeId) -> Vec<NodeId> {
     let mut out = schedule::materialized_operands(&held.tys, id);

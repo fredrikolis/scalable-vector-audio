@@ -3,7 +3,8 @@
 use sva_formula::NodeId;
 use sva_samples::machine::ops::Layout;
 use sva_samples::{
-    Binary, BufId, Buffer, Ctx, Label, NodeRenderer, SampleError, Site, SiteId, Unary, Window, stft,
+    Binary, BufId, Buffer, Ctx, Extent, Label, NodeRenderer, SampleError, Site, SiteId, Unary,
+    Window, stft,
 };
 
 use crate::cast::Cast;
@@ -139,6 +140,11 @@ impl Program {
                 Window::of(buffer, held.extents.support(*r))
             })
             .collect();
+        let live: Vec<Extent> = self
+            .reads
+            .iter()
+            .map(|r| live(&held.buffers[r], held.extents.support(*r)))
+            .collect();
         let ctx = Ctx {
             rate: held.config.rate,
             start: extent.start,
@@ -146,9 +152,50 @@ impl Program {
             reads: &buffers,
         };
         renderer
-            .run(&self.layout, &ctx)
+            .run_live(&self.layout, &ctx, &live)
             .map_err(|e| refused(held, id, &e))
     }
+
+    /// What the program runs over `extent`, span by span without the reads dead there, each
+    /// read taken as live over its whole support.
+    pub(crate) fn priced(&self, held: &Render, extent: Extent) -> Option<u128> {
+        let live: Vec<Extent> = self
+            .reads
+            .iter()
+            .map(|r| {
+                held.extents
+                    .support
+                    .get(r)
+                    .copied()
+                    .unwrap_or(Extent::EVERYWHERE)
+            })
+            .collect();
+        let spans = self
+            .renderer
+            .spans(&self.layout, (extent.start, extent.end), &live)
+            .ok()?;
+        spans.iter().try_fold(0u128, |sum, span| {
+            let ops = span.renderer.ops(&self.layout).ok()? as u128;
+            Some(sum + ops * (span.to - span.from) as u128)
+        })
+    }
+}
+
+/// Where a read can answer anything but +0.0: a held sample that is not +0.0, and any of
+/// its support the buffer does not hold, which no value answers.
+fn live(buffer: &Buffer, support: Extent) -> Extent {
+    let held = buffer.extent();
+    let nonzero = |n: &usize| buffer.planes.iter().any(|p| p[*n].to_bits() != 0);
+    let inner = match (0..held.len()).find(nonzero) {
+        None => Extent::NOWHERE,
+        Some(first) => {
+            let last = (0..held.len()).rev().find(nonzero).unwrap_or(first);
+            Extent::new(held.start + first as i64, held.start + last as i64 + 1)
+        }
+    };
+    let before = support.intersect(Extent::new(i64::MIN, held.start));
+    let after = support.intersect(Extent::new(held.end, i64::MAX));
+    inner.hull(before).hull(after)
 }
 
 struct Build<'a> {

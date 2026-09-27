@@ -266,7 +266,7 @@ fn costed_at(
     let len = extent.len();
     match render.tys.ty(id).held {
         Held::Frames => (frames_flops(render, id, len), "short-time transform"),
-        Held::Sampled => (ops_of(render, id) as u128 * len as u128, "sampled program"),
+        Held::Sampled => (sampled(render, id, extent), "sampled program"),
         _ if extent.is_empty() => (0, "silent"),
         _ => closed_form_flops(render, id, extent, paid),
     }
@@ -321,9 +321,16 @@ fn pointwise_flops(render: &Render, id: NodeId, extent: Extent, paid: &mut Carri
 /// it: a sampled program's operations, or a pointwise tree and the forms it reads.
 pub(crate) fn per_sample(render: &Render, id: NodeId) -> u128 {
     match render.tys.ty(id).held {
-        Held::Sampled => ops_of(render, id) as u128,
+        Held::Sampled => crate::render::sampled_ops(render, id, None)
+            .unwrap_or_else(|| ops_of(render, id) as u128),
         _ => pointwise_flops(render, id, Extent::new(0, 1), &mut Carried::of(id)),
     }
+}
+
+/// A node no program lowers, as `istft`, by the tree it was built from.
+fn sampled(render: &Render, id: NodeId, extent: Extent) -> u128 {
+    crate::render::sampled_ops(render, id, Some(extent))
+        .unwrap_or_else(|| ops_of(render, id) as u128 * extent.len() as u128)
 }
 
 /// What a stream or a render did, counted exactly and alike on every machine: the samples

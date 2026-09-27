@@ -418,7 +418,7 @@ impl LinePlan {
 }
 
 impl LanePlan {
-    pub fn flops(&self, _len: usize) -> u128 {
+    pub fn flops(&self) -> u128 {
         match self {
             LanePlan::Grouped { groups, bins } => groups
                 .iter()
@@ -540,7 +540,7 @@ impl Plan {
         match self {
             Plan::Spectrum(_) => transform_flops(len),
             Plan::Lines(found) => found.flops(len),
-            Plan::Sampled(held) => held.lanes.iter().map(|lane| lane.flops(len)).sum(),
+            Plan::Sampled(held) => held.lanes.iter().map(|lane| lane.flops()).sum(),
             Plan::Point { nodes, .. } => *nodes as u128 * len as u128,
             Plan::Added(parts) => parts.iter().map(|part| part.flops(len)).sum(),
         }

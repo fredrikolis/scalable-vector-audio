@@ -4,7 +4,7 @@ mod fixtures;
 
 use fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{Cache, Range, Render, RenderConfig, render};
+use sva_engine::{Cache, Range, Render, RenderConfig, flops, render};
 
 const RATE: u32 = 8_000;
 
@@ -50,4 +50,45 @@ fn a_closed_form_sums_only_the_atoms_live_at_each_instant() {
     assert_eq!(stats.hits(), stats.lookups.len(), "{stats:?}");
     let reread = further.output(further.root).expect("the song").plane(0)[..samples.len()].to_vec();
     assert_eq!(reread, samples);
+}
+
+/// A sum of sampled notes reads each only while it sounds: the bits are the notes added in
+/// order from +0, and the sum pays only for the notes sounding.
+#[test]
+fn a_sampled_sum_reads_each_operand_only_where_it_is_nonzero() {
+    let g = graph_of(
+        "pruning-sampled",
+        &[
+            (
+                "note",
+                "crop(lowpass(sample(0.5*sin(2*pi*440*t)), cutoff=2000, q=0.7), 0s, 0.5s)\n",
+            ),
+            ("song", "@note(t) + @note(t - 2s) + @note(t - 4s)\n"),
+        ],
+    );
+    let held = over(&g, "song", 4.5, None);
+    let song = held.output(held.root).expect("the song").plane(0).to_vec();
+    let alone = over(&g, "note", 4.5, None);
+    let note = alone
+        .output(alone.root)
+        .expect("the note")
+        .plane(0)
+        .to_vec();
+    let at = |n: i64| {
+        usize::try_from(n)
+            .ok()
+            .and_then(|n| note.get(n))
+            .copied()
+            .unwrap_or(0.0)
+    };
+    let gap = i64::from(RATE) * 2;
+    for (n, sample) in song.iter().enumerate() {
+        let n = n as i64;
+        let added = 0.0 + at(n) + at(n - gap) + at(n - 2 * gap);
+        assert_eq!(sample.to_bits(), added.to_bits(), "sample {n}");
+    }
+    // `(a + b) + c`: a read and two adds, a read and one add for `c`, a zero while none sounds.
+    let note = u128::from(RATE / 2);
+    let silent = song.len() as u128 - 3 * note;
+    assert_eq!(flops::tree(&held).rows[0].own, (3 + 3 + 2) * note + silent);
 }
