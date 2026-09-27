@@ -56,9 +56,9 @@ pub struct Rendered {
 
 impl Rendered {
     pub fn answer(&self, node: &str, representation: Representation) -> Result<Answer, CliError> {
-        let id = self.render.node(node).map_err(CliError::Engine)?;
-        let mut answer =
-            sva_engine::answer(&self.render, id, representation).map_err(CliError::Engine)?;
+        let written = |e| CliError::Engine(as_written(e, &self.expression));
+        let id = self.render.node(node).map_err(written)?;
+        let mut answer = sva_engine::answer(&self.render, id, representation).map_err(written)?;
         self.attribute(&mut answer)?;
         Ok(answer)
     }
@@ -219,7 +219,8 @@ fn instance_read(graph: &Graph, text: &str) -> Option<sva_ast::Expr> {
 
 pub fn execute(job: Job) -> Result<Rendered, CliError> {
     let (graph, config) = settle(&job)?;
-    let render = render(&graph, PROBE, config, job.cache).map_err(CliError::Engine)?;
+    let render = render(&graph, PROBE, config, job.cache)
+        .map_err(|e| CliError::Engine(as_written(e, job.target)))?;
     Ok(Rendered {
         config: render.config.clone(),
         expression: job.target.to_string(),
@@ -241,7 +242,30 @@ pub fn stream(job: &Job, block: usize, bindings: &[(String, f64)]) -> Result<Str
         range: config.range,
         until: config.until,
     };
-    Stream::open(&graph, &target, bindings, config).map_err(CliError::Engine)
+    Stream::open(&graph, &target, bindings, config)
+        .map_err(|e| CliError::Engine(as_written(e, job.target)))
+}
+
+/// The engine knows a target only as the node it was defined as, so a refusal that names
+/// that node names the target as the caller wrote it instead.
+fn as_written(refused: EngineError, target: &str) -> EngineError {
+    match refused {
+        EngineError::Refused(mut d) => {
+            if d.location.node == PROBE {
+                d.location.node = target.to_string();
+            }
+            d.message = d
+                .message
+                .replace(&format!("`{PROBE}`"), &format!("`{target}`"));
+            EngineError::Refused(d)
+        }
+        EngineError::Binding { node, span, fault } if node == PROBE => EngineError::Binding {
+            node: target.to_string(),
+            span,
+            fault,
+        },
+        other => other,
+    }
 }
 
 pub fn instances_behind(

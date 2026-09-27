@@ -75,7 +75,9 @@ impl Reading<'_> {
             self.take(&TokenKind::RParen)?;
             return Ok(held);
         }
+        let from = self.at;
         let left = self.term()?;
+        let left_bare = self.bare_number(from);
         let cmp = match self.peek() {
             Some(TokenKind::Lt) => Cmp::Lt,
             Some(TokenKind::Le) => Cmp::Le,
@@ -84,8 +86,37 @@ impl Reading<'_> {
             _ => return Err(self.wrong("a comparison, `<`, `<=`, `>` or `>=`")),
         };
         self.at += 1;
+        let from = self.at;
         let right = self.term()?;
+        let bare = match (level(&left), level(&right)) {
+            (true, false) => self.bare_number(from),
+            (false, true) => left_bare,
+            _ => None,
+        };
+        if let Some((start, end)) = bare {
+            return Err(refused(
+                self.text,
+                &format!(
+                    "`{}` (at bytes {start}..{end}) is compared with a level and has no level \
+                     unit; write it in `db`",
+                    &self.text[start..end]
+                ),
+            ));
+        }
         Ok(Until::Holds(left, cmp, right))
+    }
+
+    /// The bytes of the number `term` read from token `from` on, where it was written
+    /// with no unit; `0` is zero in every unit.
+    fn bare_number(&self, from: usize) -> Option<(usize, usize)> {
+        let read = &self.tokens[from..self.at];
+        let unitless = read
+            .iter()
+            .any(|t| matches!(t.kind, TokenKind::Num(n) if n != 0.0));
+        match (unitless, read.first(), read.last()) {
+            (true, Some(first), Some(last)) => Some((first.span.start, last.span.end)),
+            _ => None,
+        }
     }
 
     fn term(&mut self) -> Result<Term, CliError> {
@@ -153,8 +184,7 @@ impl Reading<'_> {
         Ok(At::Now(sign * self.number()?))
     }
 
-    /// A time in seconds or a level as amplitude, a minus before it allowed; `0` and a level
-    /// need no unit.
+    /// A time in seconds or a level in `db`, a minus before it allowed; `0` needs no unit.
     fn number(&mut self) -> Result<f64, CliError> {
         let sign = match self.peek() {
             Some(TokenKind::Minus) => {
@@ -190,6 +220,10 @@ impl Reading<'_> {
         });
         refused(self.text, &format!("expected {wanted}, found {found}"))
     }
+}
+
+fn level(term: &Term) -> bool {
+    matches!(term, Term::Envelope(_) | Term::Max(..) | Term::Min(..))
 }
 
 fn spelled(kind: &TokenKind) -> &'static str {

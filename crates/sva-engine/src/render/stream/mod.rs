@@ -8,6 +8,7 @@ use sva_samples::physics::chaigne_askenfelt::landing_step;
 use sva_samples::{Extent, Tape};
 
 use super::extent::{self, Supports};
+use super::sampled;
 use super::silent::{Kept, bound_from};
 use super::until::Known;
 use super::{Range, Render, RenderConfig, Until, prepared};
@@ -100,6 +101,7 @@ impl Stream {
         }
         let wrapped = bound(graph, target, bindings)?;
         let held = prepared(&wrapped, STREAMED)?;
+        sampled::on_the_grid(&held.tys, config.rate)?;
         let render_config = RenderConfig {
             range: config.range,
             until: config.until.clone(),

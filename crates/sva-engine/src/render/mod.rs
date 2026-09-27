@@ -259,6 +259,7 @@ pub(crate) fn run(
     config: RenderConfig,
     recording: Option<&Recording>,
 ) -> Result<Render, EngineError> {
+    sampled::on_the_grid(&prepared.tys, config.rate)?;
     let identity = prepared.identity(&config.asks).ok();
     let Prepared {
         instances,

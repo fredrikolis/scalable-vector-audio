@@ -86,6 +86,24 @@ fn a_condition_reads_comparisons_over_time_and_level() {
     ));
 }
 
+/// A level compares with a level in `db`: a bare number beside one has no unit to be read
+/// in, and the refusal points at it.
+#[test]
+fn a_level_compared_with_a_bare_number_refuses_where_it_is_written() {
+    for (text, at) in [
+        ("envelope(t) < -60", "`-60` (at bytes 14..17)"),
+        (
+            "t > 1s or 0.001 > max(envelope([t, inf)))",
+            "`0.001` (at bytes 10..15)",
+        ),
+    ] {
+        let Err(CliError::Usage(why)) = until(text, 44_100, None) else {
+            panic!("`{text}` compares a level with no unit");
+        };
+        assert!(why.contains(at), "{why}");
+    }
+}
+
 fn asking<'a>(held: &'a sva_ast::Composition, target: &'a str) -> Job<'a> {
     Job::over(held, target)
 }
@@ -158,6 +176,18 @@ fn a_bar_span_is_settled_by_a_whole_tempo_pair_and_by_nothing_less() {
             "half a tempo settles nothing"
         );
     }
+}
+
+/// A refusal names the target as the caller wrote it, never the node the pipeline defined it as.
+#[test]
+fn a_refusal_names_the_target_as_written() {
+    let held = composition(&[("tone", "sin(2*pi*220*t)\n")]);
+    let Err(refused) = execute(asking(&held, "@tone")) else {
+        panic!("nothing ends an endless tone");
+    };
+    let message = refused.message();
+    assert!(message.contains("(@tone)"), "{message}");
+    assert!(!message.contains("probe"), "{message}");
 }
 
 /// A target that parses answers off the expression it is: what it leaves unbound is the

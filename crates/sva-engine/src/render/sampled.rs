@@ -1,4 +1,4 @@
-// Concern: turns one sampled node into the renderer that writes its buffer | Non-concern: collapsing a closed form (mod.rs), the op array itself (sva-samples) | IO: (NodeId) -> a Buffer
+// Concern: turns one sampled node into the renderer that writes its buffer, or refuses one no grid holds | Non-concern: collapsing a closed form (mod.rs), the op array | IO: (NodeId) -> a Buffer
 
 use sva_formula::NodeId;
 use sva_samples::machine::ops::Layout;
@@ -12,7 +12,7 @@ use crate::loops::Delay;
 use crate::offset::Offset;
 use crate::render::Render;
 use crate::render::extent::Supports;
-use crate::typing::Value;
+use crate::typing::{Typing, Value};
 
 /// A sampled node is the dearest kind this engine runs, so it is keyed as a collapse is: off
 /// the node's identity, the rate and the extent it was stepped over. Its length rides along.
@@ -66,6 +66,26 @@ pub(super) struct Program {
     pub reads: Vec<NodeId>,
     pub layout: Layout,
     pub site_nodes: Vec<NodeId>,
+}
+
+/// A read of samples off the grid, or a delay that moves with `t`, is known from the types
+/// and the rate, so it refuses wherever it is written, as typing refuses a loop's fractional
+/// step, before a range is decided or a sample computed, dependencies first.
+pub(super) fn on_the_grid(tys: &Typing, rate: u32) -> Result<(), EngineError> {
+    for id in (0..tys.len()).map(|n| NodeId(n as u32)) {
+        match *tys.value(id) {
+            Value::Read { source, at, site }
+                if matches!(tys.ty(id).held, sva_formula::Held::Sampled) =>
+            {
+                if let Err(count) = at.steps_at(rate) {
+                    return Err(off_grid(tys, source, site, count, rate));
+                }
+            }
+            Value::SelfAt(Delay::Varying) => return Err(varying(tys, id)),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn program(held: &Render, id: NodeId) -> Result<Program, EngineError> {
@@ -170,7 +190,7 @@ impl Build<'_> {
             )),
             Value::SelfAt(delay) => match self.delay(delay) {
                 Some(steps) => Ok(NodeRenderer::SelfAt { steps }),
-                None => Err(varying(self.held, id)),
+                None => Err(varying(&self.held.tys, id)),
             },
             Value::Solver(params) => {
                 let site = self.site(Site::Physics(params), id);
@@ -206,7 +226,7 @@ impl Build<'_> {
     ) -> Result<i64, EngineError> {
         let rate = self.held.config.rate;
         at.steps_at(rate)
-            .map_err(|count| off_grid(self.held, source, site, count, rate))
+            .map_err(|count| off_grid(&self.held.tys, source, site, count, rate))
     }
 
     /// A sampled operand is already a buffer, so a renderer reads it rather than recomputing it.
@@ -316,21 +336,21 @@ impl Build<'_> {
 }
 
 pub fn refused(held: &Render, id: NodeId, e: &SampleError) -> EngineError {
-    collapse_refused(held, id, &e.to_string(), e.code())
+    collapse_refused(&held.tys, id, &e.to_string(), e.code())
 }
 
-fn collapse_refused(held: &Render, id: NodeId, message: &str, code: &str) -> EngineError {
+fn collapse_refused(tys: &Typing, id: NodeId, message: &str, code: &str) -> EngineError {
     EngineError::refused(Diagnostic {
         code: code.to_string(),
         message: message.to_string(),
-        location: Located::at(held.tys.name(id), None),
+        location: Located::at(tys.name(id), None),
         help: "write the node so the grid can hold it".to_string(),
     })
 }
 
 fn uncollapsed(held: &Render, id: NodeId) -> EngineError {
     collapse_refused(
-        held,
+        &held.tys,
         id,
         "a closed form reaches the grid with no collapse written for it",
         "type.samples_in_closed_form",
@@ -338,7 +358,7 @@ fn uncollapsed(held: &Render, id: NodeId) -> EngineError {
 }
 
 fn off_grid(
-    held: &Render,
+    tys: &Typing,
     source: NodeId,
     site: sva_formula::Origin,
     count: f64,
@@ -348,9 +368,9 @@ fn off_grid(
         code: "ref.fractional_shift_on_samples".to_string(),
         message: format!(
             "`@{}` is samples, and this offset is not a whole one.",
-            held.tys.name(source)
+            tys.name(source)
         ),
-        location: held.tys.locate(site),
+        location: tys.locate(site),
         help: format!(
             "{} samples at {rate} Hz; pick a rate or a delay that lands on the grid",
             count.abs()
@@ -358,9 +378,9 @@ fn off_grid(
     })
 }
 
-fn varying(held: &Render, id: NodeId) -> EngineError {
+fn varying(tys: &Typing, id: NodeId) -> EngineError {
     collapse_refused(
-        held,
+        tys,
         id,
         "a delay written as a closed form in t has no whole-sample offset this machine can read",
         "engine.varying_delay",
@@ -369,7 +389,7 @@ fn varying(held: &Render, id: NodeId) -> EngineError {
 
 fn missing(held: &Render, id: NodeId) -> EngineError {
     collapse_refused(
-        held,
+        &held.tys,
         id,
         "the frames this reads were never built",
         "cast.istft_needs_frames",
@@ -378,7 +398,7 @@ fn missing(held: &Render, id: NodeId) -> EngineError {
 
 fn unplanned(held: &Render, id: NodeId, name: &str) -> EngineError {
     collapse_refused(
-        held,
+        &held.tys,
         id,
         &format!("`{name}` has no sampled form"),
         "engine.unshadered_operation",
