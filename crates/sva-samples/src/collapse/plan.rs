@@ -4,6 +4,7 @@ use sva_formula::closed_form::{Part, map_children};
 use sva_formula::spectral_sum::atom::SpectralAtom;
 use sva_formula::{Body, ClosedForm, Lane, Line, SpectralSum, Var, normalize_closed_form};
 
+use super::active::{self, Window};
 use super::truncate::Audible;
 use super::{Extent, atoms, lines, point, truncate};
 use crate::error::CollapseError;
@@ -24,16 +25,27 @@ pub struct LinePlan {
     pub tail_db: Option<f64>,
 }
 
-/// FORMAT 9.2's window route.
+/// FORMAT 9.2's window route. Outside `live` the factor zeroes a sum proven finite.
 pub struct Group {
     pub factor: SpectralAtom,
     pub placed: Vec<Line>,
     pub summed: Vec<Line>,
+    pub live: Window,
+    samples: usize,
 }
 
+/// `atoms` times `samples` chose the route before a sweep skipped dead atoms, so the choice
+/// keeps its bits; `evaluated` is what it now runs.
 pub enum LanePlan {
-    Grouped { groups: Vec<Group>, bins: usize },
-    Sweep { atoms: usize, samples: usize },
+    Grouped {
+        groups: Vec<Group>,
+        bins: usize,
+    },
+    Sweep {
+        atoms: usize,
+        samples: usize,
+        evaluated: u128,
+    },
 }
 
 pub struct Sampled {
@@ -324,12 +336,12 @@ pub(super) fn kept_lines(
 
 fn lane_plan(lane: &Lane, rate: u32, extent: Extent, len: usize) -> LanePlan {
     let bins = lines::bins(extent.span_secs(rate), rate);
+    let step = 1.0 / f64::from(rate);
+    let spans = super::span::absolute(lane, extent, rate);
     let sweep = LanePlan::Sweep {
         atoms: lane.atoms.len(),
-        samples: super::span::nonzero(lane, extent, rate)
-            .iter()
-            .map(|(from, to)| to - from)
-            .sum(),
+        samples: spans.iter().map(|(from, to)| (to - from) as usize).sum(),
+        evaluated: active::evaluated(&active::windows(lane, step), &spans),
     };
     let Some(found) = lines::grouped(lane) else {
         return sweep;
@@ -341,18 +353,33 @@ fn lane_plan(lane: &Lane, rate: u32, extent: Extent, len: usize) -> LanePlan {
                 true => (Vec::new(), held),
                 false => lines::split(&held, bins, rate),
             };
+            let live = match bounded(&placed, &summed, bins) {
+                true => active::window(&factor, step),
+                false => active::OPEN,
+            };
             Group {
+                samples: active::evaluated(&[live], &[(extent.start, extent.end)]) as usize,
                 factor,
                 placed,
                 summed,
+                live,
             }
         })
         .collect();
     let grouped = LanePlan::Grouped { groups, bins };
-    match grouped.flops(len) <= sweep.flops(len) {
+    match grouped.chosen_by(len) <= sweep.chosen_by(len) {
         true => grouped,
         false => sweep,
     }
+}
+
+fn bounded(placed: &[Line], summed: &[Line], bins: usize) -> bool {
+    let reach: f64 = placed
+        .iter()
+        .chain(summed)
+        .map(|l| l.amp.re.abs() + l.amp.im.abs())
+        .sum();
+    reach * (bins.max(1) as f64) < 1e300
 }
 
 /// `n*log2(n)` butterflies; a length that is no power of two is Bluestein's three
@@ -391,19 +418,23 @@ impl LinePlan {
 }
 
 impl LanePlan {
-    pub fn flops(&self, len: usize) -> u128 {
+    pub fn flops(&self, _len: usize) -> u128 {
         match self {
             LanePlan::Grouped { groups, bins } => groups
                 .iter()
-                .map(|g| {
-                    let placed = match g.placed.is_empty() {
-                        true => 0,
-                        false => transform_flops(*bins),
-                    };
-                    placed + (g.summed.len() as u128 + 1) * len as u128
-                })
+                .map(|g| transformed(g, *bins) + (g.summed.len() as u128 + 1) * g.samples as u128)
                 .sum(),
-            LanePlan::Sweep { atoms, samples } => *atoms as u128 * *samples as u128,
+            LanePlan::Sweep { evaluated, .. } => *evaluated,
+        }
+    }
+
+    fn chosen_by(&self, len: usize) -> u128 {
+        match self {
+            LanePlan::Grouped { groups, bins } => groups
+                .iter()
+                .map(|g| transformed(g, *bins) + (g.summed.len() as u128 + 1) * len as u128)
+                .sum(),
+            LanePlan::Sweep { atoms, samples, .. } => *atoms as u128 * *samples as u128,
         }
     }
 
@@ -419,7 +450,92 @@ impl LanePlan {
     }
 }
 
+fn transformed(g: &Group, bins: usize) -> u128 {
+    match g.placed.is_empty() {
+        true => 0,
+        false => transform_flops(bins),
+    }
+}
+
 impl Plan {
+    /// Outside it every sample is +0.0 and inside each is its own instant's, so a run over it
+    /// alone holds the same bits; a row reading the whole extent at once answers all of it.
+    pub fn nonzero(&self, rate: u32, extent: Extent) -> Extent {
+        let step = 1.0 / f64::from(rate);
+        let lane = |lane: &Lane, taken: &LanePlan| -> Option<Option<Window>> {
+            match taken {
+                LanePlan::Sweep { .. } if lane.modal.is_empty() => Some(active::hull(
+                    &active::windows(lane, step),
+                    &super::span::absolute(lane, extent, rate),
+                )),
+                LanePlan::Grouped { groups, .. } if groups.iter().all(|g| g.placed.is_empty()) => {
+                    Some(active::hull(
+                        &groups.iter().map(|g| g.live).collect::<Vec<_>>(),
+                        &[(extent.start, extent.end)],
+                    ))
+                }
+                _ => None,
+            }
+        };
+        let found = match self {
+            Plan::Sampled(held) => held
+                .sum
+                .lanes
+                .iter()
+                .zip(&held.lanes)
+                .map(|(l, taken)| lane(l, taken))
+                .collect::<Option<Vec<_>>>()
+                .map(|lanes| lanes.into_iter().flatten().collect::<Vec<_>>()),
+            Plan::Added(parts) => Some(
+                parts
+                    .iter()
+                    .map(|part| part.nonzero(rate, extent))
+                    .filter(|part| !part.is_empty())
+                    .map(|part| (part.start, part.end))
+                    .collect(),
+            ),
+            _ => None,
+        };
+        match found {
+            None => extent,
+            Some(spans) => spans
+                .into_iter()
+                .map(|(a, b)| Extent::new(a, b))
+                .fold(Extent::NOWHERE, Extent::hull)
+                .intersect(extent),
+        }
+    }
+
+    /// What two extents cut to one may still differ in.
+    pub fn route(&self) -> Vec<u64> {
+        let lines = |held: &[Vec<Line>]| held.iter().map(|l| l.len() as u64).collect::<Vec<_>>();
+        match self {
+            Plan::Spectrum(_) => vec![0],
+            Plan::Lines(found) => [vec![1], lines(&found.placed), lines(&found.summed)].concat(),
+            Plan::Sampled(held) => {
+                let mut out = vec![2, held.rule as u64];
+                for lane in &held.lanes {
+                    match lane {
+                        LanePlan::Sweep { .. } => out.push(0),
+                        LanePlan::Grouped { groups, .. } => {
+                            out.push(1 + groups.len() as u64);
+                            for g in groups {
+                                out.extend([g.placed.len() as u64, g.summed.len() as u64]);
+                            }
+                        }
+                    }
+                }
+                out
+            }
+            Plan::Point { .. } => vec![3],
+            Plan::Added(parts) => {
+                let mut out = vec![4, parts.len() as u64];
+                parts.iter().for_each(|part| out.extend(part.route()));
+                out
+            }
+        }
+    }
+
     pub fn flops(&self, len: usize) -> u128 {
         match self {
             Plan::Spectrum(_) => transform_flops(len),

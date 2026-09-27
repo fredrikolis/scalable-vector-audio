@@ -1,5 +1,6 @@
 // Concern: turns a closed form into samples by the rule its shape names | Non-concern: its spectral sum (sva-formula), reading the buffer (measure/) | IO: (&ClosedForm, rate) -> Buffer, Label
 
+mod active;
 mod atoms;
 mod blocks;
 mod inverse;
@@ -234,6 +235,62 @@ pub fn of_spectral_sum_or_point(
             None => Err(e),
         },
         other => other,
+    }
+}
+
+/// A collapse decided for one extent and not yet run: each row `of_spectral_sum_or_point` and
+/// `render` would take, run over that extent or over its `nonzero` part.
+pub struct Planned(Plan);
+
+pub fn planned(
+    sum: Option<&SpectralSum>,
+    written: Option<&ClosedForm>,
+    rate: u32,
+    extent: Extent,
+    profile: &Profile,
+) -> Result<Planned, CollapseError> {
+    let len = extent.len();
+    let normalized;
+    let sum = match (sum, written) {
+        (Some(sum), _) => sum,
+        (None, Some(form)) => match normalize_closed_form(form) {
+            Ok(held) => {
+                normalized = held;
+                &normalized
+            }
+            Err(_) if form.var == Var::T => {
+                return plan::of_written(form, rate, extent, profile, len).map(Planned);
+            }
+            Err(left) => return Err(CollapseError::LeftAlgebra(left.reason.clause())),
+        },
+        (None, None) => return Err(CollapseError::NotEvaluable("a form with neither view")),
+    };
+    match plan::of(sum, rate, extent, profile, len) {
+        Err(e) if reaches_no_atom(&e) => match written.filter(|t| t.var == Var::T) {
+            Some(form) => plan::of_written(form, rate, extent, profile, len).map(Planned),
+            None => Err(e),
+        },
+        other => other.map(Planned),
+    }
+}
+
+impl Planned {
+    pub fn nonzero(&self, rate: u32, extent: Extent) -> Extent {
+        self.0.nonzero(rate, extent)
+    }
+
+    pub fn route(&self) -> Vec<u64> {
+        self.0.route()
+    }
+
+    pub fn run(
+        self,
+        rate: u32,
+        extent: Extent,
+        profile: &Profile,
+        score: AliasScore,
+    ) -> Result<(Buffer, Label), CollapseError> {
+        run(self.0, rate, extent, profile, extent.len(), score)
     }
 }
 

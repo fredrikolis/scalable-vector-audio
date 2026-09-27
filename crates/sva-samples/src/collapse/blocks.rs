@@ -2,6 +2,7 @@
 
 use sva_formula::{ClosedForm, SpectralSum, Var, normalize_closed_form};
 
+use super::active::{self, Window};
 use super::lines::Direct;
 use super::truncate::{self, Audible};
 use super::{plan, point, reaches_no_atom, span};
@@ -23,6 +24,7 @@ enum Row {
     Sweep {
         sum: Box<SpectralSum>,
         spans: Vec<Option<Vec<(i64, i64)>>>,
+        windows: Vec<Vec<Window>>,
     },
     Point {
         written: Box<ClosedForm>,
@@ -79,10 +81,16 @@ impl Rows {
 
     /// Appends `[tape.end(), to)` of every component, on the grid's own index.
     pub fn extend(&self, to: i64, tape: &mut Tape) -> Result<(), CollapseError> {
-        let step = 1.0 / f64::from(self.rate);
-        for i in tape.end()..to {
-            for c in 0..self.width {
-                tape.push(c, value(&self.row, c, i, self.rate, step)?);
+        let from = tape.end();
+        if to <= from {
+            return Ok(());
+        }
+        let planes = (0..self.width)
+            .map(|c| values(&self.row, c, (from, to), self.rate))
+            .collect::<Result<Vec<_>, _>>()?;
+        for i in 0..(to - from) as usize {
+            for (c, plane) in planes.iter().enumerate() {
+                tape.push(c, plane[i]);
             }
         }
         Ok(())
@@ -98,15 +106,10 @@ fn worked(row: &Row, c: usize, from: i64, to: i64) -> (u128, u128) {
         Row::Lines(lanes) => lanes[c]
             .as_ref()
             .map_or((0, 0), |d| times(d.lines_priced_and_turned(), n)),
-        Row::Sweep { sum, spans } => {
-            let inside = spans[c].as_ref().map_or(n, |spans| {
-                let held = spans
-                    .iter()
-                    .map(|(a, b)| (to.min(*b) - from.max(*a)).max(0));
-                held.sum::<i64>() as u128
-            });
-            let atoms = sum.lanes[c].atoms.len();
-            times((atoms, atoms), inside)
+        Row::Sweep { spans, windows, .. } => {
+            let evaluated =
+                active::evaluated(&windows[c], &inside(spans[c].as_deref(), (from, to)));
+            (evaluated, evaluated)
         }
         Row::Point { written, .. } => times(plan::point_work(&written.body, c), n),
         Row::Added(parts) => {
@@ -139,9 +142,16 @@ fn of_sum(sum: &SpectralSum, rate: u32, profile: &Profile) -> Result<Row, Collap
         .iter()
         .map(|lane| span::windows(lane, rate))
         .collect();
+    let step = 1.0 / f64::from(rate);
+    let windows = truncated
+        .lanes
+        .iter()
+        .map(|lane| active::windows(lane, step))
+        .collect();
     Ok(Row::Sweep {
         sum: Box::new(truncated),
         spans,
+        windows,
     })
 }
 
@@ -201,38 +211,59 @@ fn width(row: &Row) -> usize {
     }
 }
 
-/// Each row's arithmetic, in its whole-render row's order, so the bits agree.
-fn value(row: &Row, c: usize, i: i64, rate: u32, step: f64) -> Result<f64, CollapseError> {
+/// Each row's arithmetic over `[from, to)`, in its whole-render row's order, so the bits agree.
+fn values(row: &Row, c: usize, (from, to): Window, rate: u32) -> Result<Vec<f64>, CollapseError> {
+    let step = 1.0 / f64::from(rate);
+    let n = (to - from) as usize;
     Ok(match row {
-        Row::Lines(lanes) => {
-            let mut held = 0.0;
-            if let Some(direct) = &lanes[c] {
-                held += direct.at(i as f64 / f64::from(rate));
+        Row::Lines(lanes) => (from..to)
+            .map(|i| {
+                let mut held = 0.0;
+                if let Some(direct) = &lanes[c] {
+                    held += direct.at(i as f64 / f64::from(rate));
+                }
+                held
+            })
+            .collect(),
+        Row::Sweep {
+            sum,
+            spans,
+            windows,
+        } => {
+            let mut out = vec![0.0; n];
+            for (a, b) in inside(spans[c].as_deref(), (from, to)) {
+                let at = (a - from) as usize..(b - from) as usize;
+                active::sweep(&sum.lanes[c], &windows[c], (a, b), step, &mut out[at])?;
             }
-            held
+            out
         }
-        Row::Sweep { sum, spans } => {
-            let inside = spans[c]
-                .as_ref()
-                .is_none_or(|spans| spans.iter().any(|(from, to)| (*from..*to).contains(&i)));
-            match inside {
-                true => point::eval_lane(&sum.lanes[c], i as f64 * step)?.re,
-                false => 0.0,
-            }
-        }
-        Row::Point { written, .. } => {
-            point::eval_body(&written.body, c, i as f64 * step, &point::NoRefs)?.re
-        }
+        Row::Point { written, .. } => (from..to)
+            .map(|i| Ok(point::eval_body(&written.body, c, i as f64 * step, &point::NoRefs)?.re))
+            .collect::<Result<_, CollapseError>>()?,
         Row::Added(parts) => {
-            let mut sum = 0.0;
+            let mut sum = vec![0.0; n];
             for (part, held) in parts {
                 if let Some(lane) = lane(*held, c) {
-                    sum += value(part, lane, i, rate, step)?;
+                    for (out, v) in sum.iter_mut().zip(values(part, lane, (from, to), rate)?) {
+                        *out += v;
+                    }
                 }
             }
             sum
         }
     })
+}
+
+/// `[from, to)` met with a lane's spans, where every atom of it is windowed.
+fn inside(spans: Option<&[(i64, i64)]>, (from, to): Window) -> Vec<Window> {
+    match spans {
+        None => vec![(from, to)],
+        Some(spans) => spans
+            .iter()
+            .map(|(a, b)| (from.max(*a), to.min(*b)))
+            .filter(|(a, b)| a < b)
+            .collect(),
+    }
 }
 
 /// One component broadcasts.

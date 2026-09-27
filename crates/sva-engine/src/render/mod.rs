@@ -489,33 +489,66 @@ fn collapse_closed_form(
         Err(e) => return Err(e),
     };
     let score = held.alias_score(id);
-    let extent = held.extents.of(id);
-    let samples = extent.len();
-    let key = crate::cache::buffer_key(
-        identity,
-        held.config.rate,
-        extent,
-        held.tys.ty(id).width as usize,
-        score,
+    let (rate, profile) = (held.config.rate, &held.config.profile);
+    let asked = held.extents.of(id);
+    let planned = match (&sum, &written) {
+        (Err(_), None) => None,
+        _ => Some(
+            sva_samples::planned(sum.as_ref().ok(), written.as_ref(), rate, asked, profile)
+                .map_err(|e| collapse_refused(held, id, &e))?,
+        ),
+    };
+    // A run over where the row writes nonzero is the same bits there, so the key names that.
+    let (over, route) = match (&planned, score) {
+        (Some(planned), AliasScore::NotAsked) => (planned.nonzero(rate, asked), planned.route()),
+        _ => (asked, Vec::new()),
+    };
+    let width = held.tys.ty(id).width as usize;
+    let key = crate::cache::mixed(
+        crate::cache::buffer_key(identity, rate, over, width, score),
+        &route,
     );
     if let Ok(sum) = &sum {
         held.symbolic.insert(id, sum.clone());
     }
     // FORMAT 9.3: the label belongs to the value, so an entry without one is no value.
-    if let Some((hit, label)) = warm(held, id, key, samples, cache) {
-        held.buffers.insert(id, hit);
+    if let Some((hit, label)) = warm(held, id, key, over.len(), cache) {
+        held.buffers.insert(id, padded(hit, asked));
         held.labels.insert(id, label);
         return Ok(());
     }
-    let (buffer, label) = match (&sum, &written) {
-        (Err(_), None) => pointwise::point_sample(held, id, score)?,
-        _ => sampled_form(held, extent, &sum, written.as_ref(), score)
+    let (buffer, label) = match planned {
+        None => pointwise::point_sample(held, id, score)?,
+        Some(planned) => planned
+            .run(rate, over, profile, score)
             .map_err(|e| collapse_refused(held, id, &e))?,
     };
     store(key, &buffer, &label, cache);
-    held.buffers.insert(id, buffer);
+    held.buffers.insert(id, padded(buffer, asked));
     held.labels.insert(id, label);
     Ok(())
+}
+
+/// A buffer over part of `asked`, zero over the rest.
+fn padded(buffer: Buffer, asked: Extent) -> Buffer {
+    if buffer.extent() == asked {
+        return buffer;
+    }
+    let at = (buffer.start - asked.start).max(0) as usize;
+    let planes = buffer
+        .planes
+        .iter()
+        .map(|plane| {
+            let mut out = vec![0.0; asked.len()];
+            if !plane.is_empty() {
+                out[at..at + plane.len()].copy_from_slice(plane);
+            }
+            out
+        })
+        .collect();
+    let mut out = Buffer::of_planes(buffer.rate, planes);
+    out.start = asked.start;
+    out
 }
 
 fn collapse_refused(held: &Render, id: NodeId, e: &sva_samples::CollapseError) -> EngineError {
@@ -525,25 +558,6 @@ fn collapse_refused(held: &Render, id: NodeId, e: &sva_samples::CollapseError) -
         location: Located::at(held.tys.name(id), None),
         help: e.help().to_string(),
     })
-}
-
-/// A closed form with a spectral sum takes the six rows over it; one without takes the point-sampled
-/// row over the written closed form itself, which is what FORMAT 9.1's no-dual row is.
-fn sampled_form(
-    held: &Render,
-    extent: Extent,
-    sum: &Result<SpectralSum, EngineError>,
-    written: Option<&sva_formula::ClosedForm>,
-    score: AliasScore,
-) -> Result<(Buffer, Label), sva_samples::CollapseError> {
-    let (rate, profile) = (held.config.rate, &held.config.profile);
-    match (sum, written) {
-        (Ok(sum), written) => {
-            sva_samples::of_spectral_sum_or_point(sum, written, rate, extent, profile, score)
-        }
-        (Err(_), Some(form)) => sva_samples::render(form, rate, extent, profile, score),
-        (Err(_), None) => unreachable!("a closed form with neither view is point-sampled above"),
-    }
 }
 
 /// A spectral sum is rate-free, so one entry answers every rate the same closed form is read at.

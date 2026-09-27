@@ -46,6 +46,19 @@ pub fn eval_lane(lane: &Lane, t: f64) -> Result<C64, CollapseError> {
     for a in &lane.atoms {
         sum = sum + eval_atom(a, t)?;
     }
+    with_modal(lane, sum, t)
+}
+
+/// Every atom `live` leaves out is exactly zero here.
+pub(crate) fn eval_among(lane: &Lane, live: &[usize], t: f64) -> Result<C64, CollapseError> {
+    let mut sum = C64::ZERO;
+    for &i in live {
+        sum = sum + eval_atom(&lane.atoms[i], t)?;
+    }
+    with_modal(lane, sum, t)
+}
+
+fn with_modal(lane: &Lane, mut sum: C64, t: f64) -> Result<C64, CollapseError> {
     for bank in &lane.modal {
         for a in sva_formula::modal::atoms(bank, sva_formula::Origin::UNKNOWN) {
             sum = sum + eval_atom(&a, t)?;

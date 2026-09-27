@@ -6,11 +6,19 @@ use super::Extent;
 
 /// Where every atom is windowed, the lane is zero outside their union.
 pub(super) fn nonzero(lane: &Lane, extent: Extent, rate: u32) -> Vec<(usize, usize)> {
-    let len = extent.len();
+    let local = |n: i64| (n - extent.start) as usize;
+    absolute(lane, extent, rate)
+        .into_iter()
+        .map(|(from, to)| (local(from), local(to)))
+        .collect()
+}
+
+/// The same spans on the grid's own index.
+pub(super) fn absolute(lane: &Lane, extent: Extent, rate: u32) -> Vec<(i64, i64)> {
     let Some(spans) = windows(lane, rate) else {
-        return vec![(0, len)];
+        return vec![(extent.start, extent.end)];
     };
-    let within = |n: i64| n.saturating_sub(extent.start).clamp(0, len as i64) as usize;
+    let within = |n: i64| n.clamp(extent.start, extent.end);
     spans
         .into_iter()
         .map(|(from, to)| (within(from), within(to)))

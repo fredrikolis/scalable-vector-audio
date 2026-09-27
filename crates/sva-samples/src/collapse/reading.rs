@@ -4,7 +4,7 @@ use sva_formula::{ClosedForm, SpectralSum};
 
 use crate::error::CollapseError;
 
-use super::{Extent, lines, plan, point, span};
+use super::{Extent, active, lines, plan, point, span};
 
 pub(super) fn sampled_spectral_sum(
     sum: &SpectralSum,
@@ -21,10 +21,10 @@ pub(super) fn sampled_spectral_sum(
             continue;
         }
         let mut plane = vec![0.0; len];
+        let windows = active::windows(lane, step);
         for (from, to) in span::nonzero(lane, extent, rate) {
-            for (at, held) in plane.iter_mut().enumerate().take(to).skip(from) {
-                *held = point::eval_lane(lane, extent.instant(at, 1, step))?.re;
-            }
+            let over = (extent.start + from as i64, extent.start + to as i64);
+            active::sweep(lane, &windows, over, step, &mut plane[from..to])?;
         }
         planes.push(plane);
     }
@@ -44,8 +44,16 @@ fn under_a_window(
     let step = 1.0 / f64::from(rate);
     for group in groups {
         let mut held = lines::transformed(&group.placed, extent, bins, rate, len);
-        lines::add_direct(&mut held, &group.summed, extent, rate);
-        for (at, value) in held.into_iter().enumerate() {
+        let live = extent.intersect(Extent::new(group.live.0, group.live.1));
+        let (from, to) = match live.is_empty() {
+            true => (0, 0),
+            false => (
+                (live.start - extent.start) as usize,
+                (live.end - extent.start) as usize,
+            ),
+        };
+        lines::add_direct(&mut held[from..to], &group.summed, live, rate);
+        for (at, value) in held.into_iter().enumerate().take(to).skip(from) {
             plane[at] += value * point::eval_atom(&group.factor, extent.instant(at, 1, step))?.re;
         }
     }
