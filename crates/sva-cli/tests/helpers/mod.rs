@@ -84,8 +84,9 @@ pub fn json_of(r: &Rendered, name: &str, representation: Representation) -> Stri
     let rate = r.config.rate;
     let interval = r
         .render
-        .range
+        .output
         .map(|x| (x.start_secs(rate), x.end as f64 / f64::from(rate)));
+    let bounds = r.render.reconstructions();
     success_envelope(
         &query_data(&Report {
             target: &r.expression,
@@ -98,6 +99,7 @@ pub fn json_of(r: &Rendered, name: &str, representation: Representation) -> Stri
             answers: &answers,
             analyses: &[],
             limit: Some(SAMPLE_LIMIT),
+            bounds: &bounds,
         }),
         &[],
     )

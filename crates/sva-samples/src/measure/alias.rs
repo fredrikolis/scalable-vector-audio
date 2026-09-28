@@ -50,8 +50,6 @@ pub struct Alias {
     pub nmr_peak_db: f64,
     pub peak_at_secs: f64,
     pub audible: bool,
-    /// Filled by whoever holds the graph: how many `instances` are not a function of `t` alone.
-    pub rate_dependent: usize,
     pub instances: usize,
     pub bands: Vec<AliasBand>,
 }
@@ -158,7 +156,6 @@ pub fn measure_alias(
         nmr_peak_db: if scored > 0 { nmr_peak } else { nmr_db },
         peak_at_secs: peak_at,
         audible: scored > 0 && nmr_db > AUDIBLE_NMR_DB,
-        rate_dependent: 0,
         instances: 0,
         bands: bands(&sig_bands, &err_bands, &edges, frames.max(1)),
     }

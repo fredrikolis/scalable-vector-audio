@@ -60,8 +60,7 @@ fn a_fractional_shift_hashes_as_a_new_expression() {
     );
 }
 
-/// An `sp` offset on a sampled ref moves the reading by whole samples, and an offset that
-/// names no index refuses rather than being rounded into one.
+/// An `sp` offset on a sampled ref moves the reading by whole lattice samples.
 #[test]
 fn an_sp_offset_read_is_an_integer_index() {
     let rendered = |name: &str, body: &str| {
@@ -69,7 +68,7 @@ fn an_sp_offset_read_is_an_integer_index() {
             name,
             &[("grid", "chaigne_askenfelt(261.63)\n"), ("node", body)],
         );
-        let held = render(&g, "node", RenderConfig::seconds(22_050, 0.01), None)
+        let held = render(&g, "node", RenderConfig::seconds(44_100, 0.01), None)
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         let id = held.id("node").expect("the root");
         held.output(id).expect("a rendered read").plane(0).to_vec()
@@ -86,20 +85,6 @@ fn an_sp_offset_read_is_an_integer_index() {
             plain[i - 2]
         );
     }
-
-    let g = graph_of(
-        "fractional",
-        &[
-            ("grid", "chaigne_askenfelt(261.63)\n"),
-            ("node", "@grid(t - 1.5sp)*0.5\n"),
-        ],
-    );
-    assert_eq!(
-        types(&g, "node")
-            .expect_err("half a sample names no index")
-            .code(),
-        "ref.fractional_shift_on_samples",
-    );
 }
 
 /// A duration on a sampled ref is an index offset wherever it is a whole sample count at
@@ -113,7 +98,10 @@ fn a_bar_offset_that_lands_on_the_grid_reads_a_sampled_ref() {
             ("node", "@grid(t - 1b)*0.5\n"),
         ],
     );
-    g.resolve_bar_spans(2.0);
+    g.resolve_bar_spans(sva_ast::PerBar {
+        seconds: 2.0,
+        per: 1.0,
+    });
     let held = render(&g, "node", RenderConfig::seconds(8_000, 2.5), None)
         .expect("a bar offset that lands on the grid");
     let id = held.id("node").expect("the root");
@@ -128,27 +116,6 @@ fn a_bar_offset_that_lands_on_the_grid_reads_a_sampled_ref() {
             buffer.at(0, i)
         );
     }
-}
-
-/// An offset a rate turns into half a sample names no index, and the refusal states the
-/// count it would have needed rather than rounding into a neighbour.
-#[test]
-fn a_half_sample_offset_still_refuses_naming_the_count() {
-    let g = graph_of(
-        "half-sample",
-        &[
-            ("grid", "sample(sin(2*pi*220*t))\n"),
-            ("node", "@grid(t - 0.0025s)*0.5\n"),
-        ],
-    );
-    let Err(refused) = render(&g, "node", RenderConfig::seconds(1_000, 0.05), None) else {
-        panic!("2.5 samples names no index");
-    };
-    assert_eq!(refused.code(), "ref.fractional_shift_on_samples");
-    assert!(
-        refused.to_string().contains("2.5 samples at 1000 Hz"),
-        "the refusal names the count it would need: {refused}"
-    );
 }
 
 /// A closed form ref is inlined into the reading closed form, and nothing is held for it.
@@ -170,7 +137,7 @@ fn a_law_ref_substitutes_and_allocates_no_buffer() {
 
     let id = held.id("node").expect("the root");
     let Read::Substitute(form) =
-        resolve(&held.tys, id, 0, Held::Form(Var::T)).expect("a law substitutes")
+        resolve(&held.tys, id, Held::Form(Var::T)).expect("a law substitutes")
     else {
         panic!("a law ref substitutes rather than hitting a buffer");
     };
@@ -180,8 +147,8 @@ fn a_law_ref_substitutes_and_allocates_no_buffer() {
     );
 }
 
-/// `sp` on a read of a closed form puts the whole reading node on the grid, so the closed form it reads is
-/// collapsed once and indexed, rather than refusing for having no sampled form.
+/// `sp` is one step of the lattice in seconds, so a closed form read `2sp` back is that closed
+/// form moved, exact at any rate.
 #[test]
 fn a_law_read_at_a_grid_offset_renders() {
     let g = graph_of(
@@ -197,7 +164,8 @@ fn a_law_read_at_a_grid_offset_renders() {
     let buffer = held.output(id).expect("a rendered read");
     assert_eq!(buffer.len(), 80);
     for i in 0..buffer.len() {
-        let want = 0.5 * (std::f64::consts::TAU * 220.0 * (i as f64 - 2.0) / 8_000.0).sin();
+        let at = i as f64 / 8_000.0 - 2.0 / 44_100.0;
+        let want = 0.5 * (std::f64::consts::TAU * 220.0 * at).sin();
         assert!(
             (buffer.at(0, i) - want).abs() < 1e-9,
             "sample {i}: {} against {want}",
@@ -553,28 +521,31 @@ fn a_reflected_read_counts_down_on_a_form_and_on_samples() {
         ("form-rev", "@form(0.11s - t)"),
         ("held-rev", "@held(0.11s - t)"),
         ("held-neg", "@held(-1*(t - 0.11s))"),
-        ("held-sp", "@held(11sp - t)"),
+        ("held-sp", "@held(4851sp - t)"),
     ] {
         let got = first(name, body, 3).expect("a reflected read renders");
         assert!(near(&got, &[0.11, 0.10, 0.09]), "{body}: {got:?}");
     }
 }
 
-/// Samples read at a whole multiple of `t` land on samples; any other multiple lands between
-/// them and refuses by its own code.
+/// Samples read at any multiple of `t` land where that multiple says: on lattice samples
+/// where it is whole there, between them otherwise, read there by the kernel.
 #[test]
-fn a_scaled_read_of_samples_strides_by_a_whole_scale_and_refuses_another() {
+fn a_scaled_read_of_samples_lands_on_or_between_samples() {
     let got = first("held-2t", "@held(2*t - 0.02s)", 3).expect("a whole scale renders");
     assert!(near(&got, &[-0.02, 0.0, 0.02]), "{got:?}");
-    let refused = first("held-half", "@held(0.5*t)", 3).expect_err("half a sample");
-    assert_eq!(refused.code(), "ref.scaled_read_off_the_grid");
+    let got = first("held-half", "@held(0.5*t)", 3).expect("half a sample renders");
+    let want = [0.0, 0.005, 0.01];
+    assert!(
+        got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-9),
+        "{got:?}"
+    );
 }
 
-/// Seconds and grid steps add in one offset, and a crop may end on a grid step.
+/// Seconds and lattice steps add in one offset.
 #[test]
 fn an_offset_in_seconds_and_steps_reads_their_sum() {
     let got = first("mixed", "@held(t - 0.02s - 1sp)", 3).expect("a mixed offset renders");
-    assert!(near(&got, &[-0.03, -0.02, -0.01]), "{got:?}");
-    let got = first("crop-sp", "crop(@held, 0s, 2sp)", 3).expect("a crop ending on a step");
-    assert!(near(&got, &[0.0, 0.01, 0.0]), "{got:?}");
+    let step = 1.0 / 44_100.0;
+    assert!(near(&got, &[-0.02 - step, -0.01 - step, -step]), "{got:?}");
 }

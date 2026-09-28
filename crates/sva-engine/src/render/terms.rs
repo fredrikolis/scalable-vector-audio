@@ -4,7 +4,7 @@ use sva_ast::{Arg, BinOp, ByteSpan, Expr, Literal};
 use sva_formula::{Hash, NodeId};
 
 use crate::instantiate::Instances;
-use crate::offset::Offset;
+use crate::time::Affine;
 use crate::typing::{SumSlot, Typing, Value};
 
 /// The node a stream defines as the sum of its terms, for its expression to read as `@notes`.
@@ -122,7 +122,7 @@ impl Terms {
         let mut at = match tys.value(notes) {
             Value::Read {
                 source,
-                at: Offset::NOW,
+                at: crate::typing::When::Time(Affine::NOW),
                 ..
             } => Some(*source),
             _ => Some(notes),

@@ -117,7 +117,7 @@ fn operands(tys: &Typing, id: NodeId) -> Vec<NodeId> {
             x, cutoff, q, gain, ..
         } => vec![*x, *cutoff, *q, *gain],
         Value::Solver { varying, .. } => varying.iter().map(|(_, a)| *a).collect(),
-        Value::SelfAt(_) | Value::Grid(_) => Vec::new(),
+        Value::SelfAt { .. } | Value::Noise(_) => Vec::new(),
     }
 }
 

@@ -344,13 +344,13 @@ impl Rendering {
     #[wasm_bindgen(getter)]
     pub fn start_secs(&self) -> f64 {
         let rate = self.inner.config.rate;
-        self.inner.render.range.map_or(0.0, |r| r.start_secs(rate))
+        self.inner.render.output.map_or(0.0, |r| r.start_secs(rate))
     }
 
     #[wasm_bindgen(getter)]
     pub fn duration_secs(&self) -> f64 {
         let rate = self.inner.config.rate;
-        self.inner.render.range.map_or(0.0, |r| r.span_secs(rate))
+        self.inner.render.output.map_or(0.0, |r| r.span_secs(rate))
     }
 
     #[wasm_bindgen(getter)]
@@ -409,8 +409,9 @@ impl Rendering {
         let interval = self
             .inner
             .render
-            .range
+            .output
             .map(|r| (r.start_secs(rate), r.end as f64 / f64::from(rate)));
+        let bounds = self.inner.render.reconstructions();
         parse(&query_data(&Report {
             target: &self.inner.expression,
             rate,
@@ -422,6 +423,7 @@ impl Rendering {
             answers: &answers,
             analyses: &[],
             limit: Some(SAMPLE_LIMIT),
+            bounds: &bounds,
         }))
     }
 

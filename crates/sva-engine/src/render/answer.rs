@@ -112,7 +112,7 @@ pub(super) fn on_the_grid(
     if let Some(held) = render.output(node) {
         return Ok(held);
     }
-    let extent = render.range.ok_or_else(|| {
+    let extent = render.output.ok_or_else(|| {
         render.unranged.clone().unwrap_or_else(|| {
             refused(
                 render,
@@ -122,15 +122,25 @@ pub(super) fn on_the_grid(
             )
         })
     })?;
-    collapsed_over(render, node, extent)
+    collapsed_over(render, node, extent, render.config.rate)
+}
+
+/// A closed form the render did not hold, over its range on the render's own lattice.
+pub(super) fn on_the_lattice(
+    render: &Render,
+    node: sva_formula::NodeId,
+) -> Result<Buffer, EngineError> {
+    let range = render.range.expect("a render pulled to an end has a range");
+    collapsed_over(render, node, range, render.lattice())
 }
 
 fn collapsed_over(
     render: &Render,
     node: sva_formula::NodeId,
     extent: sva_samples::Extent,
+    rate: u32,
 ) -> Result<Buffer, EngineError> {
-    let (rate, profile) = (render.config.rate, &render.config.profile);
+    let profile = &render.config.profile;
     let written = refs::substituted_closed_form(&render.tys, node);
     let composed;
     let sum = match render.symbolic.get(&node) {
@@ -637,12 +647,10 @@ fn own_samples(render: &Render, id: sva_formula::NodeId) -> Result<Buffer, Engin
     let needed = range.intersect(render.extents.support(id));
     let held = render.extents.of(id);
     if needed.is_empty() || held.intersect(needed) == needed {
-        return Ok(render
-            .output(id)
-            .expect("a held buffer over a decided range"));
+        return Ok(render.aligned(id, range));
     }
     match render.tys.ty(id).is_closed_form() {
-        true => collapsed_over(render, id, range),
+        true => collapsed_over(render, id, range, render.lattice()),
         false => Err(unmaterialized(
             render,
             id,
@@ -663,7 +671,7 @@ fn arguments_under(render: &Render, node: sva_formula::NodeId) -> Vec<crate::Arg
                 x, cutoff, q, gain, ..
             } => vec![*x, *cutoff, *q, *gain],
             Value::Solver { varying, .. } => varying.iter().map(|(_, a)| *a).collect(),
-            Value::SelfAt(_) | Value::Grid(_) => Vec::new(),
+            Value::SelfAt { .. } | Value::Noise(_) => Vec::new(),
         }
     };
     let mut names: Vec<&str> = Vec::new();

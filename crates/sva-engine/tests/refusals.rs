@@ -19,21 +19,17 @@ fn parts(e: &EngineError) -> (String, String, String) {
 const CHORD: &str = "sin(2*pi*261.63*t) + sin(2*pi*329.63*t)\n";
 
 #[test]
-fn mixing_samples_and_a_law_names_sample() {
-    let e = refusal(
+fn mixing_samples_and_a_law_collapses_the_law() {
+    let g = fixtures::graph_of(
         "samples-and-law",
         &[
             ("body", "chaigne_askenfelt(261.63)\n"),
             ("master", "@body*sin(2*pi*3*t)\n"),
         ],
-        "master",
     );
-    let (code, _, help) = parts(&e);
-    assert_eq!(code, "type.samples_in_closed_form");
-    assert!(
-        help.contains("sample("),
-        "the repair names the cast: {help}"
-    );
+    let typing = sva_engine::types(&g, "master").expect("samples times a law types");
+    let id = typing.id("master").expect("the root");
+    assert_eq!(typing.ty(id).held, sva_engine::Held::Sampled);
 }
 
 #[test]
@@ -114,7 +110,7 @@ fn a_stft_argument_that_is_not_samples_names_sample() {
         "stft-on-a-law",
         &[
             ("chord", CHORD),
-            ("frames", "stft(@chord, window=1024, hop=256)\n"),
+            ("frames", "stft(@chord, window=1024sp, hop=256sp)\n"),
         ],
         "frames",
     );

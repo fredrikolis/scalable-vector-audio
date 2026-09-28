@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sva_formula::{Hash, Held, NodeId};
-use sva_samples::{Buffer, Extent, Label, NodeRenderer};
+use sva_samples::{At, Buffer, Extent, Label, NodeRenderer, Slot};
 
 use super::drive::node::{self, Hold, Kind};
 use super::drive::{self, Driver};
@@ -133,8 +133,15 @@ fn reads_ahead(held: &Render, id: NodeId) -> bool {
     };
     let mut ahead = false;
     extent::leaves(&program.renderer, &mut |leaf| {
-        if let NodeRenderer::Buffer { at, .. } = leaf {
-            ahead |= at.ahead();
+        if let NodeRenderer::Read {
+            slot: Slot::Read(_),
+            at,
+        } = leaf
+        {
+            ahead |= match at {
+                At::Map(map) => map.ahead(),
+                At::Moving { .. } => true,
+            };
         }
     });
     ahead
@@ -177,12 +184,12 @@ fn pulled(
         .collect();
     let mut nodes = node::built(held, &order, Hold::Every(whole), lenses, &|_| false)?;
     if aside {
-        let root = answer::on_the_grid(held, held.root)?;
-        let support = extent::Supports::new(&held.tys, held.config.rate).of(held.root);
+        let root = answer::on_the_lattice(held, held.root)?;
+        let support = extent::Supports::new(held).of(held.root);
         nodes.push(node::whole(held.root, root, range, support));
     }
     let root = nodes.iter().position(|n| n.id == held.root);
-    let mut driver = Driver::new(nodes, root, pulled, BLOCK, until, &held.config, false);
+    let mut driver = Driver::new(nodes, root, pulled, BLOCK, until, held, false);
     while driver.pull(held, lenses)? {}
     let stop = recalled.or(driver.stop().filter(|stop| *stop < range.end));
     let mut driven = Vec::new();
@@ -193,19 +200,20 @@ fn pulled(
         node.store(held, lenses);
         let computed = !matches!(node.kind, Kind::Whole);
         if computed || node.run.is_some() {
-            let label = Label::measured(held.config.profile.name, held.config.rate);
+            let label = Label::measured(held.config.profile.name, held.lattice());
             held.labels.insert(node.id, label);
         }
         if computed {
             driven.push(node.id);
         }
-        let buffer = node.tape.into_buffer(held.config.rate);
+        let buffer = node.tape.into_buffer(held.lattice());
         held.buffers.insert(node.id, buffer);
     }
     if let Some(stop) = stop {
         reach::extend(held, costed, Extent::new(range.start, stop))?;
+        held.cut_output(stop);
         if let (Some(key), None) = (stop_key, recalled) {
-            let record = Buffer::mono(held.config.rate, vec![range.end as f64, stop as f64]);
+            let record = Buffer::mono(held.lattice(), vec![range.end as f64, stop as f64]);
             record_lens(held, lenses).store(key, &Payload::Samples(Box::new(record)), None);
         }
     }
@@ -250,10 +258,11 @@ fn stop_key(held: &Render, lenses: &Lenses) -> Result<Option<Hash>, EngineError>
     let config = &held.config;
     let mut words = vec![
         u64::from(config.rate),
+        u64::from(held.lattice()),
         range.start as u64,
         range.end as u64,
         config.profile.precision_bits as u64,
-        drive::frame(config) as u64,
+        drive::frame(config, held.lattice()) as u64,
         STOP_TAG,
     ];
     words.extend(until.to_string().bytes().map(u64::from));
@@ -276,7 +285,7 @@ fn record_lens<'l>(held: &Render, lenses: &'l Lenses) -> crate::cache::Lens<'l> 
 fn recalled(held: &Render, lenses: &Lenses, key: Hash) -> Option<i64> {
     let range = held.range?;
     let expected = Expected::Samples {
-        rate: held.config.rate,
+        rate: held.lattice(),
         width: 1,
         samples: 2,
     };

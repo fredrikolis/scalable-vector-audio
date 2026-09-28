@@ -1,4 +1,4 @@
-// Concern: classifies a self-reference, and folds the shift one reads at to a constant | Non-concern: running either kind (sva-samples), lowering the rest (lower/) | IO: (body, Cx) -> SelfKind, Shift
+// Concern: classifies a self-reference, and folds a read's time or a number to its exact value | Non-concern: running a loop (sva-samples), lowering (lower/) | IO: (body, Cx) -> SelfKind, Affine
 
 use sva_ast::{Arg, BinOp, ByteSpan, Expr, Literal};
 use sva_formula::closed_form::{map_children, read_at};
@@ -7,85 +7,88 @@ use sva_formula::{Body, C64, IndexId, Part, Series, Var};
 use crate::arguments::Chosen;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Cx, Instances, Node};
-
-/// A sampled loop's step count is only known once an observation names a rate.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Delay {
-    Steps(u32),
-    Secs(f64),
-    /// Seconds and grid steps together, a count of samples at a rate.
-    Mixed {
-        secs: f64,
-        steps: i64,
-    },
-    /// A delay written as a closed form of `t`, which only the grid can follow.
-    Varying,
-}
+use crate::time::{Affine, Q};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum SelfKind {
-    Series { gain: C64, delay: f64 },
-    Sampled,
+    Series {
+        gain: C64,
+        delay: f64,
+    },
+    /// Run on the lattice; `gain` bounds how far the output moves per unit its taps move,
+    /// where the body is linear in them, and `taps` names each one where all are fixed.
+    Sampled {
+        gain: Option<f64>,
+        taps: Option<Vec<(f64, Q)>>,
+    },
     Refuse(Box<EngineError>),
 }
 
-/// Linear in `self`, a constant delay in seconds and `abs(g) < 1` is a series, and the same
-/// loop at unit gain or above settles nowhere. A delay in `sp` is row three of FORMAT 11 and
-/// runs on the grid at unit gain, a running sum being a value; above it, nothing settles.
-pub(crate) fn classify(inst: &Instances, e: &Expr, cx: Cx, at: &str) -> SelfKind {
+/// Linear in one `self` a constant delay back with `abs(g) < 1` is a series. A loop written on
+/// the lattice, which `sp` in its body says, runs there; there a running sum is a value.
+pub(crate) fn classify(inst: &Instances, e: &Expr, cx: Cx, at: &str, stepped: bool) -> SelfKind {
     match read(inst, e, cx, C64::ONE) {
         Reading::Refused(tap) => SelfKind::Refuse(Box::new(
             tap_refusal(tap, Located::at(at, None)).expect("a refused tap names its reason"),
         )),
-        Reading::Free | Reading::Nonlinear => SelfKind::Sampled,
-        Reading::Linear {
-            gain,
-            delay: Delay::Steps(_) | Delay::Mixed { .. },
-        } if gain.abs() > 1.0 => SelfKind::Refuse(Box::new(unbounded(gain, at))),
-        Reading::Linear {
-            delay: Delay::Steps(_) | Delay::Mixed { .. } | Delay::Varying,
-            ..
-        } => SelfKind::Sampled,
-        Reading::Linear {
-            gain,
-            delay: Delay::Secs(secs),
-        } => match gain.abs() < 1.0 {
-            true => SelfKind::Series { gain, delay: secs },
-            false => SelfKind::Refuse(Box::new(unbounded(gain, at))),
+        Reading::Free | Reading::Nonlinear => SelfKind::Sampled {
+            gain: None,
+            taps: None,
         },
+        Reading::Linear { taps, plain, norm } => {
+            let fixed = |taps: &[(C64, Tap)]| {
+                taps.iter()
+                    .map(|(g, tap)| match tap {
+                        Tap::Back(d) if g.im == 0.0 => Some((g.re, *d)),
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()
+            };
+            match (plain, taps.as_slice()) {
+                (true, [(g, Tap::Back(delay))]) if !stepped && g.abs() < 1.0 => SelfKind::Series {
+                    gain: *g,
+                    delay: delay.to_f64(),
+                },
+                (true, [(g, Tap::Back(_))]) if !stepped || g.abs() > 1.0 => {
+                    SelfKind::Refuse(Box::new(unbounded(*g, at)))
+                }
+                _ => SelfKind::Sampled {
+                    gain: Some(norm),
+                    taps: plain.then(|| fixed(&taps)).flatten(),
+                },
+            }
+        }
     }
 }
 
-/// What one `self(...)` call site reads: a usable delay, or the reason it is not one.
+/// What one `self(...)` call site reads: a constant delay back, a time that moves, or the
+/// reason it reads nothing already written.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Tap {
-    At(Delay),
+    Back(Q),
+    Moving,
     Zero,
     Forward,
-    Fractional,
 }
 
 /// The one reading of a self-reference's time, so classification and lowering cannot drift.
 pub(crate) fn tap_of(inst: &Instances, arg: &Expr, cx: Cx) -> Tap {
-    let Some(Shift { secs, steps }) = shift_of(inst, arg, cx) else {
-        return Tap::At(Delay::Varying);
+    let Some(time) = time_of(inst, arg, cx) else {
+        return Tap::Moving;
     };
-    match (secs, steps) {
-        (0.0, 0.0) => Tap::Zero,
-        (_, steps) if steps.fract() != 0.0 => Tap::Fractional,
-        (secs, 0.0) if secs > 0.0 => Tap::At(Delay::Secs(secs)),
-        (0.0, steps) if steps > 0.0 => Tap::At(Delay::Steps(steps as u32)),
-        (0.0, _) | (_, 0.0) => Tap::Forward,
-        (secs, steps) => Tap::At(Delay::Mixed {
-            secs,
-            steps: steps as i64,
-        }),
+    if time.scale != Q::ONE {
+        return Tap::Moving;
+    }
+    match time.shift.neg() {
+        d if d.is_zero() => Tap::Zero,
+        d if d > Q::ZERO => Tap::Back(d),
+        _ => Tap::Forward,
     }
 }
 
 pub(crate) fn tap_refusal(tap: Tap, at: Located) -> Option<EngineError> {
     let (code, message, help) = match tap {
-        Tap::At(_) => return None,
+        Tap::Back(_) | Tap::Moving => return None,
         Tap::Zero => (
             "samples.zero_delay_loop",
             "a loop reaches no sample it has already written.",
@@ -95,11 +98,6 @@ pub(crate) fn tap_refusal(tap: Tap, at: Located) -> Option<EngineError> {
             "engine.forward_self_read",
             "a loop reads its own output before it is written.",
             "write self at an earlier time, as in self(t - 1sp)",
-        ),
-        Tap::Fractional => (
-            "ref.fractional_shift_on_samples",
-            "a read on the grid moves by whole samples.",
-            "write a whole number of sp, or the delay in seconds",
         ),
     };
     Some(EngineError::refused(Diagnostic {
@@ -119,10 +117,16 @@ fn unbounded(gain: C64, at: &str) -> EngineError {
     })
 }
 
-/// What one subterm gives: nothing, one scaled delayed read, or a shape no series expands.
+/// What one subterm gives: nothing, scaled reads of `self`, or a shape no gain bounds. A
+/// component taken or joined keeps a gain but no longer spells one series.
 enum Reading {
     Free,
-    Linear { gain: C64, delay: Delay },
+    /// `norm` bounds the output's move per unit move of every tap, component by component.
+    Linear {
+        taps: Vec<(C64, Tap)>,
+        plain: bool,
+        norm: f64,
+    },
     Refused(Tap),
     Nonlinear,
 }
@@ -133,7 +137,11 @@ fn read(inst: &Instances, e: &Expr, cx: Cx, gain: C64) -> Reading {
     }
     match inst.node(e, cx) {
         Node::Own { arg, .. } => match tap_of(inst, arg, cx) {
-            Tap::At(delay) => Reading::Linear { gain, delay },
+            tap @ (Tap::Back(_) | Tap::Moving) => Reading::Linear {
+                taps: vec![(gain, tap)],
+                plain: true,
+                norm: gain.abs(),
+            },
             refused => Reading::Refused(refused),
         },
         Node::Bin(op @ (BinOp::Add | BinOp::Sub), l, r) => {
@@ -160,10 +168,49 @@ fn read(inst: &Instances, e: &Expr, cx: Cx, gain: C64) -> Reading {
             (false, false) => Reading::Free,
             _ => Reading::Nonlinear,
         },
+        Node::Call { name, args, .. } if name == crate::vocabulary::CHANNEL => match args {
+            [Arg::Pos(x), Arg::Pos(k)] if !holds(inst, k, cx) => opaque(read(inst, x, cx, gain)),
+            _ => Reading::Nonlinear,
+        },
+        Node::Call { name, args, .. } if name == crate::vocabulary::JOIN => args
+            .iter()
+            .map(|a| match a {
+                Arg::Pos(x) => opaque(read(inst, x, cx, gain)),
+                Arg::Named(..) => Reading::Nonlinear,
+            })
+            .fold(Reading::Free, beside),
         other => match holds_in(inst, &other, cx) {
             true => Reading::Nonlinear,
             false => Reading::Free,
         },
+    }
+}
+
+fn opaque(r: Reading) -> Reading {
+    match r {
+        Reading::Linear { taps, norm, .. } => Reading::Linear {
+            taps,
+            plain: false,
+            norm,
+        },
+        other => other,
+    }
+}
+
+/// Two components side by side: each moves by its own taps alone.
+fn beside(a: Reading, b: Reading) -> Reading {
+    let norms = |r: &Reading| match r {
+        Reading::Linear { norm, .. } => *norm,
+        _ => 0.0,
+    };
+    let widest = norms(&a).max(norms(&b));
+    match join(a, b) {
+        Reading::Linear { taps, plain, .. } => Reading::Linear {
+            taps,
+            plain,
+            norm: widest,
+        },
+        other => other,
     }
 }
 
@@ -174,18 +221,31 @@ fn join(a: Reading, b: Reading) -> Reading {
         (Reading::Free, other) | (other, Reading::Free) => other,
         (
             Reading::Linear {
-                gain: g1,
-                delay: d1,
+                taps: mut held,
+                plain: p1,
+                norm: n1,
             },
             Reading::Linear {
-                gain: g2,
-                delay: d2,
+                taps: more,
+                plain: p2,
+                norm: n2,
             },
-        ) if d1 == d2 => Reading::Linear {
-            gain: g1 + g2,
-            delay: d1,
-        },
-        _ => Reading::Nonlinear,
+        ) => {
+            for (g, tap) in more {
+                match held
+                    .iter_mut()
+                    .find(|(_, t)| *t == tap && tap != Tap::Moving)
+                {
+                    Some((sum, _)) => *sum = *sum + g,
+                    None => held.push((g, tap)),
+                }
+            }
+            Reading::Linear {
+                taps: held,
+                plain: p1 && p2,
+                norm: n1 + n2,
+            }
+        }
     }
 }
 
@@ -208,6 +268,54 @@ fn holds_in(inst: &Instances, node: &Node, cx: Cx) -> bool {
 
 fn constant(inst: &Instances, e: &Expr, cx: Cx) -> Option<C64> {
     plain(amount(inst, e, cx)?).map(C64::real)
+}
+
+/// A linear loop whose fractional taps fall inside the kernel's reach, each such tap
+/// replaced by the loop's own equation one delay back until every tap on its own past clears
+/// it: the reads of the rest and of its past, each `(delay, coefficient)`.
+pub(crate) enum Expanded {
+    Needless,
+    Taps {
+        rest: Vec<(Q, f64)>,
+        own: Vec<(Q, f64)>,
+    },
+    Unreachable,
+}
+
+const EXPANSIONS: usize = 256;
+
+pub(crate) fn expanded(taps: &[(f64, Q)], half: usize) -> Expanded {
+    let lattice = Q::int(i64::from(lattice()));
+    let reach = Q::int(half as i64);
+    let short = |d: &Q| {
+        d.mul(lattice)
+            .is_some_and(|samples| !samples.is_integer() && samples <= reach)
+    };
+    if !taps.iter().any(|(_, d)| short(d)) {
+        return Expanded::Needless;
+    }
+    let mut rest = std::collections::BTreeMap::from([(Q::ZERO, 1.0)]);
+    let mut own: std::collections::BTreeMap<Q, f64> = std::collections::BTreeMap::new();
+    for (g, d) in taps {
+        *own.entry(*d).or_insert(0.0) += g;
+    }
+    for _ in 0..EXPANSIONS {
+        let Some((&d, &c)) = own.iter().find(|(d, _)| short(d)) else {
+            return Expanded::Taps {
+                rest: rest.into_iter().collect(),
+                own: own.into_iter().collect(),
+            };
+        };
+        own.remove(&d);
+        *rest.entry(d).or_insert(0.0) += c;
+        for (g, e) in taps {
+            match d.add(*e) {
+                Some(at) => *own.entry(at).or_insert(0.0) += c * g,
+                None => return Expanded::Unreachable,
+            }
+        }
+    }
+    Expanded::Unreachable
 }
 
 /// `sum(k, 0, inf, g^k * rest(t - k*d))`, with the shift written into the body and the
@@ -286,113 +394,88 @@ pub(crate) fn expandable(
     }
 }
 
-/// A read at `t` minus a delay, in seconds and grid steps, either or both.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Shift {
-    pub secs: f64,
-    pub steps: f64,
+/// `t` scaled by a constant and moved by constants, each exact; `None` where the time is no
+/// such line, or where a constant in it has no exact value.
+pub fn time_of(inst: &Instances, e: &Expr, cx: Cx) -> Option<Affine> {
+    match walk(inst, e, cx)? {
+        Term::Line(line) => Some(line),
+        Term::Number(shift) => Some(Affine {
+            scale: Q::ZERO,
+            shift,
+        }),
+    }
 }
 
-/// A read's time as written: `scale*t` moved by a duration and a count of grid steps.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Time {
-    pub scale: f64,
-    pub secs: f64,
-    pub steps: f64,
+/// A term of a time: a line in `t`, or one exact number.
+enum Term {
+    Line(Affine),
+    Number(Q),
 }
 
-impl Time {
-    const T: Time = Time {
-        scale: 1.0,
-        secs: 0.0,
-        steps: 0.0,
-    };
-
-    fn plus(self, other: Time, sign: f64) -> Time {
-        Time {
-            scale: self.scale + sign * other.scale,
-            secs: self.secs + sign * other.secs,
-            steps: self.steps + sign * other.steps,
+impl Term {
+    fn parts(&self) -> (Q, Q) {
+        match self {
+            Term::Line(a) => (a.scale, a.shift),
+            Term::Number(q) => (Q::ZERO, *q),
         }
     }
 
-    fn times(self, k: f64) -> Time {
-        Time {
-            scale: self.scale * k,
-            secs: self.secs * k,
-            steps: self.steps * k,
+    fn of(scale: Q, shift: Q) -> Term {
+        match scale.is_zero() {
+            true => Term::Number(shift),
+            false => Term::Line(Affine { scale, shift }),
         }
     }
-
-    fn over(self, k: f64) -> Time {
-        Time {
-            scale: self.scale / k,
-            secs: self.secs / k,
-            steps: self.steps / k,
-        }
-    }
-
-    fn number(self) -> Option<f64> {
-        (self.scale == 0.0 && self.steps == 0.0).then_some(self.secs)
-    }
 }
 
-/// `t` scaled by a constant and moved by constants, the whole grammar of a read's time; `None`
-/// where the time is no such line.
-pub fn time_of(inst: &Instances, e: &Expr, cx: Cx) -> Option<Time> {
-    let held = walk(inst, e, cx)?;
-    [held.scale, held.secs, held.steps]
-        .iter()
-        .all(|v| v.is_finite())
-        .then_some(held)
-}
-
-/// A time at `t` itself, moved by a constant.
-pub fn shift_of(inst: &Instances, e: &Expr, cx: Cx) -> Option<Shift> {
-    let time = time_of(inst, e, cx)?;
-    (time.scale == 1.0).then_some(Shift {
-        secs: -time.secs,
-        steps: -time.steps,
-    })
-}
-
-/// Every sign and scale as written: a plain factor or divisor scales the time it holds.
-fn walk(inst: &Instances, e: &Expr, cx: Cx) -> Option<Time> {
+fn walk(inst: &Instances, e: &Expr, cx: Cx) -> Option<Term> {
     if let Some(r) = inst.follow(e, cx, |e2, cx2| walk(inst, e2, cx2)) {
         return r;
     }
     match inst.node(e, cx) {
-        Node::Name("t") => Some(Time::T),
+        Node::Name("t") => Some(Term::Line(Affine::NOW)),
         Node::Bin(op @ (BinOp::Add | BinOp::Sub), l, r) => {
-            let sign = if op == BinOp::Sub { -1.0 } else { 1.0 };
-            Some(walk(inst, l, cx)?.plus(walk(inst, r, cx)?, sign))
+            let ((a, b), (c, d)) = (walk(inst, l, cx)?.parts(), walk(inst, r, cx)?.parts());
+            let (c, d) = match op {
+                BinOp::Sub => (c.neg(), d.neg()),
+                _ => (c, d),
+            };
+            Some(Term::of(a.add(c)?, b.add(d)?))
         }
-        Node::Bin(BinOp::Mul, l, r) => {
-            let (a, b) = (walk(inst, l, cx)?, walk(inst, r, cx)?);
-            match (a.number(), b.number()) {
-                (Some(k), _) => Some(b.times(k)),
-                (_, Some(k)) => Some(a.times(k)),
-                _ => None,
+        Node::Bin(BinOp::Mul, l, r) => match (walk(inst, l, cx)?, walk(inst, r, cx)?) {
+            (Term::Number(k), other) | (other, Term::Number(k)) => {
+                let (a, b) = other.parts();
+                Some(Term::of(a.mul(k)?, b.mul(k)?))
             }
-        }
+            _ => None,
+        },
         Node::Bin(BinOp::Div, l, r) => {
-            let by = walk(inst, r, cx)?.number()?;
-            (by != 0.0).then(|| walk(inst, l, cx).map(|a| a.over(by)))?
+            let Term::Number(by) = walk(inst, r, cx)? else {
+                return None;
+            };
+            let (a, b) = walk(inst, l, cx)?.parts();
+            Some(Term::of(a.div(by)?, b.div(by)?))
         }
-        _ => {
-            let (secs, steps) = amount(inst, e, cx)?;
-            Some(Time {
-                scale: 0.0,
-                secs,
-                steps,
-            })
-        }
+        Node::Bin(BinOp::Mod, l, r) => match (walk(inst, l, cx)?, walk(inst, r, cx)?) {
+            (Term::Number(a), Term::Number(b)) => Some(Term::Number(a.rem(b)?)),
+            _ => None,
+        },
+        Node::Lit(Literal::Num(n)) => Q::decimal(*n).map(Term::Number),
+        Node::Lit(Literal::Samples(n)) => Some(Term::Number(
+            Q::decimal(*n)?.div(Q::int(i64::from(lattice())))?,
+        )),
+        _ => Q::decimal(plain(amount(inst, e, cx)?)?).map(Term::Number),
     }
 }
 
-/// A written duration over every operator FORMAT 3.3 folds, seconds and grid steps kept
-/// apart. What this drops is defaulted, never refused.
-pub(crate) fn amount(inst: &Instances, e: &Expr, cx: Cx) -> Option<(f64, f64)> {
+/// The step every stateful node runs at, which `1sp` is one of.
+pub(crate) fn lattice() -> u32 {
+    sva_samples::PSYCHOACOUSTIC_V1.lattice_hz
+}
+
+/// A written number over every operator FORMAT 3.3 folds. What this drops is defaulted, never
+/// refused.
+pub(crate) fn amount(inst: &Instances, e: &Expr, cx: Cx) -> Option<f64> {
     folded(inst, e, cx, &mut None)
 }
 
@@ -402,7 +485,7 @@ pub(crate) fn amount_choosing(
     e: &Expr,
     cx: Cx,
     chosen: &mut Vec<Chosen>,
-) -> Option<(f64, f64)> {
+) -> Option<f64> {
     folded(inst, e, cx, &mut Some(chosen))
 }
 
@@ -412,27 +495,24 @@ fn folded(
     e: &Expr,
     cx: Cx,
     chosen: &mut Option<&mut Vec<Chosen>>,
-) -> Option<(f64, f64)> {
+) -> Option<f64> {
     if let Some(r) = inst.follow(e, cx, |e2, cx2| folded(inst, e2, cx2, &mut None)) {
         return r;
     }
     match inst.node(e, cx) {
-        Node::Lit(Literal::Num(n)) => Some((*n, 0.0)),
-        Node::Lit(Literal::Samples(n)) => Some((0.0, *n)),
-        Node::Name("pi") => Some((std::f64::consts::PI, 0.0)),
-        Node::Name("inf") => Some((f64::INFINITY, 0.0)),
-        Node::Name(other) => sva_formula::note::frequency(other).map(|hz| (hz, 0.0)),
+        Node::Lit(Literal::Num(n)) => Some(*n),
+        Node::Lit(Literal::Samples(n)) => Some(n / f64::from(lattice())),
+        Node::Name("pi") => Some(std::f64::consts::PI),
+        Node::Name("inf") => Some(f64::INFINITY),
+        Node::Name(other) => sva_formula::note::frequency(other),
         Node::Bin(op, l, r) => {
             let (a, b) = (folded(inst, l, cx, chosen)?, folded(inst, r, cx, chosen)?);
             Some(match op {
-                BinOp::Add => (a.0 + b.0, a.1 + b.1),
-                BinOp::Sub => (a.0 - b.0, a.1 - b.1),
-                BinOp::Mul => scaled(a, b)?,
-                BinOp::Div => {
-                    let by = number(b)?;
-                    (a.0 / by, a.1 / by)
-                }
-                BinOp::Mod => (crate::lower::constant_modulo(number(a)?, number(b)?)?, 0.0),
+                BinOp::Add => a + b,
+                BinOp::Sub => a - b,
+                BinOp::Mul => a * b,
+                BinOp::Div => a / b,
+                BinOp::Mod => crate::lower::constant_modulo(a, b)?,
             })
         }
         Node::Call { name, args, span } => called(inst, (name, span), args, cx, chosen),
@@ -445,30 +525,22 @@ fn folded(
     }
 }
 
-/// One side of a product carries the unit and the other is the plain number scaling it.
-fn scaled(a: (f64, f64), b: (f64, f64)) -> Option<(f64, f64)> {
-    match (number(a), number(b)) {
-        (Some(k), _) => Some((k * b.0, k * b.1)),
-        (_, Some(k)) => Some((k * a.0, k * a.1)),
-        _ => None,
-    }
-}
-
 fn called(
     inst: &Instances,
     (name, at): (&str, ByteSpan),
     args: &[Arg],
     cx: Cx,
     chosen: &mut Option<&mut Vec<Chosen>>,
-) -> Option<(f64, f64)> {
+) -> Option<f64> {
+    if name == "rand" {
+        return drawn(inst, args, cx);
+    }
     let mut positional = Vec::new();
     let mut named = Vec::new();
     for arg in args {
         match arg {
-            Arg::Pos(x) => positional.push(number(folded(inst, x, cx, chosen)?)?),
-            Arg::Named(key, x) => {
-                named.push((key.as_str(), number(folded(inst, x, cx, chosen)?)?));
-            }
+            Arg::Pos(x) => positional.push(folded(inst, x, cx, chosen)?),
+            Arg::Named(key, x) => named.push((key.as_str(), folded(inst, x, cx, chosen)?)),
         }
     }
     let n = crate::lower::constant_call(name, &positional, &named)?;
@@ -481,14 +553,16 @@ fn called(
             chosen: won,
         });
     }
-    Some((n, 0.0))
+    Some(n)
 }
 
-pub(crate) fn plain(amount: (f64, f64)) -> Option<f64> {
-    number(amount).filter(|v| v.is_finite())
+/// A constant key is one instant of the noise, read there.
+fn drawn(inst: &Instances, args: &[Arg], cx: Cx) -> Option<f64> {
+    let (key, seed) = crate::lower::rand_arguments(args, |x| amount(inst, x, cx))?;
+    let at = time_of(inst, key, cx)?;
+    (at.scale.is_zero()).then(|| crate::lower::noise_at(seed, at.shift))
 }
 
-/// A number with no grid step, `inf` carried through.
-fn number(amount: (f64, f64)) -> Option<f64> {
-    (amount.1 == 0.0).then_some(amount.0)
+pub(crate) fn plain(amount: f64) -> Option<f64> {
+    amount.is_finite().then_some(amount)
 }

@@ -123,6 +123,27 @@ impl<'a> Window<'a> {
         }
     }
 
+    /// `None` for a sample inside the support this window does not hold.
+    pub fn get(&self, c: usize, k: i64) -> Option<f64> {
+        let plane = &self.planes[c];
+        let held = k
+            .checked_sub(self.base)
+            .and_then(|at| usize::try_from(at).ok())
+            .and_then(|at| plane.get(at));
+        match held {
+            Some(v) => Some(*v),
+            None => (!self.support.contains(k)).then_some(0.0),
+        }
+    }
+
+    /// Samples `[from, to)` where this window holds every one of them.
+    pub fn held(&self, c: usize, from: i64, to: i64) -> Option<&'a [f64]> {
+        let plane = &self.planes[c];
+        let start = usize::try_from(from.checked_sub(self.base)?).ok()?;
+        let end = usize::try_from(to.checked_sub(self.base)?).ok()?;
+        plane.get(start..end)
+    }
+
     /// A sample not held inside the support is a reader past its extent: no value answers it.
     pub fn at(&self, c: usize, k: i64) -> f64 {
         let plane = &self.planes[c];

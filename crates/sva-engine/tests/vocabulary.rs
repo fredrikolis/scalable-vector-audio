@@ -152,14 +152,11 @@ fn pow_two_to_n_over_twelve_transposes_exactly() {
     );
 }
 
-/// A key that quantizes `t` is closed in `t` and takes no transform, so it keeps no dual.
+/// A key that quantizes `t` reads the lattice's noise at those instants, so it is samples.
 #[test]
-fn a_quantized_time_key_is_a_closed_form_in_t_with_no_dual() {
+fn a_quantized_time_key_reads_the_lattice_noise() {
     let quantized = ty_of("held", "rand(t - t % 0.0625, seed=17)\n");
-    assert_eq!(
-        (quantized.held, quantized.dual),
-        (Held::Form(Var::T), false)
-    );
+    assert_eq!((quantized.held, quantized.dual), (Held::Sampled, false));
     assert!(
         ty_of("drawn-once", "rand(3, seed=17)\n").has_dual(),
         "a constant key is one number"
@@ -176,8 +173,8 @@ fn a_quantized_time_key_is_a_closed_form_in_t_with_no_dual() {
             "keyed-on-a-law",
             &[("clock", "sin(t)\n"), ("node", "rand(@clock, seed=1)\n")]
         ),
-        (Held::Form(Var::T), false),
-        "a ref to a closed form is a key that moves"
+        (Held::Sampled, false),
+        "a ref to a closed form is a time that moves"
     );
     assert_eq!(
         form(

@@ -21,7 +21,7 @@ pub struct Graph {
     defaults: BTreeMap<String, Vec<(String, Expr)>>,
     grids: HashMap<String, Grid>,
     spans: HashMap<String, Option<FileSpan>>,
-    seconds_per_bar: Option<f64>,
+    per_bar: Option<PerBar>,
     skipped: Vec<Skipped>,
 }
 
@@ -34,12 +34,32 @@ fn has_bar_literal(e: &Expr) -> bool {
     }
 }
 
-fn resolve_bar_literals(e: &Expr, seconds_per_bar: f64) -> Expr {
+/// Seconds per bar as the quotient `beats * 60 / bpm`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PerBar {
+    pub seconds: f64,
+    pub per: f64,
+}
+
+impl PerBar {
+    pub fn secs(self) -> f64 {
+        self.seconds / self.per
+    }
+}
+
+fn resolve_bar_literals(e: &Expr, per_bar: PerBar) -> Expr {
+    let num = |v: f64| Box::new(Expr::Lit(Literal::Num(v)));
     match e {
-        Expr::Lit(Literal::Bars(bars)) => Expr::Lit(Literal::Num(bars * seconds_per_bar)),
-        _ => map_children_ok(e, Binds::Substitute, |c| {
-            resolve_bar_literals(c, seconds_per_bar)
-        }),
+        Expr::Lit(Literal::Bars(bars)) => Expr::Bin(
+            BinOp::Mul,
+            num(*bars),
+            Box::new(Expr::Bin(
+                BinOp::Div,
+                num(per_bar.seconds),
+                num(per_bar.per),
+            )),
+        ),
+        _ => map_children_ok(e, Binds::Substitute, |c| resolve_bar_literals(c, per_bar)),
     }
 }
 
@@ -82,7 +102,8 @@ impl Graph {
     /// Every TSV grid node is re-derived from its own cells against the span it now carries,
     /// so a pattern's row spacing and the `crop`/`repeat` placing it share one resolved
     /// number. Re-deriving changes only shift literals, so the checks already run stay valid.
-    pub fn resolve_bar_spans(&mut self, seconds_per_bar: f64) {
+    pub fn resolve_bar_spans(&mut self, per_bar: PerBar) {
+        let seconds_per_bar = per_bar.secs();
         for span in self.spans.values_mut().flatten() {
             if span.unit == SpanUnit::Bars {
                 span.amount *= seconds_per_bar;
@@ -96,12 +117,12 @@ impl Graph {
             self.nodes
                 .insert(path.clone(), crate::tsv::materialize(grid, span.amount));
         }
-        self.seconds_per_bar = Some(seconds_per_bar);
+        self.per_bar = Some(per_bar);
         for expr in self.nodes.values_mut() {
-            *expr = resolve_bar_literals(expr, seconds_per_bar);
+            *expr = resolve_bar_literals(expr, per_bar);
         }
         for value in self.defaults.values_mut().flatten() {
-            value.1 = resolve_bar_literals(&value.1, seconds_per_bar);
+            value.1 = resolve_bar_literals(&value.1, per_bar);
         }
     }
 
@@ -122,7 +143,7 @@ impl Graph {
     }
 
     pub fn seconds_per_bar(&self) -> Option<f64> {
-        self.seconds_per_bar
+        self.per_bar.map(PerBar::secs)
     }
 
     /// Adds a node no file backs — an ad-hoc expression read in this graph's namespace.
@@ -131,8 +152,8 @@ impl Graph {
         if self.nodes.contains_key(path) {
             return false;
         }
-        let expr = match self.seconds_per_bar {
-            Some(spb) => resolve_bar_literals(&expr, spb),
+        let expr = match self.per_bar {
+            Some(per_bar) => resolve_bar_literals(&expr, per_bar),
             None => expr,
         };
         self.nodes.insert(path.to_string(), expr);
@@ -495,7 +516,7 @@ impl Loading {
             defaults: self.defaults,
             grids: self.grids,
             spans: self.spans,
-            seconds_per_bar: None,
+            per_bar: None,
             skipped: self.skipped,
         })
     }
@@ -965,19 +986,22 @@ mod tests {
             vec!["grid-1b", "swung", "tiled"]
         );
 
-        g.resolve_bar_spans(2.0);
+        g.resolve_bar_spans(PerBar {
+            seconds: 2.0,
+            per: 1.0,
+        });
         assert!(g.unresolved_bar_literals().is_empty());
         assert_eq!(
             g.expr("swung"),
-            Some(&parse("@kick(t - 0.04s)*0.9").unwrap())
+            Some(&parse("@kick(t - 0.02*(2/1))*0.9").unwrap())
         );
         assert_eq!(
             g.expr("tiled"),
-            Some(&parse("crop(@kick(t % 2s), 0s, 32s)").unwrap())
+            Some(&parse("crop(@kick(t % (1*(2/1))), 0s, 16*(2/1))").unwrap())
         );
         assert_eq!(
             g.expr("grid-1b"),
-            Some(&parse("@kick + @kick(t - 0.02s)").unwrap()),
+            Some(&parse("@kick + @kick(t - 0.01*(2/1))").unwrap()),
             "a grid's cells are re-materialized, then their bar literals resolved"
         );
     }
@@ -1014,7 +1038,10 @@ mod tests {
         ];
         let mut g = load(&of(&files)).unwrap();
 
-        g.resolve_bar_spans(0.5);
+        g.resolve_bar_spans(PerBar {
+            seconds: 0.5,
+            per: 1.0,
+        });
 
         assert_eq!(
             g.span("drums/pattern-2b"),
@@ -1044,7 +1071,10 @@ mod tests {
         ];
         let mut g = load(&of(&files)).unwrap();
 
-        g.resolve_bar_spans(2.0);
+        g.resolve_bar_spans(PerBar {
+            seconds: 2.0,
+            per: 1.0,
+        });
         let mut rows = Vec::new();
         flatten_sum(g.expr("pattern-1b").unwrap(), &mut rows);
         let shifts: Vec<f64> = rows.iter().map(ref_shift).collect();
@@ -1151,7 +1181,10 @@ mod tests {
             ("track", "repeat(@loop-2s, 3)\n"),
         ];
         let mut g = load(&of(&files)).unwrap();
-        g.resolve_bar_spans(1.0);
+        g.resolve_bar_spans(PerBar {
+            seconds: 1.0,
+            per: 1.0,
+        });
         g.desugar_arrangement().unwrap();
 
         let expr = g.expr("track").unwrap().clone();
@@ -1179,7 +1212,10 @@ mod tests {
             ("track", "concat(@intro-3s, @drop-5s)\n"),
         ];
         let mut g = load(&of(&files)).unwrap();
-        g.resolve_bar_spans(1.0);
+        g.resolve_bar_spans(PerBar {
+            seconds: 1.0,
+            per: 1.0,
+        });
         g.desugar_arrangement().unwrap();
 
         let expr = g.expr("track").unwrap().clone();
@@ -1206,7 +1242,10 @@ mod tests {
             ("track", "repeat(@loop-1s, 2.5)\n"),
         ];
         let mut g = load(&of(&files)).unwrap();
-        g.resolve_bar_spans(1.0);
+        g.resolve_bar_spans(PerBar {
+            seconds: 1.0,
+            per: 1.0,
+        });
         let errs = g.desugar_arrangement().unwrap_err();
         assert!(errs.iter().any(|r| r.code == DiagCode::BadArrangementArg));
     }
@@ -1215,7 +1254,10 @@ mod tests {
     fn concat_with_a_non_ref_argument_is_refused_not_guessed() {
         let files: Vec<(&str, &str)> = vec![("track", "concat(1 + 2, 3)\n")];
         let mut g = load(&of(&files)).unwrap();
-        g.resolve_bar_spans(1.0);
+        g.resolve_bar_spans(PerBar {
+            seconds: 1.0,
+            per: 1.0,
+        });
         let errs = g.desugar_arrangement().unwrap_err();
         assert!(errs.iter().any(|r| r.code == DiagCode::BadArrangementArg));
     }
@@ -1240,7 +1282,10 @@ mod tests {
             ("track", "concat(@a-1s(t*2), @b-1s)\n"),
         ];
         let mut g = load(&of(&files)).unwrap();
-        g.resolve_bar_spans(1.0);
+        g.resolve_bar_spans(PerBar {
+            seconds: 1.0,
+            per: 1.0,
+        });
         let errs = g.desugar_arrangement().unwrap_err();
         assert!(errs.iter().any(|r| r.code == DiagCode::BadArrangementArg));
     }
@@ -1253,7 +1298,10 @@ mod tests {
             ("concatenated", "concat()\n"),
         ];
         let mut g = load(&of(&files)).unwrap();
-        g.resolve_bar_spans(1.0);
+        g.resolve_bar_spans(PerBar {
+            seconds: 1.0,
+            per: 1.0,
+        });
         g.desugar_arrangement().unwrap();
 
         assert_eq!(

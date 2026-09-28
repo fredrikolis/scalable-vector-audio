@@ -176,8 +176,14 @@ fn crossings() -> Vec<Crossing> {
     Cast::NAMES
         .into_iter()
         .map(|name| {
-            let cast = Cast::from_name(name, &[("window", 1024.0), ("hop", 256.0)])
-                .unwrap_or_else(|| unreachable!("{name} is one of Cast::NAMES"));
+            let cast = match Cast::from_name(name) {
+                Some(Cast::Stft { .. }) => Cast::Stft {
+                    window: 1024,
+                    hop: 256,
+                },
+                Some(cast) => cast,
+                None => unreachable!("{name} is one of Cast::NAMES"),
+            };
             Crossing {
                 name,
                 rows: HELD

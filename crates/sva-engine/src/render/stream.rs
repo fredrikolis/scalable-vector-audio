@@ -7,11 +7,12 @@ use sva_ast::{Expr, Graph};
 use super::drive::node::{self, Driven, Hold, Kind};
 use super::drive::{self, Block, Driver, edit};
 use super::terms::{Handle, NOTES, Terms};
-use super::{Lenses, Render, RenderConfig, prepared, reach, sampled};
+use super::{Lenses, Render, RenderConfig, prepared, reach};
 use crate::cache::{Cache, CacheStats, Recording};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::flops::Work;
 use crate::schedule;
+use sva_samples::Extent;
 
 pub const STREAMED: &str = "streamed";
 
@@ -36,6 +37,10 @@ pub struct Stream {
     ended: usize,
     live: bool,
     dropped: Vec<String>,
+    /// The next output sample, where the output is not the lattice itself.
+    out_at: i64,
+    /// The root's lattice samples that output still reads, kept across edits.
+    stage: sva_samples::Tape,
 }
 
 impl Stream {
@@ -59,13 +64,15 @@ impl Stream {
             ended: 0,
             live: false,
             dropped: Vec::new(),
+            out_at: shell.output.expect("audio out decides an output").start,
+            stage: sva_samples::Tape::new(1, 0, range.start),
             driver: Driver::new(
                 Vec::new(),
                 None,
                 range,
                 config.block,
                 config.render.until.clone(),
-                &shell.config,
+                &shell,
                 true,
             ),
             recording: cache.map(|cache| Recording::over(cache, config.render.cache_policy)),
@@ -113,7 +120,7 @@ impl Stream {
         let notes = self.shell.id(NOTES);
         let lag = self.driver.nodes.iter().find(|n| Some(n.id) == notes);
         let at = self.driver.at - lag.map_or(0, |n| n.lag);
-        let at = at as f64 / f64::from(self.config.render.rate);
+        let at = at as f64 / f64::from(self.shell.lattice());
         let Some(terms) = self.terms.removed(handle, at) else {
             return Ok(false);
         };
@@ -135,7 +142,7 @@ impl Stream {
         mut terms: Terms,
     ) -> Result<(), EngineError> {
         let mut render = self.config.render.clone();
-        render.range.start = Some(self.driver.start);
+        render.range.start = self.shell.output.map(|output| output.start);
         let shell = shelled(graph, &target, &mut terms, &render)?;
         let range = shell.range.expect("audio out decides a range");
         let order = order(&shell);
@@ -188,13 +195,51 @@ impl Stream {
         Ok(())
     }
 
-    /// The next block, cut where the stream ends; `None` from there on.
+    /// The next block, cut where the stream ends; `None` from there on. Off the lattice's own
+    /// rate a block is the kernel's reading of the root at each output instant.
     pub fn next_block(&mut self) -> Result<Option<Block>, EngineError> {
         let lenses = self.lenses.with(self.recording.as_ref());
-        let block = self.driver.next_block(&self.shell, &lenses)?;
+        let map = self.shell.out_map();
+        if map.whole() && map.a == 1 {
+            let block = self.driver.next_block(&self.shell, &lenses)?;
+            drop(lenses);
+            self.prune();
+            return Ok(block);
+        }
+        let (from, mut to) = (self.out_at, self.out_at + self.config.block as i64);
+        let last = self.shell.output.map_or(i64::MAX, |output| output.end);
+        to = to.min(last);
+        if let Some(end) = self.output_end() {
+            to = to.min(end);
+        }
+        let reached = self.shell.on_lattice(Extent::new(from, to.max(from)));
+        while self.driver.at < reached.end && self.driver.pull(&self.shell, &lenses)? {
+            staged(&mut self.stage, &self.driver);
+        }
         drop(lenses);
+        if let Some(end) = self.output_end() {
+            to = to.min(end);
+        }
+        if to <= from {
+            return Ok(None);
+        }
+        let planes = sva_samples::machine::resample(
+            self.stage.window(),
+            map,
+            Extent::new(from, to),
+            self.stage.width(),
+        )
+        .map_err(|e| super::sampled::refused(&self.shell, self.shell.root, &e))?;
+        self.stage.forget_before(reached.start);
+        self.out_at = to;
         self.prune();
-        Ok(block)
+        Ok(Some(Block::of_planes(planes, from)))
+    }
+
+    /// The output sample the stream ends before, once the lattice's end is known.
+    fn output_end(&self) -> Option<i64> {
+        let (end, output) = (self.driver.end()?, self.shell.output?);
+        Some(super::cut(output, self.shell.out_map(), end).end)
     }
 
     /// An edit starts a changed node with no state at its instant silent there, never
@@ -236,7 +281,11 @@ impl Stream {
     }
 
     pub fn position(&self) -> i64 {
-        self.driver.at
+        let map = self.shell.out_map();
+        match map.whole() && map.a == 1 {
+            true => self.driver.at,
+            false => self.out_at,
+        }
     }
 
     pub fn work(&self) -> Work {
@@ -258,7 +307,11 @@ impl Stream {
 
     /// Where the stream ends, once known.
     pub fn end(&self) -> Option<i64> {
-        self.driver.end()
+        let map = self.shell.out_map();
+        match map.whole() && map.a == 1 {
+            true => self.driver.end(),
+            false => self.output_end(),
+        }
     }
 
     pub fn width(&self) -> usize {
@@ -270,10 +323,16 @@ impl Stream {
     }
 
     fn hold(&self) -> Hold {
-        let root_keep = match self.config.render.until {
-            Some(_) => drive::frame(&self.shell.config),
+        let framed = match self.config.render.until {
+            Some(_) => drive::frame(&self.shell.config, self.shell.lattice()),
             None => 0,
         };
+        let map = self.shell.out_map();
+        let reading = match map.whole() && map.a == 1 {
+            true => 0,
+            false => 2 * (self.config.block + sva_samples::kernel().half_width()),
+        };
+        let root_keep = framed.max(reading);
         Hold::Trailing {
             block: self.config.block,
             root_keep,
@@ -311,12 +370,25 @@ fn shelled(
     }
     let mut held = prepared(&wrapped, STREAMED)?;
     terms.typed(&held.instances, &mut held.tys);
-    sampled::on_the_grid(&held.tys, config.rate)?;
     let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
     let audio = schedule.materialize.clone();
     let mut shell = Render::shell(held.tys, held.root, config.clone(), schedule);
     reach::streamed(&mut shell, &audio)?;
     Ok(shell)
+}
+
+/// The root's samples the driver just computed, onto the stage the output reads.
+fn staged(stage: &mut sva_samples::Tape, driver: &Driver) {
+    let root = &driver.nodes[driver.root.expect("a stream reads its root")];
+    if stage.width() != root.width {
+        *stage = sva_samples::Tape::new(root.width, 0, stage.end());
+    }
+    let window = root.tape.within(root.support);
+    for n in stage.end()..driver.at {
+        for c in 0..root.width {
+            stage.push(c, window.at(c, n));
+        }
+    }
 }
 
 fn order(shell: &Render) -> Vec<sva_formula::NodeId> {

@@ -90,18 +90,13 @@ fn scalar(f: &Body) -> Option<f64> {
     })
 }
 
-/// The one number a node holds at `rate`, `inf` included.
-pub(crate) fn number_at(
-    tys: &crate::typing::Typing,
-    id: sva_formula::NodeId,
-    rate: u32,
-) -> Option<f64> {
+/// The one number a node holds, `inf` included.
+pub(crate) fn number_of(tys: &crate::typing::Typing, id: sva_formula::NodeId) -> Option<f64> {
     match tys.value(id) {
         crate::typing::Value::ClosedForm(form) => match form.body {
             Body::Const(c) if c.im == 0.0 => Some(c.re),
             _ => constant_value(&form.body, form.var),
         },
-        crate::typing::Value::Grid(count) => Some(count / f64::from(rate)),
         _ => None,
     }
 }

@@ -1,24 +1,27 @@
 // Concern: the postfix op array one node renderer lowers to, and the width each slot holds | Non-concern: lowering into it or running it (mod.rs) | IO: (&NodeRenderer, &Layout) -> Vec<Op> + Vec<usize>
 
 use crate::error::SampleError;
-use crate::machine::renderer::{Binary, BufId, NodeRenderer, Remap, Site, SiteId, Unary};
+use crate::machine::renderer::{At, Binary, Map, NodeRenderer, Site, SiteId, Slot, Unary};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Op {
     Const(f64),
     Time,
+    Noise(u64),
     Read {
-        id: BufId,
-        at: Remap,
+        slot: Slot,
+        at: Map,
     },
     /// A read times a constant, the bits of `Mul` over the two.
     ReadScaled {
-        id: BufId,
-        at: Remap,
+        slot: Slot,
+        at: Map,
         by: f64,
     },
-    SelfAt {
-        steps: u32,
+    /// A reading at the position the operand below it names, in seconds.
+    Moving {
+        slot: Slot,
+        per_sec: f64,
     },
     Add(usize),
     Mul(usize),
@@ -32,6 +35,15 @@ pub(crate) enum Op {
         b: f64,
         rise: f64,
         fall: f64,
+    },
+    /// Ahead of a crop whose operand holds no state: where the window is shut, the `over` ops
+    /// up to the crop are skipped and the crop writes zero.
+    Guard {
+        a: f64,
+        b: f64,
+        rise: f64,
+        fall: f64,
+        over: usize,
     },
     Join(usize),
     Channel(usize),
@@ -81,17 +93,36 @@ pub(crate) fn lower(
     let w = match renderer {
         NodeRenderer::Const(v) => push(Op::Const(*v), 1, ops, widths),
         NodeRenderer::Time => push(Op::Time, 1, ops, widths),
-        NodeRenderer::Buffer { id, at } => {
-            let width = layout.read_widths[id.0 as usize];
-            push(Op::Read { id: *id, at: *at }, width, ops, widths)
+        NodeRenderer::Noise(seed) => push(Op::Noise(*seed), 1, ops, widths),
+        NodeRenderer::Read {
+            slot,
+            at: At::Map(at),
+        } => push(
+            Op::Read {
+                slot: *slot,
+                at: *at,
+            },
+            slot_width(*slot, layout),
+            ops,
+            widths,
+        ),
+        NodeRenderer::Read {
+            slot,
+            at: At::Moving { per_sec, time },
+        } => {
+            meet(1, lower(time, layout, ops, widths)?)?;
+            let op = Op::Moving {
+                slot: *slot,
+                per_sec: *per_sec,
+            };
+            push(op, slot_width(*slot, layout), ops, widths)
         }
-        NodeRenderer::SelfAt { steps } => {
-            push(Op::SelfAt { steps: *steps }, layout.width, ops, widths)
-        }
-        NodeRenderer::Mul(parts) if let Some((id, at, by)) = scaled_read(parts) => {
-            let width = layout.read_widths[id.0 as usize];
-            push(Op::ReadScaled { id, at, by }, width, ops, widths)
-        }
+        NodeRenderer::Mul(parts) if let Some((slot, at, by)) = scaled_read(parts) => push(
+            Op::ReadScaled { slot, at, by },
+            slot_width(slot, layout),
+            ops,
+            widths,
+        ),
         NodeRenderer::Add(parts) | NodeRenderer::Mul(parts) => {
             let mut width = 1;
             for p in parts {
@@ -129,7 +160,22 @@ pub(crate) fn lower(
             rise,
             fall,
         } => {
+            let guarded = x.stateless();
+            let guard = ops.len();
+            if guarded {
+                ops.push(Op::Const(0.0));
+                widths.push(1);
+            }
             let w = lower(x, layout, ops, widths)?;
+            if guarded {
+                ops[guard] = Op::Guard {
+                    a: *a,
+                    b: *b,
+                    rise: *rise,
+                    fall: *fall,
+                    over: ops.len() - guard,
+                };
+            }
             let crop = Op::Crop {
                 a: *a,
                 b: *b,
@@ -185,10 +231,29 @@ pub(crate) fn lower(
     Ok(w)
 }
 
-fn scaled_read(parts: &[NodeRenderer]) -> Option<(BufId, Remap, f64)> {
+fn slot_width(slot: Slot, layout: &Layout) -> usize {
+    match slot {
+        Slot::Read(id) => layout.read_widths[id.0 as usize],
+        Slot::Own => layout.width,
+    }
+}
+
+fn scaled_read(parts: &[NodeRenderer]) -> Option<(Slot, Map, f64)> {
     match parts {
-        [NodeRenderer::Buffer { id, at }, NodeRenderer::Const(by)]
-        | [NodeRenderer::Const(by), NodeRenderer::Buffer { id, at }] => Some((*id, *at, *by)),
+        [
+            NodeRenderer::Read {
+                slot,
+                at: At::Map(at),
+            },
+            NodeRenderer::Const(by),
+        ]
+        | [
+            NodeRenderer::Const(by),
+            NodeRenderer::Read {
+                slot,
+                at: At::Map(at),
+            },
+        ] => Some((*slot, *at, *by)),
         _ => None,
     }
 }

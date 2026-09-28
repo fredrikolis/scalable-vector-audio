@@ -38,7 +38,7 @@ pub fn point_sample(
     score: AliasScore,
 ) -> Result<(Buffer, Label), EngineError> {
     let tree = plan(held, id)?;
-    let rate = held.config.rate;
+    let rate = held.lattice();
     let extent = held.extents.of(id);
     let width = usize::from(held.tys.ty(id).width);
     let mut planes = Vec::with_capacity(width);
@@ -82,7 +82,7 @@ fn sweep(
     extent: Extent,
     oversample: usize,
 ) -> Result<Vec<f64>, EngineError> {
-    let step = 1.0 / (f64::from(held.config.rate) * oversample as f64);
+    let step = 1.0 / (f64::from(held.lattice()) * oversample as f64);
     (0..extent.len() * oversample)
         .map(|i| {
             value(held, tree, component, extent.instant(i, oversample, step))
@@ -122,7 +122,7 @@ pub(super) fn value(
         Point::Operation { name, args, widths } => {
             operation(held, name, args, widths, component, t)
         }
-        Point::Buffer(id) => Ok(read(held, *id, component, t)),
+        Point::Buffer(id) => read(held, *id, component, t),
     }
 }
 
@@ -143,12 +143,13 @@ impl Refs for Reads<'_> {
     }
 }
 
-/// A sampled operand has no value between its own grid points, so the nearest one answers.
-fn read(held: &Render, id: NodeId, component: usize, t: f64) -> C64 {
+/// A sampled operand between its lattice samples is the kernel's reading of them.
+fn read(held: &Render, id: NodeId, component: usize, t: f64) -> Result<C64, CollapseError> {
     let buffer = held.buffers.get(&id).expect("a read is materialized first");
-    let at = (t * f64::from(buffer.rate)).round() as i64;
     let window = Window::of(buffer, held.extents.support(id));
-    C64::real(window.at(component.min(buffer.width.saturating_sub(1)), at))
+    let at = sva_samples::machine::read_at(window, t * f64::from(buffer.rate), buffer.width)
+        .map_err(|_| CollapseError::NotEvaluable("a sample past what the render holds"))?;
+    Ok(C64::real(at[component.min(buffer.width.saturating_sub(1))]))
 }
 
 fn operation(
@@ -221,7 +222,7 @@ pub(super) fn plan(held: &Render, id: NodeId) -> Result<Point, EngineError> {
     if !held.tys.ty(id).is_closed_form() {
         return Ok(Point::Buffer(id));
     }
-    let band = Audible::of(&held.config.profile, held.config.rate);
+    let band = Audible::of(&held.config.profile, held.lattice());
     let left = match refs::spectral_sum_of(&held.tys, id, Var::T) {
         Ok(sum) => {
             let held = truncate_spectral_sum(&sum, band).map_err(|e| refused(held, id, &e))?;

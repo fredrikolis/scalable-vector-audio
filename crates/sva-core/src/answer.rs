@@ -206,8 +206,6 @@ fn crest_json(c: &Crest) -> String {
     )
 }
 
-/// `rate_dependent` is what stops the figure reading as pure alias: a sampled loop is a
-/// different signal at the oversampled rate.
 fn alias_json(a: &Alias) -> String {
     let band = |b: &AliasBand| {
         format!(
@@ -223,7 +221,7 @@ fn alias_json(a: &Alias) -> String {
     format!(
         "{{ \"oversample\": {}, \"sample_rate\": {}, \"frame_size\": {}, \"frames\": {}, \
          \"scored_frames\": {}, \"playback_db_spl\": {}, \"asr_db\": {}, \"nmr_db\": {}, \
-         \"nmr_peak_db\": {}, \"peak_at_secs\": {}, \"audible\": {}, \"rate_dependent\": {}, \
+         \"nmr_peak_db\": {}, \"peak_at_secs\": {}, \"audible\": {}, \
          \"instances\": {}, \"bands\": {} }}",
         a.oversample,
         num(a.sample_rate),
@@ -236,7 +234,6 @@ fn alias_json(a: &Alias) -> String {
         num(a.nmr_peak_db),
         num(a.peak_at_secs),
         a.audible,
-        a.rate_dependent,
         a.instances,
         list(&a.bands, band)
     )
@@ -558,6 +555,27 @@ pub struct Report<'a> {
     /// envelope only says which reading ran, under which profile, and at what rate.
     pub analyses: &'a [(String, String)],
     pub limit: Option<usize>,
+    /// Every reading the render took between lattice samples, each with its bound.
+    pub bounds: &'a [sva_engine::Reconstruction],
+}
+
+/// A reading between lattice samples: what it read, how, and the error per source component
+/// below and above the band edge.
+fn bound_json(r: &sva_engine::Reconstruction) -> String {
+    format!(
+        "{{ \"node\": \"{}\", \"source\": \"{}\", \"reading\": \"{}\", \
+         \"kernel\": \"{}\", \"taps\": {}, \"band_hz\": {}, \"in_band\": {}, \
+         \"above_band\": {}, \"looped\": {} }}",
+        escape(&r.node),
+        escape(&r.source),
+        r.reading,
+        r.bound.kernel,
+        r.bound.taps,
+        num(r.bound.band_hz),
+        num(r.bound.in_band),
+        num(r.bound.above_band),
+        r.looped.map_or(NONE.to_string(), num)
+    )
 }
 
 /// `written` names every reading that went to a file rather than into `representations`.
@@ -601,8 +619,10 @@ pub fn query_data(report: &Report) -> String {
             num(end)
         )
     });
+    let bounds = list(report.bounds, bound_json);
     format!(
         "{{\n  \"target\": \"{}\",\n  \"sample_rate\": {},\n  \"bits\": {},\n  \
+         \"bounds\": {bounds},\n  \
          \"profile\": \"{}\",\n  \"interval\": {interval},\n  \"label\": {label},\n  \
          \"written\": {written},\n  \"representations\": {{\n    {reads}\n  }}\n}}",
         escape(report.target),

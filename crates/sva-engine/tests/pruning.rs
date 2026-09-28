@@ -8,7 +8,7 @@ use sva_engine::{
     Ask, Cache, Output, Range, Render, RenderConfig, Representation, answer, flops, render,
 };
 
-const RATE: u32 = 8_000;
+const RATE: u32 = 44_100;
 
 fn notes() -> Graph {
     graph_of(

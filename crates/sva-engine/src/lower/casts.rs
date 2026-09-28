@@ -33,6 +33,9 @@ impl Lowering<'_, '_> {
         };
         let piece = self.walk(x, cx, inner)?;
         let source = self.seal(piece, inner, None)?;
+        if cast == Cast::Sample && self.typing.ty(source).held == Held::Sampled {
+            return Ok(Piece::Value(source));
+        }
         let ty = cast
             .resolve(&[self.typing.ty(source)])
             .map_err(|m| self.blocked(cast.name(), m, source, span))?;

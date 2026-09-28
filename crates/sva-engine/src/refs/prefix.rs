@@ -9,7 +9,7 @@ use super::identity::{Sink, closed_form_identity, identity_in};
 use super::substituted_closed_form;
 use crate::error::EngineError;
 use crate::lower::field;
-use crate::typing::{Typing, Value};
+use crate::typing::{Typing, Value, When};
 
 /// What a render has asked of its nodes' switches, kept for every later ask.
 #[derive(Default)]
@@ -56,12 +56,10 @@ impl<'a> Walk<'a> {
         }
         match self.typing.value(id) {
             Value::Read { source, at, .. } => {
-                // A reflected or strided read switches nowhere: its prefix is its whole identity.
-                if let Ok(at) = at.steps_at(self.rate)
-                    && at.scale == 1
-                {
+                // A scaled or moving read switches nowhere: its prefix is its whole identity.
+                if let Some(lead) = lead(at) {
                     let moved = self.change_points(*source);
-                    out.extend(moved.into_iter().map(|c| c.saturating_sub(at.shift)));
+                    out.extend(moved.into_iter().map(|c| c.saturating_sub(lead)));
                 }
             }
             Value::Filter {
@@ -84,7 +82,7 @@ impl<'a> Walk<'a> {
                     out.extend(window.switches(self.rate));
                 }
             }
-            Value::ClosedForm(_) | Value::Cast(..) | Value::SelfAt(_) | Value::Grid(_) => {}
+            Value::ClosedForm(_) | Value::Cast(..) | Value::SelfAt { .. } | Value::Noise(_) => {}
         }
         self.held.points.insert(id, out.clone());
         out
@@ -148,15 +146,12 @@ impl<'a> Walk<'a> {
         let mut sink = Sink::new();
         match typing.value(id) {
             Value::Read {
-                source, at: offset, ..
+                source, at: when, ..
             } => {
-                let shift = offset
-                    .steps_at(self.rate)
-                    .expect("a read with switches is on the grid")
-                    .shift;
+                let lead = lead(when).expect("a read with switches is at scale one");
                 sink.text("read");
-                sink.hash(self.prefix_identity(*source, at.saturating_add(shift))?);
-                super::identity::offset(&mut sink, *offset);
+                sink.hash(self.prefix_identity(*source, at.saturating_add(lead))?);
+                super::identity::when(&mut sink, typing, *when);
             }
             Value::Filter {
                 shape,
@@ -212,7 +207,7 @@ impl<'a> Walk<'a> {
                     }
                 }
             }
-            Value::ClosedForm(_) | Value::Cast(..) | Value::SelfAt(_) | Value::Grid(_) => {
+            Value::ClosedForm(_) | Value::Cast(..) | Value::SelfAt { .. } | Value::Noise(_) => {
                 return identity_in(typing, id, self.named);
             }
         }
@@ -226,7 +221,7 @@ impl<'a> Walk<'a> {
         }
         let number = |at: usize| match args.get(at) {
             None => Some(0.0),
-            Some(id) => crate::lower::number_at(self.typing, *id, self.rate),
+            Some(id) => crate::lower::number_of(self.typing, *id),
         };
         Some(Window {
             l: number(1)?,
@@ -235,6 +230,16 @@ impl<'a> Walk<'a> {
             fall: number(4)?,
         })
     }
+}
+
+/// How far past its own sample a read at scale one reaches its source, taps and all.
+fn lead(at: &When) -> Option<i64> {
+    let When::Time(time) = at else {
+        return None;
+    };
+    let lattice = crate::loops::lattice();
+    let map = time.map(lattice, lattice)?;
+    (map.a == map.d).then(|| map.lead(sva_samples::kernel().half_width()))
 }
 
 /// A crop's `[l, r)` and shoulders, as its evaluators read them.

@@ -2,6 +2,9 @@
 
 mod live;
 pub mod ops;
+mod read;
+
+pub use read::{read_at, resample};
 pub mod renderer;
 pub mod tape;
 
@@ -100,6 +103,7 @@ fn open(p: &Program, rate: u32) -> Result<Vec<State>, SampleError> {
 struct Stack {
     values: Vec<Vec<f64>>,
     pending: Vec<usize>,
+    memo: Vec<read::Memo>,
 }
 
 impl Stack {
@@ -107,6 +111,7 @@ impl Stack {
         Stack {
             values: widths.iter().map(|&w| vec![0.0; w]).collect(),
             pending: Vec::with_capacity(widths.len()),
+            memo: vec![read::Memo::default(); widths.len()],
         }
     }
 }
@@ -304,6 +309,21 @@ struct Here<'a> {
     sr: f64,
 }
 
+impl Here<'_> {
+    fn source(&self, slot: renderer::Slot) -> read::Source<'_> {
+        match slot {
+            renderer::Slot::Read(id) => read::Source {
+                window: self.reads[id.0 as usize],
+                limit: None,
+            },
+            renderer::Slot::Own => read::Source {
+                window: self.own.window(),
+                limit: Some(self.n),
+            },
+        }
+    }
+}
+
 /// One sample of the whole renderer. Postfix order puts every operand's slot before the slot
 /// that consumes it, so `split_at_mut` hands out the reads and the one write at once.
 fn step(
@@ -313,21 +333,52 @@ fn step(
     stack: &mut Stack,
 ) -> Result<(), SampleError> {
     stack.pending.clear();
-    for (slot, op) in p.ops.iter().enumerate() {
+    let mut slot = 0;
+    while slot < p.ops.len() {
+        let op = &p.ops[slot];
+        if let Op::Guard {
+            a,
+            b,
+            rise,
+            fall,
+            over,
+        } = op
+        {
+            if crate::collapse::crop_gain(here.t, *a, *b, *rise, *fall) == 0.0 {
+                let crop = slot + over;
+                stack.values[crop].fill(0.0);
+                stack.pending.push(crop);
+                slot = crop + 1;
+            } else {
+                slot += 1;
+            }
+            continue;
+        }
         let at = stack.pending.len() - arity_of(op);
         let (done, rest) = stack.values.split_at_mut(slot);
-        fill(op, done, &stack.pending[at..], &mut rest[0], here, states)?;
+        let memo = &mut stack.memo[slot];
+        fill(
+            op,
+            done,
+            &stack.pending[at..],
+            &mut rest[0],
+            here,
+            states,
+            memo,
+        )?;
         stack.pending.truncate(at);
         stack.pending.push(slot);
+        slot += 1;
     }
     Ok(())
 }
 
 fn arity_of(op: &Op) -> usize {
     match op {
-        Op::Const(_) | Op::Time | Op::Read { .. } | Op::ReadScaled { .. } | Op::SelfAt { .. } => 0,
+        Op::Const(_) | Op::Time | Op::Noise(_) | Op::Read { .. } | Op::ReadScaled { .. } => 0,
         Op::Physics { arity, .. } => *arity,
-        Op::Map(_) | Op::Crop { .. } | Op::Channel(_) => 1,
+        Op::Map(_) | Op::Crop { .. } | Op::Channel(_) | Op::Moving { .. } => 1,
+        Op::Guard { .. } => 0,
         Op::Sub | Op::Div | Op::Pow | Op::Zip(_) => 2,
         Op::Add(n) | Op::Mul(n) | Op::Join(n) => *n,
         Op::Filter { .. } => 4,
@@ -341,31 +392,24 @@ fn fill(
     result: &mut [f64],
     here: &Here,
     states: &mut [State],
+    memo: &mut read::Memo,
 ) -> Result<(), SampleError> {
     let (n, t, sr) = (here.n, here.t, here.sr);
     let arg = |k: usize| done[srcs[k]].as_slice();
     match op {
         Op::Const(v) => result[0] = *v,
         Op::Time => result[0] = t,
-        Op::Read { id, at } => {
-            let window = here.reads[id.0 as usize];
-            let at = at.at(n);
-            for (c, slot) in result.iter_mut().enumerate() {
-                *slot = window.at(c, at);
+        Op::Noise(seed) => result[0] = sva_formula::draw(*seed, n as f64),
+        Op::Read { slot, at } => here.source(*slot).mapped(*at, n, memo, result)?,
+        Op::ReadScaled { slot, at, by } => {
+            here.source(*slot).mapped(*at, n, memo, result)?;
+            for v in result.iter_mut() {
+                *v *= by;
             }
         }
-        Op::ReadScaled { id, at, by } => {
-            let window = here.reads[id.0 as usize];
-            let at = at.at(n);
-            for (c, slot) in result.iter_mut().enumerate() {
-                *slot = window.at(c, at) * by;
-            }
-        }
-        Op::SelfAt { steps } => {
-            let at = n - i64::from(*steps);
-            for (c, slot) in result.iter_mut().enumerate() {
-                *slot = here.own.window().at(c, at);
-            }
+        Op::Moving { slot, per_sec } => {
+            let p = arg(0)[0] * per_sec;
+            here.source(*slot).at(p, memo, result)?;
         }
         Op::Add(_) | Op::Mul(_) => {
             let product = matches!(op, Op::Mul(_));
@@ -399,6 +443,7 @@ fn fill(
                 *slot = f.apply(part(arg(0), c));
             }
         }
+        Op::Guard { .. } => unreachable!("a guard is stepped over before any op fills"),
         Op::Crop { a, b, rise, fall } => {
             let gain = crate::collapse::crop_gain(t, *a, *b, *rise, *fall);
             for (c, slot) in result.iter_mut().enumerate() {

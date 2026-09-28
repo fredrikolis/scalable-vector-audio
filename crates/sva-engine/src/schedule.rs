@@ -9,7 +9,7 @@ use crate::cast::Cast;
 use crate::error::EngineError;
 use crate::instantiate::{Cx, Instances, Node};
 use crate::query::Ask;
-use crate::typing::{Typing, Value};
+use crate::typing::{Typing, Value, When};
 
 /// One-hop instance names. `self(...)` is a same-node read, never an edge.
 fn direct_refs(inst: &Instances, e: &Expr, cx: Cx, out: &mut Vec<String>) {
@@ -326,7 +326,7 @@ pub(crate) fn holds_self(typing: &Typing, id: NodeId, seen: &mut BTreeSet<NodeId
         return false;
     }
     match typing.value(id) {
-        Value::SelfAt(_) => true,
+        Value::SelfAt { .. } => true,
         Value::Cast(Cast::Sample, _) | Value::Read { .. } => false,
         Value::Cast(_, source) => holds_self(typing, *source, seen),
         Value::Op { args, .. } => args.iter().any(|a| holds_self(typing, *a, seen)),
@@ -336,19 +336,24 @@ pub(crate) fn holds_self(typing: &Typing, id: NodeId, seen: &mut BTreeSet<NodeId
             .into_iter()
             .any(|operand| holds_self(typing, *operand, seen)),
         Value::Solver { varying, .. } => varying.iter().any(|(_, a)| holds_self(typing, *a, seen)),
-        Value::ClosedForm(_) | Value::Grid(_) => false,
+        Value::ClosedForm(_) | Value::Noise(_) => false,
     }
 }
 
-/// Which nodes under `id` a render has to hold before it can hold `id` itself.
+/// Which nodes under `id` a render has to hold before it can hold `id` itself: the buffers its
+/// program reads, an operation, filter or read under it being part of that program.
 pub(crate) fn materialized_operands(typing: &Typing, id: NodeId) -> Vec<NodeId> {
     let sampled = |set: Vec<NodeId>| -> Vec<NodeId> {
         let mut out = Vec::new();
         for op in set {
-            if typing.ty(op).is_closed_form() || matches!(typing.value(op), Value::Grid(_)) {
+            if typing.ty(op).is_closed_form() {
                 continue;
             }
-            match holds_self(typing, op, &mut BTreeSet::new()) {
+            let inlined = matches!(
+                typing.value(op),
+                Value::Op { .. } | Value::Filter { .. } | Value::Read { .. }
+            );
+            match inlined || holds_self(typing, op, &mut BTreeSet::new()) {
                 true => out.extend(materialized_operands(typing, op)),
                 false => out.push(op),
             }
@@ -356,15 +361,28 @@ pub(crate) fn materialized_operands(typing: &Typing, id: NodeId) -> Vec<NodeId> 
         out
     };
     match typing.value(id) {
-        Value::ClosedForm(_) | Value::SelfAt(_) | Value::Grid(_) => Vec::new(),
+        Value::ClosedForm(_) | Value::Noise(_) => Vec::new(),
+        Value::SelfAt { at, .. } => sampled(moving(*at)),
         Value::Solver { varying, .. } => sampled(varying.iter().map(|(_, a)| *a).collect()),
         Value::Cast(Cast::Sample, source) => vec![*source],
-        Value::Read { source, .. } => vec![*source],
+        Value::Read { source, at, .. } => {
+            let mut out = vec![*source];
+            out.extend(sampled(moving(*at)));
+            out
+        }
         Value::Cast(_, source) => sampled(vec![*source]),
         Value::Op { args, .. } => sampled(args.clone()),
         Value::Filter {
             x, cutoff, q, gain, ..
         } => sampled(vec![*x, *cutoff, *q, *gain]),
+    }
+}
+
+/// The node a moving time is held in.
+fn moving(at: When) -> Vec<NodeId> {
+    match at {
+        When::Moving(id) => vec![id],
+        When::Time(_) => Vec::new(),
     }
 }
 
@@ -444,7 +462,7 @@ fn reads_under(typing: &Typing, id: NodeId, seen: &mut BTreeSet<NodeId>, out: &m
                 read_through(typing, *arg, seen, out);
             }
         }
-        Value::SelfAt(_) | Value::Grid(_) => {}
+        Value::SelfAt { .. } | Value::Noise(_) => {}
     }
 }
 

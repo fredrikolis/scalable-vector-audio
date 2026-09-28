@@ -1,6 +1,6 @@
 // Concern: resolves optional bpm/meter into resolve_bar_spans' seconds_per_bar | Non-concern: what a resolved span feeds into (lib.rs run()) | IO: (&mut Graph) -> () or CliError
 
-use sva_ast::{Expr, Graph, Literal};
+use sva_ast::{Expr, Graph, Literal, PerBar};
 
 use crate::cli_error::CliError;
 
@@ -33,6 +33,7 @@ pub fn refuse_unresolved_bars(graph: &Graph) -> Result<(), CliError> {
 pub struct Tempo {
     pub seconds_per_bar: f64,
     pub beats_per_bar: f64,
+    pub bpm: f64,
 }
 
 /// `None` when the composition declares neither `bpm` nor `meter`.
@@ -50,6 +51,7 @@ pub fn resolved(graph: &Graph) -> Result<Option<Tempo>, CliError> {
             Ok(Some(Tempo {
                 seconds_per_bar: beats_per_bar * 60.0 / bpm,
                 beats_per_bar,
+                bpm,
             }))
         }
         (Some(_), Some(_)) => Err(CliError::BadTempo(
@@ -70,7 +72,10 @@ pub fn resolve(graph: &mut Graph) -> Result<(), CliError> {
     match resolved(graph)? {
         None => refuse_unresolved_bars(graph),
         Some(tempo) => {
-            graph.resolve_bar_spans(tempo.seconds_per_bar);
+            graph.resolve_bar_spans(PerBar {
+                seconds: tempo.beats_per_bar * 60.0,
+                per: tempo.bpm,
+            });
             Ok(())
         }
     }

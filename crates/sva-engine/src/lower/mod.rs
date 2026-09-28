@@ -15,13 +15,14 @@ use sva_formula::{Body, ClosedForm, Held, IndexId, NodeId, Part, Ty, Var};
 use crate::cast::{Cast, Mismatch};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Cx, Instances, Node};
-use crate::loops::{self, Delay, SelfKind};
-use crate::offset::Offset;
+use crate::loops::{self, SelfKind};
 use crate::overload;
-use crate::typing::{Node as Typed, Typing, Value};
+use crate::time::Affine;
+use crate::typing::{Node as Typed, Typing, Value, When};
 
+pub(crate) use calls::{noise_at, rand_arguments};
 pub(crate) use constant::{
-    constant_call, constant_modulo, constant_value, holds_infinite, number_at,
+    constant_call, constant_modulo, constant_value, holds_infinite, number_of,
 };
 pub(crate) use solvers::{field, value_of};
 
@@ -32,12 +33,12 @@ pub enum Piece {
 }
 
 /// What `self(...)` stands for while this node's body is lowered: nothing, the zero a
-/// Neumann series expands around, or one read of the node's own output on the grid.
+/// Neumann series expands around, or a read of the node's own past on the lattice.
 #[derive(Clone, Copy, PartialEq)]
 enum SelfMode {
     Absent,
     Zero,
-    Sampled,
+    Sampled { gain: Option<f64> },
 }
 
 pub struct Lowering<'a, 'g> {
@@ -46,7 +47,7 @@ pub struct Lowering<'a, 'g> {
     node: &'a str,
     indices: Vec<(String, IndexId)>,
     mode: SelfMode,
-    own: Vec<(Delay, NodeId)>,
+    own: Vec<(crate::time::Q, NodeId)>,
 }
 
 /// Dependencies are already typed, so every ref this reads answers with a decided `Ty`.
@@ -61,15 +62,22 @@ pub fn node(path: &str, inst: &Instances, typing: &mut Typing) -> Result<NodeId,
     let var = axis_of(inst, typing, expr, cx, path)?;
     let kind = match inst.reads_self(path) {
         false => None,
-        true => Some(loops::classify(inst, expr, cx, path)),
+        true => {
+            let stepped = crosses(inst, typing, expr, cx);
+            Some(loops::classify(inst, expr, cx, path, stepped))
+        }
     };
     let closed = match kind {
         Some(SelfKind::Refuse(e)) => return Err(*e),
-        Some(SelfKind::Series { gain, delay }) if !crosses(inst, typing, expr, cx) => {
-            Some((gain, delay))
-        }
-        Some(SelfKind::Series { .. }) | Some(SelfKind::Sampled) => {
-            return sampled_loop(path, inst, typing, (expr, cx), var);
+        Some(SelfKind::Series { gain, delay }) => Some((gain, delay)),
+        Some(SelfKind::Sampled { gain, taps }) => {
+            let expansion = taps
+                .as_deref()
+                .map(|taps| loops::expanded(taps, sva_samples::kernel().half_width()));
+            if let Some(loops::Expanded::Taps { rest, own }) = expansion {
+                return expanded_loop(path, inst, typing, (expr, cx), var, (rest, own));
+            }
+            return sampled_loop(path, inst, typing, (expr, cx), var, gain);
         }
         None => None,
     };
@@ -98,17 +106,72 @@ fn sampled_loop(
     typing: &mut Typing,
     (expr, cx): (&Expr, Cx),
     var: Var,
+    gain: Option<f64>,
 ) -> Result<NodeId, EngineError> {
     let mut low = Lowering {
         inst,
         typing,
         node: path,
         indices: Vec::new(),
-        mode: SelfMode::Sampled,
+        mode: SelfMode::Sampled { gain },
         own: Vec::new(),
     };
     let piece = low.walk(expr, cx, var)?;
     low.seal(piece, var, Some(path))
+}
+
+/// The loop as its expansion writes it: its rest read at each delay, and its own past at taps
+/// every kernel reading clears.
+fn expanded_loop(
+    path: &str,
+    inst: &Instances,
+    typing: &mut Typing,
+    (expr, cx): (&Expr, Cx),
+    var: Var,
+    (rest, own): (Vec<(crate::time::Q, f64)>, Vec<(crate::time::Q, f64)>),
+) -> Result<NodeId, EngineError> {
+    let mut low = Lowering {
+        inst,
+        typing,
+        node: path,
+        indices: Vec::new(),
+        mode: SelfMode::Zero,
+        own: Vec::new(),
+    };
+    let body = low.walk(expr, cx, var)?;
+    let body = low.seal(body, var, None)?;
+    let gain = own.iter().map(|(_, c)| c.abs()).sum::<f64>();
+    let back = |d: crate::time::Q| {
+        When::Time(Affine {
+            scale: crate::time::Q::ONE,
+            shift: d.neg(),
+        })
+    };
+    let mut terms = Vec::new();
+    for (d, c) in rest {
+        let read = match d.is_zero() {
+            true => Piece::Value(body),
+            false => low.delayed(body, back(d), var),
+        };
+        terms.push(low.scaled(c, read, var)?);
+    }
+    for (d, c) in own {
+        let ty = sva_formula::Ty::discrete(Held::Sampled, sva_formula::Codomain::Real);
+        let tap = low.register(
+            Value::SelfAt {
+                at: back(d),
+                gain: Some(gain),
+            },
+            ty,
+            var,
+        );
+        terms.push(low.scaled(c, Piece::Value(tap), var)?);
+    }
+    let mut sum = terms.remove(0);
+    for term in terms {
+        sum = low.operation("+", vec![sum, term], None, var)?;
+    }
+    low.seal(sum, var, Some(path))
 }
 
 /// Whether the body leaves the closed form: a series expands a closed form around itself, and nothing that
@@ -184,7 +247,7 @@ fn scan_axis(inst: &Instances, typing: &Typing, e: &Expr, cx: Cx, seen: &mut (bo
             Some(ty) if ty.held == Held::Form(Var::F) => seen.1 = true,
             _ => {}
         },
-        Node::Call { name, args, .. } if Cast::from_name(name, &[]).is_none() => {
+        Node::Call { name, args, .. } if Cast::from_name(name).is_none() => {
             for a in args {
                 let (Arg::Pos(x) | Arg::Named(_, x)) = a;
                 scan_axis(inst, typing, x, cx, seen);
@@ -247,7 +310,7 @@ impl<'g> Lowering<'_, 'g> {
                             var: self.typing.var(id),
                             value: Value::Read {
                                 source: id,
-                                at: Offset::NOW,
+                                at: When::Time(Affine::NOW),
                                 site,
                             },
                         };
@@ -287,6 +350,37 @@ impl<'g> Lowering<'_, 'g> {
                     _ => Ok(self.typing.push(node, path)),
                 }
             }
+        }
+    }
+
+    /// `id` read at `at`: a closed form moved exactly, samples read there.
+    fn delayed(&mut self, id: NodeId, at: When, var: Var) -> Piece {
+        match (self.typing.ty(id).is_closed_form(), at) {
+            (true, When::Time(time)) => {
+                let of = self.part(Body::Node(id), None);
+                Piece::ClosedForm(Body::Shift {
+                    by: time.shift.neg().to_f64(),
+                    of,
+                })
+            }
+            _ => Piece::Value(self.reading(id, at, ByteSpan::new(0, 0), var)),
+        }
+    }
+
+    fn scaled(&mut self, c: f64, piece: Piece, var: Var) -> Result<Piece, EngineError> {
+        if c == 1.0 {
+            return Ok(piece);
+        }
+        let by = Piece::ClosedForm(Body::Const(sva_formula::C64::real(c)));
+        match piece {
+            Piece::ClosedForm(f) => {
+                let (a, b) = (
+                    self.part(Body::Const(sva_formula::C64::real(c)), None),
+                    self.part(f, None),
+                );
+                Ok(Piece::ClosedForm(Body::Mul(vec![a, b])))
+            }
+            value => self.operation("*", vec![by, value], None, var),
         }
     }
 

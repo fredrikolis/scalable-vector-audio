@@ -62,15 +62,11 @@ impl Rendered {
         Ok(answer)
     }
 
-    /// An alias score is only readable beside what else moves with the rate: a sampled loop
-    /// is a different signal at the oversampled rate, and the engine cannot see the graph.
+    /// An alias score reads beside how many instances the render holds.
     fn attribute(&self, answer: &mut Answer) -> Result<(), CliError> {
         let Output::Alias(alias) = &mut answer.value else {
             return Ok(());
         };
-        alias.rate_dependent = sva_engine::rate_dependent(&self.graph, &self.target)
-            .map_err(CliError::Engine)?
-            .len();
         alias.instances = self.render.tys.paths().count();
         Ok(())
     }

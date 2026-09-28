@@ -239,7 +239,10 @@ fn a_cropped_cell_moves_with_its_row() {
         "crop(@kick(t), 0s, 0.5s)\ncrop(@kick(t), 0s, 0.5s)\n",
     );
     let mut g = parse_composition(&dir).expect("the grid should resolve");
-    g.resolve_bar_spans(2.0);
+    g.resolve_bar_spans(sva_ast::PerBar {
+        seconds: 2.0,
+        per: 1.0,
+    });
 
     let placed = sva_ast::render_expr(g.expr("pattern-2b").expect("a materialized grid"));
     assert_eq!(

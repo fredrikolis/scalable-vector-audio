@@ -81,8 +81,9 @@ a feedback term sits under a `sample` and comes last in that chain.
 
 `C4` is a note name, `440hz` a frequency, `0.25s` a duration. `4st` and `50ct` are a semitone
 and a cent as ratios, so `C4*4st` is `E4` and a chord written that way transposes with its
-root. `1b` is a bar against the composition's own bpm and meter, and `1sp` is one sample at
-the render's rate. The rest are `ms`, `m`, `h`, `khz` and `db`.
+root. `1b` is a bar against the composition's own bpm and meter, and `1sp` is one step of the
+lattice every filter, loop and solver runs on, 1/44100 s. The rest are `ms`, `m`, `h`, `khz`
+and `db`.
 
 ## sva-cli
 
@@ -128,8 +129,10 @@ names an interval; with none, a render ends where `master`'s support does.
 `ledger` prints rms, peak and clipped per node.
 
 Every reading says whether it is `exact` or `measured`, under which profile and at which
-rate. No expression can read that rate as a number: `1sp` is the one literal measured in it,
-and a node that writes one is discrete. `--rate` is legal with every representation.
+rate. `--rate` sets only the instants the output is read at: a filter, loop, solver or `rand`
+steps on the lattice whatever it is, and a read between two lattice samples is a windowed-sinc
+reading of them, listed under `bounds` with the error it may carry. `--rate` is legal with
+every representation.
 
 `sva-cli builtins` prints every builtin with its arity and named arguments, the unit suffixes
 and the note-name grammar; the vocabulary is closed, so a name outside it does not parse.

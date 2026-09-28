@@ -220,6 +220,12 @@ pub(crate) fn is_free_name(name: &str) -> bool {
     (reserved && name != crate::vocabulary::SELF) || note::frequency(name).is_some()
 }
 
+fn implicit_time(name: &str) -> bool {
+    crate::overload::FINITE_DIFFERENCE.contains(&name)
+        || crate::lower::physics::MODAL.contains(&name)
+        || matches!(name, "noise" | "stft" | "istft")
+}
+
 pub fn is_reserved(name: &str) -> bool {
     is_free_name(name) || name == crate::vocabulary::SELF || is_builtin(name)
 }
@@ -346,7 +352,7 @@ impl<'g> Instances<'g> {
                 .or_else(|| self.position_dependent(r, cx)),
             Node::Read { arg, .. } => self.position_dependent(arg, cx),
             Node::Call { name, args, .. } => {
-                if Shape::from_name(name).is_some() || name == "crop" {
+                if Shape::from_name(name).is_some() || name == "crop" || implicit_time(name) {
                     return Some(name.to_string());
                 }
                 args.iter().find_map(|a| {

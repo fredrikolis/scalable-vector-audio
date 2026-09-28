@@ -36,22 +36,16 @@ pub enum Cast {
     Istft,
 }
 
-/// The named arguments a call carries, already folded to numbers.
-pub type Named<'a> = [(&'a str, f64)];
-
 impl Cast {
     pub const NAMES: [&'static str; 5] = ["sample", "fourier", "ifourier", "stft", "istft"];
 
-    pub fn from_name(name: &str, named: &Named) -> Option<Cast> {
-        let read = |key: &str| named.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
+    /// A short-time transform's window and hop are counted where the call is lowered.
+    pub fn from_name(name: &str) -> Option<Cast> {
         Some(match name {
             "sample" => Cast::Sample,
             "fourier" => Cast::Fourier,
             "ifourier" => Cast::IFourier,
-            "stft" => Cast::Stft {
-                window: read("window").unwrap_or(0.0) as usize,
-                hop: read("hop").unwrap_or(0.0) as usize,
-            },
+            "stft" => Cast::Stft { window: 0, hop: 0 },
             "istft" => Cast::Istft,
             _ => return None,
         })
@@ -98,10 +92,11 @@ impl Cast {
                     args,
                     "write sample(ifourier(x)) to sample a spectrum in t",
                 )),
-                Held::Sampled | Held::Frames => Err(Mismatch::new(
+                Held::Sampled => Ok(*arg),
+                Held::Frames => Err(Mismatch::new(
                     "type.samples_in_closed_form",
                     args,
-                    "this is already samples; drop the sample(...)",
+                    "this is frames; write istft(...) to read them as samples",
                 )),
             },
             Cast::Stft { .. } => match arg.held {

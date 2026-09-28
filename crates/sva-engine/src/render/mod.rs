@@ -2,6 +2,7 @@
 
 mod answer;
 pub(crate) mod bound;
+mod bounds;
 mod drive;
 pub(crate) mod extent;
 mod pointwise;
@@ -93,6 +94,7 @@ impl RenderConfig {
 }
 
 pub use answer::{answer, answer_buffer, sketch_atom};
+pub use bounds::Reconstruction;
 pub use drive::Block;
 pub use quiet::{QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, quiet_tails};
 pub use stream::{STREAMED, Stream, StreamConfig};
@@ -108,11 +110,15 @@ pub struct Render {
     pub labels: BTreeMap<NodeId, Label>,
     pub traces: Vec<FilterTrace>,
     pub config: RenderConfig,
+    /// The output's rate where the render holds only closed forms, else the profile's lattice.
+    pub lattice: u32,
     pub schedule: Schedule,
     pub bindings: BTreeMap<NodeId, Vec<Binding>>,
     pub cache_stats: Option<CacheStats>,
-    /// The samples the root was read over; `None` where no reading needed any.
+    /// The lattice samples the root was read over; `None` where no reading needed any.
     pub range: Option<Extent>,
+    /// The output samples those stand for, at the render's rate.
+    pub output: Option<Extent>,
     pub(crate) unranged: Option<EngineError>,
     pub(crate) extents: extent::Extents,
     identities: std::cell::RefCell<BTreeMap<NodeId, sva_formula::Hash>>,
@@ -126,8 +132,14 @@ impl Render {
         config: RenderConfig,
         schedule: Schedule,
     ) -> Self {
+        let stateful = (0..tys.len()).any(|n| !tys.ty(NodeId(n as u32)).is_closed_form());
+        let lattice = match stateful {
+            true => config.profile.lattice_hz,
+            false => config.rate,
+        };
         Render {
             root,
+            lattice,
             tys,
             buffers: BTreeMap::new(),
             frames: BTreeMap::new(),
@@ -139,6 +151,7 @@ impl Render {
             bindings: BTreeMap::new(),
             cache_stats: None,
             range: None,
+            output: None,
             unranged: None,
             extents: extent::Extents::default(),
             identities: Default::default(),
@@ -147,6 +160,28 @@ impl Render {
     }
 
     /// A node's content address, each node under it named once however often it is asked.
+    pub(crate) fn lattice(&self) -> u32 {
+        self.lattice
+    }
+
+    pub(crate) fn out_map(&self) -> sva_samples::Map {
+        let (lattice, rate) = (i128::from(self.lattice), i128::from(self.config.rate));
+        sva_samples::Map::new(lattice, 0, rate).expect("two rates make one map")
+    }
+
+    pub(crate) fn cut_output(&mut self, stop: i64) {
+        self.output = self.output.map(|output| cut(output, self.out_map(), stop));
+    }
+
+    pub(crate) fn on_lattice(&self, over: Extent) -> Extent {
+        self.out_map()
+            .image(over, sva_samples::kernel().half_width())
+    }
+
+    pub(crate) fn to_output(&self, over: Extent) -> Extent {
+        self.out_map().preimage(over, 0)
+    }
+
     pub(crate) fn identity(&self, id: NodeId) -> Result<sva_formula::Hash, EngineError> {
         refs::identity_in(&self.tys, id, &mut self.identities.borrow_mut())
     }
@@ -156,7 +191,7 @@ impl Render {
         let (mut held, mut named) = (self.prefixes.borrow_mut(), self.identities.borrow_mut());
         ask(&mut refs::Walk::new(
             &self.tys,
-            self.config.rate,
+            self.lattice,
             &mut held,
             &mut named,
         ))
@@ -170,15 +205,26 @@ impl Render {
 
     pub fn work(&self) -> crate::flops::Work {
         crate::flops::Work {
-            samples: self.range.map_or(0, |range| range.len() as u64),
+            samples: self.output.map_or(0, |range| range.len() as u64),
             priced_flops: crate::flops::total(self),
             waves: None,
         }
     }
 
+    /// A node's samples at each output instant, read off its lattice where that differs.
     pub fn output(&self, node: NodeId) -> Option<Buffer> {
         self.buffers.contains_key(&node).then_some(())?;
-        Some(self.aligned(node, self.range?))
+        let map = self.out_map();
+        if map.whole() && map.a == 1 {
+            return Some(self.aligned(node, self.range?));
+        }
+        let window = sva_samples::Window::of(&self.buffers[&node], self.extents.support(node));
+        let over = self.output?;
+        let planes = sva_samples::machine::resample(window, map, over, self.buffers[&node].width)
+            .expect("a range's lattice samples are all held");
+        let mut out = Buffer::of_planes(self.config.rate, planes);
+        out.start = over.start;
+        Some(out)
     }
 
     /// A node's samples over `over`: its own where it holds them, zero outside its support.
@@ -224,6 +270,16 @@ impl Render {
             None => AliasScore::NotAsked,
         }
     }
+}
+
+/// `output` ended where its readings through `map` stop being whole before `stop`.
+pub(crate) fn cut(output: Extent, map: sva_samples::Map, stop: i64) -> Extent {
+    let reach = match map.whole() {
+        true => 0,
+        false => sva_samples::kernel().half_width() as i64,
+    };
+    let inside = map.preimage(Extent::new(i64::MIN, stop - reach), 0);
+    Extent::new(output.start, inside.end.clamp(output.start, output.end))
 }
 
 /// Nothing is materialized that no reading asked for: a closed form answered off its spectral sum
@@ -290,7 +346,6 @@ type Planned<'g> = (
 );
 
 fn planned(prepared: Prepared<'_>, config: RenderConfig) -> Result<Planned<'_>, EngineError> {
-    sampled::on_the_grid(&prepared.tys, config.rate)?;
     let Prepared {
         instances,
         order,
@@ -378,8 +433,11 @@ fn stamp(held: &mut Render) {
         return;
     };
     let counted = crate::flops::total(held);
-    held.labels
-        .insert(root, label.costing(counted, held.config.flop_budget));
+    let label = sva_samples::Label {
+        rate: held.config.rate,
+        ..label.costing(counted, held.config.flop_budget)
+    };
+    held.labels.insert(root, label);
 }
 
 /// One render, every reading: a closed form a reading asks for is composed once here, and each
@@ -520,7 +578,7 @@ pub(super) fn materialize(
     }
     let extent = held.extents.of(id);
     if extent.is_empty() && !matches!(held.tys.ty(id).held, Held::Frames) {
-        let (rate, width) = (held.config.rate, held.tys.ty(id).width as usize);
+        let (rate, width) = (held.lattice(), held.tys.ty(id).width as usize);
         let mut silent = Buffer::silence(rate, width.max(1), 0);
         silent.start = extent.start;
         held.buffers.insert(id, silent);
@@ -562,7 +620,7 @@ fn collapse_closed_form(
     cache: Option<&Lens>,
 ) -> Result<(), EngineError> {
     let var = held.tys.var(id);
-    let written = match refs::resolve(&held.tys, id, 0, held.tys.ty(id).held) {
+    let written = match refs::resolve(&held.tys, id, held.tys.ty(id).held) {
         Ok(refs::Read::Substitute(form)) => Some(*form),
         _ => None,
     };
@@ -588,7 +646,7 @@ fn collapse_closed_form(
         None => None,
     };
     let score = held.alias_score(id);
-    let (rate, profile) = (held.config.rate, &held.config.profile);
+    let (rate, profile) = (held.lattice(), &held.config.profile);
     let asked = held.extents.of(id);
     let planned = match (&sum, &written) {
         (Err(_), None) => None,
@@ -625,12 +683,33 @@ fn collapse_closed_form(
             .run(rate, over, profile, score)
             .map_err(|e| collapse_refused(held, id, &e))?,
     };
+    finite(held, id, buffer.planes.iter().flatten())?;
     if let Some(key) = key {
         store(key, &buffer, &label, cache);
     }
     held.buffers.insert(id, padded(buffer, asked));
     held.labels.insert(id, label);
     Ok(())
+}
+
+/// A decay read long before its onset names no sample there.
+pub(crate) fn finite<'a>(
+    held: &Render,
+    id: NodeId,
+    mut samples: impl Iterator<Item = &'a f64>,
+) -> Result<(), EngineError> {
+    match samples.all(|v| v.is_finite()) {
+        true => Ok(()),
+        false => Err(EngineError::refused(Diagnostic {
+            code: "collapse.not_finite".to_string(),
+            message: format!(
+                "`{}` passes the largest double where it is read",
+                held.tys.name(id)
+            ),
+            location: Located::at(held.tys.name(id), None),
+            help: "crop a decay at its onset, so it is read only where it falls".to_string(),
+        })),
+    }
 }
 
 /// A buffer over part of `asked`, zero over the rest.
@@ -685,7 +764,7 @@ pub(super) fn warm(
     cache: Option<&Lens>,
 ) -> Option<(Buffer, Label)> {
     let expected = Expected::Samples {
-        rate: held.config.rate,
+        rate: held.lattice(),
         width: held.tys.ty(id).width as usize,
         samples,
     };

@@ -213,7 +213,11 @@ fn channel(args: &[Ty]) -> Result<Ty, Mismatch> {
 /// The window and hop a call wrote are not in a `Ty`, so the table types the representation
 /// and the call site checks the arguments.
 fn cast_of(name: &str, args: &[Ty]) -> Result<Ty, Mismatch> {
-    Cast::from_name(name, &[("window", 1.0), ("hop", 1.0)])
+    Cast::from_name(name)
+        .map(|cast| match cast {
+            Cast::Stft { .. } => Cast::Stft { window: 1, hop: 1 },
+            other => other,
+        })
         .expect("a cast signature names a cast")
         .resolve(args)
 }

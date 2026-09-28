@@ -93,6 +93,7 @@ pub fn write_analysis(
             answers: &[],
             analyses: &analyses,
             limit: None,
+            bounds: &[],
         }),
         &[],
     );
@@ -130,6 +131,7 @@ pub fn write(printed: &Printed, dest: &Path, framing: &Framing) -> Result<(), Cl
             answers: std::slice::from_ref(printed),
             analyses: &[],
             limit: None,
+            bounds: &[],
         }),
         &[],
     );

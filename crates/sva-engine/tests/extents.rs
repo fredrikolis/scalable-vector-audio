@@ -6,7 +6,7 @@ use fixtures::graph_of;
 use sva_ast::Graph;
 use sva_engine::{Range, RenderConfig, render};
 
-const RATE: u32 = 8_000;
+const RATE: u32 = 44_100;
 
 fn composition() -> Graph {
     graph_of(
@@ -27,7 +27,7 @@ fn composition() -> Graph {
                 "ring",
                 "lowpass(sample(crop(0.5*sin(2*pi*220*t), 0s, 0.05s)), 220, q=30)\n",
             ),
-            ("whole", "istft(stft(@held, window=256, hop=64))\n"),
+            ("whole", "istft(stft(@held, window=256sp, hop=64sp))\n"),
             ("smoothed", "lp(crop(4, 0s, 2s), cutoff=8)\n"),
             ("steps", "0.5 + 0.5*rand(t - t % 0.125, seed=17)\n"),
             (

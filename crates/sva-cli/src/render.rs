@@ -37,7 +37,7 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
     let bits = rendered.config.profile.precision_bits;
     let interval = rendered
         .render
-        .range
+        .output
         .map(|r| (r.start_secs(rate), r.end as f64 / f64::from(rate)));
     let framing = Framing {
         target: args.target.clone(),
@@ -59,6 +59,7 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
         });
     }
     let (answers, written) = routed(&args.asked, taken, &framing)?;
+    let bounds = rendered.render.reconstructions();
 
     Ok(success_envelope(
         &query_data(&Report {
@@ -72,6 +73,7 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
             answers: &answers,
             analyses: &[],
             limit: Some(SAMPLE_LIMIT),
+            bounds: &bounds,
         }),
         &[],
     ))
@@ -199,6 +201,7 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
             answers: &answers,
             analyses: &analyses,
             limit: Some(SAMPLE_LIMIT),
+            bounds: &[],
         }),
         &[],
     ))

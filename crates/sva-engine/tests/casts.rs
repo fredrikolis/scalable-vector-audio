@@ -37,18 +37,18 @@ fn fourier_then_ifourier_of_a_chord_is_the_same_normal() {
 /// Exact from sample zero, not only in the steady-state overlap.
 #[test]
 fn stft_and_istft_round_trip_from_sample_zero() {
-    let plain = samples("direct", &[("chord", CHORD)], "chord", 8_192, 0.25);
+    let plain = samples("direct", &[("chord", CHORD)], "chord", 44_100, 0.25);
     let round = samples(
         "roundtrip",
         &[
             ("chord", CHORD),
             (
                 "back",
-                "istft(stft(sample(crop(@chord, 0s, 0.25s)), window=1024, hop=256))\n",
+                "istft(stft(sample(crop(@chord, 0s, 0.25s)), window=1024sp, hop=256sp))\n",
             ),
         ],
         "back",
-        8_192,
+        44_100,
         0.25,
     );
     assert_eq!(plain.len(), round.len());
@@ -66,7 +66,7 @@ fn an_unedited_round_trip_is_labelled_exact() {
             ("chord", CHORD),
             (
                 "back",
-                "istft(stft(sample(crop(@chord, 0s, 0.25s)), window=1024, hop=256))\n",
+                "istft(stft(sample(crop(@chord, 0s, 0.25s)), window=1024sp, hop=256sp))\n",
             ),
         ],
     );

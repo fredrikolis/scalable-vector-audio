@@ -7,11 +7,12 @@ use sva_formula::{Body, NodeId, closed_form};
 
 use super::bound::Tail;
 use super::extent::Supports;
-use super::{Render, RenderConfig, prepared, reach, sampled};
+use super::{Render, RenderConfig, prepared, reach};
 use crate::cast::Cast;
 use crate::error::EngineError;
 use crate::schedule;
-use crate::typing::Value;
+use crate::time::Q;
+use crate::typing::{Value, When};
 
 /// Half a 24-bit step.
 pub const QUIET_LEVEL: f64 = 1.0 / (1u64 << 24) as f64;
@@ -36,7 +37,6 @@ pub fn quiet_tails(
     config: RenderConfig,
 ) -> Result<Vec<QuietTail>, EngineError> {
     let held = prepared(graph, target)?;
-    sampled::on_the_grid(&held.tys, config.rate)?;
     let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
     let audio = schedule.materialize.clone();
     let mut shell = Render::shell(held.tys.clone(), held.root, config, schedule);
@@ -69,7 +69,6 @@ pub fn quiet_tails(
         .collect())
 }
 
-/// Seconds, either end infinite.
 type Span = (f64, f64);
 
 const EVERYWHERE: Span = (f64::NEG_INFINITY, f64::INFINITY);
@@ -79,8 +78,8 @@ const EVERYWHERE: Span = (f64::NEG_INFINITY, f64::INFINITY);
 /// support. A transform, a warp or a derivative asks its whole support.
 fn extents(shell: &Render) -> BTreeMap<NodeId, Span> {
     let tys = &shell.tys;
-    let rate = f64::from(shell.config.rate);
-    let supports = Supports::new(tys, shell.config.rate);
+    let rate = f64::from(shell.lattice());
+    let supports = Supports::new(shell);
     let secs = |e: sva_samples::Extent| -> Span {
         let edge = |n: i64| match n {
             i64::MIN => f64::NEG_INFINITY,
@@ -110,16 +109,15 @@ fn extents(shell: &Render) -> BTreeMap<NodeId, Span> {
         };
         match tys.value(id) {
             Value::ClosedForm(form) => reads(&form.body, own, 0.0, &mut ask),
-            Value::Read { source, at, .. } => match at.steps_at(shell.config.rate) {
-                Ok(at) if at.scale == 1 => ask(
-                    *source,
-                    (
-                        own.0 + at.shift as f64 / rate,
-                        own.1 + at.shift as f64 / rate,
-                    ),
-                ),
-                _ => ask(*source, EVERYWHERE),
-            },
+            Value::Read {
+                source,
+                at: When::Time(time),
+                ..
+            } if time.scale == Q::ONE => {
+                let by = time.shift.to_f64();
+                ask(*source, (own.0 + by, own.1 + by));
+            }
+            Value::Read { source, .. } => ask(*source, EVERYWHERE),
             Value::Cast(Cast::Stft { .. } | Cast::Fourier | Cast::IFourier, source) => {
                 ask(*source, EVERYWHERE)
             }

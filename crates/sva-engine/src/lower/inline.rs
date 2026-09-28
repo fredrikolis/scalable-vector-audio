@@ -5,7 +5,8 @@ use sva_samples::{Binary, NodeRenderer};
 
 use crate::typing::Typing;
 
-/// Numbers, `t`, arithmetic, unaries, `min`/`max`/`%` and crops, refs inlined; else `None`.
+/// Numbers, `t`, arithmetic, unaries, `min`/`max`/`%`, crops, joins and components, refs
+/// inlined; else `None`.
 pub(crate) fn renderer(tys: &Typing, id: NodeId) -> Option<NodeRenderer> {
     let form = crate::refs::substituted_closed_form(tys, id)?;
     (form.var == Var::T).then(|| of(&form.body)).flatten()
@@ -42,6 +43,11 @@ fn of(f: &Body) -> Option<NodeRenderer> {
             };
             NodeRenderer::Zip(op, one(a)?, one(b)?)
         }
+        Body::Join(parts) => NodeRenderer::Join(each(parts)?),
+        Body::Channel(x, k) => NodeRenderer::Channel {
+            x: one(x)?,
+            k: usize::from(*k),
+        },
         Body::Crop {
             of: x,
             l,

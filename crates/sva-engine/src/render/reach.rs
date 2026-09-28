@@ -53,7 +53,7 @@ enum Ends {
 
 /// An unstated end is where the root's support ends.
 fn ranged_by(held: &mut Render, costed: &[NodeId], ends: Ends) -> Result<(), EngineError> {
-    let support = Supports::new(&held.tys, held.config.rate).of(held.root);
+    let support = held.to_output(Supports::new(held).of(held.root));
     let start = held
         .config
         .range
@@ -66,7 +66,10 @@ fn ranged_by(held: &mut Render, costed: &[NodeId], ends: Ends) -> Result<(), Eng
             Ends::Refused => return Err(endless(held)),
         },
     };
-    extend(held, costed, Extent::new(start, end.max(start)))
+    let output = Extent::new(start, end.max(start));
+    held.output = Some(output);
+    let range = held.on_lattice(output);
+    extend(held, costed, range)
 }
 
 pub(super) fn extend(

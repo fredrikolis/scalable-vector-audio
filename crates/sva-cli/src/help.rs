@@ -77,9 +77,13 @@ RENDER:
 
   `--bits <n>` is the precision every sample is written to, from 2 to 52: the
   point where a series is truncated, and the encoding of a `.wav`, integer PCM
-  at n bits up to 16 and 32-bit float above. `--rate <hz>` is the sample rate;
-  no expression can read it. `--flop-budget <n>` is the operation count paid
-  before a render refuses.
+  at n bits up to 16 and 32-bit float above. `--rate <hz>` is the output's
+  sample rate and sets only the instants it is read at: filters, loops,
+  solvers and `rand` step on the profile's 44.1 kHz lattice, where `1sp` is
+  one step, and a read between two lattice samples is a windowed-sinc reading
+  of them. `data.bounds` lists each such reading with the error it may carry
+  per source component below and above the band edge. `--flop-budget <n>` is
+  the operation count paid before a render refuses.
 
   `ledger` prints one row per node under the target. A row's `share` is the
   part of its reader's own energy that row accounts for, so one reader's refs
@@ -194,7 +198,8 @@ EXAMPLES:
 
 OUTPUT:
   {{"status": "success", "data": {{"target": "@master([0, 8b])", "sample_rate":
-  44100, "bits": 24, "profile": "psychoacoustic-v1", "interval": {{"start_secs":
+  44100, "bits": 24, "bounds": {{"items": [...]}}, "profile":
+  "psychoacoustic-v1", "interval": {{"start_secs":
   0, "end_secs": 16}}, "label": {{...}}, "written": {{"items": [...]}},
   "representations": {{"ledger": {{...}}}}, "diagnostics": {{"items": []}}}},
   "meta": {{"request_id": "req_...", "timestamp": 1700000000}}}}

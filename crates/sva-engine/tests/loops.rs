@@ -4,7 +4,7 @@ mod fixtures;
 
 use fixtures::graph_of;
 use sva_engine::{
-    Delay, Detail, EngineError, Held, Output, RenderConfig, Representation, Source, Value, answer,
+    Detail, EngineError, Held, Output, RenderConfig, Representation, Source, Value, When, answer,
     render, types,
 };
 use sva_formula::Body;
@@ -104,12 +104,12 @@ fn a_constant_delay_over_sampled_input_runs_on_the_grid() {
 
 fn reads_itself(typing: &sva_engine::Typing, id: sva_engine::NodeId) -> bool {
     match typing.value(id) {
-        Value::SelfAt(_) => true,
+        Value::SelfAt { .. } => true,
         Value::Op { args, .. } => args.iter().any(|a| reads_itself(typing, *a)),
         Value::Cast(_, source) | Value::Filter { x: source, .. } | Value::Read { source, .. } => {
             reads_itself(typing, *source)
         }
-        Value::ClosedForm(_) | Value::Solver { .. } | Value::Grid(_) => false,
+        Value::ClosedForm(_) | Value::Solver { .. } | Value::Noise(_) => false,
     }
 }
 
@@ -164,14 +164,14 @@ fn two_self_reads_at_two_delays_stay_apart() {
     assert_eq!(taps.len(), 2, "one read per written delay: {taps:?}");
 }
 
-fn collect_taps(typing: &sva_engine::Typing, id: sva_engine::NodeId, out: &mut Vec<Delay>) {
+fn collect_taps(typing: &sva_engine::Typing, id: sva_engine::NodeId, out: &mut Vec<When>) {
     match typing.value(id) {
-        Value::SelfAt(delay) => out.push(*delay),
+        Value::SelfAt { at, .. } => out.push(*at),
         Value::Op { args, .. } => args.iter().for_each(|a| collect_taps(typing, *a, out)),
         Value::Cast(_, source) | Value::Filter { x: source, .. } | Value::Read { source, .. } => {
             collect_taps(typing, *source, out)
         }
-        Value::ClosedForm(_) | Value::Solver { .. } | Value::Grid(_) => {}
+        Value::ClosedForm(_) | Value::Solver { .. } | Value::Noise(_) => {}
     }
 }
 
@@ -213,45 +213,6 @@ fn a_zero_coefficient_leaves_the_body_alone() {
         !matches!(form.body, Body::Series(_)),
         "no series expands a loop that carries nothing"
     );
-}
-
-/// A grid offset is a whole number of samples; rounding one would move the read silently.
-#[test]
-fn a_fractional_grid_delay_refuses() {
-    let refused = form(
-        "fractional",
-        "sample(sin(2*pi*220*t)) + 0.5*self(t - 1.5sp)\n",
-    )
-    .expect_err("no value");
-    assert_eq!(refused.code(), "ref.fractional_shift_on_samples");
-}
-
-/// A delay of seconds and grid steps together is a count of steps once a rate is named, and
-/// one that is no whole count at that rate refuses by its own code, before anything decides
-/// where an endless render ends, or renders what reads the loop.
-#[test]
-fn a_delay_off_the_grid_refuses_by_its_own_code_before_any_range() {
-    let g = graph_of(
-        "string",
-        &[
-            (
-                "string",
-                "sample(crop(sin(2*pi*220*t), 0s, 0.01s)) + 0.5*(self(t - 0.01s) + \
-                 self(t - 0.0001s - 1sp))\n",
-            ),
-            ("pluck", "crop(0.5*@string, 0s, 1s)\n"),
-        ],
-    );
-    for root in ["string", "pluck"] {
-        let Err(refused) = render(&g, root, RenderConfig::at(8_000), None) else {
-            panic!("{root}: a delay no index names rendered");
-        };
-        assert_eq!(
-            refused.code(),
-            "ref.fractional_shift_on_samples",
-            "{root}: {refused}"
-        );
-    }
 }
 
 /// Reading ahead is not the same mistake as reading the sample being written.

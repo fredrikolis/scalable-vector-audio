@@ -126,8 +126,8 @@ fn sampled_leaf(
             .find_map(|op| sampled_leaf(typing, op, open))
     };
     match typing.value(id) {
-        crate::typing::Value::SelfAt(_) => Some("sp, a self-reference on the grid".to_string()),
-        crate::typing::Value::Grid(_) => Some("sp, a duration on the grid".to_string()),
+        crate::typing::Value::SelfAt { .. } => Some("self, a loop run on the lattice".to_string()),
+        crate::typing::Value::Noise(_) => Some("rand, noise drawn on the lattice".to_string()),
         crate::typing::Value::Solver { .. } => Some("a finite-difference builtin".to_string()),
         crate::typing::Value::Cast(crate::cast::Cast::Sample, source) => {
             Some(format!("sample({})", typing.name(*source)))
@@ -136,10 +136,14 @@ fn sampled_leaf(
             under(vec![*source], open).or_else(|| Some(cast.name().to_string()))
         }
         crate::typing::Value::Read { source, at, .. } => under(vec![*source], open).or_else(|| {
-            Some(format!(
-                "a read at {}*t{:+}s{:+}sp",
-                at.scale, at.secs, at.steps
-            ))
+            Some(match at {
+                crate::typing::When::Time(time) => format!(
+                    "a read at {}*t{:+}s",
+                    time.scale.to_f64(),
+                    time.shift.to_f64()
+                ),
+                crate::typing::When::Moving(_) => "a read at a moving time".to_string(),
+            })
         }),
         crate::typing::Value::Op { args, .. } => under(args.clone(), open),
         crate::typing::Value::Filter { x, .. } => under(vec![*x], open),

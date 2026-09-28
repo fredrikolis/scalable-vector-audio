@@ -1,4 +1,4 @@
-// Concern: proves a discrete node renders at the observation's rate, accumulator and all | Non-concern: any solver's own grid (sva-samples) | IO: (a composition, rate) -> a Buffer
+// Concern: proves a discrete node renders on its lattice, accumulator and all, read out at any rate | Non-concern: any solver's own grid (sva-samples) | IO: (a composition, rate) -> a Buffer
 
 mod fixtures;
 
@@ -30,7 +30,13 @@ fn a_one_step_accumulator_renders() {
         "accumulator",
         &[("acc", "sample(0.25 + 0*t) + self(t - 1sp)\n")],
     );
-    let held = render(&g, "acc", RenderConfig::seconds(1_000, 0.01), None).expect("a recurrence");
+    let held = render(
+        &g,
+        "acc",
+        RenderConfig::seconds(44_100, 10.0 / 44_100.0),
+        None,
+    )
+    .expect("a recurrence");
     let root = held.id("acc").expect("the root");
     let buffer = held.output(root).expect("a rendered loop");
     assert_eq!(buffer.len(), 10);
@@ -134,7 +140,13 @@ fn a_self_read_is_founded_sample_by_sample_without_a_block() {
         "three-step",
         &[("acc", "sample(1 + 0*t) + 0.5*self(t - 3sp)\n")],
     );
-    let held = render(&g, "acc", RenderConfig::seconds(1_000, 0.01), None).expect("a recurrence");
+    let held = render(
+        &g,
+        "acc",
+        RenderConfig::seconds(44_100, 10.0 / 44_100.0),
+        None,
+    )
+    .expect("a recurrence");
     let root = held.id("acc").expect("the root");
     let buffer = held.output(root).expect("a rendered loop");
     assert_eq!(buffer.len(), 10);
@@ -155,7 +167,7 @@ fn a_self_read_is_founded_sample_by_sample_without_a_block() {
 }
 
 fn plane(g: &sva_ast::Graph, node: &str) -> Vec<f64> {
-    let held = render(g, node, RenderConfig::seconds(8_000, 0.05), None)
+    let held = render(g, node, RenderConfig::seconds(44_100, 0.05), None)
         .unwrap_or_else(|e| panic!("{node}: {e}"));
     let id = held.id(node).unwrap_or_else(|| panic!("{node} typed"));
     held.output(id).expect("a rendered node").plane(0).to_vec()
@@ -186,11 +198,11 @@ fn a_sampled_crop_takes_the_closed_forms_window() {
             (c - s).abs() < 1e-9,
             "sample {i}: the closed form reads {c}, the sampled crop {s}"
         );
-        let inside = (80..320).contains(&i);
+        let inside = (441..1764).contains(&i);
         assert!(inside || *s == 0.0, "sample {i} lies outside [10ms, 40ms)");
     }
     let hard = plane(&g, "hard");
-    let first = (0.01 * 8_000.0) as usize + 1;
+    let first = (0.01 * 44_100.0) as usize + 1;
     assert!(
         sampled[first].abs() < hard[first].abs(),
         "the rise opens the window gradually: {} against {}",
@@ -208,7 +220,7 @@ fn a_sampled_crop_refuses_the_shoulders_a_closed_form_refuses() {
             "crop(sample(sin(2*pi*220*t)), 10ms, 20ms, rise=6ms, fall=6ms)\n",
         )],
     );
-    let Err(refused) = render(&g, "body", RenderConfig::seconds(8_000, 0.05), None) else {
+    let Err(refused) = render(&g, "body", RenderConfig::seconds(44_100, 0.05), None) else {
         panic!("two shoulders longer than their window render nothing");
     };
     assert!(
@@ -216,4 +228,32 @@ fn a_sampled_crop_refuses_the_shoulders_a_closed_form_refuses() {
             || format!("{refused:?}").contains("bad_crop_shoulder"),
         "{refused:?}"
     );
+}
+
+/// A limiter written in `sp` recovers on the lattice whatever rate reads it out: where an
+/// instant is on both a 44.1 kHz and a 96 kHz output, the two hold the same bits.
+#[test]
+fn an_sp_limiter_releases_alike_at_every_output_rate() {
+    let g = graph_of(
+        "limiter",
+        &[
+            ("target", "sample(crop(0.5 + 0*t, 0s, 0.1s))\n"),
+            ("gr", "max(@target, self(t - 1sp)*0.99975)\n"),
+        ],
+    );
+    let at = |rate: u32| {
+        let held = render(&g, "gr", RenderConfig::seconds(rate, 0.3), None)
+            .unwrap_or_else(|e| panic!("{rate}: {e}"));
+        held.output(held.root).expect("a gain").plane(0).to_vec()
+    };
+    let (low, high) = (at(44_100), at(96_000));
+    let shared = (0..low.len() / 147).take_while(|k| 320 * k < high.len());
+    for k in shared {
+        assert_eq!(low[147 * k], high[320 * k], "instant {}", 147 * k);
+    }
+    let released = low
+        .iter()
+        .skip(4_410)
+        .position(|g| *g <= 0.5 / std::f64::consts::E);
+    assert_eq!(released, Some(3_999), "90.7 ms after the target lets go");
 }

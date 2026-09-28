@@ -13,7 +13,7 @@ use sva_engine::{
 use sva_samples::AliasScore;
 
 const SECONDS: f64 = 0.05;
-const RATE: u32 = 8_000;
+const RATE: u32 = 44_100;
 
 /// `x` and `y` are each read by `a` and `b`, so they are the forks; `master` is the target.
 fn forked(master: &str) -> Graph {

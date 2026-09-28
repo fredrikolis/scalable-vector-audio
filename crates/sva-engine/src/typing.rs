@@ -10,10 +10,9 @@ use crate::arguments::{Arguments, Called, Chosen};
 use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::Instances;
-use crate::loops::Delay;
 use crate::lower;
-use crate::offset::Offset;
 use crate::schedule::Order;
+use crate::time::Affine;
 
 /// A closed form is cast-free on one axis; every crossing is its own node.
 #[derive(Clone, Debug, PartialEq)]
@@ -24,15 +23,18 @@ pub enum Value {
         name: String,
         args: Vec<NodeId>,
     },
-    /// One read of this node's own output, at the delay the call site wrote.
-    SelfAt(Delay),
-    /// A count of samples read as a duration, which only a rate turns into seconds.
-    Grid(f64),
+    /// One read of this node's own past at the time the call site wrote; `gain` bounds how
+    /// far the loop's output moves per unit its taps move, where it is linear in them.
+    SelfAt {
+        at: When,
+        gain: Option<f64>,
+    },
     Read {
         source: NodeId,
-        at: Offset,
+        at: When,
         site: Origin,
     },
+    Noise(u64),
     /// The signal and its three arguments, each a node of its own.
     Filter {
         shape: Shape,
@@ -45,6 +47,13 @@ pub enum Value {
         params: Box<Params>,
         varying: Vec<(&'static str, NodeId)>,
     },
+}
+
+/// A read's instant: exact, or a closed form of `t` held as a node.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum When {
+    Time(Affine),
+    Moving(NodeId),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -65,6 +74,7 @@ pub struct Typing {
     pending: BTreeSet<NodeId>,
     indices: u32,
     sum: Option<(NodeId, Vec<SumSlot>)>,
+    between: Vec<String>,
 }
 
 /// One term of a stream's note sum: its node, or the identity it had before it ended.
@@ -85,6 +95,16 @@ impl Typing {
             .as_ref()
             .filter(|(held, _)| *held == node)
             .map(|(_, slots)| slots.as_slice())
+    }
+
+    pub(crate) fn note_between(&mut self, node: &str) {
+        if !self.between.iter().any(|held| held == node) {
+            self.between.push(node.to_string());
+        }
+    }
+
+    pub(crate) fn drawn_between(&self) -> &[String] {
+        &self.between
     }
 
     pub(crate) fn next_index(&mut self) -> sva_formula::IndexId {

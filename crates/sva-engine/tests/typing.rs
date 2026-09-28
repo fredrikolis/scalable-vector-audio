@@ -37,29 +37,6 @@ fn a_graph_of_closed_forms_types_end_to_end() {
 }
 
 #[test]
-fn a_node_touching_sp_is_discrete() {
-    let g = graph_of(
-        "grid",
-        &[("chord", CHORD), ("tail", "@chord(t - 1sp)*0.5\n")],
-    );
-    let typing = types(&g, "tail").expect("a grid read");
-    let tail = typing.id("tail").expect("tail");
-    assert_eq!(
-        typing.ty(tail).held,
-        Held::Sampled,
-        "an sp offset puts the whole node on the grid"
-    );
-    let chord = typing.ty(typing.id("chord").expect("chord"));
-    assert_eq!(
-        (chord.held, chord.dual),
-        (Held::Form(Var::T), true),
-        "the closed form it reads is untouched"
-    );
-}
-
-/// The judgment is structural over the spectral sum's existence, so nothing a second run
-/// holds — no cached term, no already-decided node — can change a type.
-#[test]
 fn a_dual_is_decided_identically_by_lint_and_by_render() {
     let g = graph_of(
         "identical",

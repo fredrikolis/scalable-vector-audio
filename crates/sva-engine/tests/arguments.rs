@@ -360,13 +360,13 @@ fn the_bore_reads_its_positional_as_a_length() {
     let (found, _) = arguments_of(&g, "body");
     let first = &found[0].calls[0].arguments[0];
     assert_eq!((first.name.as_str(), first.value), ("length", 0.3));
-    let held = render(&g, "body", RenderConfig::seconds(8_000, 0.05), None).expect("a render");
+    let held = render(&g, "body", RenderConfig::seconds(44_100, 0.05), None).expect("a render");
     let id = held.id("body").expect("the root");
     let rendered = held.output(id).expect("a solve").plane(0).to_vec();
     let params = sva_samples::Params::DarabunditScavone(
         sva_samples::physics::darabundit_scavone::BoreParams::at(0.3),
     );
-    let mut solver = sva_samples::site(&params, 8_000).expect("a grid");
+    let mut solver = sva_samples::site(&params, 44_100).expect("a grid");
     let stepped: Vec<f64> = (0..rendered.len())
         .map(|_| solver.step(&[]).expect("a settled step"))
         .collect();

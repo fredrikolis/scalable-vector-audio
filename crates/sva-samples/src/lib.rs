@@ -12,6 +12,7 @@ pub mod machine;
 pub mod measure;
 pub mod physics;
 pub mod profile;
+pub mod reconstruct;
 pub mod stft;
 
 pub use biquad::Coeffs;
@@ -25,7 +26,7 @@ pub use error::{CollapseError, SampleError};
 pub use filters::{Automation, AutomationFrame, FilterSite, FilterTrace};
 pub use frames::Frames;
 pub use label::{Cost, Detail, Dropped, Label, Rule, Source};
-pub use machine::renderer::{Binary, BufId, NodeRenderer, Remap, Site, SiteId, Unary};
+pub use machine::renderer::{At, Binary, BufId, Map, NodeRenderer, Site, SiteId, Slot, Unary};
 pub use machine::tape::{Tape, Window};
 pub use machine::{Ctx, Machine, MachineState};
 pub use measure::Consumes;
@@ -45,4 +46,5 @@ pub use measure::spectrum::{
 pub use measure::stereo::{StereoFrame, StereoImage};
 pub use physics::{Params, Solver, site};
 pub use profile::{PSYCHOACOUSTIC_V1, Profile};
+pub use reconstruct::{Bound, Kernel, KernelSpec, kernel};
 pub use sva_formula::Shape;

@@ -7,8 +7,7 @@ use sva_formula::{
 };
 
 use crate::error::{Diagnostic, EngineError};
-use crate::offset::Offset;
-use crate::typing::{SumSlot, Typing, Value};
+use crate::typing::{SumSlot, Typing, Value, When};
 
 use super::{cyclic, nodes_in, spectral_sum_of, substituted_closed_form};
 
@@ -115,10 +114,16 @@ fn built(
         Value::Read { source, at, .. } => {
             sink.text("read");
             sink.hash(identity_of(typing, *source, open, named)?);
-            offset(&mut sink, *at);
+            when(&mut sink, typing, *at);
         }
-        Value::SelfAt(delay) => sink.text(&format!("self {delay:?}")),
-        Value::Grid(count) => sink.text(&format!("sp {count}")),
+        Value::SelfAt { at, .. } => {
+            sink.text("self");
+            when(&mut sink, typing, *at);
+        }
+        Value::Noise(seed) => {
+            sink.text("noise");
+            sink.word(*seed);
+        }
         Value::Solver { params, varying } => {
             let mut held = (**params).clone();
             for (key, _) in varying {
@@ -153,11 +158,22 @@ fn built(
     Ok(sink.finish())
 }
 
-pub(super) fn offset(sink: &mut Sink, at: Offset) {
+/// A moving time is named by its closed form, which holds no ref back to the reader.
+pub(super) fn when(sink: &mut Sink, typing: &Typing, at: When) {
     sink.text("at");
-    sink.word(at.scale as u64);
-    sink.word(at.secs.to_bits());
-    sink.word(at.steps as u64);
+    match at {
+        When::Time(time) => {
+            for q in [time.scale, time.shift] {
+                sink.word(q.num() as u64);
+                sink.word((q.num() >> 64) as u64);
+                sink.word(q.den() as u64);
+            }
+        }
+        When::Moving(id) => match identity(typing, id) {
+            Ok(held) => sink.hash(held),
+            Err(_) => sink.text(typing.name(id)),
+        },
+    }
 }
 
 const IDENTITY_ROTATE: u32 = 23;
@@ -169,7 +185,7 @@ impl Sink {
         Sink(sva_formula::Lanes::default())
     }
 
-    fn word(&mut self, part: u64) {
+    pub(super) fn word(&mut self, part: u64) {
         self.0.word(part);
     }
 

@@ -289,3 +289,86 @@ fn a_closed_stream_ends_at_its_range() {
     }
     assert_eq!((heard, stream.end()), (1_000, Some(1_000)));
 }
+
+fn reads() -> Graph {
+    graph_of(
+        "reads",
+        &[
+            (
+                "filtered",
+                "lowpass(sample(0.3*saw(220*t)), cutoff=900, q=0.8)\n",
+            ),
+            ("shifted", "@filtered(t - 0.0123456s)\n"),
+            ("scaled", "@filtered(0.75*t)\n"),
+            ("warped", "@filtered(t - t*t/4)\n"),
+            ("reversed", "@filtered(1s - t)\n"),
+        ],
+    )
+}
+
+fn streamed_at(g: &Graph, target: &str, rate: u32, block: usize, samples: usize) -> Vec<f64> {
+    let config = StreamConfig {
+        block,
+        render: RenderConfig {
+            range: Range {
+                start: Some(0),
+                end: Some(4 * i64::from(rate)),
+            },
+            ..RenderConfig::at(rate)
+        },
+    };
+    let mut stream = Stream::open(g, &at(target), config, None).unwrap_or_else(|e| panic!("{e}"));
+    let mut out = Vec::with_capacity(samples + block);
+    while out.len() < samples {
+        let block = stream
+            .next_block()
+            .unwrap_or_else(|e| panic!("{target}: {e}"));
+        out.extend_from_slice(block.expect("a stream with no end").plane(0));
+    }
+    out.truncate(samples);
+    out
+}
+
+fn whole_at(g: &Graph, target: &str, rate: u32, samples: usize) -> Vec<f64> {
+    let secs = samples as f64 / f64::from(rate);
+    let held = render(g, target, RenderConfig::seconds(rate, secs), None)
+        .unwrap_or_else(|e| panic!("{target}: {e}"));
+    held.output(held.root).expect("a buffer").plane(0).to_vec()
+}
+
+/// A read between lattice samples, at a shift, a scale or a moving time, streams what the
+/// whole render writes, read out at the lattice's own rate or another.
+#[test]
+fn off_lattice_reads_stream_the_whole_render_bit_for_bit() {
+    let g = reads();
+    for rate in [44_100u32, 48_000] {
+        for target in ["shifted", "scaled", "warped"] {
+            let want = whole_at(&g, target, rate, 6_000);
+            sounds(&want);
+            for block in [256, 1_000] {
+                assert_eq!(
+                    streamed_at(&g, target, rate, block, 6_000),
+                    want,
+                    "{target} at {rate} in blocks of {block}"
+                );
+            }
+        }
+    }
+}
+
+/// A stream stands at one instant, so a read of output it has not computed refuses by code.
+#[test]
+fn a_streamed_read_backwards_in_time_refuses() {
+    let g = reads();
+    let config = config(512, four());
+    let mut stream = Stream::open(&g, &at("reversed"), config, None).expect("it opens");
+    let refused = std::iter::repeat_with(|| stream.next_block())
+        .take(200)
+        .find_map(Result::err)
+        .expect("a backward read refuses");
+    assert_eq!(refused.code(), "engine.reads_ahead", "{refused}");
+    assert!(
+        render(&g, "reversed", RenderConfig::seconds(RATE, 0.5), None).is_ok(),
+        "a whole render reads it backwards"
+    );
+}

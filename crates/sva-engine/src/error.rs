@@ -61,7 +61,7 @@ impl fmt::Display for BindingFault {
             BindingFault::ShiftedRead(v, what) => write!(
                 f,
                 "`{v}` is read at a shifted time but its argument holds `{what}`, whose value \
-                 depends on the sample being written rather than on that time; pass a file"
+                 follows a time of its own rather than the `t` handed to it; pass a file"
             ),
             BindingFault::TooManyInstances(n) => {
                 write!(f, "this composition expands past {n} function invocations")
@@ -205,7 +205,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 74] = [
+pub static REGISTRY: [(&str, &str); 75] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -256,6 +256,14 @@ pub static REGISTRY: [(&str, &str); 74] = [
     ("cast.stft_needs_samples", "stft on anything but samples"),
     ("cast.istft_needs_frames", "istft on anything but frames"),
     ("cast.missing_window", "stft without window= or hop="),
+    (
+        "collapse.not_finite",
+        "a closed form past the largest double where it is read",
+    ),
+    (
+        "cast.window_off_the_lattice",
+        "an stft window or hop that is no whole number of lattice steps",
+    ),
     (
         "collapse.empty_band",
         "every line sits at or above the ceiling",
@@ -334,14 +342,6 @@ pub static REGISTRY: [(&str, &str); 74] = [
         "inf where it names no number: inf - inf, 0*inf, or in a term that moves",
     ),
     (
-        "ref.fractional_shift_on_samples",
-        "a sampled read offset that is not a whole sample",
-    ),
-    (
-        "ref.scaled_read_off_the_grid",
-        "samples read at k*t where k is not whole",
-    ),
-    (
         "engine.unknown_node",
         "a target no node of this composition answers for",
     ),
@@ -414,12 +414,16 @@ pub static REGISTRY: [(&str, &str); 74] = [
         "a number-valued argument that moves",
     ),
     (
-        "engine.varying_delay",
-        "a delay with no whole-sample offset on the grid",
+        "engine.reads_ahead",
+        "a stream reading a sample its source has not computed yet",
     ),
     (
-        "engine.unreadable_shift",
-        "samples read at a time whose rate moves",
+        "engine.unreadable_position",
+        "a moving reading at no finite position",
+    ),
+    (
+        "engine.loop_reads_ahead",
+        "a loop reading its own past between samples closer than the kernel reaches",
     ),
     (
         "engine.per_lane_read_on_samples",

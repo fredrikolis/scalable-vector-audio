@@ -1,7 +1,7 @@
 // Concern: runs one renderer span by span, each span without the reads that answer zero there | Non-concern: where a read is zero (the caller's windows) | IO: (NodeRenderer, Ctx, live windows) -> Buffer
 
-use super::ops::{Layout, lower};
-use super::renderer::{BufId, NodeRenderer, Remap};
+use super::ops::{Layout, Op, lower};
+use super::renderer::{At, BufId, Map, NodeRenderer, Slot};
 use super::tape::Tape;
 use super::{Ctx, Machine};
 use crate::buffer::Buffer;
@@ -42,7 +42,8 @@ impl NodeRenderer {
     ) -> Result<Vec<Span>, SampleError> {
         let mut leaves = Vec::new();
         buffers(self, &mut leaves);
-        let reach = |id: BufId, at: Remap| at.preimage(live[id.0 as usize]);
+        let half = crate::reconstruct::kernel().half_width();
+        let reach = |id: BufId, at: Map| at.preimage(live[id.0 as usize], half);
         let mut edges = vec![from, to];
         for (id, at) in &leaves {
             let held = reach(*id, *at);
@@ -57,7 +58,7 @@ impl NodeRenderer {
         let mut out: Vec<Span> = Vec::new();
         for pair in edges.windows(2) {
             let span = Extent::new(pair[0], pair[1]);
-            let dead = |id: BufId, at: Remap| reach(id, at).intersect(span).is_empty();
+            let dead = |id: BufId, at: Map| reach(id, at).intersect(span).is_empty();
             let renderer = pruned(self, &dead, layout)?;
             match out.last_mut() {
                 Some(last) if last.renderer == renderer => last.to = span.end,
@@ -71,10 +72,24 @@ impl NodeRenderer {
         Ok(out)
     }
 
+    /// One per op, a kernel reading its taps' multiply-adds and, where its fraction moves, the
+    /// weights it interpolates each sample.
     pub fn ops(&self, layout: &Layout) -> Result<usize, SampleError> {
         let (mut ops, mut widths) = (Vec::new(), Vec::new());
         lower(self, layout, &mut ops, &mut widths)?;
-        Ok(ops.len())
+        let taps = 2 * crate::reconstruct::kernel().half_width();
+        Ok(ops
+            .iter()
+            .zip(&widths)
+            .map(|(op, width)| match op {
+                Op::Read { at, .. } | Op::ReadScaled { at, .. } if !at.whole() => {
+                    let held = at.a % at.d == 0 || at.d <= 1024;
+                    2 * taps * width + usize::from(!held) * 10 * taps
+                }
+                Op::Moving { .. } => 2 * taps * width + 10 * taps,
+                _ => 1,
+            })
+            .sum())
     }
 }
 
@@ -83,8 +98,12 @@ fn width(r: &NodeRenderer, layout: &Layout) -> Result<usize, SampleError> {
     lower(r, layout, &mut ops, &mut widths)
 }
 
-fn buffers(r: &NodeRenderer, out: &mut Vec<(BufId, Remap)>) {
-    if let NodeRenderer::Buffer { id, at } = r {
+fn buffers(r: &NodeRenderer, out: &mut Vec<(BufId, Map)>) {
+    if let NodeRenderer::Read {
+        slot: Slot::Read(id),
+        at: At::Map(at),
+    } = r
+    {
         out.push((*id, *at));
     }
     for part in operands(r) {
@@ -96,7 +115,7 @@ fn buffers(r: &NodeRenderer, out: &mut Vec<(BufId, Remap)>) {
 /// where that keeps its width.
 fn pruned(
     r: &NodeRenderer,
-    dead: &dyn Fn(BufId, Remap) -> bool,
+    dead: &dyn Fn(BufId, Map) -> bool,
     layout: &Layout,
 ) -> Result<NodeRenderer, SampleError> {
     let whole = width(r, layout)?;
@@ -119,9 +138,12 @@ fn pruned(
 }
 
 /// Exactly +0.0 at every sample of the span.
-fn zero(r: &NodeRenderer, dead: &dyn Fn(BufId, Remap) -> bool) -> bool {
+fn zero(r: &NodeRenderer, dead: &dyn Fn(BufId, Map) -> bool) -> bool {
     match r {
-        NodeRenderer::Buffer { id, at } => dead(*id, *at),
+        NodeRenderer::Read {
+            slot: Slot::Read(id),
+            at: At::Map(at),
+        } => dead(*id, *at),
         NodeRenderer::Const(v) => v.to_bits() == 0,
         NodeRenderer::Crop { x, .. } => zero(x, dead),
         NodeRenderer::Add(parts) => parts.iter().all(|p| zero(p, dead)),
@@ -146,6 +168,10 @@ fn operands(r: &NodeRenderer) -> Vec<&NodeRenderer> {
             x, cutoff, q, gain, ..
         } => vec![x, cutoff, q, gain],
         NodeRenderer::Physics { args, .. } => args.iter().collect(),
+        NodeRenderer::Read {
+            at: At::Moving { time, .. },
+            ..
+        } => vec![time],
         _ => Vec::new(),
     }
 }
@@ -202,6 +228,16 @@ fn rebuilt(r: &NodeRenderer, each: &mut Each) -> Result<NodeRenderer, SampleErro
             site: *site,
             from: *from,
             args: args.iter().map(&mut *each).collect::<Result<_, _>>()?,
+        },
+        NodeRenderer::Read {
+            slot,
+            at: At::Moving { per_sec, time },
+        } => NodeRenderer::Read {
+            slot: *slot,
+            at: At::Moving {
+                per_sec: *per_sec,
+                time: one(time)?,
+            },
         },
         leaf => leaf.clone(),
     })

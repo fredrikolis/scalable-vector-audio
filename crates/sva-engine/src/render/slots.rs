@@ -1,7 +1,7 @@
 // Concern: what each buffer a sampled node reads contributed to it | Non-concern: building the program (sampled.rs), sharing a target's energy out (sva-samples) | IO: (NodeId) -> a ref and its addend
 
 use sva_formula::NodeId;
-use sva_samples::{BufId, Buffer, NodeRenderer};
+use sva_samples::{BufId, Buffer, NodeRenderer, Slot};
 
 use crate::cast::Cast;
 use crate::error::EngineError;
@@ -141,8 +141,8 @@ fn moves(r: &NodeRenderer) -> bool {
     match r {
         NodeRenderer::Const(_) => false,
         NodeRenderer::Time
-        | NodeRenderer::Buffer { .. }
-        | NodeRenderer::SelfAt { .. }
+        | NodeRenderer::Read { .. }
+        | NodeRenderer::Noise(_)
         | NodeRenderer::Physics { .. } => true,
         other => operands(other).iter().any(|p| moves(p)),
     }
@@ -150,14 +150,20 @@ fn moves(r: &NodeRenderer) -> bool {
 
 fn reads(r: &NodeRenderer, kept: &dyn Fn(BufId) -> bool) -> bool {
     match r {
-        NodeRenderer::Buffer { id, .. } => kept(*id),
+        NodeRenderer::Read {
+            slot: Slot::Read(id),
+            ..
+        } => kept(*id),
         other => operands(other).iter().any(|p| reads(p, kept)),
     }
 }
 
 fn silenced(r: &NodeRenderer, kept: &dyn Fn(BufId) -> bool) -> NodeRenderer {
     match r {
-        NodeRenderer::Buffer { id, .. } if !kept(*id) => NodeRenderer::Const(0.0),
+        NodeRenderer::Read {
+            slot: Slot::Read(id),
+            ..
+        } if !kept(*id) => NodeRenderer::Const(0.0),
         NodeRenderer::Add(set) => NodeRenderer::Add(each(set, kept)),
         NodeRenderer::Mul(set) => NodeRenderer::Mul(each(set, kept)),
         NodeRenderer::Join(set) => NodeRenderer::Join(each(set, kept)),

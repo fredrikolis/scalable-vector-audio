@@ -11,71 +11,153 @@ pub struct BufId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SiteId(pub u32);
 
-/// Which sample of a buffer a reader's sample `n` reads: `scale*n + shift`. A scale other than
-/// one reflects or strides the read, and reads ahead of the sample it is taken at.
+/// Reader sample `n` reads source position `(a*n + b)/d`, `d > 0`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Remap {
-    pub scale: i64,
-    pub shift: i64,
+pub struct Map {
+    pub a: i128,
+    pub b: i128,
+    pub d: i128,
 }
 
-impl Remap {
-    pub const fn shift(shift: i64) -> Remap {
-        Remap { scale: 1, shift }
-    }
-
-    pub fn at(self, n: i64) -> i64 {
-        self.scale.saturating_mul(n).saturating_add(self.shift)
-    }
-
-    /// Whether some sample reads one not yet written when it is.
-    pub fn ahead(self) -> bool {
-        self.scale != 1 || self.shift > 0
-    }
-
-    /// The samples read over a reader's `over`.
-    pub fn image(self, over: Extent) -> Extent {
-        if self.scale == 1 || over.is_empty() {
-            return over.shifted(self.shift);
+impl Map {
+    pub const fn shift(b: i64) -> Map {
+        Map {
+            a: 1,
+            b: b as i128,
+            d: 1,
         }
-        if self.scale == 0 {
-            return Extent::new(self.shift, self.shift.saturating_add(1));
-        }
-        let (s, k) = (i128::from(self.scale), i128::from(self.shift));
-        let (first, last) = (first(over), last(over));
-        let ends = (first.map(|a| s * a + k), last.map(|b| s * b + k));
-        let (lo, hi) = match self.scale > 0 {
-            true => ends,
-            false => (ends.1, ends.0),
+    }
+
+    /// Lowest terms, so two spellings of one map are one map.
+    pub fn new(a: i128, b: i128, d: i128) -> Option<Map> {
+        let g = gcd(gcd(a.abs(), b.abs()), d.abs()).max(1);
+        let sign = d.signum();
+        let limit = 1i128 << 100;
+        let map = Map {
+            a: sign * a / g,
+            b: sign * b / g,
+            d: d.abs() / g,
         };
-        extent(lo, hi.map(|h| h + 1))
+        (map.d > 0 && map.a.abs() < limit && map.b.abs() < limit && map.d < limit).then_some(map)
     }
 
-    /// The reader samples that read inside `into`.
-    pub fn preimage(self, into: Extent) -> Extent {
-        if self.scale == 1 || into.is_empty() {
-            return into.shifted(self.shift.saturating_neg());
+    pub fn whole(self) -> bool {
+        self.d == 1
+    }
+
+    pub fn at(self, n: i64) -> (i64, i128) {
+        let num = self.a.saturating_mul(i128::from(n)).saturating_add(self.b);
+        let floor = num
+            .div_euclid(self.d)
+            .clamp(i128::from(i64::MIN), i128::from(i64::MAX));
+        (floor as i64, num.rem_euclid(self.d))
+    }
+
+    /// Whether some sample reads a position past its own.
+    pub fn ahead(self) -> bool {
+        self.a != self.d || self.b > 0
+    }
+
+    pub fn lead(self, half_width: usize) -> i64 {
+        let floor = self.b.div_euclid(self.d);
+        let floor = floor.clamp(i128::from(i64::MIN / 2), i128::from(i64::MAX / 2)) as i64;
+        match self.whole() {
+            true => floor,
+            false => floor + half_width as i64,
         }
-        if self.scale == 0 {
-            return match into.contains(self.shift) {
+    }
+
+    /// The source samples read over a reader's `over`.
+    pub fn image(self, over: Extent, reach: usize) -> Extent {
+        if over.is_empty() {
+            return over;
+        }
+        if self.a == 0 {
+            let (floor, rem) = self.at(0);
+            return widened(Extent::new(floor, floor.saturating_add(1)), rem != 0, reach);
+        }
+        let ends = (first(over), last(over));
+        let at = |n: Option<i128>| n.map(|n| self.floor_at(n));
+        let (lo, hi) = match self.a > 0 {
+            true => (at(ends.0), at(ends.1)),
+            false => (at(ends.1), at(ends.0)),
+        };
+        widened(extent(lo, hi.map(|h| h + 1)), !self.whole(), reach)
+    }
+
+    /// The reader samples whose reading touches `into`.
+    pub fn preimage(self, into: Extent, reach: usize) -> Extent {
+        if into.is_empty() {
+            return into;
+        }
+        let into = reached_from(into, !self.whole(), reach);
+        if self.a == 0 {
+            let (floor, _) = self.at(0);
+            return match into.contains(floor) {
                 true => Extent::EVERYWHERE,
                 false => Extent::NOWHERE,
             };
         }
-        let (s, k) = (i128::from(self.scale), i128::from(self.shift));
+        let (a, b, d) = (self.a, self.b, self.d);
         let (first, last) = (first(into), last(into));
-        let (lo, hi) = match self.scale > 0 {
-            true => (
-                first.map(|a| ceil_div(a - k, s)),
-                last.map(|b| floor_div(b - k, s)),
-            ),
+        let lowest = |m: i128| ceil_div(m * d - b, a);
+        let highest = |m: i128| floor_div((m + 1) * d - 1 - b, a);
+        let (lo, hi) = match self.a > 0 {
+            true => (first.map(lowest), last.map(highest)),
             false => (
-                last.map(|b| ceil_div(b - k, s)),
-                first.map(|a| floor_div(a - k, s)),
+                last.map(|m| ceil_div((m + 1) * d - 1 - b, a)),
+                first.map(|m| floor_div(m * d - b, a)),
             ),
         };
         extent(lo, hi.map(|h| h + 1))
     }
+
+    fn floor_at(self, n: i128) -> i128 {
+        self.a
+            .saturating_mul(n)
+            .saturating_add(self.b)
+            .div_euclid(self.d)
+    }
+}
+
+fn gcd(a: i128, b: i128) -> i128 {
+    match b {
+        0 => a,
+        b => gcd(b, a % b),
+    }
+}
+
+fn widened(e: Extent, fractional: bool, reach: usize) -> Extent {
+    if !fractional || reach == 0 || e.is_empty() {
+        return e;
+    }
+    let r = reach as i64;
+    let start = match e.start {
+        i64::MIN => i64::MIN,
+        s => s.saturating_sub(r - 1),
+    };
+    let end = match e.end {
+        i64::MAX => i64::MAX,
+        e => e.saturating_add(r),
+    };
+    Extent::new(start, end)
+}
+
+/// The floors whose taps reach `e`: a floor `f` touches `f - reach + 1 ..= f + reach`.
+fn reached_from(e: Extent, fractional: bool, reach: usize) -> Extent {
+    if !fractional || reach == 0 || e.is_empty() {
+        return e;
+    }
+    let r = reach as i64;
+    let start = match e.start {
+        i64::MIN => i64::MIN,
+        s => s.saturating_sub(r),
+    };
+    let end = match e.end {
+        i64::MAX => i64::MAX,
+        e => e.saturating_add(r - 1),
+    };
+    Extent::new(start, end)
 }
 
 /// An extent's first and last sample, `None` where that edge is unbounded.
@@ -107,6 +189,23 @@ fn extent(lo: Option<i128>, hi: Option<i128>) -> Extent {
     }
 }
 
+/// Another node's samples, or this node's own past.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Slot {
+    Read(BufId),
+    Own,
+}
+
+/// A map fixed by the lattices, or a time in seconds the renderer computes each sample.
+#[derive(Clone, Debug, PartialEq)]
+pub enum At {
+    Map(Map),
+    Moving {
+        per_sec: f64,
+        time: Box<NodeRenderer>,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unary {
     Sin,
@@ -127,19 +226,17 @@ pub enum Binary {
     Mod,
 }
 
-/// Every closed form-typed subterm was collapsed to a `Buffer` before this tree was built, so there
-/// is no oscillator, no series, no delta and no rate here: `rand` arrives folded.
+/// Every closed form-typed subterm was collapsed to a buffer or inlined before this tree was
+/// built, so there is no oscillator, no series and no delta here.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeRenderer {
     Const(f64),
     Time,
-    Buffer {
-        id: BufId,
-        at: Remap,
+    Read {
+        slot: Slot,
+        at: At,
     },
-    SelfAt {
-        steps: u32,
-    },
+    Noise(u64),
     Add(Vec<NodeRenderer>),
     Mul(Vec<NodeRenderer>),
     Sub(Box<NodeRenderer>, Box<NodeRenderer>),
@@ -174,6 +271,37 @@ pub enum NodeRenderer {
         from: i64,
         args: Vec<NodeRenderer>,
     },
+}
+
+impl NodeRenderer {
+    /// Holds no call site and reads none of its own past, so skipping a sample of it changes
+    /// no later one.
+    pub fn stateless(&self) -> bool {
+        match self {
+            NodeRenderer::Filter { .. } | NodeRenderer::Physics { .. } => false,
+            NodeRenderer::Read {
+                slot: Slot::Own, ..
+            } => false,
+            NodeRenderer::Read {
+                at: At::Moving { time, .. },
+                ..
+            } => time.stateless(),
+            NodeRenderer::Add(set) | NodeRenderer::Mul(set) | NodeRenderer::Join(set) => {
+                set.iter().all(NodeRenderer::stateless)
+            }
+            NodeRenderer::Sub(a, b)
+            | NodeRenderer::Div(a, b)
+            | NodeRenderer::Pow(a, b)
+            | NodeRenderer::Zip(_, a, b) => a.stateless() && b.stateless(),
+            NodeRenderer::Map(_, x)
+            | NodeRenderer::Crop { x, .. }
+            | NodeRenderer::Channel { x, .. } => x.stateless(),
+            NodeRenderer::Const(_)
+            | NodeRenderer::Time
+            | NodeRenderer::Noise(_)
+            | NodeRenderer::Read { .. } => true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

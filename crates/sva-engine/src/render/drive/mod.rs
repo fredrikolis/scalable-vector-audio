@@ -44,6 +44,10 @@ impl Block {
         Block { planes, start }
     }
 
+    pub(in crate::render) fn of_planes(planes: Vec<Vec<f64>>, start: i64) -> Block {
+        Block { planes, start }
+    }
+
     pub fn start(&self) -> i64 {
         self.start
     }
@@ -65,8 +69,8 @@ impl Block {
     }
 }
 
-/// The `envelope` reading's own frame, where one is asked.
-pub(super) fn frame(config: &RenderConfig) -> usize {
+/// The `envelope` reading's own frame on the render's lattice, where one is asked.
+pub(super) fn frame(config: &RenderConfig, lattice: u32) -> usize {
     let secs = config
         .asks
         .iter()
@@ -76,7 +80,7 @@ pub(super) fn frame(config: &RenderConfig) -> usize {
         })
         .flatten()
         .unwrap_or(DEFAULT_FRAME_SECS);
-    ((secs * f64::from(config.rate)).round() as usize).max(1)
+    ((secs * f64::from(lattice)).round() as usize).max(1)
 }
 
 impl Driver {
@@ -86,7 +90,7 @@ impl Driver {
         range: Extent,
         block: usize,
         until: Option<Until>,
-        config: &RenderConfig,
+        shell: &Render,
         prunes: bool,
     ) -> Driver {
         Driver {
@@ -97,7 +101,7 @@ impl Driver {
             last: range.end,
             block,
             until,
-            frame: frame(config),
+            frame: frame(&shell.config, shell.lattice()),
             stop: None,
             end: None,
             prunes,
@@ -184,7 +188,7 @@ impl Driver {
         let open = self.start + (from - 1 - self.start).div_euclid(frame) * frame;
         let base = open.max(root.tape.base()).max(self.start);
         let heard = Block::of(&root.tape, root.support, base, to);
-        let rate = shell.config.rate;
+        let rate = shell.lattice();
         let known = Known::new(
             heard.plane(0),
             base,

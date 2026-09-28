@@ -36,6 +36,12 @@ pub enum SampleError {
         model: &'static str,
         sample: usize,
     },
+    /// A reading needs a sample this run has not computed yet.
+    ReadsAhead {
+        at: i64,
+    },
+    /// A moving reading named no finite position.
+    UnreadablePosition,
     /// A varying parameter outside the range its model holds, at one sample.
     ArgumentOutOfRange {
         model: &'static str,
@@ -156,6 +162,8 @@ impl SampleError {
             SampleError::BridgeUnstable { .. } => "samples.bridge_unstable",
             SampleError::ContactUnsettled { .. } => "samples.contact_unsettled",
             SampleError::ArgumentOutOfRange { .. } => "samples.argument_out_of_range",
+            SampleError::ReadsAhead { .. } => "engine.reads_ahead",
+            SampleError::UnreadablePosition => "engine.unreadable_position",
         }
     }
 }
@@ -204,6 +212,14 @@ impl std::fmt::Display for SampleError {
                 "`{model}`'s contact force settled on no value at sample {sample}. ask for a \
                  lower bow velocity or force, or a higher --rate"
             ),
+            SampleError::ReadsAhead { at } => write!(
+                f,
+                "a reading needs sample {at} of its source, which is not computed yet: a \
+                 stream reads no output ahead of where it stands"
+            ),
+            SampleError::UnreadablePosition => {
+                write!(f, "a moving reading named no finite position")
+            }
             SampleError::ArgumentOutOfRange {
                 model,
                 name,

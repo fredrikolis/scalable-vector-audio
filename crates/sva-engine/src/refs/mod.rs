@@ -423,27 +423,18 @@ fn lane_at(n: &SpectralSum, at: usize) -> &Lane {
     n.lanes.get(at).unwrap_or(&n.lanes[0])
 }
 
-/// The four ways a node reads another, one per representation the reading node holds.
+/// The two ways a node reads another, one per representation the reading node holds.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Read {
     Substitute(Box<ClosedForm>),
-    BufferHit { source: NodeId, shift: i64 },
-    IndexOffset { source: NodeId, steps: i64 },
+    Buffer(NodeId),
 }
 
 /// A form reading a form substitutes and allocates nothing; a sampled node reading
-/// anything reads a buffer, at the index offset the call site wrote.
-pub fn resolve(
-    typing: &Typing,
-    source: NodeId,
-    steps: i64,
-    reader: Held,
-) -> Result<Read, EngineError> {
+/// anything reads a buffer.
+pub fn resolve(typing: &Typing, source: NodeId, reader: Held) -> Result<Read, EngineError> {
     if !reader.is_closed_form() {
-        return Ok(match steps {
-            0 => Read::BufferHit { source, shift: 0 },
-            steps => Read::IndexOffset { source, steps },
-        });
+        return Ok(Read::Buffer(source));
     }
     let form =
         substituted_closed_form(typing, source).ok_or_else(|| no_closed_form(typing, source))?;

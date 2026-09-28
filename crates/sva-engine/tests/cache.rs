@@ -14,7 +14,7 @@ use sva_formula::hash::hash_closed_form_under;
 use sva_formula::{ClosedForm, Origin, Var};
 
 const SECONDS: f64 = 0.05;
-const RATE: u32 = 8_000;
+const RATE: u32 = 44_100;
 
 fn store_all() -> Cache {
     Cache::new()
@@ -298,7 +298,7 @@ fn frames_are_held_under_the_window_they_were_read_through() {
             ("chord", "sin(2*pi*256*t)\n"),
             (
                 "master",
-                "istft(stft(sample(crop(@chord, 0s, 0.05s)), window=256, hop=64))\n",
+                "istft(stft(sample(crop(@chord, 0s, 0.05s)), window=256sp, hop=64sp))\n",
             ),
         ],
     );

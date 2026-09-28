@@ -12,7 +12,8 @@ use crate::cast::Cast;
 use crate::error::EngineError;
 use crate::instantiate::Cx;
 use crate::lower::{Lowering, Piece};
-use crate::typing::Value;
+use crate::time::Affine;
+use crate::typing::{Value, When};
 use crate::vocabulary::SERIES;
 
 impl<'g> Lowering<'_, 'g> {
@@ -68,11 +69,21 @@ impl<'g> Lowering<'_, 'g> {
             ))));
         }
         self.note_call(name, span, written_named(&named), chosen);
-        if let Some(cast) = Cast::from_name(name, &view) {
+        if let Some(cast) = Cast::from_name(name) {
+            let cast = match cast {
+                Cast::Stft { .. } => Cast::Stft {
+                    window: self.lattice_count(args, "window", span, cx)?,
+                    hop: self.lattice_count(args, "hop", span, cx)?,
+                },
+                other => other,
+            };
             return self.cast(cast, args, span, cx, var);
         }
         if let Some(shape) = Shape::from_name(name) {
             return self.filter(shape, args, span, cx, var);
+        }
+        if name == "rand" {
+            return self.drawn(args, span, cx, var);
         }
         let positional: Vec<&Expr> = args
             .iter()
@@ -81,9 +92,6 @@ impl<'g> Lowering<'_, 'g> {
                 Arg::Named(..) => None,
             })
             .collect();
-        if name == "rand" {
-            return self.drawn(&positional, &view, cx, span, var);
-        }
         if let Some(piece) = self.wave(name, &positional, &view, cx, var)? {
             return Ok(piece);
         }
@@ -338,10 +346,10 @@ impl<'g> Lowering<'_, 'g> {
         name: &str,
         key: &str,
         written: &Expr,
-        folded: Option<(f64, f64)>,
+        folded: Option<f64>,
     ) -> Result<(), EngineError> {
         match folded {
-            Some((v, 0.0)) if !v.is_finite() => Err(self.infinite(&format!(
+            Some(v) if !v.is_finite() => Err(self.infinite(&format!(
                 "`{name}` reads `{key}={}`, which is {v}, and an argument is a finite number",
                 sva_ast::render_expr(written)
             ))),
@@ -509,44 +517,118 @@ impl<'g> Lowering<'_, 'g> {
         crate::loops::plain(crate::loops::amount(self.inst, e, cx)?)
     }
 
-    /// `rand(key, seed=)` is a keyed hash, read at whatever the key names. A constant key is
-    /// one number, folded here. A key that moves with `t` is a piecewise-constant closed form in `t`:
-    /// closed in `t`, so every instant hashes the key its own time names.
+    /// A duration a cast counts in lattice steps, which has to be a whole number of them;
+    /// zero where it is not written.
+    fn lattice_count(
+        &self,
+        args: &[Arg],
+        key: &str,
+        span: ByteSpan,
+        cx: Cx,
+    ) -> Result<usize, EngineError> {
+        let Some(written) = args.iter().find_map(|a| match a {
+            Arg::Named(k, x) if k == key => Some(x),
+            _ => None,
+        }) else {
+            return Ok(0);
+        };
+        let lattice = crate::time::Q::int(i64::from(crate::loops::lattice()));
+        let count = crate::loops::time_of(self.inst, written, cx)
+            .filter(|at| at.scale.is_zero())
+            .and_then(|at| at.shift.mul(lattice))
+            .filter(|n| n.is_integer() && n.num() > 0);
+        match count {
+            Some(n) => Ok(n.num() as usize),
+            None => Err(self.refused_at(
+                "cast.window_off_the_lattice",
+                format!(
+                    "`stft`'s `{key}` is no whole number of lattice steps: {}",
+                    sva_ast::render_expr(written)
+                ),
+                "write it in sp, as window=2048sp",
+                Some(span),
+            )),
+        }
+    }
+
+    /// `rand(key, seed=)` is white noise on the lattice read at `key`: a constant key is
+    /// one number, `t` the noise itself, and any other time a read of it.
     fn drawn(
         &mut self,
-        positional: &[&Expr],
-        named: &[(&str, f64)],
-        cx: Cx,
+        args: &[Arg],
         span: ByteSpan,
+        cx: Cx,
         var: Var,
     ) -> Result<Piece, EngineError> {
-        let (key, seed) = match positional {
-            [] => return Err(EngineError::BadArity("rand".to_string())),
-            [key] => (*key, named_or(named, "seed", 0.0)),
-            [key, seed, ..] => (
-                *key,
-                self.named_value(seed, cx)
-                    .ok_or_else(|| EngineError::BadArity("rand".to_string()))?,
-            ),
+        let bad = || EngineError::BadArity("rand".to_string());
+        let (key, seed) = rand_arguments(args, |x| self.named_value(x, cx)).ok_or_else(bad)?;
+        let at = match crate::loops::time_of(self.inst, key, cx) {
+            Some(at) if at.scale.is_zero() => {
+                if !on_lattice(at.shift) {
+                    self.typing.note_between(self.node);
+                }
+                return Ok(Piece::ClosedForm(Body::Const(C64::real(noise_at(
+                    seed, at.shift,
+                )))));
+            }
+            Some(at) => When::Time(at),
+            None => When::Moving(self.time(key, cx)?),
         };
-        let seed = seed as u64;
-        let Piece::ClosedForm(body) = self.walk(key, cx, var)? else {
-            return Err(self.refused_at(
-                "type.samples_in_closed_form",
-                "`rand` reads a key this node already sampled.".to_string(),
-                "hash a closed form in t, or read the buffer where it is written",
-                Some(span),
-            ));
-        };
-        let body = crate::refs::fold_constants(self.typing, &body);
-        if let Some(n) = super::constant_value(&body, var) {
-            return Ok(Piece::ClosedForm(Body::Const(C64::real(hash::draw(
-                seed, n,
-            )))));
+        let ty = sva_formula::Ty::discrete(sva_formula::Held::Sampled, sva_formula::Codomain::Real);
+        let noise = self.register(Value::Noise(seed), ty, var);
+        match at {
+            When::Time(at) if at == Affine::NOW => Ok(Piece::Value(noise)),
+            at => Ok(Piece::Value(self.reading(noise, at, span, var))),
         }
-        let of = self.part(body, Some(span));
-        Ok(Piece::ClosedForm(Body::Keyed { seed, of }))
     }
+}
+
+/// The key and the seed of `rand(key, seed)` or `rand(key, seed=)`.
+pub(crate) fn rand_arguments<'a>(
+    args: &'a [Arg],
+    number: impl Fn(&Expr) -> Option<f64>,
+) -> Option<(&'a Expr, u64)> {
+    let mut positional = args.iter().filter_map(|a| match a {
+        Arg::Pos(x) => Some(x),
+        Arg::Named(..) => None,
+    });
+    let key = positional.next()?;
+    let seed = match positional.next() {
+        Some(x) => number(x)?,
+        None => match args.iter().find_map(|a| match a {
+            Arg::Named(k, x) if k == "seed" => Some(x),
+            _ => None,
+        }) {
+            Some(x) => number(x)?,
+            None => 0.0,
+        },
+    };
+    Some((key, seed as u64))
+}
+
+fn on_lattice(at: crate::time::Q) -> bool {
+    let lattice = crate::time::Q::int(i64::from(crate::loops::lattice()));
+    at.mul(lattice).is_some_and(|p| p.is_integer())
+}
+
+/// The lattice noise at an instant: its draw where the instant is a lattice sample, the
+/// kernel's reading of its draws between two.
+pub(crate) fn noise_at(seed: u64, at: crate::time::Q) -> f64 {
+    let lattice = crate::time::Q::int(i64::from(crate::loops::lattice()));
+    let draw = |n: i64| hash::draw(seed, n as f64);
+    let Some(p) = at.mul(lattice) else {
+        return f64::NAN;
+    };
+    let floor = p.num().div_euclid(p.den()) as i64;
+    let rem = p.num().rem_euclid(p.den());
+    if rem == 0 {
+        return draw(floor);
+    }
+    let mut weights = Vec::new();
+    sva_samples::kernel().weights(rem as f64 / p.den() as f64, &mut weights);
+    let taps = sva_samples::reconstruct::taps(floor, sva_samples::kernel().half_width());
+    taps.zip(&weights)
+        .fold(0.0, |acc, (n, w)| acc + w * draw(n))
 }
 
 /// FORMAT 3.3's arithmetic row: a closed form of its operands alone, so one image serves a

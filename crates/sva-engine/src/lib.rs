@@ -10,12 +10,12 @@ pub mod instantiate;
 mod loops;
 mod lower;
 mod meaning;
-mod offset;
 pub mod overload;
 pub mod query;
 mod refs;
 pub mod render;
 mod schedule;
+mod time;
 mod trace;
 mod typing;
 mod vocabulary;
@@ -29,27 +29,25 @@ pub use cache::{
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
 pub use flops::{Row as FlopRow, Tree as FlopTree, Work};
-pub use loops::{Delay, Shift};
 pub use meaning::{Meaning, meaning};
-pub use offset::Offset;
 pub use query::{Answer, Ask, DEFAULT_FRAME_SECS, Output, Representation};
 pub use refs::{Read, identity, nodes_in, resolve, spectral_sum_of, symbolic_hash};
 pub use render::until::{Cmp, Term};
 pub use render::{
-    Block, Handle, NOTES, QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, Range, Render, RenderConfig,
-    STREAMED, Stream, StreamConfig, Until, answer, answer_buffer, plan, quiet_tails, render,
-    sketch_atom,
+    Block, Handle, NOTES, QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, Range, Reconstruction, Render,
+    RenderConfig, STREAMED, Stream, StreamConfig, Until, answer, answer_buffer, plan, quiet_tails,
+    render, sketch_atom,
 };
 pub use schedule::{Order, Schedule, schedule_from};
 pub use sva_formula::{C64, Codomain, Held, Line, NodeId, SpectralSum, Ty, Var};
 pub use sva_samples::{
-    Alias, AliasBand, BAND_COUNT, BandCrest, BandTrack, Bands, Buffer, Cost, Crest, Detail,
+    Alias, AliasBand, BAND_COUNT, BandCrest, BandTrack, Bands, Bound, Buffer, Cost, Crest, Detail,
     EnvelopeFrame, Extent, FormantFrame, Frames, Label, LedgerEntry, Loudness, LoudnessFrame,
     MAX_PINNED_FRAME, PSYCHOACOUSTIC_V1, PitchFrame, Profile, Rule, SignalKind, Source, Spectrum,
     StereoFrame, StereoImage, measure_alias, pinned_frame,
 };
 pub use trace::{Traced, Up, trace};
-pub use typing::{Typing, Value};
+pub use typing::{Typing, Value, When};
 pub use vocabulary::{BUILTINS, MAX_WIDTH, RESERVED, is_builtin, named_may_move, recognized_named};
 
 use sva_ast::Graph;
@@ -68,38 +66,4 @@ pub fn types(graph: &Graph, root: &str) -> Result<Typing, EngineError> {
     let held = instances.instance_of(root)?;
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&held))?;
     typing::infer_all(&instances, &order)
-}
-
-/// Every instance whose samples are a function of the RATE, not just of `t`.
-pub fn rate_dependent(graph: &Graph, root: &str) -> Result<Vec<String>, EngineError> {
-    let instances = instantiate::instantiate(graph, root)?;
-    Ok(instances
-        .paths()
-        .filter(|p| instances.at(p).is_some_and(|(e, _)| reads_rate(e)))
-        .map(str::to_string)
-        .collect())
-}
-
-fn reads_rate(e: &sva_ast::Expr) -> bool {
-    match e {
-        sva_ast::Expr::Lit(sva_ast::Literal::Samples(_)) => true,
-        sva_ast::Expr::Lit(_) => false,
-        sva_ast::Expr::Var(_) => false,
-        sva_ast::Expr::Bin(_, a, b) => reads_rate(a) || reads_rate(b),
-        sva_ast::Expr::SelfRef { .. } => true,
-        sva_ast::Expr::Ref { arg, binds, .. } => {
-            reads_rate(arg) || binds.iter().any(|(_, v)| reads_rate(v))
-        }
-        sva_ast::Expr::Call { name, args, .. } => {
-            let drawn = name == "rand"
-                && !matches!(
-                    args.first(),
-                    Some(sva_ast::Arg::Pos(sva_ast::Expr::Lit(_))) | None
-                );
-            drawn
-                || args.iter().any(|a| match a {
-                    sva_ast::Arg::Pos(v) | sva_ast::Arg::Named(_, v) => reads_rate(v),
-                })
-        }
-    }
 }

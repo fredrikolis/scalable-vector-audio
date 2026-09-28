@@ -4,14 +4,14 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sva_formula::{Body, C64, Fold, Held, NodeId, Unary, exp_zero_at};
-use sva_samples::{Extent, NodeRenderer};
+use sva_samples::{At, Extent, NodeRenderer, Slot, kernel};
 
 use super::Render;
 use super::pointwise::{self, Point};
 use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::schedule;
-use crate::typing::{Typing, Value};
+use crate::typing::{Typing, Value, When};
 
 /// Where each node can be nonzero: outside its support a node is exactly zero.
 pub(crate) struct Supports<'a> {
@@ -22,10 +22,10 @@ pub(crate) struct Supports<'a> {
 }
 
 impl<'a> Supports<'a> {
-    pub(crate) fn new(tys: &'a Typing, rate: u32) -> Supports<'a> {
+    pub(crate) fn new(held: &'a Render) -> Supports<'a> {
         Supports {
-            tys,
-            rate,
+            tys: &held.tys,
+            rate: held.lattice(),
             held: RefCell::default(),
             open: RefCell::default(),
         }
@@ -53,14 +53,17 @@ impl<'a> Supports<'a> {
             Value::Cast(Cast::Fourier | Cast::IFourier, _) => Extent::EVERYWHERE,
             Value::Cast(_, source) => self.of(*source),
             Value::Op { name, args } => self.operation(name, args, &|arg| self.of(arg)),
-            Value::SelfAt(_) => Extent::NOWHERE,
-            Value::Grid(count) if *count == 0.0 => Extent::NOWHERE,
-            Value::Grid(_) => Extent::EVERYWHERE,
-            Value::Read { source, at, .. } => match at.steps_at(self.rate) {
-                Ok(at) => at.preimage(self.of(*source)),
-                Err(_) if at.scale != 1 => Extent::EVERYWHERE,
-                Err(count) => moved(self.of(*source), -count),
+            Value::SelfAt { .. } => Extent::NOWHERE,
+            Value::Noise(_) => Extent::EVERYWHERE,
+            Value::Read {
+                source,
+                at: When::Time(time),
+                ..
+            } => match time.map(self.rate, self.rate) {
+                Some(map) => map.preimage(self.of(*source), kernel().half_width()),
+                None => Extent::EVERYWHERE,
             },
+            Value::Read { .. } => Extent::EVERYWHERE,
             Value::Filter { x, .. } => stateful(self.of(*x)),
             Value::Solver { .. } => Extent::from(0),
         }
@@ -78,7 +81,7 @@ impl<'a> Supports<'a> {
     /// The loop `id` with its own past nonzero over `past`.
     fn with_past(&self, id: NodeId, past: Extent) -> Extent {
         match self.tys.value(id) {
-            Value::SelfAt(_) => past,
+            Value::SelfAt { .. } => past,
             Value::Op { name, args } => self.operation(
                 name,
                 args,
@@ -95,7 +98,7 @@ impl<'a> Supports<'a> {
     fn operation(&self, name: &str, args: &[NodeId], of: &dyn Fn(NodeId) -> Extent) -> Extent {
         let number = |at: usize| {
             args.get(at)
-                .and_then(|a| crate::lower::number_at(self.tys, *a, self.rate))
+                .and_then(|a| crate::lower::number_of(self.tys, *a))
         };
         match name {
             "+" | "-" | "join" => args
@@ -171,7 +174,7 @@ impl<'a> Supports<'a> {
                     earliest(held, self.state_start(arg, owner))
                 }),
             Value::Solver { .. } => Some(0),
-            Value::SelfAt(_) => starting(self.of(owner)),
+            Value::SelfAt { .. } => starting(self.of(owner)),
             Value::Op { args, .. } => args.iter().fold(None, |held, arg| {
                 earliest(held, self.state_start(*arg, owner))
             }),
@@ -543,7 +546,7 @@ pub(crate) fn decide(
     order: &[NodeId],
     demands: &[(NodeId, Extent)],
 ) -> Result<Extents, EngineError> {
-    let supports = Supports::new(&held.tys, held.config.rate);
+    let supports = Supports::new(held);
     let mut demand: BTreeMap<NodeId, Extent> = BTreeMap::new();
     for (id, asked) in demands {
         let slot = demand.entry(*id).or_insert(Extent::NOWHERE);
@@ -623,11 +626,30 @@ fn reads(
         (Held::Sampled, _) => {
             let program = super::sampled::program(held, id)?;
             let mut out = Vec::new();
-            leaves(&program.renderer, &mut |leaf| {
-                if let NodeRenderer::Buffer { id: slot, at } = leaf {
-                    out.push((program.reads[slot.0 as usize], at.image(extent)));
-                }
-            });
+            let rate = held.lattice();
+            windowed(
+                &program.renderer,
+                extent,
+                rate,
+                &mut |leaf, over| match leaf {
+                    NodeRenderer::Read {
+                        slot: Slot::Read(slot),
+                        at: At::Map(at),
+                    } => {
+                        let source = program.reads[slot.0 as usize];
+                        out.push((source, at.image(over, kernel().half_width())));
+                    }
+                    NodeRenderer::Read {
+                        slot: Slot::Read(slot),
+                        at: At::Moving { per_sec, time },
+                    } => {
+                        let source = program.reads[slot.0 as usize];
+                        let reached = reached(time, *per_sec, over, rate);
+                        out.push((source, reached.unwrap_or_else(|| supports.of(source))));
+                    }
+                    _ => {}
+                },
+            );
             Ok(out)
         }
         _ if schedule::materialized_operands(&held.tys, id).is_empty() => Ok(Vec::new()),
@@ -637,11 +659,11 @@ fn reads(
             };
             let mut found = Vec::new();
             point_reads(&tree, Some(0.0), &mut found);
-            let rate = f64::from(held.config.rate);
+            let rate = f64::from(held.lattice());
             Ok(found
                 .into_iter()
                 .map(|(source, by)| match by {
-                    Some(secs) => (source, moved(extent, secs * rate)),
+                    Some(secs) => (source, kernel_reach(moved(extent, secs * rate))),
                     None => (source, supports.of(source)),
                 })
                 .collect())
@@ -678,6 +700,92 @@ fn body_reads(
     }
 }
 
+/// The source samples a moving read touches over `extent`, found by computing its time at
+/// every instant; `None` where that time itself reads samples.
+fn reached(time: &NodeRenderer, per_sec: f64, extent: Extent, lattice: u32) -> Option<Extent> {
+    let mut reads = false;
+    leaves(time, &mut |leaf| {
+        reads |= matches!(leaf, NodeRenderer::Read { .. })
+    });
+    if reads || !extent.is_bounded() || extent.is_empty() {
+        return None;
+    }
+    let layout = sva_samples::machine::MachineLayout {
+        width: 1,
+        read_widths: Vec::new(),
+        sites: Vec::new(),
+    };
+    let ctx = sva_samples::Ctx {
+        rate: lattice,
+        start: extent.start,
+        len: extent.len(),
+        reads: &[],
+    };
+    let times = time.run(&layout, &ctx).ok()?;
+    let (lo, hi) = times
+        .plane(0)
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), t| {
+            (lo.min(t * per_sec), hi.max(t * per_sec))
+        });
+    if !(lo.is_finite() && hi.is_finite()) {
+        return None;
+    }
+    let reach = kernel().half_width() as i64;
+    Some(Extent::new(
+        lo.floor() as i64 - reach,
+        hi.floor() as i64 + reach + 1,
+    ))
+}
+
+/// A buffer read between its samples touches the kernel's taps either side.
+fn kernel_reach(e: Extent) -> Extent {
+    let reach = kernel().half_width() as i64;
+    match e.is_empty() || e == Extent::EVERYWHERE {
+        true => e,
+        false => Extent::new(e.start.saturating_sub(reach), e.end.saturating_add(reach)),
+    }
+}
+
+/// Every leaf beside the samples it is read over: a crop over no state is skipped where it is
+/// shut, so its window narrows what the reads under it are asked for.
+fn windowed(
+    renderer: &NodeRenderer,
+    over: Extent,
+    rate: u32,
+    found: &mut dyn FnMut(&NodeRenderer, Extent),
+) {
+    match renderer {
+        NodeRenderer::Crop { x, a, b, .. } if x.stateless() => {
+            let inside = over.intersect(window(rate, *a, *b));
+            windowed(x, inside, rate, found);
+        }
+        NodeRenderer::Crop { .. } => leaves(renderer, &mut |leaf| found(leaf, over)),
+        NodeRenderer::Filter {
+            x, cutoff, q, gain, ..
+        } => [x, cutoff, q, gain]
+            .into_iter()
+            .for_each(|p| windowed(p, over, rate, found)),
+        NodeRenderer::Add(parts)
+        | NodeRenderer::Mul(parts)
+        | NodeRenderer::Join(parts)
+        | NodeRenderer::Physics { args: parts, .. } => {
+            parts.iter().for_each(|p| windowed(p, over, rate, found));
+        }
+        NodeRenderer::Sub(a, b)
+        | NodeRenderer::Div(a, b)
+        | NodeRenderer::Pow(a, b)
+        | NodeRenderer::Zip(_, a, b) => {
+            windowed(a, over, rate, found);
+            windowed(b, over, rate, found);
+        }
+        NodeRenderer::Map(_, x) | NodeRenderer::Channel { x, .. } => {
+            windowed(x, over, rate, found);
+        }
+        leaf => leaves(leaf, &mut |inner| found(inner, over)),
+    }
+}
+
 /// Every leaf under a renderer's operators.
 pub(crate) fn leaves(renderer: &NodeRenderer, found: &mut dyn FnMut(&NodeRenderer)) {
     match renderer {
@@ -700,6 +808,13 @@ pub(crate) fn leaves(renderer: &NodeRenderer, found: &mut dyn FnMut(&NodeRendere
             .into_iter()
             .for_each(|p| leaves(p, found)),
         NodeRenderer::Physics { args, .. } => args.iter().for_each(|p| leaves(p, found)),
+        NodeRenderer::Read {
+            at: At::Moving { time, .. },
+            ..
+        } => {
+            leaves(time, found);
+            found(renderer);
+        }
         leaf => found(leaf),
     }
 }

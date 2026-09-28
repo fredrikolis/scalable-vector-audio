@@ -21,7 +21,9 @@ pub use dir::Dir;
 pub use doc_comment::{DocComment, parse as parse_doc_comment};
 pub use expr::{Arg, BinOp, Binds, Expr, JOIN, Literal, SERIES, children, map_children};
 pub use filename::{FileSpan, SpanUnit};
-pub use graph::{Graph, VARIABLES, load, load_reaching, names_a_node, reads_of, resolve_ref_path};
+pub use graph::{
+    Graph, PerBar, VARIABLES, load, load_reaching, names_a_node, reads_of, resolve_ref_path,
+};
 pub use ingest::{Parsed, occurs_free, parse_file};
 pub use lexer::{LogUnit, Token, TokenKind, ref_spans, strip_line_comment, tokenize};
 pub use outline::{Outline, outline};

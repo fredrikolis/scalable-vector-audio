@@ -309,7 +309,6 @@ fn an_alias_rendering_separates_a_folding_law_from_one_that_does_not() {
     let clean = measured("sin(2*pi*440*t)");
     assert!(!clean.audible, "{} dB NMR", clean.nmr_db);
     assert!(clean.asr_db < -100.0, "{} dB ASR", clean.asr_db);
-    assert_eq!(clean.rate_dependent, 0, "a function of t alone");
     assert_eq!(clean.oversample, 4);
 
     let folding = measured("tanh(sin(2*pi*4000*t)*8)");
@@ -327,26 +326,6 @@ fn an_alias_rendering_separates_a_folding_law_from_one_that_does_not() {
         !exact.audible,
         "a line spectrum places every partial: {} dB NMR",
         exact.nmr_db
-    );
-}
-
-/// A sampled loop is a different signal at the oversampled rate, so a render holding one is
-/// counted beside the figure rather than read as pure alias.
-#[test]
-fn a_rate_dependent_instance_is_counted_beside_the_figures() {
-    let count = |expr: &str| {
-        let rendered = second(expr);
-        sva_engine::rate_dependent(&rendered.graph, &rendered.target).unwrap()
-    };
-    assert!(count("sin(2*pi*440*t)").is_empty());
-    assert_eq!(
-        count("sample(sin(2*pi*220*t)) + 0.5*self(t - 1sp)").len(),
-        1,
-        "a sampled loop is a family indexed by the rate"
-    );
-    assert!(
-        count("rand(0, seed=3)").is_empty(),
-        "a keyed constant is rate-free"
     );
 }
 
