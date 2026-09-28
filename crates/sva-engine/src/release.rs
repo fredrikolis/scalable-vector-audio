@@ -2,11 +2,11 @@
 
 use std::collections::HashSet;
 
-use sva_ast::{Arg, BinOp, ByteSpan, Expr, Literal, render_expr};
+use sva_ast::{Arg, BinOp, ByteSpan, Expr, render_expr};
 
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Cx, Instances, Node, RELEASE, ScopeId};
-use crate::loops::{Shift, shift_of};
+use crate::loops::{Shift, amount, plain, shift_of};
 use crate::typing::Typing;
 
 /// How a subterm reads `release`, ordered by how much of it reaches the samples before it.
@@ -80,8 +80,9 @@ fn refusal(path: &str, offense: Offense) -> EngineError {
             offense.term, offense.why
         ),
         location: Located::at(path, offense.span),
-        help: "read release only as a crop's end with no fall, as the start of a crop the \
-               term lives in, or through a past read of such a term"
+        help: "read release only as a crop's end, or `release + c` with a constant c >= 0 \
+               and no fall longer than c, as the start of a crop the term lives in, or through \
+               a past read of such a term"
             .to_string(),
     })
 }
@@ -216,7 +217,8 @@ impl Walk<'_, '_> {
         span: ByteSpan,
         cx: Cx,
     ) -> Result<Use, Offense> {
-        let (start_use, end_use) = (self.term(start, cx)?, self.term(end, cx)?);
+        let (start_use, _) = self.edge(start, cx)?;
+        let (end_use, lead) = self.edge(end, cx)?;
         for a in args {
             let Arg::Named(key, x) = a else {
                 continue;
@@ -224,7 +226,10 @@ impl Walk<'_, '_> {
             if self.term(x, cx)? != Use::Free {
                 return Err(offense(e, Some(span), "shapes a shoulder by release"));
             }
-            if key == "fall" && end_use == Use::Bare && !zero(x) {
+            let within = amount(self.inst, x, cx)
+                .and_then(plain)
+                .is_some_and(|fall| fall <= lead);
+            if key == "fall" && end_use == Use::Bare && !within {
                 return Err(offense(
                     e,
                     Some(span),
@@ -250,6 +255,31 @@ impl Walk<'_, '_> {
                 "places a window edge by a term that reads release",
             )),
         }
+    }
+
+    /// `release + c`, a constant `c >= 0` in seconds as every crop edge is, stands as
+    /// `release`; `c` bounds a fall.
+    fn edge(&mut self, e: &Expr, cx: Cx) -> Result<(Use, f64), Offense> {
+        let inst = self.inst;
+        if !matches!(e, Expr::Var(name) if name == RELEASE)
+            && let Some(found) = inst.follow(e, cx, |e2, cx2| self.edge(e2, cx2))
+        {
+            return found;
+        }
+        if let Node::Bin(BinOp::Add, l, r) = inst.node(e, cx) {
+            for (bare, offset) in [(l, r), (r, l)] {
+                let late = amount(inst, offset, cx)
+                    .and_then(plain)
+                    .filter(|secs| *secs >= 0.0);
+                if let Some(lead) = late
+                    && self.term(offset, cx)? == Use::Free
+                    && self.term(bare, cx)? == Use::Bare
+                {
+                    return Ok((Use::Bare, lead));
+                }
+            }
+        }
+        Ok((self.term(e, cx)?, 0.0))
     }
 
     /// A node that reads `release` may be heard at its own time or later, never earlier.
@@ -307,10 +337,6 @@ fn lands(name: &str) -> bool {
 
 /// A transform whose every output reads every input instant, the future included.
 const WHOLE_SIGNAL: [&str; 4] = ["fourier", "ifourier", "stft", "istft"];
-
-fn zero(e: &Expr) -> bool {
-    matches!(e, Expr::Lit(Literal::Num(v)) if *v == 0.0)
-}
 
 fn offense(e: &Expr, span: Option<ByteSpan>, why: &'static str) -> Offense {
     Offense {

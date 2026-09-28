@@ -22,9 +22,19 @@ use crate::typing::{Node as Typed, Typing, Value};
 
 pub(crate) use constant::{constant_call, constant_modulo, constant_value};
 
-/// An unbound `release` is never, and a crop's end is the one place it may stand.
+/// An unbound `release` is never, and a crop's edge is the one place it may stand, alone or
+/// with a constant after it.
 pub(crate) fn never(body: &Body) -> bool {
-    matches!(body, Body::Const(c) if c.re == f64::INFINITY && c.im == 0.0)
+    match body {
+        Body::Const(c) => c.re == f64::INFINITY && c.im == 0.0,
+        Body::Add(parts) => {
+            parts.iter().any(|p| never(&p.body))
+                && parts
+                    .iter()
+                    .all(|p| never(&p.body) || constant::is_constant(&p.body))
+        }
+        _ => false,
+    }
 }
 
 /// One written subterm, either still inside a closed form or already a node of its own.

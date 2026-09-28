@@ -123,6 +123,49 @@ fn a_sample_before_release_that_reads_it_is_refused_by_name() {
     }
 }
 
+/// An edge a constant past `release` moves nothing before it, so a note gated a tail after
+/// its key-up is the held note until the tail's fall; an edge before `release` still refuses.
+#[test]
+fn a_crop_a_constant_past_release_is_the_held_note_until_then() {
+    let files = [
+        ("synth", SYNTH),
+        (
+            "gated",
+            "crop(@synth(t, f0=220, release=release), 0s, release + 0.2s, fall=0.1s)\n",
+        ),
+        ("released", "@gated(t, release=0.5)\n"),
+        ("held", "@synth(t, f0=220, release=0.5)\n"),
+        ("unbound", "@gated(t)\n"),
+        ("sustained", "@synth(t, f0=220)\n"),
+    ];
+    let released = samples(&files, "released", 1.0);
+    let held = samples(&files, "held", 1.0);
+    let fall = (0.6 * f64::from(RATE)) as usize;
+    for i in 0..fall {
+        assert!(
+            (released[i] - held[i]).abs() <= 1e-12,
+            "sample {i}: gated {} against held {}",
+            released[i],
+            held[i]
+        );
+    }
+    let end = (0.7 * f64::from(RATE)) as usize + 1;
+    assert!(
+        released[end..].iter().all(|v| *v == 0.0),
+        "silent past the tail"
+    );
+    let unbound = samples(&files, "unbound", 1.0);
+    let sustained = samples(&files, "sustained", 1.0);
+    for (i, (a, b)) in unbound.iter().zip(&sustained).enumerate() {
+        assert!(
+            (a - b).abs() <= 1e-12,
+            "sample {i}: unbound gate {a} against {b}"
+        );
+    }
+    let e = refusal("crop(1, 0s, release - 0.1s)\n");
+    assert_eq!(e.code(), "engine.release_not_causal", "{e}");
+}
+
 #[test]
 fn a_past_read_of_a_releasing_node_is_causal() {
     let files = [

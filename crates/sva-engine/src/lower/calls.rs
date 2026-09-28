@@ -137,6 +137,10 @@ impl<'g> Lowering<'_, 'g> {
                 arity(3)?;
                 let (rise, fall) = shoulders_of(named);
                 let (l, r) = self.cropped(&bodies[1], &bodies[2], (rise, fall), var, span)?;
+                let fall = match r {
+                    Edge::PosInf => 0.0,
+                    _ => fall,
+                };
                 let of = self.part(bodies[0].clone(), Some(span));
                 Ok(Piece::ClosedForm(Body::Crop {
                     of,
