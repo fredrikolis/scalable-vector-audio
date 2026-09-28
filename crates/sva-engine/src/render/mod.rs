@@ -116,6 +116,7 @@ pub struct Render {
     pub(crate) unranged: Option<EngineError>,
     pub(crate) extents: extent::Extents,
     identities: std::cell::RefCell<BTreeMap<NodeId, sva_formula::Hash>>,
+    prefixes: std::cell::RefCell<refs::Prefixes>,
 }
 
 impl Render {
@@ -141,12 +142,25 @@ impl Render {
             unranged: None,
             extents: extent::Extents::default(),
             identities: Default::default(),
+            prefixes: Default::default(),
         }
     }
 
     /// A node's content address, each node under it named once however often it is asked.
     pub(crate) fn identity(&self, id: NodeId) -> Result<sva_formula::Hash, EngineError> {
         refs::identity_in(&self.tys, id, &mut self.identities.borrow_mut())
+    }
+
+    /// The node's switches and its identity before each, asked once however often.
+    #[cfg_attr(not(test), expect(dead_code, reason = "segment keys read it"))]
+    pub(crate) fn prefixes<T>(&self, ask: impl FnOnce(&mut refs::Walk) -> T) -> T {
+        let (mut held, mut named) = (self.prefixes.borrow_mut(), self.identities.borrow_mut());
+        ask(&mut refs::Walk::new(
+            &self.tys,
+            self.config.rate,
+            &mut held,
+            &mut named,
+        ))
     }
 
     /// `key` with what a node's samples read beyond its content: the precision a collapse

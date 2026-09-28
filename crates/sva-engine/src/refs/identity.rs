@@ -91,16 +91,7 @@ fn built(
         Value::Read { source, at, .. } => {
             sink.text("read");
             sink.hash(identity_of(typing, *source, open, named)?);
-            match at {
-                Offset::Steps(steps) => {
-                    sink.text("sp");
-                    sink.word(*steps as u64);
-                }
-                Offset::Secs(secs) => {
-                    sink.text("s");
-                    sink.word(secs.to_bits());
-                }
-            }
+            offset(&mut sink, *at);
         }
         Value::SelfAt(delay) => sink.text(&format!("self {delay:?}")),
         Value::Grid(count) => sink.text(&format!("sp {count}")),
@@ -128,12 +119,25 @@ fn built(
     Ok(sink.finish())
 }
 
+pub(super) fn offset(sink: &mut Sink, at: Offset) {
+    match at {
+        Offset::Steps(steps) => {
+            sink.text("sp");
+            sink.word(steps as u64);
+        }
+        Offset::Secs(secs) => {
+            sink.text("s");
+            sink.word(secs.to_bits());
+        }
+    }
+}
+
 const IDENTITY_ROTATE: u32 = 23;
 
-struct Sink(sva_formula::Lanes<IDENTITY_ROTATE>);
+pub(super) struct Sink(sva_formula::Lanes<IDENTITY_ROTATE>);
 
 impl Sink {
-    fn new() -> Sink {
+    pub(super) fn new() -> Sink {
         Sink(sva_formula::Lanes::default())
     }
 
@@ -141,28 +145,28 @@ impl Sink {
         self.0.word(part);
     }
 
-    fn text(&mut self, what: &str) {
+    pub(super) fn text(&mut self, what: &str) {
         self.word(what.len() as u64);
         for byte in what.as_bytes() {
             self.word(u64::from(*byte));
         }
     }
 
-    fn hash(&mut self, held: Hash) {
+    pub(super) fn hash(&mut self, held: Hash) {
         self.word(held.0);
         self.word(held.1);
     }
 
-    fn finish(&self) -> Hash {
+    pub(super) fn finish(&self) -> Hash {
         self.0.finish()
     }
 }
 
 /// The same identity from forms a caller already holds, so a render never walks a closed form twice.
-pub fn closed_form_identity(
-    sum: &Result<SpectralSum, EngineError>,
+pub fn closed_form_identity<E: Clone>(
+    sum: &Result<SpectralSum, E>,
     written: Option<&ClosedForm>,
-) -> Result<Hash, EngineError> {
+) -> Result<Hash, E> {
     match (sum, written) {
         (Ok(sum), _) => Ok(hash_spectral_sum(sum)),
         (Err(_), Some(form)) => Ok(hash_closed_form(form)),

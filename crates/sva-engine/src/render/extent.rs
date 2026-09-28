@@ -463,7 +463,7 @@ fn constant(tys: &Typing, id: NodeId) -> Option<f64> {
 
 /// The samples a crop's `[l, r)` can be nonzero over: every one some evaluator reads as
 /// inside it, whether it takes the instant as `n / rate` or as `n * (1 / rate)`.
-fn window(rate: u32, l: f64, r: f64) -> Extent {
+pub(crate) fn window(rate: u32, l: f64, r: f64) -> Extent {
     if l.is_nan() || r.is_nan() {
         return Extent::EVERYWHERE;
     }

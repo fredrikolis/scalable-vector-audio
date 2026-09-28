@@ -15,9 +15,12 @@ use crate::error::{Diagnostic, EngineError, Located};
 use crate::typing::{Typing, Value};
 
 mod identity;
+#[cfg_attr(not(test), allow(dead_code, reason = "segment keys read it"))]
+mod prefix;
 
 pub(crate) use identity::identity_in;
 pub use identity::{closed_form_identity, identity, symbolic_hash};
+pub(crate) use prefix::{Prefixes, Walk};
 
 /// The spectral sum of one node read on `want`'s axis, with every ref it holds already
 /// composed in. A pair answers on either axis; anything else answers on its own.
