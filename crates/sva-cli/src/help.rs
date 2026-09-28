@@ -68,6 +68,13 @@ RENDER:
   `arguments`, and a closed form's `spectrum`, `envelope` and `pitch`, read the
   expression and ignore the range.
 
+  A closed form's `spectrum` and `pitch` are its exact lines, so a term under a
+  crop or an envelope, which has a width and is no line, refuses them; so does
+  `spectrum(frame=)`, as a closed form has no frames. `sample(...)` of it
+  measures either frame by frame. A measured `spectrum` is one spectrum: every
+  `frame`-long window across the range, averaged. `pitch` is framed, one entry
+  per `frame`; for the spectrum at one instant, read a range one frame long.
+
   `--bits <n>` is the precision every sample is written to, from 2 to 52: the
   point where a series is truncated, and the encoding of a `.wav`, integer PCM
   at n bits up to 16 and 32-bit float above. `--rate <hz>` is the sample rate;

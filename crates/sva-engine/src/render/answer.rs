@@ -214,12 +214,16 @@ fn exact(
             frame_secs: Some(_),
             ..
         } => {
-            return Err(refused(
-                render,
-                node,
-                "engine.observation_needs_samples",
-                "a closed form has no frames to take a spectrum across".to_string(),
-            ));
+            return Err(EngineError::refused(Diagnostic {
+                code: "engine.observation_needs_samples".to_string(),
+                message: "a closed form's spectrum is its lines, and it has no frames to \
+                          take a spectrum across"
+                    .to_string(),
+                location: Located::at(render.tys.name(node), None),
+                help: "drop `frame` for the lines, or read `sample(...)` of it to measure \
+                       frames"
+                    .to_string(),
+            }));
         }
         // FORMAT 14.1: a pair's spectrum is its whole line list; no estimate, no peaks.
         Representation::Spectrum {
@@ -403,8 +407,9 @@ fn not_a_line(
         code: "read.lines_need_unwindowed_lines".to_string(),
         message,
         location: at,
-        help: "`atoms` states each term as it stands, and `lines` of the node under \
-               the window or envelope lists the lines it multiplies"
+        help: "`atoms` states each term as it stands, `lines` of the node under the window \
+               or envelope lists the lines it multiplies, and `pitch` or `spectrum` of \
+               `sample(...)` of it measures it frame by frame"
             .to_string(),
     })
 }
