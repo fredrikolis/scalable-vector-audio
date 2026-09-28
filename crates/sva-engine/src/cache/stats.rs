@@ -1,6 +1,9 @@
 // Concern: what one render asked the store, what each lookup came to, and the store after it | Non-concern: what the store evicts (store.rs) | IO: (loads, stores) -> CacheStats
 
+use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
+
+use sva_samples::MachineState;
 
 use sva_formula::Hash;
 use sva_samples::Label;
@@ -17,6 +20,8 @@ pub enum Outcome {
     ComputedReplaced,
     /// A run found short, carried on and stored again.
     Extended,
+    /// Found only up to a switch.
+    Prefix,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -126,8 +131,12 @@ impl Recording {
         self.cache.holds(key)
     }
 
-    pub(crate) fn run_span(&self, key: Hash) -> Option<sva_samples::Extent> {
+    pub(crate) fn run_span(&self, key: Hash) -> Option<(sva_samples::Extent, Option<Hash>)> {
         self.cache.run_span(key)
+    }
+
+    pub(crate) fn mark_every(&self) -> usize {
+        self.cache.mark_every()
     }
 
     fn held(&self) -> MutexGuard<'_, Vec<Lookup>> {
@@ -182,6 +191,32 @@ impl Lens<'_> {
             },
         });
         found
+    }
+
+    /// Read unnoted; its node notes one lookup.
+    pub(crate) fn peek(&self, key: Hash, expected: Expected) -> Option<Entry> {
+        let stamp = self.stamp(expected.kind());
+        self.recording.cache.load(key, expected, stamp)
+    }
+
+    pub(crate) fn note(&self, node: &str, key: Hash, outcome: Outcome) {
+        self.recording.held().push(Lookup {
+            node: node.to_string(),
+            key,
+            kind: PayloadKind::Run,
+            outcome,
+        });
+    }
+
+    pub(crate) fn mark(&self, key: Hash, marks: BTreeMap<i64, MachineState>) {
+        if self.stores {
+            self.recording.cache.mark(key, marks);
+        }
+    }
+
+    /// Read after its children, so they are evicted first.
+    pub(crate) fn touch(&self, key: Hash) {
+        self.recording.cache.touch(key);
     }
 
     /// A value looked up under `looked` and computed over less than it named.

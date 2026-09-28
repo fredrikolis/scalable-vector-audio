@@ -5,8 +5,10 @@ mod store;
 
 pub use stats::{CacheStats, Lookup, Outcome};
 pub(crate) use stats::{Lens, Recording};
-pub use store::{Cache, CachePolicy, DEFAULT_CACHE_BYTES, PrunePolicy};
+pub use store::{Cache, CachePolicy, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY, PrunePolicy};
 pub use sva_formula::Hash;
+
+use std::collections::BTreeMap;
 
 use sva_formula::SpectralSum;
 use sva_samples::{Buffer, Frames, Label, MachineState};
@@ -28,11 +30,13 @@ pub enum PayloadKind {
     Run,
 }
 
-/// A machine node's samples from where its state starts, and the state where they end.
+/// One segment of a machine node's run: its samples, the state at each marked index, and the
+/// segment before it.
 #[derive(Clone)]
 pub struct Run {
     pub samples: Buffer,
-    pub state: Option<MachineState>,
+    pub marks: BTreeMap<i64, MachineState>,
+    pub parent: Option<Hash>,
 }
 
 impl Run {
@@ -41,8 +45,8 @@ impl Run {
     }
 
     pub fn bytes(&self) -> usize {
-        let state = self.state.as_ref().map_or(0, MachineState::bytes);
-        self.samples.len() * self.samples.width * size_of::<f64>() + state
+        let marks: usize = self.marks.values().map(MachineState::bytes).sum();
+        self.samples.len() * self.samples.width * size_of::<f64>() + marks
     }
 }
 

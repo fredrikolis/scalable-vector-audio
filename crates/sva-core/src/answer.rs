@@ -503,6 +503,7 @@ fn stats_with(stats: &CacheStats, extra: &str) -> String {
             Outcome::ComputedNotStored => "computed_not_stored",
             Outcome::ComputedReplaced => "computed_replaced",
             Outcome::Extended => "extended",
+            Outcome::Prefix => "prefix",
         };
         format!(
             "{{ \"node\": \"{}\", \"key\": \"{}\", \"kind\": \"{}\", \"outcome\": \"{outcome}\" }}",

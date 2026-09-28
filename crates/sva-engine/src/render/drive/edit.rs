@@ -130,9 +130,12 @@ impl Driven {
         self.tape = tape;
         let was = old.run.take();
         if let Some(run) = &mut self.run {
-            run.records &= origin && was.as_ref().is_some_and(|was| was.records);
+            let agrees = was
+                .as_ref()
+                .is_some_and(|was| was.records && (same || run.shares(was, from)));
+            run.records &= origin && agrees;
             if let (true, Some(was)) = (same, was) {
-                run.stored = was.stored;
+                run.continues(was);
             }
         }
         old.kind = Kind::Ended;

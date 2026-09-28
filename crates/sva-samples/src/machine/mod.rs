@@ -209,6 +209,11 @@ impl Machine {
         self.steps(to, reads, own)
     }
 
+    /// `run_to`, the filters' frames kept: the same block, stopped where a state is taken.
+    pub fn run_on(&mut self, to: i64, reads: &[Window], own: &mut Tape) -> Result<(), SampleError> {
+        self.steps(to, reads, own)
+    }
+
     fn steps(&mut self, to: i64, reads: &[Window], own: &mut Tape) -> Result<(), SampleError> {
         loop {
             while let Some((from, _)) = self.ahead.last()

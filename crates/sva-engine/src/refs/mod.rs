@@ -15,7 +15,6 @@ use crate::error::{Diagnostic, EngineError, Located};
 use crate::typing::{Typing, Value};
 
 mod identity;
-#[cfg_attr(not(test), allow(dead_code, reason = "segment keys read it"))]
 mod prefix;
 #[cfg(test)]
 mod prefix_law;

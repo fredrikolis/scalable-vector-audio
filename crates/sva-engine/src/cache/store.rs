@@ -3,12 +3,17 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use std::collections::BTreeMap;
+
 use sva_formula::Hash;
-use sva_samples::Label;
+use sva_samples::{Label, MachineState};
 
 use super::{Entry, Expected, Payload};
 
 pub const DEFAULT_CACHE_BYTES: u64 = 2 << 30;
+
+/// Samples between two states a run keeps, so a reader resumes from one at most this far back.
+pub const DEFAULT_MARK_EVERY: usize = 16_384;
 
 /// Which values a render stores; whatever is not stored is computed again when asked.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -117,6 +122,7 @@ struct State {
     clock: u64,
     tree: u64,
     evictions: u64,
+    mark_every: usize,
 }
 
 impl State {
@@ -213,6 +219,7 @@ impl Cache {
         Cache {
             state: Arc::new(Mutex::new(State {
                 max_bytes,
+                mark_every: DEFAULT_MARK_EVERY,
                 ..State::default()
             })),
         }
@@ -284,10 +291,52 @@ impl Cache {
         self.locked().entries.contains_key(&key)
     }
 
-    pub(crate) fn run_span(&self, key: Hash) -> Option<sva_samples::Extent> {
+    pub(crate) fn run_span(&self, key: Hash) -> Option<(sva_samples::Extent, Option<Hash>)> {
         match &self.locked().entries.get(&key)?.payload {
-            Payload::Run(run) => Some(run.samples.extent()),
+            Payload::Run(run) => Some((run.samples.extent(), run.parent)),
             _ => None,
+        }
+    }
+
+    /// How many samples apart a run keeps the states it passes.
+    pub fn mark_every(&self) -> usize {
+        self.locked().mark_every
+    }
+
+    pub fn set_mark_every(&self, samples: usize) {
+        self.locked().mark_every = samples.max(1);
+    }
+
+    pub(crate) fn mark(&self, key: Hash, marks: BTreeMap<i64, MachineState>) {
+        let mut state = self.locked();
+        let Some(held) = state.entries.get_mut(&key) else {
+            return;
+        };
+        let Payload::Run(run) = &mut held.payload else {
+            return;
+        };
+        let before = run.bytes() as u64;
+        let span = run.samples.extent();
+        run.marks.extend(
+            marks
+                .into_iter()
+                .filter(|(at, _)| span.start <= *at && *at <= span.end),
+        );
+        let after = run.bytes() as u64;
+        state.bytes += after - before;
+        state.bounded();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn forget(&self, key: Hash) {
+        self.locked().remove(key);
+    }
+
+    pub(crate) fn touch(&self, key: Hash) {
+        let mut state = self.locked();
+        let tick = state.tick();
+        if let Some(held) = state.entries.get_mut(&key) {
+            held.read = tick;
         }
     }
 

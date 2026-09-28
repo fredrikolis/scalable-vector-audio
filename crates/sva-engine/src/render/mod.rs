@@ -152,7 +152,6 @@ impl Render {
     }
 
     /// The node's switches and its identity before each, asked once however often.
-    #[cfg_attr(not(test), expect(dead_code, reason = "segment keys read it"))]
     pub(crate) fn prefixes<T>(&self, ask: impl FnOnce(&mut refs::Walk) -> T) -> T {
         let (mut held, mut named) = (self.prefixes.borrow_mut(), self.identities.borrow_mut());
         ask(&mut refs::Walk::new(
@@ -479,12 +478,7 @@ impl Lenses<'_> {
         if !self.runs.contains(&id) {
             return sampled::key(held, id).is_ok_and(|(key, _)| recording.holds(key));
         }
-        let extent = held.extents.of(id);
-        drive::node::run_key_of(held, id).is_ok_and(|key| {
-            recording
-                .run_span(key)
-                .is_some_and(|span| span.start <= extent.start && extent.end <= span.end)
-        })
+        drive::node::covered(held, id, recording)
     }
 }
 

@@ -7,7 +7,7 @@ use sva_samples::{Buffer, Extent, Machine, MachineState, NodeRenderer, Rows, Tap
 
 use super::super::pointwise::{self, Point};
 use super::super::{Lenses, Render, collapse_refused, sampled};
-use crate::cache::{Expected, Payload, Run, run_key};
+use crate::cache::{Expected, Outcome, Payload, Recording, Run, run_key};
 use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::refs;
@@ -46,13 +46,102 @@ pub(in crate::render) struct Driven {
     pub(in crate::render) run: Option<Recorded>,
 }
 
+impl Recorded {
+    /// Whether `other`'s samples before `at` are this run's: the two agree there.
+    pub(super) fn shares(&self, other: &Recorded, at: i64) -> bool {
+        self.segments.before(at) == other.segments.before(at)
+    }
+
+    /// Takes all a run of the same node recorded.
+    pub(super) fn continues(&mut self, was: Recorded) {
+        (self.stored, self.held, self.marks) = (was.stored, was.held, was.marks);
+    }
+}
+
 pub(in crate::render) struct Recorded {
-    key: Hash,
-    /// How far the store holds this run.
+    segments: Segments,
+    /// How far the store holds this run, and how far it holds each segment's entry.
     pub(super) stored: i64,
+    held: Vec<i64>,
     /// Every sample from where its state starts is kept.
     pub(super) records: bool,
     pub(super) loaded: bool,
+    /// The states passed since the store last took them, and how far apart a ladder keeps them.
+    pub(super) marks: BTreeMap<i64, MachineState>,
+    every: usize,
+}
+
+/// A run cut where its switches turn: each segment keyed by the node's identity before the
+/// next switch, the last by its whole identity.
+pub(in crate::render) struct Segments {
+    starts: Vec<i64>,
+    keys: Vec<Hash>,
+}
+
+impl Segments {
+    fn of(shell: &Render, id: NodeId, extent: Extent) -> Result<Segments, EngineError> {
+        let width = usize::from(shell.tys.ty(id).width).max(1);
+        let rate = shell.config.rate;
+        let points = shell.prefixes(|walk| walk.change_points(id));
+        let (mut starts, mut keys) = (vec![extent.start], Vec::new());
+        for &at in points.iter().filter(|at| **at > extent.start) {
+            let before = shell.prefixes(|walk| walk.prefix_identity(id, at))?;
+            let key = shell.keyed(run_key(before, rate, width));
+            if keys.last() != Some(&key) {
+                keys.push(key);
+                starts.push(at);
+            }
+        }
+        let whole = run_key_of(shell, id)?;
+        match keys.last() == Some(&whole) {
+            true => {
+                starts.pop();
+            }
+            false => keys.push(whole),
+        }
+        Ok(Segments { starts, keys })
+    }
+
+    fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// The node's identity before `at`: the segment holding the sample before it.
+    fn before(&self, at: i64) -> Hash {
+        let k = self.starts[1..].iter().take_while(|s| **s < at).count();
+        self.keys[k]
+    }
+
+    fn end(&self, k: usize) -> i64 {
+        self.starts.get(k + 1).copied().unwrap_or(i64::MAX)
+    }
+
+    fn whole(&self) -> Hash {
+        *self.keys.last().expect("a run has a segment")
+    }
+
+    fn parent(&self, k: usize) -> Option<Hash> {
+        k.checked_sub(1).map(|p| self.keys[p])
+    }
+
+    /// Where a machine with call sites keeps its state: each switch, and a ladder.
+    fn marks_in(&self, from: i64, to: i64, every: usize) -> Vec<i64> {
+        let base = self.starts[0];
+        let step = every as i64;
+        let mut out: Vec<i64> = self.starts[1..]
+            .iter()
+            .copied()
+            .filter(|at| from < *at && *at <= to)
+            .collect();
+        let mut at = base + ((from - base).div_euclid(step) + 1) * step;
+        while at <= to {
+            out.push(at);
+            at += step;
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
 }
 
 /// How a driver holds its nodes' samples.
@@ -84,18 +173,17 @@ pub(in crate::render) fn built(
             nodes.push(whole(id, buffer, extent, support));
             continue;
         }
-        let run = match lenses.runs.contains(&id) && !extent.is_empty() {
+        let mut run = match lenses.runs.contains(&id) && !extent.is_empty() {
             true => found(shell, id, extent, lenses, !unloaded(at))?,
             false => None,
         };
-        if let (false, Some((recorded, run))) = (trailing, &run)
-            && run.end() >= extent.end
-        {
-            let mut node = whole(id, run.samples.over(extent, support), extent, support);
-            node.run = Some(Recorded {
-                records: false,
-                ..*recorded
-            });
+        let whole_run =
+            |(_, loaded): &(Recorded, Loaded)| loaded.samples.extent().end >= extent.end;
+        if !trailing && run.as_ref().is_some_and(whole_run) {
+            let (mut recorded, loaded) = run.take().expect("a whole run");
+            let mut node = whole(id, loaded.samples.over(extent, support), extent, support);
+            recorded.records = false;
+            node.run = Some(recorded);
             nodes.push(node);
             continue;
         }
@@ -204,59 +292,156 @@ pub(in crate::render) fn runnable(shell: &Render, order: &[NodeId]) -> BTreeSet<
     out
 }
 
-/// A run starting after the extent is no prefix of it; a stateless one starting before is.
+/// What the store answers a node with: its samples from where its state starts, and the
+/// state where they end where it holds call sites.
+pub(in crate::render) struct Loaded {
+    samples: Buffer,
+    state: Option<MachineState>,
+}
+
+/// Segment by segment from the first: a segment's samples up to the next switch, on to the
+/// next segment where it marked its state there, else from its last mark. A run starting after
+/// the extent is no prefix of it; a stateless one starting before is.
 fn found(
     shell: &Render,
     id: NodeId,
     extent: Extent,
     lenses: &Lenses,
     looks: bool,
-) -> Result<Option<(Recorded, Run)>, EngineError> {
+) -> Result<Option<(Recorded, Loaded)>, EngineError> {
     let (Some(lens), Some(recording)) = (lenses.at(id), lenses.recording) else {
         return Ok(None);
     };
-    let width = usize::from(shell.tys.ty(id).width).max(1);
-    let key = run_key_of(shell, id)?;
+    let (rate, width) = (
+        shell.config.rate,
+        usize::from(shell.tys.ty(id).width).max(1),
+    );
+    let segments = Segments::of(shell, id, extent)?;
     let mut recorded = Recorded {
-        key,
+        held: vec![i64::MIN; segments.len()],
+        segments,
         stored: extent.start,
         records: lens.keeps(),
         loaded: false,
+        marks: BTreeMap::new(),
+        every: recording.mark_every(),
     };
-    let usable = recording
-        .run_span(key)
-        .is_none_or(|span| span.start <= extent.start && extent.start < span.end);
-    if !looks || !usable {
-        return Ok(Some((recorded, empty_run(shell, width, extent))));
+    let mut loaded = Loaded {
+        samples: Buffer::silence(rate, width, 0),
+        state: None,
+    };
+    loaded.samples.start = extent.start;
+    if !looks {
+        return Ok(Some((recorded, loaded)));
     }
-    let expected = Expected::Run {
-        rate: shell.config.rate,
-        width,
+    let sites = !sampled::program_reading(shell, id, &|_| 1)?
+        .layout
+        .sites
+        .is_empty();
+    let expected = Expected::Run { rate, width };
+    let segments = &recorded.segments;
+    let (mut planes, mut pos) = (vec![Vec::new(); width], extent.start);
+    let (mut state, mut reached) = (None, None);
+    for k in 0..segments.len() {
+        let (start, boundary) = (segments.starts[k], segments.end(k));
+        let Some(run) = lens
+            .peek(segments.keys[k], expected)
+            .and_then(|entry| entry.payload.run())
+        else {
+            break;
+        };
+        let placed = match k {
+            0 => run.samples.start <= start && start < run.end(),
+            _ => run.samples.start == start && run.parent == segments.parent(k),
+        };
+        if !placed {
+            break;
+        }
+        recorded.held[k] = run.end();
+        if k == 0 {
+            recorded.records &= run.samples.start == extent.start;
+        }
+        let upto = boundary.min(run.end()).min(extent.end);
+        for (c, plane) in planes.iter_mut().enumerate() {
+            let at = |n: i64| run.samples.plane(c)[(n - run.samples.start) as usize];
+            plane.extend((pos..upto).map(at));
+        }
+        (pos, reached) = (upto, Some(k));
+        let taken = run
+            .marks
+            .range(start..=upto)
+            .map(|(at, m)| (*at, m.clone()));
+        recorded.marks.extend(taken);
+        if upto >= extent.end || (upto == boundary && !sites) {
+            state = run.marks.get(&upto).cloned();
+            if upto >= extent.end {
+                break;
+            }
+            continue;
+        }
+        if upto == boundary && run.marks.contains_key(&boundary) {
+            state = run.marks.get(&boundary).cloned();
+            continue;
+        }
+        if sites {
+            match run.marks.range(start..=upto).next_back() {
+                Some((at, mark)) => (pos, state) = (*at, Some(mark.clone())),
+                None => pos = start,
+            }
+            planes
+                .iter_mut()
+                .for_each(|p| p.truncate((pos - extent.start) as usize));
+            recorded.marks.retain(|at, _| *at <= pos);
+        }
+        break;
+    }
+    if let Some(k) = reached {
+        for key in segments.keys[..=k].iter().rev() {
+            lens.touch(*key);
+        }
+    }
+    let outcome = match reached {
+        _ if pos == extent.start => Outcome::ComputedNotStored,
+        Some(k) if k + 1 == segments.len() => Outcome::Hit,
+        _ => Outcome::Prefix,
     };
-    let Some(run) = lens
-        .load(key, shell.tys.name(id), expected)
-        .and_then(|entry| entry.payload.run())
-    else {
-        return Ok(Some((recorded, empty_run(shell, width, extent))));
+    lens.note(shell.tys.name(id), segments.whole(), outcome);
+    if pos > extent.start {
+        recorded.stored = pos;
+        recorded.loaded = true;
+        loaded.samples = Buffer::of_planes(rate, planes);
+        loaded.samples.start = extent.start;
+        loaded.state = state;
+    }
+    Ok(Some((recorded, loaded)))
+}
+
+/// Whether the store's segments of `id` hold every sample of its extent, one after another.
+pub(in crate::render) fn covered(shell: &Render, id: NodeId, recording: &Recording) -> bool {
+    let extent = shell.extents.of(id);
+    let Ok(segments) = Segments::of(shell, id, extent) else {
+        return false;
     };
-    recorded.stored = run.end();
-    recorded.loaded = true;
-    recorded.records &= run.samples.start == extent.start;
-    Ok(Some((recorded, run)))
+    for k in 0..segments.len() {
+        let Some((span, parent)) = recording.run_span(segments.keys[k]) else {
+            return false;
+        };
+        let start = segments.starts[k];
+        let placed = match k {
+            0 => span.start <= start && start < span.end,
+            _ => span.start == start && parent == segments.parent(k),
+        };
+        let upto = segments.end(k).min(span.end).min(extent.end);
+        if !placed || upto >= extent.end || upto < segments.end(k) {
+            return placed && upto >= extent.end;
+        }
+    }
+    false
 }
 
 pub(in crate::render) fn run_key_of(shell: &Render, id: NodeId) -> Result<Hash, EngineError> {
     let width = usize::from(shell.tys.ty(id).width).max(1);
     Ok(shell.keyed(run_key(shell.identity(id)?, shell.config.rate, width)))
-}
-
-fn empty_run(shell: &Render, width: usize, extent: Extent) -> Run {
-    let mut samples = Buffer::silence(shell.config.rate, width, 0);
-    samples.start = extent.start;
-    Run {
-        samples,
-        state: None,
-    }
 }
 
 /// A node held whole before any reader runs.
@@ -399,21 +584,24 @@ fn point(shell: &Render, id: NodeId) -> Result<(Kind, usize), EngineError> {
 }
 
 impl Driven {
-    fn preload(&mut self, run: Run) {
-        let end = run.end().min(self.extent.end);
-        let carried = match (&mut self.kind, &run.state) {
-            (Kind::Machine { machine, .. }, _) if !machine.stateful() || end < run.end() => true,
+    fn preload(&mut self, loaded: Loaded) {
+        let end = loaded.samples.extent().end.min(self.extent.end);
+        let carried = match (&mut self.kind, &loaded.state) {
+            (Kind::Machine { machine, .. }, _) if !machine.stateful() || end >= self.extent.end => {
+                true
+            }
             (Kind::Machine { machine, .. }, Some(last)) => machine.carry(last).is_ok(),
             (Kind::Machine { .. }, None) => false,
             _ => true,
         };
-        if run.samples.is_empty() || !carried {
+        if loaded.samples.is_empty() || !carried {
             if let Some(recorded) = &mut self.run {
-                recorded.loaded = false;
+                (recorded.loaded, recorded.stored) = (false, self.extent.start);
+                recorded.marks.clear();
             }
             return;
         }
-        let mut tape = Tape::from(run.samples);
+        let mut tape = Tape::from(loaded.samples);
         tape.forget_before(self.extent.start);
         tape.cut(end);
         self.tape = tape;
@@ -457,9 +645,31 @@ impl Driven {
                     .iter()
                     .map(|&r| done[r].tape.within(done[r].support))
                     .collect();
+                let refused = |e| sampled::refused(shell, id, &e);
+                let marking = self
+                    .run
+                    .as_mut()
+                    .filter(|r| r.records && machine.stateful());
+                let marks = marking.as_ref().map_or(Vec::new(), |run| {
+                    run.segments.marks_in(self.tape.end(), to, run.every)
+                });
+                let first = marks.first().map_or(to, |at| *at);
                 machine
-                    .run_to(to, &windows, &mut self.tape)
-                    .map_err(|e| sampled::refused(shell, id, &e))?;
+                    .run_to(first, &windows, &mut self.tape)
+                    .map_err(refused)?;
+                if let Some(run) = marking {
+                    for (k, &at) in marks.iter().enumerate() {
+                        if k > 0 {
+                            machine
+                                .run_on(at, &windows, &mut self.tape)
+                                .map_err(refused)?;
+                        }
+                        run.marks.insert(at, machine.state());
+                    }
+                }
+                machine
+                    .run_on(to, &windows, &mut self.tape)
+                    .map_err(refused)?;
             }
         }
         Ok((start, self.tape.end()))
@@ -497,9 +707,10 @@ impl Driven {
         self.run = None;
     }
 
-    /// What it recorded past what the store holds.
+    /// What it recorded past what the store holds, segment by segment: a segment longer
+    /// than its entry replaces it, and one no longer adds only its marks.
     pub(in crate::render) fn store(&mut self, shell: &Render, lenses: &Lenses) {
-        let Some(recorded) = &self.run else {
+        let Some(recorded) = &mut self.run else {
             return;
         };
         let end = self.tape.end();
@@ -509,18 +720,36 @@ impl Driven {
         let Some(lens) = lenses.at(self.id) else {
             return;
         };
-        let state = match &self.kind {
-            Kind::Machine { machine, .. } if machine.stateful() => Some(machine.state()),
-            _ => None,
-        };
-        let run = Run {
-            samples: self.tape.clone().into_buffer(shell.config.rate),
-            state,
-        };
-        lens.store(recorded.key, &Payload::Run(Box::new(run)), None);
-        if let Some(recorded) = &mut self.run {
-            recorded.stored = end;
+        if let Kind::Machine { machine, .. } = &self.kind
+            && machine.stateful()
+        {
+            recorded.marks.insert(end, machine.state());
         }
+        let samples = self.tape.clone().into_buffer(shell.config.rate);
+        let segments = &recorded.segments;
+        for k in 0..segments.len() {
+            let (from, to) = (segments.starts[k], segments.end(k).min(end));
+            if to <= from {
+                break;
+            }
+            let marks: BTreeMap<i64, MachineState> = recorded
+                .marks
+                .range(from..=to)
+                .map(|(at, m)| (*at, m.clone()))
+                .collect();
+            if to <= recorded.held[k] {
+                lens.mark(segments.keys[k], marks);
+                continue;
+            }
+            let run = Run {
+                samples: samples.over(Extent::new(from, to), samples.extent()),
+                marks,
+                parent: segments.parent(k),
+            };
+            lens.store(segments.keys[k], &Payload::Run(Box::new(run)), None);
+            recorded.held[k] = to;
+        }
+        recorded.stored = end;
     }
 
     /// Held only where its tape ends at `at`; a machine with no call site holds none.
@@ -556,4 +785,54 @@ pub(in crate::render) fn no_stream(shell: &Render, id: NodeId, class: &str) -> E
 
 fn unheld(shell: &Render, id: NodeId) -> EngineError {
     EngineError::UnknownNode(shell.tys.name(id).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Segments;
+    use crate::cache::{Cache, Outcome, PayloadKind};
+    use crate::render::{RenderConfig, plan, render};
+
+    const STRING: &str = "release = inf\nchaigne_askenfelt(f0, damper_r=0.1*crop(min(1, \
+        (t - release)/0.03), release, inf))\n";
+
+    fn rendered(g: &sva_ast::Graph, cache: Option<&Cache>) -> (Vec<f64>, Vec<Outcome>) {
+        let held =
+            render(g, "released", RenderConfig::seconds(44_100, 0.5), cache).expect("a render");
+        let runs = held.cache_stats.iter().flat_map(|s| s.lookups.clone());
+        let found = runs
+            .filter(|l| l.kind == PayloadKind::Run)
+            .map(|l| l.outcome);
+        let samples = held.output(held.root).expect("a buffer").plane(0).to_vec();
+        (samples, found.collect())
+    }
+
+    /// A segment is read only on from its parent: with the held run gone, a stored release
+    /// is a miss, computed from its start.
+    #[test]
+    fn a_segment_whose_parent_is_gone_is_a_miss() {
+        let mut files = sva_ast::Composition::new();
+        files
+            .insert("string", STRING)
+            .insert("held", "@string(t, f0=261.63)\n")
+            .insert("released", "@string(t, f0=261.63, release=0.3)\n");
+        let g = sva_ast::load(&files).expect("a composition");
+        let cache = Cache::new();
+        render(&g, "held", RenderConfig::seconds(44_100, 0.5), Some(&cache)).expect("held");
+        let (cold, _) = rendered(&g, None);
+        assert_eq!(rendered(&g, Some(&cache)).0, cold);
+        let planned = plan(&g, "released", RenderConfig::seconds(44_100, 0.5)).expect("a plan");
+        for &id in &planned.schedule.materialize {
+            let segments = Segments::of(&planned, id, planned.extents.of(id)).expect("keys");
+            if segments.len() > 1 {
+                cache.forget(segments.keys[0]);
+            }
+        }
+        let (again, found) = rendered(&g, Some(&cache));
+        assert_eq!(again, cold);
+        assert!(
+            found.iter().all(|o| *o == Outcome::ComputedStored),
+            "{found:?}"
+        );
+    }
 }
