@@ -1,9 +1,25 @@
-// Concern: the callable names this language answers and the named arguments each takes | Non-concern: what any of them denotes, or evaluating one | IO: (name) -> is-a-builtin, named keys
+// Concern: the names this language answers: callables, their named arguments, and each reserved word with a line on it | Non-concern: evaluating any of them | IO: (name) -> is-a-builtin, named keys
 
 use sva_formula::filter::Shape;
 
 use crate::lower::physics::MODAL;
 use crate::overload::FINITE_DIFFERENCE as PHYSICS;
+
+/// Every name the language reserves; `self` is call-only, the rest are values.
+pub const RESERVED: [(&str, &str); 6] = [
+    ("t", "time in seconds"),
+    ("f", "frequency in hertz"),
+    ("i", "the imaginary unit"),
+    ("pi", "the constant pi"),
+    (
+        "inf",
+        "infinity, a value: a crop edge never reached, a sum's open bound; arithmetic that \
+         leaves no number refuses",
+    ),
+    (SELF, "a bounded self-reference, call-only: self(t - 1sp)"),
+];
+
+pub const SELF: &str = "self";
 
 /// Enough for surround; ambisonics is deferred rather than pretended at.
 pub const MAX_WIDTH: usize = 8;

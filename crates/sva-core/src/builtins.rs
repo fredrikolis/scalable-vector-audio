@@ -63,20 +63,6 @@ pub const NOTE_GRAMMAR: &str = "a bare identifier: a letter A-G, an optional acc
     s (sharp) or b (flat) -- never #, then a whole-number octave, e.g. A4, Cs4, Db4; A4 = 440 Hz, \
     twelve-tone equal temperament, up to G9 where MIDI's 128 notes end";
 
-/// `(name, what it resolves to)`.
-pub const RESERVED: [(&str, &str); 6] = [
-    ("t", "time in seconds"),
-    ("f", "frequency in hertz"),
-    ("i", "the imaginary unit"),
-    ("pi", "the constant pi"),
-    (
-        "inf",
-        "infinity, a value: a crop edge never reached, a sum's open bound; arithmetic that \
-         leaves no number refuses",
-    ),
-    ("self", "a bounded self-reference, call-only: self(t - 1sp)"),
-];
-
 /// `(name, its call shape)`.
 pub const SPECIAL_FORMS: [(&str, &str); 5] = [
     (
@@ -222,7 +208,7 @@ pub fn builtins() -> Builtins {
         refusals: &REGISTRY,
         unit_suffixes: &UNIT_SUFFIXES,
         note_names: NOTE_GRAMMAR,
-        reserved: &RESERVED,
+        reserved: &sva_engine::RESERVED,
         special_forms: &SPECIAL_FORMS,
         not_supported: &NOT_SUPPORTED,
     }
@@ -422,7 +408,7 @@ mod tests {
 
     #[test]
     fn each_reserved_name_still_behaves_the_way_this_dump_says_it_does() {
-        for (name, _) in RESERVED {
+        for (name, _) in sva_engine::RESERVED {
             assert!(
                 sva_engine::instantiate::is_reserved(name),
                 "`{name}` is listed as reserved but a parameter may still take it"
