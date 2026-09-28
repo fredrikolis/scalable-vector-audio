@@ -258,3 +258,17 @@ fn a_min_or_max_of_two_lines_is_the_lower_or_higher_line_at_every_instant() {
         }
     }
 }
+
+#[test]
+fn constants_nested_under_unaries_and_folds_are_one_number() {
+    use sva_formula::Fold;
+    let floored = Body::Fold(Fold::Max, vec![part(constant(0.5)), part(constant(1e-6))]);
+    let logged = Body::Apply(Unary::Log, part(floored));
+    let scaled = Body::Mul(vec![part(constant(0.8)), part(logged)]);
+    let held = atoms(&Body::Apply(Unary::Exp, part(scaled)));
+    let [one] = held.as_slice() else {
+        panic!("one atom, not {held:?}")
+    };
+    assert!(one.is_bare(), "a bare constant, not {one:?}");
+    assert!((one.c.re - 0.5f64.powf(0.8)).abs() <= 1e-15, "{:?}", one.c);
+}

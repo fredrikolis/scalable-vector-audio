@@ -1,6 +1,6 @@
 // Concern: lowers a Body to the canonical atom sum | Non-concern: the atom algebra (product.rs), typing (infer.rs) | IO: (&Body, Var) -> SpectralSum or Left
 
-use crate::affine::{Coeff, exact_affine};
+use crate::affine::{Coeff, apply_scalar, exact_affine};
 use crate::closed_form::{Body, ClosedForm, Part, Series, Var};
 use crate::complex::C64;
 use crate::origin::Origin;
@@ -87,11 +87,15 @@ fn lower(f: &Body, origin: Origin, var: Var) -> Result<SpectralSum, Left> {
             scale(lower_part(num, var)?, k.inv())
         }
         Body::Pow(base, n) => power(base, *n, var),
-        Body::Apply(op, arg) => {
-            apply(*op, arg, origin, var).or_else(|left| kinked(f, origin, var, left))
-        }
+        Body::Apply(op, arg) => match apply(*op, arg, origin, var) {
+            Err(left) => match held_constant(arg, var) {
+                Some(c) => constant(var, apply_scalar(*op, c), origin),
+                None => kinked(f, origin, var, left),
+            },
+            held => held,
+        },
         Body::Fold(op, args) => {
-            let values = args.iter().map(held_constant).collect();
+            let values = args.iter().map(|p| held_constant(p, var)).collect();
             fold(*op, values, origin, var).or_else(|left| kinked(f, origin, var, left))
         }
         Body::Delta { at, order } => delta(at, *order, var),
@@ -170,8 +174,34 @@ fn lower_part(p: &Part, var: Var) -> Result<SpectralSum, Left> {
     lower(&p.body, p.origin, var)
 }
 
-fn held_constant(p: &Part) -> Option<C64> {
-    exact_affine(&p.body).and_then(|(a, b)| a.is_zero().then_some(b))
+/// The one number a subterm holds however deep its constants nest, so `log(max(v, e))` folds
+/// where `log` and `max` each fold alone. A spelled affine constant keeps its own bits.
+fn held_constant(p: &Part, var: Var) -> Option<C64> {
+    if let Some((a, b)) = exact_affine(&p.body) {
+        return a.is_zero().then_some(b);
+    }
+    if !timeless(&p.body) {
+        return None;
+    }
+    sole_constant(&lower_part(p, var).ok()?)
+}
+
+fn timeless(f: &Body) -> bool {
+    match f {
+        Body::Line
+        | Body::Index(_)
+        | Body::Param(_)
+        | Body::Node(_)
+        | Body::Rational(_)
+        | Body::Series(_)
+        | Body::Modal(_)
+        | Body::Run(_)
+        | Body::Delta { .. }
+        | Body::Pv(_) => false,
+        other => crate::closed_form::children(other)
+            .iter()
+            .all(|p| timeless(&p.body)),
+    }
 }
 
 /// A `min` or `max` of two lines is each line under its own window; a form refused whole
