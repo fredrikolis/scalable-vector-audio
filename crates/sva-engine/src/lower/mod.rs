@@ -18,26 +18,10 @@ use crate::instantiate::{Cx, Instances, Node};
 use crate::loops::{self, Delay, SelfKind};
 use crate::offset::Offset;
 use crate::overload;
-use crate::release::{self, Never};
 use crate::typing::{Node as Typed, Typing, Value};
 
 pub(crate) use constant::{constant_call, constant_modulo, constant_value, holds_infinite};
 pub(crate) use solvers::{field, value_of};
-
-/// An unbound `release` is never, and a crop's edge is the one place it may stand, alone or
-/// with a constant after it.
-pub(crate) fn never(body: &Body) -> bool {
-    match body {
-        Body::Const(c) => c.re == f64::INFINITY && c.im == 0.0,
-        Body::Add(parts) => {
-            parts.iter().any(|p| never(&p.body))
-                && parts
-                    .iter()
-                    .all(|p| never(&p.body) || constant::is_constant(&p.body))
-        }
-        _ => false,
-    }
-}
 
 /// One written subterm, either still inside a closed form or already a node of its own.
 pub enum Piece {
@@ -61,7 +45,6 @@ pub struct Lowering<'a, 'g> {
     indices: Vec<(String, IndexId)>,
     mode: SelfMode,
     own: Vec<(Delay, NodeId)>,
-    never: Never,
 }
 
 /// Dependencies are already typed, so every ref this reads answers with a decided `Ty`.
@@ -73,8 +56,6 @@ pub fn node(path: &str, inst: &Instances, typing: &mut Typing) -> Result<NodeId,
     let (expr, cx) = inst
         .at(path)
         .ok_or_else(|| EngineError::UnknownNode(path.to_string()))?;
-    let (reads, never) = release::check(inst, typing, path, expr, cx)?;
-    typing.note_release(path, reads);
     let var = axis_of(inst, typing, expr, cx, path)?;
     let kind = match inst.reads_self(path) {
         false => None,
@@ -86,7 +67,7 @@ pub fn node(path: &str, inst: &Instances, typing: &mut Typing) -> Result<NodeId,
             Some((gain, delay))
         }
         Some(SelfKind::Series { .. }) | Some(SelfKind::Sampled) => {
-            return sampled_loop(path, inst, typing, (expr, cx), var, never);
+            return sampled_loop(path, inst, typing, (expr, cx), var);
         }
         None => None,
     };
@@ -100,7 +81,6 @@ pub fn node(path: &str, inst: &Instances, typing: &mut Typing) -> Result<NodeId,
             None => SelfMode::Absent,
         },
         own: Vec::new(),
-        never,
     };
     let piece = low.walk(expr, cx, var)?;
     let piece = match closed {
@@ -116,7 +96,6 @@ fn sampled_loop(
     typing: &mut Typing,
     (expr, cx): (&Expr, Cx),
     var: Var,
-    never: Never,
 ) -> Result<NodeId, EngineError> {
     let mut low = Lowering {
         inst,
@@ -125,7 +104,6 @@ fn sampled_loop(
         indices: Vec::new(),
         mode: SelfMode::Sampled,
         own: Vec::new(),
-        never,
     };
     let piece = low.walk(expr, cx, var)?;
     low.seal(piece, var, Some(path))

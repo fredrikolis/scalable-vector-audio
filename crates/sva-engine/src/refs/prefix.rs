@@ -105,7 +105,9 @@ impl<'a> Walk<'a> {
         let Some(form) = self.pointwise(arg) else {
             return self.prefix_identity(arg, at).map(Argued::Node);
         };
-        if !self.argument_points(arg).iter().any(|c| *c >= at) {
+        let mut points = BTreeSet::new();
+        body_points(&form.body, self.rate, &mut points);
+        if !points.iter().any(|c| *c >= at) {
             return identity_in(self.typing, arg, self.named).map(Argued::Node);
         }
         let body = before(&form.body, at, self.rate);
@@ -375,13 +377,16 @@ fn constant_identity(v: f64, var: sva_formula::Var) -> Hash {
 mod tests {
     use crate::render::{Render, RenderConfig, plan};
 
-    const PAD: &str = "lowpass(sample(0.3*vel*saw(f0)*(crop(1, 0s, release) + crop(exp(-(t - \
+    const PAD: &str = "release = inf\nlowpass(sample(0.3*vel*saw(f0)*(crop(1, 0s, release) + crop(exp(-(t - \
         release)/0.3), release, 3600s))), cutoff=900, q=0.9)\n";
 
     fn planned(root: &str) -> Render {
         let mut files = sva_ast::Composition::new();
         files
-            .insert("note", "crop(sample(sin(2*pi*f0*t)), 0s, release)\n")
+            .insert(
+                "note",
+                "release = inf\ncrop(sample(sin(2*pi*f0*t)), 0s, release)\n",
+            )
             .insert("held", "@note(t, f0=220)\n")
             .insert("released", "@note(t, f0=220, release=0.61237)\n")
             .insert("pad", PAD)

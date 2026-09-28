@@ -56,10 +56,8 @@ const MACHINE: &[Case] = &[
     },
     Case {
         name: "a felt damping from r",
-        switched: |r| {
-            format!("chaigne_askenfelt(261.63, release=0, damper_r=0.1*crop(1, {r}s, 3600s))\n")
-        },
-        before: "chaigne_askenfelt(261.63, release=0, damper_r=0)\n",
+        switched: |r| format!("chaigne_askenfelt(261.63, damper_r=0.1*crop(1, {r}s, 3600s))\n"),
+        before: "chaigne_askenfelt(261.63)\n",
         solver: true,
     },
 ];

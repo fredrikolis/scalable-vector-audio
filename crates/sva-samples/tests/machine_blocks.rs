@@ -10,16 +10,20 @@ use sva_samples::{
 const RATE: u32 = 44_100;
 const LEN: usize = 3_000;
 
-fn string(release: f64) -> Params {
-    Params::ChaigneAskenfelt(ChaigneAskenfeltParams {
-        release,
-        ..ChaigneAskenfeltParams::at(440.0)
-    })
+fn string() -> Params {
+    Params::ChaigneAskenfelt(ChaigneAskenfeltParams::at(440.0))
 }
 
 /// `lowpass(@ramp, cutoff=900, q=0.7) + 0.5*self(t - 3sp) + 40*string`: a read, a filter, a
-/// recurrence and a solver in one renderer.
-fn renderer() -> NodeRenderer {
+/// recurrence and a solver in one renderer, the string's felt pressing from `landing` on.
+fn renderer(landing: f64) -> NodeRenderer {
+    let damper = NodeRenderer::Crop {
+        x: Box::new(NodeRenderer::Const(0.1)),
+        a: landing,
+        b: f64::INFINITY,
+        rise: 0.0,
+        fall: 0.0,
+    };
     NodeRenderer::Add(vec![
         NodeRenderer::Filter {
             site: SiteId(0),
@@ -41,19 +45,19 @@ fn renderer() -> NodeRenderer {
             NodeRenderer::Physics {
                 site: SiteId(1),
                 from: 0,
-                args: Vec::new(),
+                args: vec![damper, NodeRenderer::Const(0.0)],
             },
         ]),
     ])
 }
 
-fn layout(release: f64) -> Layout {
+fn layout() -> Layout {
     Layout {
         width: 1,
         read_widths: vec![1],
         sites: vec![
             Site::Filter(Shape::Lowpass),
-            Site::Physics(Box::new(string(release))),
+            Site::Physics(Box::new(string())),
         ],
     }
 }
@@ -62,11 +66,11 @@ fn ramp() -> Buffer {
     Buffer::mono(RATE, (0..LEN).map(|i| (i % 97) as f64 / 97.0).collect())
 }
 
-fn whole(release: f64) -> Vec<f64> {
+fn whole(landing: f64) -> Vec<f64> {
     let read = ramp();
-    let out = renderer()
+    let out = renderer(landing)
         .run(
-            &layout(release),
+            &layout(),
             &Ctx {
                 rate: RATE,
                 start: 0,
@@ -78,8 +82,8 @@ fn whole(release: f64) -> Vec<f64> {
     out.plane(0).to_vec()
 }
 
-fn opened(release: f64) -> Machine {
-    Machine::open(&renderer(), &layout(release), RATE).expect("a machine")
+fn opened(landing: f64) -> Machine {
+    Machine::open(&renderer(landing), &layout(), RATE).expect("a machine")
 }
 
 fn run(machine: &mut Machine, tape: &mut Tape, to: i64) {
@@ -120,8 +124,8 @@ fn a_held_state_resumed_in_a_fresh_machine_writes_the_rest_of_the_run() {
     assert_eq!(tape.since(0, 0), want.as_slice());
 }
 
-/// The damper lands at `ceil(release*sr)`, so a state held at or before it is the same under
-/// either release.
+/// Before the felt presses the two runs agree sample and state, so a held string's state is
+/// the released one's at the landing, and the one site takes it whole.
 #[test]
 fn a_string_held_unreleased_and_resumed_with_a_release_is_the_released_run() {
     let release = 0.04;
@@ -133,7 +137,7 @@ fn a_string_held_unreleased_and_resumed_with_a_release_is_the_released_run() {
     run(&mut held, &mut tape, landing);
 
     let mut resumed = opened(release);
-    resumed.carry(&held.state()).expect("a release alone moved");
+    resumed.carry(&held.state()).expect("the same sites");
     run(&mut resumed, &mut tape, LEN as i64);
     assert_eq!(tape.since(0, 0), want.as_slice());
 }
@@ -144,11 +148,11 @@ fn a_state_held_for_other_parameters_is_refused() {
     let other = Layout {
         sites: vec![
             Site::Filter(Shape::Highpass),
-            Site::Physics(Box::new(string(f64::INFINITY))),
+            Site::Physics(Box::new(string())),
         ],
-        ..layout(f64::INFINITY)
+        ..layout()
     };
-    let mut machine = Machine::open(&renderer(), &other, RATE).expect("a machine");
+    let mut machine = Machine::open(&renderer(f64::INFINITY), &other, RATE).expect("a machine");
     assert_eq!(machine.carry(&held).err(), Some(SampleError::StateMismatch));
 }
 

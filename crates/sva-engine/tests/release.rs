@@ -1,4 +1,4 @@
-// Concern: proves a key-up time changes no sample before it, and is never where nobody binds it | Non-concern: rendering until silent after it | IO: (a composition) -> a Buffer or a refusal
+// Concern: proves a note's release is an ordinary parameter inf never reaches, and how a solver's parameters may move | Non-concern: rendering until silent | IO: (a composition) -> samples or a refusal
 
 mod fixtures;
 
@@ -11,7 +11,7 @@ const RATE: u32 = 44_100;
 
 /// PLAN.md's envelope over one sine: attack, decay to a sustain held until release, then
 /// an exponential release from wherever the envelope stood at key-up.
-const SYNTH: &str = "a = 0.01\nd = 0.3\ns = 0.6\nr = 0.4\n\
+const SYNTH: &str = "a = 0.01\nd = 0.3\ns = 0.6\nr = 0.4\nrelease = inf\n\
     held = crop(min(t/a, 1)*(s + (1 - s)*exp(-max(t - a, 0)/d)), 0s, release)\n\
     at_release = min(release/a, 1)*(s + (1 - s)*exp(-max(release - a, 0)/d))\n\
     sin(2*pi*f0*t)*(held + crop(at_release*exp(-(t - release)/r), release, 60s))\n";
@@ -25,8 +25,7 @@ fn samples(files: &[(&str, &str)], root: &str, secs: f64) -> Vec<f64> {
 }
 
 fn refusal(body: &str) -> EngineError {
-    let files = [("env", "crop(1, 0s, release)\n"), ("probe", body)];
-    let g = graph_of("probe", &files);
+    let g = graph_of("probe", &[("probe", body)]);
     match render(&g, "probe", RenderConfig::seconds(RATE, 1.0), None) {
         Err(e) => e,
         Ok(_) => panic!("`{body}` rendered"),
@@ -86,140 +85,28 @@ fn a_note_nobody_releases_holds_its_sustain() {
     }
 }
 
+/// A stored-energy coefficient only jumps, and a varying parameter holds its range at every
+/// sample; each is refused by its own code.
 #[test]
-fn a_sampled_note_released_at_half_a_second_is_the_held_note_until_then() {
-    let filtered = "lowpass(sample(@synth(t, f0=220, release=release)), cutoff=880, q=0.707)\n";
-    let files = [
-        ("synth", SYNTH),
-        ("tone", filtered),
-        ("released", "@tone(t, release=0.5)\n"),
-        ("held", "@tone(t)\n"),
-    ];
-    let released = samples(&files, "released", 1.0);
-    let held = samples(&files, "held", 1.0);
-    let key_up = (0.5 * f64::from(RATE)) as usize;
-    // The two windows cut the same atoms at different instants, which reorders one sum.
-    for i in 0..key_up {
-        assert!(
-            (released[i] - held[i]).abs() <= 1e-12,
-            "sample {i} before key-up: {} against {}",
-            released[i],
-            held[i]
-        );
-    }
-    assert_ne!(released[key_up + 4410], held[key_up + 4410]);
-}
-
-#[test]
-fn a_sample_before_release_that_reads_it_is_refused_by_name() {
-    for (body, term) in [
-        ("sin(2*pi*release*t)\n", "2*pi*release"),
+fn a_solver_parameter_moves_only_as_its_model_allows() {
+    for (body, code) in [
         (
-            "crop(sin(2*pi*t), 0s, release, fall=0.1s)\n",
-            "crop(sin(2*pi*t), 0s, release, fall=0.1)",
+            "chaigne_askenfelt(261.63, damper_k=1e3*t)\n",
+            "engine.moving_energy_parameter",
         ),
-        ("@env(t + 0.1s)\n", "@env(t + 0.1s)"),
-        ("crop(1, 0s, 2*release)\n", "2*release"),
         (
-            "fourier(crop(sin(2*pi*t), 0s, release))\n",
-            "fourier(crop(sin(2*pi*t), 0s, release))",
+            "chaigne_askenfelt(261.63, damper_r=t - 0.5)\n",
+            "samples.argument_out_of_range",
+        ),
+        (
+            "willemsen_bilbao_serafin(196, bow_force=crop(2, 0s, 0.5s))\n",
+            "samples.argument_out_of_range",
         ),
     ] {
         let e = refusal(body);
-        assert_eq!(e.code(), "engine.release_not_causal", "{body}");
-        assert!(e.to_string().contains(&format!("`{term}`")), "{body}: {e}");
+        assert_eq!(e.code(), code, "{body}: {e}");
     }
-}
-
-/// An edge a constant past `release` moves nothing before it, so a note gated a tail after
-/// its key-up is the held note until the tail's fall; an edge before `release` still refuses.
-#[test]
-fn a_crop_a_constant_past_release_is_the_held_note_until_then() {
-    let files = [
-        ("synth", SYNTH),
-        (
-            "gated",
-            "crop(@synth(t, f0=220, release=release), 0s, release + 0.2s, fall=0.1s)\n",
-        ),
-        ("released", "@gated(t, release=0.5)\n"),
-        ("held", "@synth(t, f0=220, release=0.5)\n"),
-        ("unbound", "@gated(t)\n"),
-        ("sustained", "@synth(t, f0=220)\n"),
-    ];
-    let released = samples(&files, "released", 1.0);
-    let held = samples(&files, "held", 1.0);
-    let fall = (0.6 * f64::from(RATE)) as usize;
-    for i in 0..fall {
-        assert!(
-            (released[i] - held[i]).abs() <= 1e-12,
-            "sample {i}: gated {} against held {}",
-            released[i],
-            held[i]
-        );
-    }
-    let end = (0.7 * f64::from(RATE)) as usize + 1;
-    assert!(
-        released[end..].iter().all(|v| *v == 0.0),
-        "silent past the tail"
-    );
-    let unbound = samples(&files, "unbound", 1.0);
-    let sustained = samples(&files, "sustained", 1.0);
-    for (i, (a, b)) in unbound.iter().zip(&sustained).enumerate() {
-        assert!(
-            (a - b).abs() <= 1e-12,
-            "sample {i}: unbound gate {a} against {b}"
-        );
-    }
-    let e = refusal("crop(1, 0s, release - 0.1s)\n");
-    assert_eq!(e.code(), "engine.release_not_causal", "{e}");
-}
-
-#[test]
-fn a_past_read_of_a_releasing_node_is_causal() {
-    let files = [
-        ("env", "crop(1, 0s, release)\n"),
-        ("late", "@env(t - 0.1s, release=0.5)\n"),
-    ];
-    let late = samples(&files, "late", 1.0);
-    assert_eq!(late[(0.05 * f64::from(RATE)) as usize], 0.0);
-    assert_eq!(late[(0.3 * f64::from(RATE)) as usize], 1.0);
-    assert_eq!(late[(0.7 * f64::from(RATE)) as usize], 0.0);
-}
-
-const STRING: &str = "chaigne_askenfelt(f0, release=release)\n";
-
-#[test]
-fn a_felted_string_is_the_held_string_until_its_felt_lands() {
-    let files = [
-        ("string", STRING),
-        ("released", "@string(t, f0=261.63, release=0.5)\n"),
-        ("held", "@string(t, f0=261.63)\n"),
-        ("plain", "chaigne_askenfelt(261.63)\n"),
-    ];
-    let released = samples(&files, "released", 1.0);
-    let held = samples(&files, "held", 1.0);
-    assert_eq!(
-        held,
-        samples(&files, "plain", 1.0),
-        "an unbound release never lands"
-    );
-    let landing = (0.5 * f64::from(RATE)).ceil() as usize;
-    assert_eq!(released[..=landing], held[..=landing]);
-    assert_ne!(released[landing + 1..], held[landing + 1..]);
-}
-
-#[test]
-fn a_solver_reads_release_only_as_its_own_landing() {
-    for body in [
-        "chaigne_askenfelt(261.63, damper_r=release)\n",
-        "chaigne_askenfelt(261.63, release=release + 0.1)\n",
-        "willemsen_bilbao_serafin(261.63, bow_vel=release)\n",
-    ] {
-        let refused = refusal(body);
-        assert_eq!(
-            refused.code(),
-            "engine.release_not_causal",
-            "{body}: {refused}"
-        );
-    }
+    let jumps = "chaigne_askenfelt(261.63, damper_k=1e3*step(t - 0.1))\n";
+    let g = graph_of("jumps", &[("jumps", jumps)]);
+    render(&g, "jumps", RenderConfig::seconds(RATE, 0.2), None).expect("a spring that jumps");
 }

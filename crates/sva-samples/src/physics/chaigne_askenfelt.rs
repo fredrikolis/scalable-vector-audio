@@ -35,14 +35,11 @@ pub struct ChaigneAskenfeltParams {
     /// Cents off `detune`'s placing.
     pub string_cents: [f64; MAX_UNISON],
     pub string_hammer_k_ratio: [f64; MAX_UNISON],
-    /// Seconds to the felt's landing; `INFINITY` is never.
-    pub release: f64,
     pub damper_pos: f64,
     /// N s/m.
     pub damper_r: f64,
     /// N/m.
     pub damper_k: f64,
-    pub damper_ramp: f64,
 }
 
 impl ChaigneAskenfeltParams {
@@ -64,11 +61,9 @@ impl ChaigneAskenfeltParams {
             bridge_mass: 0.0,
             string_cents: [0.0; MAX_UNISON],
             string_hammer_k_ratio: [1.0; MAX_UNISON],
-            release: f64::INFINITY,
             damper_pos: DAMPER_POS,
-            damper_r: DAMPER_R_C4 * (262.0 / f0).powi(2),
-            damper_k: DAMPER_K,
-            damper_ramp: DAMPER_RAMP,
+            damper_r: 0.0,
+            damper_k: 0.0,
         }
     }
 }
@@ -100,23 +95,19 @@ impl ChaigneAskenfeltParams {
             (self.damper_pos, OpenUnit),
             (self.damper_r, NonNegative),
             (self.damper_k, NonNegative),
-            (self.damper_ramp, NonNegative),
-        ]) && self.release >= 0.0
+        ])
     }
 }
 
-/// The felt's dashpot moves every sample; its spring is stored energy, so it only jumps.
+/// The dashpot moves every sample; the spring stores energy, so it only jumps.
 pub const VARYING: &[(&str, Varies)] = &[
     ("damper_r", Varies::PerSample),
     ("damper_k", Varies::Piecewise),
 ];
 
-/// Position, dashpot, ramp and felt length fitted to MAPS ENSTDkCl forte key-off slopes,
-/// A0 to C5 (Emiya, Badeau & David 2010); the spring is unfitted.
+/// Fitted to MAPS ENSTDkCl forte key-off slopes (Emiya, Badeau & David 2010) beside a caller's
+/// `damper_r = 0.1 (262/f0)^2` ramped in over 0.03 s; unpressed, the felt is lifted.
 const DAMPER_POS: f64 = 0.15;
-const DAMPER_R_C4: f64 = 0.1;
-const DAMPER_K: f64 = 0.0;
-const DAMPER_RAMP: f64 = 0.03;
 const FELT_LENGTH_M: f64 = 0.04;
 
 const WIRE_DENSITY_KG_M3: f64 = 7850.0;
@@ -155,7 +146,7 @@ fn unison_frequencies(f0: f64, detune: f64, unison_count: usize, cents: &[f64]) 
         .collect()
 }
 
-/// Bounds `valid()`, so the per-string force buffer can be a stack array.
+/// Bounds `valid()`: the force buffer is a stack array.
 const MAX_UNISON: usize = 3;
 
 #[derive(Clone)]
@@ -172,17 +163,12 @@ pub struct ChaigneAskenfeltSite {
     pub(crate) bridge_mass: f64,
     pub(crate) dt: f64,
     pub(crate) felt: Vec<Vec<Felt>>,
-    /// Per string, the nodes under the felt, each one's share and `dt/(rho dx)`.
+    /// Per string, nodes under the felt, each share, `dt/(rho dx)`.
     under_felt: Vec<(Vec<usize>, f64, f64)>,
-    /// The `(damper_r, damper_k)` the felt was opened with, and the pair it is designed for.
+    /// `(damper_r, damper_k)` as opened, and as the felt is designed for.
     own: (f64, f64),
     designed_for: (f64, f64),
-    pub(crate) landing: Option<(u64, f64)>,
     pub(crate) steps: u64,
-}
-
-pub fn landing_step(release: f64, sr: f64) -> Option<u64> {
-    release.is_finite().then(|| (release * sr).ceil() as u64)
 }
 
 /// Every node under the felt, or the nearest, sharing it evenly.
@@ -232,7 +218,6 @@ impl ChaigneAskenfeltSite {
             .iter()
             .map(|g| point_weights(g.n, params.strike_pos))
             .collect();
-        let landing = landing_step(params.release, sr).map(|at| (at, params.damper_ramp * sr));
         let under: Vec<_> = strings.iter().map(|g| under_felt(g, params, dt)).collect();
         let own = (params.damper_r, params.damper_k);
         let site = ChaigneAskenfeltSite {
@@ -240,7 +225,6 @@ impl ChaigneAskenfeltSite {
             under_felt: under,
             own,
             designed_for: own,
-            landing,
             steps: 0,
             detached: vec![false; strings.len()],
             strings,
@@ -309,18 +293,12 @@ impl ChaigneAskenfeltSite {
     }
 
     pub(crate) fn springs(&self, i: usize) -> &[Felt] {
-        match self.landing {
-            Some((at, _)) if self.steps > at => &self.felt[i],
-            _ => &[],
-        }
+        &self.felt[i]
     }
 
-    pub(crate) fn pressing(&self) -> Option<f64> {
-        let (at, ramp) = self.landing?;
-        (self.steps >= at).then(|| match ramp > 0.0 {
-            true => ((self.steps - at) as f64 / ramp).min(1.0),
-            false => 1.0,
-        })
+    /// With neither dashpot nor spring the felt leaves the string, to the bit.
+    pub(crate) fn pressing(&self) -> bool {
+        self.designed_for.0.to_bits() != 0 || self.designed_for.1.to_bits() != 0
     }
 }
 
@@ -359,27 +337,6 @@ impl Solver for ChaigneAskenfeltSite {
                 .sum::<usize>();
         size_of::<Self>() + grids + strike + felt + super::floats(&self.tensions)
     }
-
-    /// Strings, hammer, bridge and step count move; the felt, landing and proof stay this site's.
-    fn take_motion(&mut self, held: &dyn Solver) -> bool {
-        let Some(held) = held.as_any().downcast_ref::<ChaigneAskenfeltSite>() else {
-            return false;
-        };
-        let alike = held.strings.len() == self.strings.len()
-            && held
-                .strings
-                .iter()
-                .zip(&self.strings)
-                .all(|(a, b)| a.n == b.n);
-        if alike {
-            self.strings = held.strings.clone();
-            self.hammer = held.hammer.clone();
-            self.detached = held.detached.clone();
-            (self.bridge_now, self.bridge_prev) = (held.bridge_now, held.bridge_prev);
-            self.steps = held.steps;
-        }
-        alike
-    }
 }
 
 impl ChaigneAskenfeltSite {
@@ -409,8 +366,8 @@ impl ChaigneAskenfeltSite {
             grid.y_next[i] = stencil_update(grid, i, 0.0, 0.0);
         }
         spread(grid, &self.strike[0], forces[0], self.dt);
-        if let Some(share) = pressing {
-            press(grid, &self.felt[0], share);
+        if pressing {
+            press(grid, &self.felt[0]);
         }
         grid.y_next[0] = 0.0;
         grid.y_next[n] = 0.0;
@@ -444,8 +401,8 @@ impl ChaigneAskenfeltSite {
                 grid.y_next[j] = stencil_update(grid, j, bridge_now, bridge_prev);
             }
             spread(grid, &self.strike[i], force, self.dt);
-            if let Some(share) = pressing {
-                press(grid, &self.felt[i], share);
+            if pressing {
+                press(grid, &self.felt[i]);
             }
             grid.y_next[0] = 0.0;
             let w = grid.rho * grid.dx / dt2;

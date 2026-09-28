@@ -28,9 +28,8 @@ fn pinned(y: &[f64], _n: usize, j: usize) -> f64 {
 pub(crate) type Felt = (usize, f64, f64);
 
 /// Spring and dashpot centred on `y^n`.
-pub(crate) fn press(grid: &mut StringGrid, felt: &[Felt], share: f64) {
+pub(crate) fn press(grid: &mut StringGrid, felt: &[Felt]) {
     for &(j, kappa, rho) in felt {
-        let rho = rho * share;
         grid.y_next[j] =
             (grid.y_next[j] + (rho - kappa / 2.0) * grid.y_prev[j]) / (1.0 + kappa / 2.0 + rho);
     }

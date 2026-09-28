@@ -118,7 +118,7 @@ mod tests {
     use crate::physics::Solver;
     use crate::physics::chaigne_askenfelt::ChaigneAskenfeltParams;
 
-    fn dissipated(site: &ChaigneAskenfeltSite, older: &[Vec<f64>], share: Option<f64>) -> f64 {
+    fn dissipated(site: &ChaigneAskenfeltSite, older: &[Vec<f64>]) -> f64 {
         let k = site.dt;
         let mut summed = 0.0;
         let mut bridge = site.dt * site.bridge_r();
@@ -131,7 +131,7 @@ mod tests {
             let bent: f64 = (0..n).map(|j| (vbar[j + 1] - vbar[j]).powi(2)).sum();
             let felt: f64 = site.felt[i]
                 .iter()
-                .map(|&(j, _, rho)| 2.0 * rho * share.unwrap_or(0.0) * vbar[j] * vbar[j])
+                .map(|&(j, _, rho)| 2.0 * rho * vbar[j] * vbar[j])
                 .sum();
             let m = grid.rho * grid.dx;
             summed += m * (grid.damp_a * own + grid.damp_b * bent + felt);
@@ -141,7 +141,7 @@ mod tests {
         (summed + bridge * vbar_p * vbar_p) / (k * k)
     }
 
-    fn unison(f0: f64, bridge_mass: f64, release: f64) -> ChaigneAskenfeltParams {
+    fn unison(f0: f64, bridge_mass: f64, damper_r: f64) -> ChaigneAskenfeltParams {
         ChaigneAskenfeltParams {
             unison_count: 3.0,
             detune: 1.0,
@@ -149,32 +149,32 @@ mod tests {
             bridge_mass,
             string_cents: [-0.2, 0.0, 0.25],
             string_hammer_k_ratio: [1.0, 0.8, 0.6],
-            release,
+            damper_r,
             ..ChaigneAskenfeltParams::at(f0)
         }
     }
 
     #[test]
     fn a_unison_loses_exactly_what_its_losses_and_its_bridge_dissipate() {
-        for (f0, bridge_mass, release) in [
-            (65.406, 1.0, f64::INFINITY),
-            (261.63, 1.0, 0.05),
-            (261.63, 0.0, f64::INFINITY),
-            (2093.0, 0.3, 0.05),
+        for (f0, bridge_mass, damper_r) in [
+            (65.406, 1.0, 0.0),
+            (261.63, 1.0, 0.1),
+            (261.63, 0.0, 0.0),
+            (2093.0, 0.3, 0.1),
         ] {
-            let p = unison(f0, bridge_mass, release);
+            let p = unison(f0, bridge_mass, damper_r);
             let mut site = ChaigneAskenfeltSite::new(&p, 44_100.0).expect("a grid");
             while !site.let_go() {
                 site.step(&[]).expect("a sample");
             }
             for step in 0..4410 {
                 let older: Vec<Vec<f64>> = site.strings.iter().map(|g| g.y_prev.clone()).collect();
-                let (before, share) = (site.energy(), site.pressing());
+                let before = site.energy();
                 site.step(&[]).expect("a sample");
-                let residual = site.energy() - before + dissipated(&site, &older, share);
+                let residual = site.energy() - before + dissipated(&site, &older);
                 assert!(
                     residual.abs() <= 1e-12 * before,
-                    "f0 {f0} bridge {bridge_mass} step {step}: E {before} misses its balance \
+                    "f0 {f0} bridge {bridge_mass} damper {damper_r} step {step}: E {before} misses its balance \
                      by {residual}"
                 );
             }
@@ -201,7 +201,7 @@ mod tests {
                 .iter()
                 .map(|g| (g.y_now.clone(), g.y_prev.clone()))
                 .collect();
-            let (before, share, springs) = (site.energy(), site.pressing(), site.felt.clone());
+            let (before, springs) = (site.energy(), site.felt.clone());
             site.step(&[r, k]).expect("a sample");
             let jumped: f64 = site
                 .strings
@@ -220,7 +220,7 @@ mod tests {
                     w * moved
                 })
                 .sum();
-            let residual = site.energy() - before + dissipated(&site, &older, share) - jumped;
+            let residual = site.energy() - before + dissipated(&site, &older) - jumped;
             assert!(
                 residual.abs() <= 1e-12 * before,
                 "step {step}: E {before} misses its balance by {residual} (jump {jumped})"

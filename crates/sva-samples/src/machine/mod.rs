@@ -272,45 +272,17 @@ impl Machine {
         }
     }
 
-    /// Whether `carry` takes `held`: the same sites, a solver's release alone aside.
+    /// Whether `carry` takes `held`: the same sites, a varying parameter's values aside.
     pub fn accepts(&self, held: &MachineState) -> bool {
-        held.sites.len() == self.program.sites.len()
-            && self
-                .program
-                .sites
-                .iter()
-                .zip(&held.sites)
-                .all(|pair| match pair {
-                    (mine, theirs) if mine == theirs => true,
-                    (Site::Physics(a), Site::Physics(b)) => a.differs_in_release_alone(b),
-                    _ => false,
-                })
+        held.sites == self.program.sites
     }
 
-    /// Takes `held`'s state site by site. A solver whose release alone moved keeps its own
-    /// parameters and takes only the motion; any other difference refuses.
+    /// Takes `held`'s state whole, or refuses where its sites are not these.
     pub fn carry(&mut self, held: &MachineState) -> Result<(), SampleError> {
-        if held.sites.len() != self.program.sites.len() {
+        if !self.accepts(held) {
             return Err(SampleError::StateMismatch);
         }
-        for (at, (mine, theirs)) in self.program.sites.iter().zip(&held.sites).enumerate() {
-            let taken = match (mine, theirs, &mut self.states[at], &held.states[at]) {
-                _ if mine == theirs => {
-                    self.states[at] = held.states[at].clone();
-                    true
-                }
-                (
-                    Site::Physics(a),
-                    Site::Physics(b),
-                    State::Physics(solver),
-                    State::Physics(motion),
-                ) if a.differs_in_release_alone(b) => solver.take_motion(motion.as_ref()),
-                _ => false,
-            };
-            if !taken {
-                return Err(SampleError::StateMismatch);
-            }
-        }
+        self.states.clone_from(&held.states);
         Ok(())
     }
 }

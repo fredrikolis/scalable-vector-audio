@@ -34,11 +34,6 @@ pub trait Solver: Held + Send + Sync {
 
     /// What one copy of this site holds, its grids and parameters alike.
     fn bytes(&self) -> usize;
-
-    /// `held`'s motion under this site's own parameters, where the two share one.
-    fn take_motion(&mut self, _held: &dyn Solver) -> bool {
-        false
-    }
 }
 
 pub trait Held {
@@ -85,20 +80,6 @@ impl Params {
             Params::RhaoutiChaigneJoly(_) => "rhaouti_chaigne_joly",
             Params::ChaigneDoutaut(_) => "chaigne_doutaut",
             Params::Botteldooren(_) => "botteldooren",
-        }
-    }
-
-    pub fn differs_in_release_alone(&self, other: &Params) -> bool {
-        match (self, other) {
-            (Params::ChaigneAskenfelt(a), Params::ChaigneAskenfelt(b)) => {
-                a.release != b.release
-                    && *a
-                        == ChaigneAskenfeltParams {
-                            release: a.release,
-                            ..b.clone()
-                        }
-            }
-            _ => false,
         }
     }
 

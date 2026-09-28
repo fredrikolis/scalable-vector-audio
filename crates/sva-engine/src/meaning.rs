@@ -135,23 +135,17 @@ fn solver(builtin: &str, key: &str) -> Option<Meaning> {
             "bridge",
         ),
         (_, "bridge_mass") => m("bridge mass; 0 is massless", "kg", "bridge"),
-        (_, "release") => m(
-            "when the felt damper lands on every string; unbound is never",
-            "s",
-            "damper",
-        ),
         (_, "damper_pos") => m("where the felt presses, along the length", "none", "damper"),
         (_, "damper_r") => m(
-            "felt dashpot once ramped in; may move every sample",
+            "felt dashpot pressing every string; 0 is lifted; may move every sample",
             "N*s/m",
             "damper",
         ),
         (_, "damper_k") => m(
-            "felt spring, whole from the landing; may only jump",
+            "felt spring pressing every string; may only jump",
             "N/m",
             "damper",
         ),
-        (_, "damper_ramp") => m("time the felt dashpot ramps in over", "s", "damper"),
         (_, "bow_pos") => m("where the bow touches, along the length", "none", "bow"),
         (_, "bow_vel") => m("bow velocity; may move every sample", "m/s", "bow"),
         (_, "bow_force") => m(

@@ -646,7 +646,7 @@ fn a_stream_crosses_block_by_block_and_a_replaced_term_releases_it() {
         "filtered",
         "lowpass(sample(@partials/one), cutoff=300, q=0.7)\n",
     );
-    held.insert("gated", "crop(@filtered, 0s, release)\n");
+    held.insert("gated", "release = inf\ncrop(@filtered, 0s, release)\n");
     let mut stream = opened(&held, "filtered");
     assert_eq!((stream.channels(), stream.sample_rate()), (1, 8000));
     let heard = blocks(&mut stream, 8000 / BLOCK);

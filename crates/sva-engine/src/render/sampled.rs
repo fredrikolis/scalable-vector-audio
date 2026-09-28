@@ -217,9 +217,10 @@ struct Build<'a> {
 impl Build<'_> {
     fn of(&mut self, id: NodeId) -> Result<NodeRenderer, EngineError> {
         match self.held.tys.value(id).clone() {
-            Value::ClosedForm(form) if crate::lower::never(&form.body) => {
-                Ok(NodeRenderer::Const(f64::INFINITY))
-            }
+            Value::ClosedForm(sva_formula::ClosedForm {
+                body: sva_formula::Body::Const(c),
+                ..
+            }) if c.im == 0.0 => Ok(NodeRenderer::Const(c.re)),
             Value::ClosedForm(form) => match crate::lower::constant_value(&form.body, form.var) {
                 Some(v) => Ok(NodeRenderer::Const(v)),
                 None => crate::lower::inline::renderer(&self.held.tys, id)
@@ -400,7 +401,13 @@ impl Build<'_> {
 }
 
 pub fn refused(held: &Render, id: NodeId, e: &SampleError) -> EngineError {
-    collapse_refused(&held.tys, id, &e.to_string(), e.code())
+    let mut refusal = collapse_refused(&held.tys, id, &e.to_string(), e.code());
+    if let (SampleError::ArgumentOutOfRange { .. }, EngineError::Refused(d)) = (e, &mut refusal) {
+        d.help = "keep the parameter in its range at every sample; `sva-cli builtins` names \
+                  each argument's range"
+            .to_string();
+    }
+    refusal
 }
 
 fn collapse_refused(tys: &Typing, id: NodeId, message: &str, code: &str) -> EngineError {

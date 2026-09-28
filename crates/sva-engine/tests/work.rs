@@ -8,7 +8,7 @@ use sva_engine::{Range, RenderConfig, Stream, StreamConfig, Work, render};
 
 const RATE: u32 = 44_100;
 
-const VOICE: &str = "lowpass(sample(0.3*vel*(saw(f0*8ct) + saw(f0/8ct))*(crop(min(t/0.005, 1)*(0.6 + \
+const VOICE: &str = "release = inf\nlowpass(sample(0.3*vel*(saw(f0*8ct) + saw(f0/8ct))*(crop(min(t/0.005, 1)*(0.6 + \
     0.4*exp(-t/0.25)), 0s, release) + crop(min(release/0.005, 1)*(0.6 + \
     0.4*exp(-release/0.25))*exp(-(t - release)/0.3), release, 3600s))), cutoff=min(f0*(2 + \
     10*vel), 18000), q=0.9)\n";

@@ -10,7 +10,7 @@ use sva_samples::physics::Varies;
 use crate::arguments::{Argument, Called, Chosen};
 use crate::cast::Cast;
 use crate::error::EngineError;
-use crate::instantiate::{Cx, RELEASE};
+use crate::instantiate::Cx;
 use crate::lower::{Lowering, Piece};
 use crate::typing::Value;
 use crate::vocabulary::SERIES;
@@ -310,10 +310,11 @@ impl<'g> Lowering<'_, 'g> {
         span: ByteSpan,
     ) -> Result<Edge, EngineError> {
         let folded = crate::refs::fold_constants(self.typing, body);
-        if super::never(&folded) {
-            return Ok(Edge::PosInf);
-        }
-        match super::constant_value(&folded, var) {
+        let infinite = match folded {
+            Body::Const(c) if c.im == 0.0 && c.re.is_infinite() => Some(c.re),
+            _ => None,
+        };
+        match infinite.or_else(|| super::constant_value(&folded, var)) {
             Some(x) => Ok(Edge::at(x)),
             None => Err(self.refused_at(
                 "engine.non_constant_argument",
@@ -348,11 +349,6 @@ impl<'g> Lowering<'_, 'g> {
             };
             match self.chosen_value(value, cx, chosen) {
                 Some(v) => out.push((key.clone(), v)),
-                None if matches!(value, Expr::Var(name) if name == RELEASE)
-                    && crate::release::never(self.inst, cx.scope) =>
-                {
-                    out.push((key.clone(), f64::INFINITY))
-                }
                 None if crate::vocabulary::named_may_move(name, key) => {}
                 None => {
                     return Err(self.refused_at(

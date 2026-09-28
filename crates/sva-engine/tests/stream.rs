@@ -17,10 +17,14 @@ const PIANO3: &str = "0.0014822 * chaigne_askenfelt(f0, vel=vel, b=max(1.4e-4, \
     string1_hammer_k_ratio=1, string2_hammer_k_ratio=0.8, string3_hammer_k_ratio=0.6)\n";
 
 /// The demo synth voice: two detuned saws through a lowpass under an ADSR.
-const VOICE: &str = "lowpass(sample(0.3*vel*(saw(f0*8ct) + saw(f0/8ct))*(crop(min(t/0.005, 1)*(0.6 + \
+const VOICE: &str = "release = inf\nlowpass(sample(0.3*vel*(saw(f0*8ct) + saw(f0/8ct))*(crop(min(t/0.005, 1)*(0.6 + \
     0.4*exp(-t/0.25)), 0s, release) + crop(min(release/0.005, 1)*(0.6 + \
     0.4*exp(-release/0.25))*exp(-(t - release)/0.3), release, 3600s))), cutoff=min(f0*(2 + \
     10*vel), 18000), q=0.9)\n";
+
+/// A string whose felt, lifted until `release`, ramps its dashpot in over 0.03 s.
+const STRING: &str = "release = inf\nchaigne_askenfelt(f0, damper_r=0.1*pow(262/f0, 2)\
+    *crop(min(1, (t - release)/0.03), release, inf))\n";
 
 const ECHO: &str = "feedback = 0.35\nx + feedback*self(t - 0.25s)\n";
 
@@ -40,7 +44,7 @@ fn composition() -> Graph {
             ("sawed", "lowpass(sample(@saw), cutoff=900, q=0.8)\n"),
             ("spectrum", "exp(0 - pow(f/300, 2))\n"),
             ("ahead", "@note(t + 0.01s)\n"),
-            ("string", "chaigne_askenfelt(f0, release=release)\n"),
+            ("string", STRING),
             ("damped", "@string(t, f0=523.25, release=0.05)\n"),
             ("held", "sin(2*pi*220*t)\n"),
             ("bar", "chaigne_doutaut(440)\n"),

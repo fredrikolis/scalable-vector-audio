@@ -431,7 +431,7 @@ impl Rendering {
 }
 
 /// A target block by block, reading `@notes` as the sum of its terms, as `@hall(t, x=@notes)`.
-/// A key-up replaces a term with one binding `release`. A one-ref term leaves with its handle
+/// A key-up replaces a term with one whose release is a number. A one-ref term leaves with its handle
 /// once its node ends, bar the last.
 #[wasm_bindgen]
 pub struct Stream {

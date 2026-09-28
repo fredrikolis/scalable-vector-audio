@@ -32,7 +32,7 @@ RENDER:
   conformance profile it ran under, and its rate.
 
   The target's own ref may read an interval: `@piano4([0, 2b], f0=C4,
-  vel=0.5, release=1s)`. Its ends are the language's literals (`s`, `ms`, `b`,
+  vel=0.5, release=1s)`, where `release` is the instrument's own parameter. Its ends are the language's literals (`s`, `ms`, `b`,
   `sp`, or a bare `0`); `[a, inf)` and `[a,)` leave the end open; the other
   arguments are the node's own named ones. The start trims the output alone:
   history before it is still computed, so a loop or a filter carries the state
@@ -43,8 +43,7 @@ RENDER:
   Every node is computed over its support met with what reads it, and nowhere
   else: outside its support a node is exactly zero. A closed interval renders
   exactly its length; an open one ends where the root's support does, at a
-  crop's end, or at a release and the crop or the exact underflow of the `exp`
-  after it. An open interval over a root whose support never ends (a held
+  crop's end, or at the exact underflow of an `exp` a crop opens. An open interval over a root whose support never ends (a held
   sine, a physical solver) refuses as `render.no_end`. A short-time transform
   reads its input whole, and refuses one with no end as
   `engine.unbounded_extent`.

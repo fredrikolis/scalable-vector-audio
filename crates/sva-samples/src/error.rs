@@ -207,11 +207,9 @@ impl std::fmt::Display for SampleError {
                 "`{model}`'s contact force settled on no value at sample {sample}. ask for a \
                  lower bow velocity or force, or a higher --rate"
             ),
-            SampleError::StateMismatch => write!(
-                f,
-                "the state held is for other call sites than these: a site that moved takes \
-                 only a chaigne_askenfelt string's motion, and only across a new release"
-            ),
+            SampleError::StateMismatch => {
+                write!(f, "the state held is for other call sites than these")
+            }
             SampleError::ArgumentOutOfRange {
                 model,
                 name,
@@ -219,8 +217,7 @@ impl std::fmt::Display for SampleError {
                 sample,
             } => write!(
                 f,
-                "`{model}`'s `{name}` is {} at sample {sample}, outside the range it \
-                 models. `sva-cli builtins` names each argument's range",
+                "`{model}`'s `{name}` is {} at sample {sample}, outside the range it models",
                 f64::from_bits(*bits)
             ),
         }

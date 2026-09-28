@@ -9,14 +9,18 @@ use sva_engine::{Cache, Outcome, PayloadKind, Range, RenderConfig, Stream, Strea
 const RATE: u32 = 44_100;
 const BLOCK: usize = 1_024;
 
-/// piano3 with its damper wired to `release`.
-const PIANO: &str = "0.0014822 * chaigne_askenfelt(f0, vel=vel, release=release, \
+/// piano3 with its damper wired to `release`: lifted until then, ramped in over 0.03 s.
+const PIANO: &str = "release = inf\n0.0014822 * chaigne_askenfelt(f0, vel=vel, \
+    damper_r=0.1*pow(262/f0, 2)*crop(min(1, (t - release)/0.03), release, inf), \
     b=max(1.4e-4, 4.1e-4*pow(f0/262, 1.9)), strike_pos=0.12, hammer_mass=0.009, \
     hammer_k=2e10*max(1, pow(f0/523, 0.6)), hammer_p=3, damp_dc=1.327*exp(0.394*log(f0/262) \
     - 0.12*log(f0/262)*log(f0/262)), damp_freq=0.00044109413838472024, unison_count=3, \
     detune=1, bridge_coupling=97.2*pow(f0/262, 0.677), bridge_mass=1.04*exp(0.466*log(f0/262) \
     - 0.506*log(f0/262)*log(f0/262)), string1_cents=-0.2, string2_cents=0, string3_cents=0.25, \
     string1_hammer_k_ratio=1, string2_hammer_k_ratio=0.8, string3_hammer_k_ratio=0.6)\n";
+
+const PLUCK: &str = "release = inf\nchaigne_askenfelt(f0, damper_r=0.1*pow(262/f0, 2)\
+    *crop(min(1, (t - release)/0.03), release, inf))\n";
 
 const ECHO: &str = "feedback = 0.35\nx + feedback*self(t - 0.25s)\n";
 
@@ -26,25 +30,31 @@ fn composition(released: f64) -> Graph {
         &[
             ("piano", PIANO),
             ("echo", ECHO),
-            ("pluck", "chaigne_askenfelt(f0, release=release)\n"),
+            ("pluck", PLUCK),
             (
                 "key",
-                "@echo(t, x=@piano(t, f0=261.63, vel=4.5, release=release))\n",
+                "release = inf\n@echo(t, x=@piano(t, f0=261.63, vel=4.5, release=release))\n",
             ),
             ("released", &format!("@key(t, release={released})\n")),
-            ("note", "@piano(t, f0=261.63, vel=4.5, release=release)\n"),
+            (
+                "note",
+                "release = inf\n@piano(t, f0=261.63, vel=4.5, release=release)\n",
+            ),
             ("played", &format!("@note(t, release={released})\n")),
             (
                 "toned",
-                "lowpass(highpass(@note(t, release=release), cutoff=180, q=0.7), cutoff=2400, \
+                "release = inf\nlowpass(highpass(@note(t, release=release), cutoff=180, q=0.7), cutoff=2400, \
                  q=1.3)\n",
             ),
             ("toned_up", &format!("@toned(t, release={released})\n")),
-            ("string", "@pluck(t, f0=523.25, release=release)\n"),
+            (
+                "string",
+                "release = inf\n@pluck(t, f0=523.25, release=release)\n",
+            ),
             ("struck", &format!("@string(t, release={released})\n")),
             (
                 "doubled",
-                "@string(t, release=release) + 0.5*@string(t - 0.3s, release=release)\n",
+                "release = inf\n@string(t, release=release) + 0.5*@string(t - 0.3s, release=release)\n",
             ),
             ("doubled_up", &format!("@doubled(t, release={released})\n")),
             ("burst", "crop(sin(2*pi*440*t), 0s, 0.05s)\n"),
