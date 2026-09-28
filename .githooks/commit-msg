@@ -9,7 +9,7 @@ git agent-verdict --require-version 2.0
 git agent-verdict "$1" standards --model sonnet \
   --standard programming --standard testing --standard cli \
   --rule "A builtin exists only when performance needs native code; complexity alone goes in online registries." \
-  --rule "Engine math stays exact: no approximations, fast paths, or fidelity traded for caching." \
+  --rule "Engine math is exact or carries a proven error bound that is stated in the code and reported to the caller; never an unproven or silent approximation, and no fidelity traded for caching." \
   --rule "No test asserts on wall-clock time." \
   --rule "State that can disagree is refactored to one canonical owner and derived, never kept in sync; a cache is still compliant with this rule if every source change evicts it." \
   --path .
