@@ -3,7 +3,7 @@
 pub(super) mod edit;
 pub(super) mod node;
 
-use sva_samples::{Extent, Tape};
+use sva_samples::{Extent, Standing, Tape};
 
 use super::until::{Known, Until};
 use super::{Lenses, Render, RenderConfig};
@@ -28,7 +28,12 @@ pub(super) struct Driver {
     /// Each node past its extent and its readers' reach is dropped.
     prunes: bool,
     pub(super) work: Work,
+    /// Where every node stood at one instant an edit may take effect at, and that instant.
+    mark: Option<(i64, Vec<Option<Stood>>)>,
 }
+
+/// A node's clock's end, and where its machine stood there.
+type Stood = (i64, Option<Standing>);
 
 pub struct Block {
     planes: Vec<Vec<f64>>,
@@ -109,11 +114,34 @@ impl Driver {
                 waves: Some(0),
                 ..Work::default()
             },
+            mark: None,
         }
+    }
+
+    fn mark(&mut self) {
+        let stood = self.nodes.iter().map(Driven::stood).collect();
+        self.mark = Some((self.at, stood));
+    }
+
+    /// Each node `changed` names as it stood at the mark; `false` where it was not at `at`.
+    pub(super) fn rewind(&mut self, at: i64, changed: &dyn Fn(usize) -> bool) -> bool {
+        let Some((_, stood)) = self.mark.take().filter(|(marked, _)| *marked == at) else {
+            return false;
+        };
+        for (n, (node, stood)) in self.nodes.iter_mut().zip(stood).enumerate() {
+            if let (true, Some(stood)) = (changed(n), stood) {
+                node.back_to(stood);
+            }
+        }
+        self.at = at;
+        self.end = self.end.filter(|end| *end <= at);
+        self.stop = self.stop.filter(|stop| *stop <= at);
+        true
     }
 
     /// An edit's nodes, from where it stands.
     pub(super) fn replace(&mut self, nodes: Vec<Driven>, root: Option<usize>, last: i64) {
+        self.mark = None;
         self.nodes = nodes;
         self.root = root;
         self.last = last;
@@ -138,6 +166,30 @@ impl Driver {
 
     /// `false` once the target has ended.
     pub(super) fn pull(&mut self, shell: &Render, lenses: &Lenses) -> Result<bool, EngineError> {
+        self.pulled(shell, lenses, None)
+    }
+
+    /// A block, cut at `edit` where it would pass it, and marked there to come back to.
+    pub(super) fn pull_marking(
+        &mut self,
+        shell: &Render,
+        lenses: &Lenses,
+        edit: i64,
+    ) -> Result<bool, EngineError> {
+        let ahead = (self.at < edit).then_some(edit);
+        let pulled = self.pulled(shell, lenses, ahead)?;
+        if pulled && Some(self.at) == ahead {
+            self.mark();
+        }
+        Ok(pulled)
+    }
+
+    fn pulled(
+        &mut self,
+        shell: &Render,
+        lenses: &Lenses,
+        stop: Option<i64>,
+    ) -> Result<bool, EngineError> {
         let from = self.at;
         if self.end.is_some_and(|end| from >= end) {
             return Ok(false);
@@ -145,6 +197,7 @@ impl Driver {
         let to = self
             .last
             .min(from.saturating_add(self.block as i64))
+            .min(stop.unwrap_or(i64::MAX))
             .max(from);
         for n in 0..self.nodes.len() {
             let (done, rest) = self.nodes.split_at_mut(n);

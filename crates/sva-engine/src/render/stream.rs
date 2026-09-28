@@ -41,6 +41,16 @@ pub struct Stream {
     out_at: i64,
     /// The root's lattice samples that output still reads, kept across edits.
     stage: sva_samples::Tape,
+    /// The root stepped at the output's instants where it holds no state, reading its nodes.
+    out: Option<Output>,
+}
+
+struct Output {
+    machine: sva_samples::Machine,
+    /// Output samples, from the stream's position.
+    tape: sva_samples::Tape,
+    /// Each slot's node, as an index into the driver's.
+    slots: Vec<usize>,
 }
 
 impl Stream {
@@ -66,6 +76,7 @@ impl Stream {
             dropped: Vec::new(),
             out_at: shell.output.expect("audio out decides an output").start,
             stage: sva_samples::Tape::new(1, 0, range.start),
+            out: None,
             driver: Driver::new(
                 Vec::new(),
                 None,
@@ -82,10 +93,12 @@ impl Stream {
         };
         let lenses = stream.lenses.with(stream.recording.as_ref());
         let order = order(&stream.shell);
-        let nodes = node::built(&stream.shell, &order, stream.hold(), &lenses, &|_| false)?;
+        let hold = stream.hold(&stream.shell)?;
+        let nodes = node::built(&stream.shell, &order, hold, &lenses, &|_| false)?;
         drop(lenses);
         let root = root_of(&stream.shell, &nodes)?;
         stream.driver.replace(nodes, Some(root), range.end);
+        stream.out = stream.output()?;
         Ok(stream)
     }
 
@@ -119,7 +132,7 @@ impl Stream {
     pub fn remove(&mut self, handle: Handle) -> Result<bool, EngineError> {
         let notes = self.shell.id(NOTES);
         let lag = self.driver.nodes.iter().find(|n| Some(n.id) == notes);
-        let at = self.driver.at - lag.map_or(0, |n| n.lag);
+        let at = self.instant() - lag.map_or(0, |n| n.lag);
         let at = at as f64 / f64::from(self.shell.lattice());
         let Some(terms) = self.terms.removed(handle, at) else {
             return Ok(false);
@@ -157,7 +170,7 @@ impl Stream {
             let identity = shell.identity(*id).ok();
             same.push(identity.and_then(|identity| kept.remove(&identity)));
         }
-        let hold = self.hold();
+        let hold = self.hold(&shell)?;
         let next = Lenses::of(None, &shell);
         let (was, now) = (
             self.lenses.with(self.recording.as_ref()),
@@ -167,6 +180,13 @@ impl Stream {
             if !same.contains(&Some(at)) {
                 node.store(&self.shell, &was);
             }
+        }
+        let instant = self.instant();
+        if self.driver.at > instant {
+            let changed = |at: usize| !same.contains(&Some(at));
+            let marked = self.driver.rewind(instant, &changed);
+            assert!(marked, "every block marks where the next edit takes effect");
+            self.stage.cut(instant);
         }
         let mut nodes = node::built(&shell, &order, hold, &now, &|at| same[at].is_some())?;
         drop((was, now));
@@ -191,6 +211,7 @@ impl Stream {
         self.expr = target;
         self.terms = terms;
         self.ended = 0;
+        self.out = self.output()?;
         self.prune();
         Ok(())
     }
@@ -199,8 +220,7 @@ impl Stream {
     /// rate a block is the kernel's reading of the root at each output instant.
     pub fn next_block(&mut self) -> Result<Option<Block>, EngineError> {
         let lenses = self.lenses.with(self.recording.as_ref());
-        let map = self.shell.out_map();
-        if map.whole() && map.a == 1 {
+        if self.shell.on_its_lattice() {
             let block = self.driver.next_block(&self.shell, &lenses)?;
             drop(lenses);
             self.prune();
@@ -213,7 +233,10 @@ impl Stream {
             to = to.min(end);
         }
         let reached = self.shell.on_lattice(Extent::new(from, to.max(from)));
-        while self.driver.at < reached.end && self.driver.pull(&self.shell, &lenses)? {
+        let next = self.lattice_at(to);
+        while self.driver.at < reached.end
+            && self.driver.pull_marking(&self.shell, &lenses, next)?
+        {
             staged(&mut self.stage, &self.driver);
         }
         drop(lenses);
@@ -223,9 +246,27 @@ impl Stream {
         if to <= from {
             return Ok(None);
         }
+        if let Some(out) = &mut self.out {
+            let nodes = &self.driver.nodes;
+            let windows: Vec<sva_samples::Window> = out
+                .slots
+                .iter()
+                .map(|&at| nodes[at].tape.within(nodes[at].support))
+                .collect();
+            out.machine
+                .run_on(to, &windows, &mut out.tape)
+                .map_err(|e| super::sampled::refused(&self.shell, self.shell.root, &e))?;
+            let planes = (0..out.tape.width())
+                .map(|c| (from..to).map(|n| out.tape.window().at(c, n)).collect())
+                .collect();
+            out.tape.forget_before(to);
+            self.out_at = to;
+            self.prune();
+            return Ok(Some(Block::of_planes(planes, from)));
+        }
         let planes = sva_samples::machine::resample(
             self.stage.window(),
-            (map, sva_samples::plain().half_width()),
+            (self.shell.out_map(), sva_samples::plain().half_width()),
             Extent::new(from, to),
             self.stage.width(),
         )
@@ -234,6 +275,48 @@ impl Stream {
         self.out_at = to;
         self.prune();
         Ok(Some(Block::of_planes(planes, from)))
+    }
+
+    /// The root at the output's own instants, where it holds no state to step on the lattice.
+    fn output(&self) -> Result<Option<Output>, EngineError> {
+        let nodes = &self.driver.nodes;
+        let index = |id: sva_formula::NodeId| {
+            nodes
+                .iter()
+                .position(|n| n.id == id)
+                .expect("every node a program reads is driven")
+        };
+        let widths = |id| nodes[index(id)].width;
+        let program = super::sampled::at_output(&self.shell, self.shell.root, &widths)?;
+        let Some(program) = program else {
+            return Ok(None);
+        };
+        let slots = program.reads.iter().map(|r| index(*r)).collect();
+        let rate = self.config.render.rate;
+        let machine = sva_samples::Machine::open(&program.renderer, &program.layout, rate)
+            .map_err(|e| super::sampled::refused(&self.shell, self.shell.root, &e))?;
+        let tape = sva_samples::Tape::new(program.layout.width, 0, self.out_at);
+        Ok(Some(Output {
+            machine,
+            tape,
+            slots,
+        }))
+    }
+
+    /// The first lattice sample at or after output sample `out`.
+    fn lattice_at(&self, out: i64) -> i64 {
+        let map = self.shell.out_map();
+        let (floor, rem) = map.at(out);
+        floor + i64::from(rem != 0)
+    }
+
+    /// Where an edit takes effect: the first lattice sample no output yet played reads as the
+    /// signal before it.
+    fn instant(&self) -> i64 {
+        match self.shell.on_its_lattice() {
+            true => self.driver.at,
+            false => self.lattice_at(self.out_at),
+        }
     }
 
     /// The output sample the stream ends before, once the lattice's end is known.
@@ -281,8 +364,7 @@ impl Stream {
     }
 
     pub fn position(&self) -> i64 {
-        let map = self.shell.out_map();
-        match map.whole() && map.a == 1 {
+        match self.shell.on_its_lattice() {
             true => self.driver.at,
             false => self.out_at,
         }
@@ -307,8 +389,7 @@ impl Stream {
 
     /// Where the stream ends, once known.
     pub fn end(&self) -> Option<i64> {
-        let map = self.shell.out_map();
-        match map.whole() && map.a == 1 {
+        match self.shell.on_its_lattice() {
             true => self.driver.end(),
             false => self.output_end(),
         }
@@ -322,21 +403,26 @@ impl Stream {
         &self.config
     }
 
-    fn hold(&self) -> Hold {
+    /// What `shell`'s nodes keep behind the block they run.
+    fn hold(&self, shell: &Render) -> Result<Hold, EngineError> {
         let framed = match self.config.render.until {
-            Some(_) => drive::frame(&self.shell.config, self.shell.lattice()),
+            Some(_) => drive::frame(&shell.config, shell.lattice()),
             None => 0,
         };
-        let map = self.shell.out_map();
-        let reading = match map.whole() && map.a == 1 {
+        let span = (self.config.block as u128 * u128::from(shell.lattice()))
+            .div_ceil(u128::from(self.config.render.rate)) as usize;
+        let reading = match shell.on_its_lattice() {
             true => 0,
-            false => 2 * (self.config.block + sva_samples::plain().half_width()),
+            false => span + 2 * sva_samples::plain().half_width() + self.config.block + 2,
         };
         let root_keep = framed.max(reading);
-        Hold::Trailing {
+        let read = super::sampled::at_output(shell, shell.root, &|_| 1)?
+            .map_or(Vec::new(), |program| program.reads);
+        Ok(Hold::Trailing {
             block: self.config.block,
             root_keep,
-        }
+            read,
+        })
     }
 }
 

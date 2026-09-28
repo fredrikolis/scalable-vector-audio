@@ -23,6 +23,7 @@ pub use live::Span;
 pub use ops::Layout as MachineLayout;
 
 /// The op array, one width per slot, and the call sites the run opens state for.
+#[derive(Clone)]
 struct Program {
     ops: Vec<Op>,
     widths: Vec<usize>,
@@ -137,6 +138,15 @@ pub struct Machine {
 #[derive(Clone)]
 pub struct MachineState {
     sites: Vec<Site>,
+    states: Vec<State>,
+}
+
+/// All a machine carries from one sample to the next: its span's program, the spans ahead
+/// and its call sites' state.
+#[derive(Clone)]
+pub struct Standing {
+    program: Program,
+    ahead: Vec<(i64, Program)>,
     states: Vec<State>,
 }
 
@@ -282,6 +292,20 @@ impl Machine {
             sites: self.program.sites.clone(),
             states: self.states.clone(),
         }
+    }
+
+    pub fn standing(&self) -> Standing {
+        Standing {
+            program: self.program.clone(),
+            ahead: self.ahead.clone(),
+            states: self.states.clone(),
+        }
+    }
+
+    /// Back where `at` was taken, from the same machine.
+    pub fn stand(&mut self, at: Standing) {
+        self.stack = Stack::of(&at.program.widths);
+        (self.program, self.ahead, self.states) = (at.program, at.ahead, at.states);
     }
 
     pub fn restart(&mut self) {

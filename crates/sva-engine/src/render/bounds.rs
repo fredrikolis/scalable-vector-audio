@@ -22,6 +22,13 @@ pub struct Reconstruction {
     pub looped: Option<f64>,
 }
 
+struct Row {
+    source: NodeId,
+    reading: &'static str,
+    bound: Option<Bound>,
+    looped: Option<f64>,
+}
+
 /// The kernel a loop reads its own past through and the proven error of its output.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Looped {
@@ -56,8 +63,15 @@ impl Render {
                 looped: None,
             });
         }
-        let map = self.out_map();
-        if self.output.is_some() && !(map.whole() && map.a == 1) {
+        if let Some(output) = self.output
+            && let Ok(Some(program)) = sampled::at_output(self, self.root, &|_| 1)
+        {
+            for row in self.rows(self.root, &program, (output, self.config.rate)) {
+                if let Row { bound: Some(b), .. } = row {
+                    out.push(self.named(self.root, row.source, "output", b, None));
+                }
+            }
+        } else if self.output.is_some() && !self.out_map().whole() {
             out.push(self.named(self.root, self.root, "output", bound, None));
         }
         let mut once: Vec<Reconstruction> = Vec::with_capacity(out.len());
@@ -73,40 +87,50 @@ impl Render {
         let Ok(program) = sampled::program(self, id) else {
             return;
         };
-        let extent = self.extents.of(id);
+        for row in self.rows(id, &program, (self.extents.of(id), self.lattice())) {
+            if let Row {
+                bound: Some(bound), ..
+            } = row
+            {
+                out.push(self.named(id, row.source, row.reading, bound, row.looped));
+            }
+        }
+    }
+
+    /// Each read of `program` between its source's samples over `extent` of instants `rate` a
+    /// second apart; `bound` is `None` where no bound on its position holds.
+    fn rows(&self, id: NodeId, program: &sampled::Program, over: (Extent, u32)) -> Vec<Row> {
+        let mut out = Vec::new();
         extent::leaves(&program.renderer, &mut |leaf| {
-            let NodeRenderer::Read {
-                slot,
-                at,
-                half_width,
-            } = leaf
-            else {
+            let NodeRenderer::Read { slot, at, .. } = leaf else {
                 return;
             };
             let source = match slot {
                 Slot::Read(buf) => program.reads[buf.0 as usize],
                 Slot::Own => id,
             };
-            let row = match (slot, at) {
+            let (reading, bound, looped) = match (slot, at) {
                 (_, At::Map(map)) if map.whole() => return,
-                (Slot::Own, _) => match self.loop_kernel(id, extent) {
+                (Slot::Own, _) => match self.loop_kernel(id, over.0) {
                     Ok(Some(held)) => ("loop", Some(held.bound), Some(held.error)),
                     _ => return,
                 },
                 (Slot::Read(_), At::Map(map)) if map.a == map.d => ("shift", plain_bound(), None),
                 (Slot::Read(_), At::Map(_)) => ("scale", plain_bound(), None),
-                (Slot::Read(_), At::Moving { .. }) => ("moving", self.moved(at, extent), None),
+                (Slot::Read(_), At::Moving { .. }) => ("moving", self.moved(at, over), None),
             };
-            if let (reading, Some(bound), looped) = row {
-                debug_assert!(reading == "loop" || *half_width == plain().half_width());
-                out.push(self.named(id, source, reading, bound, looped));
-            }
+            out.push(Row {
+                source,
+                reading,
+                bound,
+                looped,
+            });
         });
+        out
     }
 
     /// Refuses, before a sample is computed, a reading or a loop no bound within precision holds for.
     pub(super) fn readings_bounded(&self) -> Result<(), EngineError> {
-        let precision = self.config.profile.half_lsb();
         for &id in &self.schedule.materialize {
             if self.tys.ty(id).held != Held::Sampled {
                 continue;
@@ -116,34 +140,36 @@ impl Render {
             let Ok(program) = sampled::program(self, id) else {
                 continue;
             };
-            let mut refused = None;
-            extent::leaves(&program.renderer, &mut |leaf| {
-                if let NodeRenderer::Read {
-                    slot: Slot::Read(_),
-                    at: at @ At::Moving { .. },
-                    ..
-                } = leaf
-                    && refused.is_none()
-                {
-                    refused = match self.moved(at, extent) {
-                        None => Some(unplaced(self.tys.name(id))),
-                        Some(b) if b.in_band > precision => {
-                            Some(placed_past(self.tys.name(id), b, precision))
-                        }
-                        Some(_) => None,
-                    };
+            self.bounded(id, &self.rows(id, &program, (extent, self.lattice())))?;
+        }
+        if let (Some(output), Some(program)) =
+            (self.output, sampled::at_output(self, self.root, &|_| 1)?)
+        {
+            self.bounded(
+                self.root,
+                &self.rows(self.root, &program, (output, self.config.rate)),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn bounded(&self, id: NodeId, rows: &[Row]) -> Result<(), EngineError> {
+        let precision = self.config.profile.half_lsb();
+        for row in rows.iter().filter(|row| row.reading == "moving") {
+            match row.bound {
+                None => return Err(unplaced(self.tys.name(id))),
+                Some(b) if b.in_band > precision => {
+                    return Err(placed_past(self.tys.name(id), b, precision));
                 }
-            });
-            if let Some(refused) = refused {
-                return Err(refused);
+                Some(_) => {}
             }
         }
         Ok(())
     }
 
-    /// The plain kernel's bound over `extent`, with a moving position's rounding counted.
-    fn moved(&self, at: &At, extent: Extent) -> Option<Bound> {
-        let delta = position_error(at, (extent.start, extent.end), self.lattice())?;
+    /// The plain kernel's bound, with a moving position's rounding over `extent` counted.
+    fn moved(&self, at: &At, (extent, rate): (Extent, u32)) -> Option<Bound> {
+        let delta = position_error(at, (extent.start, extent.end), rate)?;
         Some(plain_bound()?.moved(delta, self.lattice()))
     }
 

@@ -66,7 +66,7 @@ fn composition(released: f64) -> Graph {
     )
 }
 
-fn config(end: Option<i64>) -> StreamConfig {
+fn config_at(rate: u32, end: Option<i64>) -> StreamConfig {
     StreamConfig {
         block: BLOCK,
         render: RenderConfig {
@@ -74,7 +74,7 @@ fn config(end: Option<i64>) -> StreamConfig {
                 start: Some(0),
                 end,
             },
-            ..RenderConfig::at(RATE)
+            ..RenderConfig::at(rate)
         },
     }
 }
@@ -84,8 +84,12 @@ fn expr(text: &str) -> sva_ast::Expr {
 }
 
 fn opened(g: &Graph, text: &str, cache: Option<&Cache>) -> Stream {
-    let end = Some(4 * i64::from(RATE));
-    Stream::open(g, &expr(text), config(end), cache).unwrap_or_else(|e| panic!("{e}"))
+    opened_at(RATE, g, text, cache)
+}
+
+fn opened_at(rate: u32, g: &Graph, text: &str, cache: Option<&Cache>) -> Stream {
+    let end = Some(4 * i64::from(rate));
+    Stream::open(g, &expr(text), config_at(rate, end), cache).unwrap_or_else(|e| panic!("{e}"))
 }
 
 fn edit(stream: &mut Stream, g: &Graph, text: &str) {
@@ -104,8 +108,12 @@ fn blocks(stream: &mut Stream, count: usize) -> Vec<f64> {
 }
 
 fn whole(g: &Graph, target: &str, samples: usize) -> Vec<f64> {
-    let secs = samples as f64 / f64::from(RATE);
-    let held = render(g, target, RenderConfig::seconds(RATE, secs), None)
+    whole_at(RATE, g, target, samples)
+}
+
+fn whole_at(rate: u32, g: &Graph, target: &str, samples: usize) -> Vec<f64> {
+    let secs = samples as f64 / f64::from(rate);
+    let held = render(g, target, RenderConfig::seconds(rate, secs), None)
         .unwrap_or_else(|e| panic!("{target}: {e}"));
     let id = held.id(target).expect("the root");
     held.output(id).expect("a buffer").plane(0).to_vec()
@@ -114,11 +122,16 @@ fn whole(g: &Graph, target: &str, samples: usize) -> Vec<f64> {
 /// Key-up is an edit binding `release` at sample `k`, on the block grid: the held blocks and
 /// the released ones after are one whole render with `release = k/rate`.
 fn released_at(target: &str, whole_target: &str, k: usize) {
-    let release = k as f64 / f64::from(RATE);
+    released_at_rate(RATE, target, whole_target, k);
+}
+
+/// Off the lattice's rate a block reads the lattice ahead of it, which an edit takes back.
+fn released_at_rate(rate: u32, target: &str, whole_target: &str, k: usize) {
+    let release = k as f64 / f64::from(rate);
     let g = composition(release);
-    let mut held = opened(&g, &format!("@{target}(t)"), None);
+    let mut held = opened_at(rate, &g, &format!("@{target}(t)"), None);
     let mut heard = blocks(&mut held, k / BLOCK);
-    let mut released = opened(&g, &format!("@{target}(t)"), None);
+    let mut released = opened_at(rate, &g, &format!("@{target}(t)"), None);
     blocks(&mut released, k / BLOCK);
     edit(
         &mut released,
@@ -127,13 +140,21 @@ fn released_at(target: &str, whole_target: &str, k: usize) {
     );
     heard.extend(blocks(&mut released, 8));
 
-    let want = whole(&g, whole_target, heard.len());
+    let want = whole_at(rate, &g, whole_target, heard.len());
     assert_ne!(
         want[k + 2_000..],
         blocks(&mut held, 8)[2_000..],
         "{target}: the damper did nothing"
     );
-    assert_eq!(heard, want, "{target}");
+    match rate == RATE {
+        true => assert_eq!(heard, want, "{target}"),
+        false => assert_eq!(heard[k..], want[k..], "{target}"),
+    }
+}
+
+#[test]
+fn key_up_between_lattice_samples_is_the_whole_render_released_there() {
+    released_at_rate(48_000, "string", "struck", 3 * BLOCK);
 }
 
 #[test]

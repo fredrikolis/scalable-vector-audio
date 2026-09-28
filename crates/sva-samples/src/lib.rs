@@ -29,7 +29,7 @@ pub use frames::Frames;
 pub use label::{Cost, Detail, Dropped, Label, Rule, Source};
 pub use machine::renderer::{At, Binary, BufId, Map, NodeRenderer, Site, SiteId, Slot, Unary};
 pub use machine::tape::{Tape, Window};
-pub use machine::{Ctx, Machine, MachineState};
+pub use machine::{Ctx, Machine, MachineState, Standing};
 pub use measure::Consumes;
 pub use measure::alias::{
     AUDIBLE_NMR_DB, Alias, AliasBand, PLAYBACK_DB_SPL, measure_alias, worst as worst_alias,

@@ -82,8 +82,12 @@ RENDER:
   solvers and `rand` step on the profile's 44.1 kHz lattice, where `1sp` is
   one step, and a read between two lattice samples is a windowed-sinc reading
   of them, the shortest of the profile's family whose bound meets its
-  precision. `data.bounds` lists each such reading with its `taps`, the error
-  it may carry per source component below and above the band edge, `position`,
+  precision. Off the lattice's rate, what holds no state, a crop or a sum
+  over the nodes that do, is evaluated at each output instant itself, and only
+  those nodes are read between their samples. An edit to a stream plays from
+  the next output sample on, what was computed ahead of it computed again.
+  `data.bounds` lists each such reading with its `taps`, the error it may
+  carry per source component below and above the band edge, `position`,
   the samples a moving read's computed position may stray, and `lebesgue`, the
   most it amplifies an error already in the samples. A loop read that way
   carries `looped`, the proven error of its own output relative to its full

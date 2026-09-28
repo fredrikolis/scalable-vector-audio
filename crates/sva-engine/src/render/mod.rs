@@ -169,6 +169,12 @@ impl Render {
         sva_samples::Map::new(lattice, 0, rate).expect("two rates make one map")
     }
 
+    /// The output is read at the lattice's own samples.
+    pub(crate) fn on_its_lattice(&self) -> bool {
+        let map = self.out_map();
+        map.whole() && map.a == 1
+    }
+
     pub(crate) fn cut_output(&mut self, stop: i64) {
         self.output = self.output.map(|output| cut(output, self.out_map(), stop));
     }
@@ -214,12 +220,18 @@ impl Render {
     /// A node's samples at each output instant, read off its lattice where that differs.
     pub fn output(&self, node: NodeId) -> Option<Buffer> {
         self.buffers.contains_key(&node).then_some(())?;
-        let map = self.out_map();
-        if map.whole() && map.a == 1 {
+        if self.on_its_lattice() {
             return Some(self.aligned(node, self.range?));
         }
-        let window = sva_samples::Window::of(&self.buffers[&node], self.extents.support(node));
+        let map = self.out_map();
         let over = self.output?;
+        let widths = |r: NodeId| self.buffers.get(&r).map_or(1, |b| b.width);
+        let pointwise = sampled::at_output(self, node, &widths)
+            .expect("a node that rendered builds at its output's instants");
+        if let Some(program) = pointwise {
+            return Some(program.at_output(self, over));
+        }
+        let window = sva_samples::Window::of(&self.buffers[&node], self.extents.support(node));
         let planes = sva_samples::machine::resample(
             window,
             (map, sva_samples::plain().half_width()),

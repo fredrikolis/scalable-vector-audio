@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sva_formula::{Hash, Held, NodeId};
 use sva_samples::{
-    At, Buffer, Extent, Machine, MachineState, NodeRenderer, Rows, Slot, Tape, Window,
+    At, Buffer, Extent, Machine, MachineState, NodeRenderer, Rows, Slot, Standing, Tape, Window,
 };
 
 use super::super::pointwise::{self, Point};
@@ -148,8 +148,13 @@ impl Segments {
 
 /// How a driver holds its nodes' samples.
 pub(in crate::render) enum Hold {
-    /// A block, and as far back as its readers reach; the root `root_keep` samples besides.
-    Trailing { block: usize, root_keep: usize },
+    /// A block, and as far back as its readers reach; the root and each of `read` `root_keep`
+    /// samples besides.
+    Trailing {
+        block: usize,
+        root_keep: usize,
+        read: Vec<NodeId>,
+    },
     /// Every sample, the nodes held here whole before any reader runs.
     Every(BTreeMap<NodeId, Buffer>),
 }
@@ -228,10 +233,15 @@ pub(in crate::render) fn built(
     for at in holds {
         nodes[at].keep = WHOLE;
     }
-    if let Hold::Trailing { block, root_keep } = hold {
+    if let Hold::Trailing {
+        block,
+        root_keep,
+        read,
+    } = hold
+    {
         let last = shell.range.map_or(i64::MAX, |range| range.end);
         for (at, node) in nodes.iter_mut().enumerate() {
-            if Some(at) == root {
+            if Some(at) == root || read.contains(&node.id) {
                 node.keep = node.keep.max(root_keep);
             }
             let leaf = node.reads.is_empty()
@@ -810,6 +820,27 @@ impl Driven {
             recorded.held[k] = to;
         }
         recorded.stored = end;
+    }
+
+    /// A whole node never moves, and an ended one holds nothing.
+    pub(super) fn stood(&self) -> Option<(i64, Option<Standing>)> {
+        match &self.kind {
+            Kind::Machine { machine, .. } => Some((self.tape.end(), Some(machine.standing()))),
+            Kind::Rows(_) | Kind::Point(_) => Some((self.tape.end(), None)),
+            Kind::Whole | Kind::Ended => None,
+        }
+    }
+
+    /// Its samples since forgotten; one ended since holds none to forget.
+    pub(super) fn back_to(&mut self, (end, standing): (i64, Option<Standing>)) {
+        if matches!(self.kind, Kind::Ended) {
+            return;
+        }
+        assert!(self.tape.end() >= end, "a node only runs on from its mark");
+        if let (Kind::Machine { machine, .. }, Some(standing)) = (&mut self.kind, standing) {
+            machine.stand(standing);
+        }
+        self.tape.cut(end);
     }
 
     /// Held only where its tape ends at `at`; a machine with no call site holds none.

@@ -95,10 +95,54 @@ pub(super) fn program_over(
     width_of: &dyn Fn(NodeId) -> usize,
     extent: Extent,
 ) -> Result<Program, EngineError> {
+    built(held, id, width_of, (extent, held.lattice(), false))
+}
+
+/// A node that holds no state and draws no noise, stepped at the output's own instants: each
+/// closed form in it read there, and only what it reads of other nodes read between their
+/// lattice samples.
+pub(super) fn at_output(
+    held: &Render,
+    id: NodeId,
+    width_of: &dyn Fn(NodeId) -> usize,
+) -> Result<Option<Program>, EngineError> {
+    let stepped = held.tys.ty(id).held == sva_formula::Held::Sampled
+        && !matches!(held.tys.value(id), Value::Cast(Cast::Istft, _));
+    let (Some(extent), true, false) = (
+        held.extents.decided.get(&id),
+        stepped,
+        held.on_its_lattice(),
+    ) else {
+        return Ok(None);
+    };
+    if !pointwise_safe(&program_reading(held, id, width_of)?.renderer) {
+        return Ok(None);
+    }
+    let program = built(held, id, width_of, (*extent, held.config.rate, true))?;
+    Ok(Some(program))
+}
+
+/// Holds no state and draws no lattice noise, so any instant reads it.
+fn pointwise_safe(renderer: &NodeRenderer) -> bool {
+    let mut noise = false;
+    super::extent::leaves(renderer, &mut |leaf| {
+        noise |= matches!(leaf, NodeRenderer::Noise(_))
+    });
+    renderer.stateless() && !noise
+}
+
+fn built(
+    held: &Render,
+    id: NodeId,
+    width_of: &dyn Fn(NodeId) -> usize,
+    (extent, rate, inlines): (Extent, u32, bool),
+) -> Result<Program, EngineError> {
     let mut build = Build {
         held,
         supports: Supports::new(held),
         owner: id,
+        rate,
+        inlines,
         extent,
         reads: Vec::new(),
         sites: Vec::new(),
@@ -154,6 +198,24 @@ impl Program {
             .map_err(|e| refused(held, id, &e))
     }
 
+    /// A program `at_output` builds, run over the output samples `over`.
+    pub(super) fn at_output(&self, held: &Render, over: Extent) -> Buffer {
+        let buffers: Vec<Window> = self
+            .reads
+            .iter()
+            .map(|r| Window::of(&held.buffers[r], held.extents.support(*r)))
+            .collect();
+        let ctx = Ctx {
+            rate: held.config.rate,
+            start: over.start,
+            len: over.len(),
+            reads: &buffers,
+        };
+        self.renderer
+            .run(&self.layout, &ctx)
+            .expect("the lattice samples an output reads are all held")
+    }
+
     /// What the program runs over `extent`, span by span without the reads dead there, each
     /// read taken as live over its whole support.
     pub(crate) fn priced(&self, held: &Render, extent: Extent) -> Option<u128> {
@@ -200,6 +262,10 @@ struct Build<'a> {
     held: &'a Render,
     supports: Supports<'a>,
     owner: NodeId,
+    /// The instants it steps at, a second.
+    rate: u32,
+    /// Whether a node it reads at its own instants is stepped here rather than read.
+    inlines: bool,
     extent: Extent,
     reads: Vec<NodeId>,
     sites: Vec<Site>,
@@ -211,15 +277,20 @@ impl Build<'_> {
             Value::ClosedForm(_) => {
                 closed_renderer(&self.held.tys, id).ok_or_else(|| uncollapsed(self.held, id))
             }
-            Value::Cast(Cast::Sample, source) => Ok(self.buffer(source, At::Map(Map::shift(0)))),
+            Value::Cast(Cast::Sample, source) => Ok(self.buffer(source, self.lattice_map())),
             Value::Cast(..) => Err(uncollapsed(self.held, id)),
+            Value::Read {
+                source,
+                at: When::Time(crate::time::Affine::NOW),
+                ..
+            } if self.inlines => self.inlined(source),
             Value::Read { source, at, .. } => {
                 let at = self.at(at, self.held.lattice(), false)?;
                 Ok(self.buffer(source, at))
             }
             Value::SelfAt { at, .. } => self.own(id, at),
             Value::Noise(seed) => Ok(NodeRenderer::Noise(seed)),
-            Value::Solver { .. } if id != self.owner => Ok(self.buffer(id, At::Map(Map::shift(0)))),
+            Value::Solver { .. } if id != self.owner => Ok(self.buffer(id, self.lattice_map())),
             Value::Solver { params, varying } => {
                 let mut args = Vec::new();
                 for (key, _) in params.varying() {
@@ -258,10 +329,10 @@ impl Build<'_> {
     /// Where one reading of a node on `source`'s lattice lands, from this program's.
     /// A time whose rationals pass one map is read as the time it spells, each sample.
     fn at(&mut self, at: When, source: u32, by_delay: bool) -> Result<At, EngineError> {
-        let reader = f64::from(self.held.lattice());
+        let reader = f64::from(self.rate);
         let per_sec = f64::from(source);
         match at {
-            When::Time(time) => Ok(match time.map(self.held.lattice(), source) {
+            When::Time(time) => Ok(match time.map(self.rate, source) {
                 Some(map) => At::Map(map),
                 None => {
                     let line = match time.scale == crate::time::Q::ONE {
@@ -280,12 +351,39 @@ impl Build<'_> {
         }
     }
 
+    /// A node read where it stands, as its own program where that holds no state and draws no
+    /// noise, else its buffer.
+    fn inlined(&mut self, source: NodeId) -> Result<NodeRenderer, EngineError> {
+        let (reads, sites) = (self.reads.len(), self.sites.len());
+        if self.held.tys.ty(source).held == sva_formula::Held::Sampled
+            && let Ok(inline) = self.of(source)
+            && pointwise_safe(&inline)
+        {
+            return Ok(inline);
+        }
+        self.reads.truncate(reads);
+        self.sites.truncate(sites);
+        let at = self.at(
+            When::Time(crate::time::Affine::NOW),
+            self.held.lattice(),
+            false,
+        )?;
+        Ok(self.buffer(source, at))
+    }
+
+    /// A lattice sample at each of this program's instants.
+    fn lattice_map(&self) -> At {
+        let (rate, lattice) = (i128::from(self.rate), i128::from(self.held.lattice()));
+        At::Map(Map::new(lattice, 0, rate).expect("two rates make one map"))
+    }
+
     /// A loop's own past through the kernel its bound chose, every tap before the sample
-    /// being written.
+    /// being written; off its lattice a loop is never stepped, holding state.
     fn own(&mut self, id: NodeId, at: When) -> Result<NodeRenderer, EngineError> {
         let at = self.at(at, self.held.lattice(), true)?;
         let half_width = match &at {
             At::Map(map) if map.whole() => 0,
+            _ if self.rate != self.held.lattice() => 0,
             _ => {
                 self.held
                     .loop_kernel(id, self.extent)?
