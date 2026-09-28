@@ -128,7 +128,7 @@ fn sampled_leaf(
     match typing.value(id) {
         crate::typing::Value::SelfAt(_) => Some("sp, a self-reference on the grid".to_string()),
         crate::typing::Value::Grid(_) => Some("sp, a duration on the grid".to_string()),
-        crate::typing::Value::Solver(_) => Some("a finite-difference builtin".to_string()),
+        crate::typing::Value::Solver { .. } => Some("a finite-difference builtin".to_string()),
         crate::typing::Value::Cast(crate::cast::Cast::Sample, source) => {
             Some(format!("sample({})", typing.name(*source)))
         }

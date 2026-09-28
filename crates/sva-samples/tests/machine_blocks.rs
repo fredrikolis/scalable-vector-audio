@@ -41,6 +41,7 @@ fn renderer() -> NodeRenderer {
             NodeRenderer::Physics {
                 site: SiteId(1),
                 from: 0,
+                args: Vec::new(),
             },
         ]),
     ])

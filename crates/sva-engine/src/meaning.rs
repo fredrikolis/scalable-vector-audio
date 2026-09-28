@@ -141,12 +141,24 @@ fn solver(builtin: &str, key: &str) -> Option<Meaning> {
             "damper",
         ),
         (_, "damper_pos") => m("where the felt presses, along the length", "none", "damper"),
-        (_, "damper_r") => m("felt dashpot once ramped in", "N*s/m", "damper"),
-        (_, "damper_k") => m("felt spring, whole from the landing", "N/m", "damper"),
+        (_, "damper_r") => m(
+            "felt dashpot once ramped in; may move every sample",
+            "N*s/m",
+            "damper",
+        ),
+        (_, "damper_k") => m(
+            "felt spring, whole from the landing; may only jump",
+            "N/m",
+            "damper",
+        ),
         (_, "damper_ramp") => m("time the felt dashpot ramps in over", "s", "damper"),
         (_, "bow_pos") => m("where the bow touches, along the length", "none", "bow"),
-        (_, "bow_vel") => m("bow velocity", "m/s", "bow"),
-        (_, "bow_force") => m("force pressing the bow on the string", "N", "bow"),
+        (_, "bow_vel") => m("bow velocity; may move every sample", "m/s", "bow"),
+        (_, "bow_force") => m(
+            "force pressing the bow on the string; may move every sample",
+            "N",
+            "bow",
+        ),
         (_, "mu_s") => m("static friction coefficient", "none", "friction"),
         (_, "mu_c") => m("sliding (Coulomb) friction coefficient", "none", "friction"),
         (_, "stribeck_vel") => m(

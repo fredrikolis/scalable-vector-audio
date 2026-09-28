@@ -3,6 +3,7 @@
 mod calls;
 mod casts;
 mod constant;
+pub(crate) mod inline;
 pub(crate) mod physics;
 mod solvers;
 mod walk;
@@ -21,6 +22,7 @@ use crate::release::{self, Never};
 use crate::typing::{Node as Typed, Typing, Value};
 
 pub(crate) use constant::{constant_call, constant_modulo, constant_value, holds_infinite};
+pub(crate) use solvers::{field, value_of};
 
 /// An unbound `release` is never, and a crop's edge is the one place it may stand, alone or
 /// with a constant after it.

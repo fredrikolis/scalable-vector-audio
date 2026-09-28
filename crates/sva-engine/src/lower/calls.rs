@@ -2,7 +2,10 @@
 
 use sva_ast::{Arg, ByteSpan, Expr};
 use sva_formula::filter::Shape;
-use sva_formula::{Body, C64, Codomain, Edge, Fold, Held, Origin, Part, Ty, Unary, Var, hash};
+use sva_formula::{
+    Body, C64, Codomain, Edge, Fold, Held, NodeId, Origin, Part, Ty, Unary, Var, hash,
+};
+use sva_samples::physics::Varies;
 
 use crate::arguments::{Argument, Called, Chosen};
 use crate::cast::Cast;
@@ -46,7 +49,7 @@ impl<'g> Lowering<'_, 'g> {
                 self.note_call(name, span, positional_named(name, &numbers, &named), chosen);
                 return self.modal(name, &numbers, &view);
             }
-            return self.solver(name, &numbers, &view, span, chosen, var);
+            return self.solver(name, (&numbers, &view, args), span, chosen, (cx, var));
         }
         if name == "noise" {
             let Some(numbers) = positional_values(self, args, cx, &mut chosen) else {
@@ -391,20 +394,41 @@ impl<'g> Lowering<'_, 'g> {
         self.typing.note(self.node, call, chosen);
     }
 
-    /// Checked in range before its grid is sized from it, then noted and registered.
+    /// Checked in range before its grid is sized from it, then noted and registered. A
+    /// varying parameter that names no number is a node the site reads every sample.
     fn solver(
         &mut self,
         name: &str,
-        numbers: &[f64],
-        view: &[(&str, f64)],
+        (numbers, view, args): (&[f64], &[(&str, f64)], &[Arg]),
         span: ByteSpan,
         chosen: Vec<Chosen>,
-        var: Var,
+        (cx, var): (Cx, Var),
     ) -> Result<Piece, EngineError> {
         let [first, ..] = numbers else {
             return Err(EngineError::BadArity(name.to_string()));
         };
-        let params = super::solvers::params(name, *first, view);
+        let mut params = super::solvers::params(name, *first, view);
+        let mut varying = Vec::new();
+        for (key, varies) in sva_samples::physics::varying(name) {
+            let written = args.iter().find_map(|a| match a {
+                Arg::Named(k, x) if k == key => Some(x),
+                _ => None,
+            });
+            let Some(written) = written.filter(|_| !view.iter().any(|(k, _)| k == key)) else {
+                continue;
+            };
+            let id = self.automation(written, span, cx, var)?;
+            if let Value::ClosedForm(form) = self.typing.value(id)
+                && let Some(v) = super::constant_value(&form.body, form.var)
+            {
+                *super::field(&mut params, key).expect("a varying field") = v + 0.0;
+                continue;
+            }
+            if *varies == Varies::Piecewise && !self.piecewise(id) {
+                return Err(self.moving_energy(name, key, span));
+            }
+            varying.push((*key, id));
+        }
         if !params.valid() {
             return Err(EngineError::refused(crate::error::Diagnostic {
                 code: "engine.physics_out_of_range".to_string(),
@@ -415,6 +439,7 @@ impl<'g> Lowering<'_, 'g> {
         }
         let handed = super::solvers::handed(&params)
             .into_iter()
+            .filter(|(key, _)| !varying.iter().any(|(k, _)| k == key))
             .enumerate()
             .map(|(at, (key, value))| Argument {
                 written: at == 0 || view.iter().any(|(k, _)| *k == key),
@@ -423,9 +448,44 @@ impl<'g> Lowering<'_, 'g> {
             })
             .collect();
         self.note_call(name, span, handed, chosen);
-        let value = Value::Solver(Box::new(params));
+        let value = Value::Solver {
+            params: Box::new(params),
+            varying,
+        };
         let ty = Ty::discrete(Held::Sampled, Codomain::Real);
         Ok(Piece::Value(self.register(value, ty, var)))
+    }
+
+    /// A stored-energy coefficient holds between jumps: numbers under windows that open and
+    /// close without shoulders, and arithmetic over them.
+    fn piecewise(&self, id: NodeId) -> bool {
+        fn steps(f: &Body) -> bool {
+            match f {
+                Body::Const(_) => true,
+                Body::Crop { of, rise, fall, .. } => {
+                    *rise == 0.0 && *fall == 0.0 && steps(&of.body)
+                }
+                Body::Add(parts) | Body::Mul(parts) | Body::Fold(Fold::Max | Fold::Min, parts) => {
+                    parts.iter().all(|p| steps(&p.body))
+                }
+                Body::Div(a, b) => steps(&a.body) && super::constant::is_constant(&b.body),
+                _ => false,
+            }
+        }
+        crate::refs::substituted_closed_form(self.typing, id).is_some_and(|f| steps(&f.body))
+    }
+
+    fn moving_energy(&self, name: &str, key: &str, span: ByteSpan) -> EngineError {
+        self.refused_at(
+            "engine.moving_energy_parameter",
+            format!(
+                "`{name}` stores energy in `{key}`, which may only jump: a coefficient that \
+                 moves between jumps can pump energy into the scheme"
+            ),
+            "write it as numbers under crops that open and close without shoulders, as \
+             k*step(t - t0)",
+            Some(span),
+        )
     }
 
     /// A number a call reads as an argument. A grid count is not one: `1sp` names no

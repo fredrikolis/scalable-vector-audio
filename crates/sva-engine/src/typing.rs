@@ -42,7 +42,10 @@ pub enum Value {
         q: NodeId,
         gain: NodeId,
     },
-    Solver(Box<Params>),
+    Solver {
+        params: Box<Params>,
+        varying: Vec<(&'static str, NodeId)>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

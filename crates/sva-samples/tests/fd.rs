@@ -12,7 +12,7 @@ pub fn render(params: &Params, rate: u32, secs: f64) -> Buffer {
     let len = (secs * f64::from(rate)).round() as usize;
     let mut solver = site(params, rate).expect("a grid this rate can hold");
     let samples = (0..len)
-        .map(|_| solver.step())
+        .map(|_| solver.step(&[]))
         .collect::<Result<Vec<f64>, _>>();
     Buffer::mono(rate, samples.expect("a solve that settles"))
 }

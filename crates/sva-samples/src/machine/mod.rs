@@ -344,12 +344,8 @@ fn step(
 
 fn arity_of(op: &Op) -> usize {
     match op {
-        Op::Const(_)
-        | Op::Time
-        | Op::Read { .. }
-        | Op::ReadScaled { .. }
-        | Op::SelfAt { .. }
-        | Op::Physics { .. } => 0,
+        Op::Const(_) | Op::Time | Op::Read { .. } | Op::ReadScaled { .. } | Op::SelfAt { .. } => 0,
+        Op::Physics { arity, .. } => *arity,
         Op::Map(_) | Op::Crop { .. } | Op::Channel(_) => 1,
         Op::Sub | Op::Div | Op::Pow | Op::Zip(_) => 2,
         Op::Add(n) | Op::Mul(n) | Op::Join(n) => *n,
@@ -452,7 +448,11 @@ fn fill(
             let State::Physics(solver) = &mut states[site.0 as usize] else {
                 unreachable!("a physics op names a physics site")
             };
-            result[0] = solver.step()?;
+            let mut args = [0.0; crate::physics::MAX_VARYING];
+            for (k, slot) in args.iter_mut().enumerate().take(srcs.len()) {
+                *slot = arg(k)[0] + 0.0;
+            }
+            result[0] = solver.step(&args[..srcs.len()])?;
         }
     }
     Ok(())

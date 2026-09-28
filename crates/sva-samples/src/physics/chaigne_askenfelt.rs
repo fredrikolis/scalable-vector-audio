@@ -4,7 +4,7 @@
 //! instrument: nothing here, or anywhere this is wired in, may name one.
 
 use crate::error::SampleError;
-use crate::physics::Solver;
+use crate::physics::{Solver, Varies};
 
 use crate::physics::ball::Ball;
 use crate::physics::bound::Bound::*;
@@ -105,6 +105,12 @@ impl ChaigneAskenfeltParams {
     }
 }
 
+/// The felt's dashpot moves every sample; its spring is stored energy, so it only jumps.
+pub const VARYING: &[(&str, Varies)] = &[
+    ("damper_r", Varies::PerSample),
+    ("damper_k", Varies::Piecewise),
+];
+
 /// Position, dashpot, ramp and felt length fitted to MAPS ENSTDkCl forte key-off slopes,
 /// A0 to C5 (Emiya, Badeau & David 2010); the spring is unfitted.
 const DAMPER_POS: f64 = 0.15;
@@ -166,6 +172,11 @@ pub struct ChaigneAskenfeltSite {
     pub(crate) bridge_mass: f64,
     pub(crate) dt: f64,
     pub(crate) felt: Vec<Vec<Felt>>,
+    /// Per string, the nodes under the felt, each one's share and `dt/(rho dx)`.
+    under_felt: Vec<(Vec<usize>, f64, f64)>,
+    /// The `(damper_r, damper_k)` the felt was opened with, and the pair it is designed for.
+    own: (f64, f64),
+    designed_for: (f64, f64),
     pub(crate) landing: Option<(u64, f64)>,
     pub(crate) steps: u64,
 }
@@ -175,7 +186,11 @@ pub fn landing_step(release: f64, sr: f64) -> Option<u64> {
 }
 
 /// Every node under the felt, or the nearest, sharing it evenly.
-fn felt_on(grid: &StringGrid, params: &ChaigneAskenfeltParams, dt: f64) -> Vec<Felt> {
+fn under_felt(
+    grid: &StringGrid,
+    params: &ChaigneAskenfeltParams,
+    dt: f64,
+) -> (Vec<usize>, f64, f64) {
     let n = grid.n;
     let at = params.damper_pos * n as f64;
     let half = FELT_LENGTH_M / 2.0 / grid.dx;
@@ -184,15 +199,17 @@ fn felt_on(grid: &StringGrid, params: &ChaigneAskenfeltParams, dt: f64) -> Vec<F
         nodes.push((at.round() as usize).clamp(1, n - 1));
     }
     let psi = 1.0 / nodes.len() as f64;
-    let unit = dt / (grid.rho * grid.dx);
-    nodes
-        .into_iter()
-        .map(|j| {
-            (
-                j,
-                params.damper_k * psi * dt * unit,
-                params.damper_r * psi * unit / 2.0,
-            )
+    (nodes, psi, dt / (grid.rho * grid.dx))
+}
+
+fn designed(under: &[(Vec<usize>, f64, f64)], dt: f64, (r, k): (f64, f64)) -> Vec<Vec<Felt>> {
+    under
+        .iter()
+        .map(|(nodes, psi, unit)| {
+            nodes
+                .iter()
+                .map(|&j| (j, k * psi * dt * unit, r * psi * unit / 2.0))
+                .collect()
         })
         .collect()
 }
@@ -216,12 +233,13 @@ impl ChaigneAskenfeltSite {
             .map(|g| point_weights(g.n, params.strike_pos))
             .collect();
         let landing = landing_step(params.release, sr).map(|at| (at, params.damper_ramp * sr));
-        let felt = match landing {
-            Some(_) => strings.iter().map(|g| felt_on(g, params, dt)).collect(),
-            None => vec![Vec::new(); strings.len()],
-        };
+        let under: Vec<_> = strings.iter().map(|g| under_felt(g, params, dt)).collect();
+        let own = (params.damper_r, params.damper_k);
         let site = ChaigneAskenfeltSite {
-            felt,
+            felt: designed(&under, dt, own),
+            under_felt: under,
+            own,
+            designed_for: own,
             landing,
             steps: 0,
             detached: vec![false; strings.len()],
@@ -307,14 +325,38 @@ impl ChaigneAskenfeltSite {
 }
 
 impl Solver for ChaigneAskenfeltSite {
-    fn step(&mut self) -> Result<f64, SampleError> {
+    fn step(&mut self, args: &[f64]) -> Result<f64, SampleError> {
+        let now = (
+            args.first().copied().unwrap_or(self.own.0),
+            args.get(1).copied().unwrap_or(self.own.1),
+        );
+        for ((name, _), value) in VARYING.iter().zip([now.0, now.1]) {
+            if !(value >= 0.0 && value.is_finite()) {
+                return Err(SampleError::ArgumentOutOfRange {
+                    model: "chaigne_askenfelt",
+                    name,
+                    bits: value.to_bits(),
+                    sample: self.steps,
+                });
+            }
+        }
+        let bits = |(r, k): (f64, f64)| (r.to_bits(), k.to_bits());
+        if bits(now) != bits(self.designed_for) {
+            self.felt = designed(&self.under_felt, self.dt, now);
+            self.designed_for = now;
+        }
         Ok(self.advance())
     }
 
     fn bytes(&self) -> usize {
         let grids: usize = self.strings.iter().map(StringGrid::bytes).sum();
         let strike: usize = self.strike.iter().map(|w| super::floats(w)).sum();
-        let felt: usize = self.felt.iter().map(std::mem::size_of_val).sum();
+        let felt: usize = self.felt.iter().map(std::mem::size_of_val).sum::<usize>()
+            + self
+                .under_felt
+                .iter()
+                .map(|(nodes, ..)| std::mem::size_of_val(nodes.as_slice()))
+                .sum::<usize>();
         size_of::<Self>() + grids + strike + felt + super::floats(&self.tensions)
     }
 

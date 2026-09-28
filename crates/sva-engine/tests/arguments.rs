@@ -368,7 +368,7 @@ fn the_bore_reads_its_positional_as_a_length() {
     );
     let mut solver = sva_samples::site(&params, 8_000).expect("a grid");
     let stepped: Vec<f64> = (0..rendered.len())
-        .map(|_| solver.step().expect("a settled step"))
+        .map(|_| solver.step(&[]).expect("a settled step"))
         .collect();
     assert_eq!(rendered, stepped, "the length reaches the model unchanged");
 }

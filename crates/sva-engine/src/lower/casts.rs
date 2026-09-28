@@ -187,9 +187,9 @@ impl Lowering<'_, '_> {
         }
     }
 
-    /// A parameter the recurrence reads once a sample: a number stays a number, and a closed form
-    /// of `t` is collapsed on the grid the filter itself runs on.
-    fn automation(
+    /// A parameter the recurrence reads once a sample: a number stays a number, a closed form
+    /// the machine evaluates stays one, and any other is collapsed on the grid it runs on.
+    pub(super) fn automation(
         &mut self,
         written: &Expr,
         span: ByteSpan,
@@ -201,7 +201,8 @@ impl Lowering<'_, '_> {
         let held = self.typing.ty(id);
         let settled = held.held == Held::Sampled
             || matches!(self.typing.value(id), Value::ClosedForm(form)
-                if super::constant_value(&form.body, form.var).is_some());
+                if super::constant_value(&form.body, form.var).is_some())
+            || super::inline::renderer(self.typing, id).is_some();
         if settled {
             return Ok(id);
         }

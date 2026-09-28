@@ -95,7 +95,17 @@ fn built(
         }
         Value::SelfAt(delay) => sink.text(&format!("self {delay:?}")),
         Value::Grid(count) => sink.text(&format!("sp {count}")),
-        Value::Solver(params) => sink.text(&format!("{params:?}")),
+        Value::Solver { params, varying } => {
+            let mut held = (**params).clone();
+            for (key, _) in varying {
+                *crate::lower::field(&mut held, key).expect("a varying field") = f64::NAN;
+            }
+            sink.text(&format!("{held:?}"));
+            for (key, arg) in varying {
+                sink.text(key);
+                sink.hash(identity_of(typing, *arg, open, named)?);
+            }
+        }
         Value::Filter {
             shape,
             x,

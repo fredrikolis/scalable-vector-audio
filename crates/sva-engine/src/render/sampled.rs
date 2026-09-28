@@ -222,7 +222,8 @@ impl Build<'_> {
             }
             Value::ClosedForm(form) => match crate::lower::constant_value(&form.body, form.var) {
                 Some(v) => Ok(NodeRenderer::Const(v)),
-                None => Err(uncollapsed(self.held, id)),
+                None => crate::lower::inline::renderer(&self.held.tys, id)
+                    .ok_or_else(|| uncollapsed(self.held, id)),
             },
             Value::Cast(Cast::Sample, source) => Ok(self.buffer(source, 0)),
             Value::Cast(..) => Err(uncollapsed(self.held, id)),
@@ -246,11 +247,20 @@ impl Build<'_> {
                 Some(steps) => Ok(NodeRenderer::SelfAt { steps }),
                 None => Err(varying(&self.held.tys, id)),
             },
-            Value::Solver(_) if id != self.owner => Ok(self.buffer(id, 0)),
-            Value::Solver(params) => {
-                let site = self.site(Site::Physics(params));
+            Value::Solver { .. } if id != self.owner => Ok(self.buffer(id, 0)),
+            Value::Solver { params, varying } => {
+                let mut args = Vec::new();
+                for (key, _) in params.varying() {
+                    args.push(match varying.iter().find(|(k, _)| k == key) {
+                        Some((_, arg)) => self.of(*arg)?,
+                        None => NodeRenderer::Const(
+                            crate::lower::value_of(&params, key).expect("a varying field"),
+                        ),
+                    });
+                }
+                let site = self.site(Site::Physics(Box::new(params.structural())));
                 let from = self.state_start(id);
-                Ok(NodeRenderer::Physics { site, from })
+                Ok(NodeRenderer::Physics { site, from, args })
             }
             Value::Filter {
                 shape,

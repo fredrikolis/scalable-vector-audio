@@ -7,11 +7,13 @@ use crate::render::{Range, RenderConfig, Stream, StreamConfig, plan, render};
 const RATE: u32 = 44_100;
 const SECS: f64 = 1.0;
 
-/// A node written with a switch at `r`, and the form it has before that switch.
+/// A node written with a switch at `r`, and the form it has before that switch; a solver
+/// is dear, so it is held to fewer instants and blocks.
 struct Case {
     name: &'static str,
     switched: fn(f64) -> String,
     before: &'static str,
+    solver: bool,
 }
 
 const MACHINE: &[Case] = &[
@@ -19,11 +21,13 @@ const MACHINE: &[Case] = &[
         name: "a sampled crop falling into r",
         switched: |r| format!("crop(sample(@tone), 0s, {r}s, fall=0.02s)\n"),
         before: "crop(sample(@tone), 0s, inf)\n",
+        solver: false,
     },
     Case {
         name: "a sampled crop rising from r",
         switched: |r| format!("sample(@tone) + crop(sample(@tone), {r}s, 3600s, rise=0.01s)\n"),
         before: "sample(@tone) + 0\n",
+        solver: false,
     },
     Case {
         name: "a filter over samples handed over at r",
@@ -34,11 +38,29 @@ const MACHINE: &[Case] = &[
             )
         },
         before: "lowpass(crop(sample(@tone), 0s, inf) + 0, cutoff=900, q=0.7)\n",
+        solver: false,
     },
     Case {
         name: "a loop over a sampled crop ending at r",
         switched: |r| format!("crop(sample(@tone), 0s, {r}s) + 0.4*self(t - 0.05s)\n"),
         before: "crop(sample(@tone), 0s, inf) + 0.4*self(t - 0.05s)\n",
+        solver: false,
+    },
+    Case {
+        name: "a bow pressed harder from r",
+        switched: |r| {
+            format!("willemsen_bilbao_serafin(196, bow_force=2 + crop(2, {r}s, 3600s))\n")
+        },
+        before: "willemsen_bilbao_serafin(196, bow_force=2)\n",
+        solver: true,
+    },
+    Case {
+        name: "a felt damping from r",
+        switched: |r| {
+            format!("chaigne_askenfelt(261.63, release=0, damper_r=0.1*crop(1, {r}s, 3600s))\n")
+        },
+        before: "chaigne_askenfelt(261.63, release=0, damper_r=0)\n",
+        solver: true,
     },
 ];
 
@@ -119,7 +141,7 @@ fn switch(g: &Graph, root: &str, other: &str) -> usize {
 /// Instants on and off the grid, drawn the same every run.
 fn instants() -> Vec<f64> {
     let mut seed: u64 = 0x5eed;
-    let mut out = vec![0.25, 0.5, 11_025.0 / f64::from(RATE)];
+    let mut out = vec![0.25, 0.5, 11_025.5 / f64::from(RATE)];
     for _ in 0..3 {
         seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
         out.push(0.2 + 0.6 * (seed >> 11) as f64 / (1u64 << 53) as f64);
@@ -130,14 +152,18 @@ fn instants() -> Vec<f64> {
 #[test]
 fn every_machine_switch_is_its_prefix_form_before_it_whole_and_streamed() {
     for case in MACHINE {
-        for r in instants() {
+        let (count, blocks) = match case.solver {
+            true => (2, &[64, 1_000][..]),
+            false => (6, &[1, 64, 1_000, 4_096][..]),
+        };
+        for r in instants().into_iter().take(count) {
             let g = graph(&(case.switched)(r), case.before);
             for (n, b) in [("n", "b"), ("late", "late_b")] {
                 let at = switch(&g, n, b);
                 let want = whole(&g, b);
                 let label = format!("{} at {r} ({n}, before {at})", case.name);
                 assert_eq!(whole(&g, n)[..at], want[..at], "{label}: whole");
-                for block in [1, 64, 1_000, 4_096] {
+                for &block in blocks {
                     let heard = streamed(&g, n, block);
                     assert_eq!(heard[..at], want[..at], "{label}: in blocks of {block}");
                 }

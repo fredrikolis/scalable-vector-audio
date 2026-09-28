@@ -75,6 +75,7 @@ pub enum NodeRenderer {
     Physics {
         site: SiteId,
         from: i64,
+        args: Vec<NodeRenderer>,
     },
 }
 

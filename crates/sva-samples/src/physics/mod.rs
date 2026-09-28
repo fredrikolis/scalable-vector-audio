@@ -28,9 +28,9 @@ use darabundit_scavone::{BoreParams, BoreSite};
 use rhaouti_chaigne_joly::{RhaoutiChaigneJolyParams, RhaoutiChaigneJolySite};
 use willemsen_bilbao_serafin::{WillemsenBilbaoSerafinParams, WillemsenBilbaoSerafinSite};
 
-/// One sample per call. The derivative half of the old pair died with the lanes.
+/// One sample per call, `args` in [`Params::varying`] order; none steps on the site's own.
 pub trait Solver: Held + Send + Sync {
-    fn step(&mut self) -> Result<f64, SampleError>;
+    fn step(&mut self, args: &[f64]) -> Result<f64, SampleError>;
 
     /// What one copy of this site holds, its grids and parameters alike.
     fn bytes(&self) -> usize;
@@ -55,6 +55,16 @@ impl<T: Solver + Clone + 'static> Held for T {
         self
     }
 }
+
+/// How a parameter may move, by where it enters the energy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Varies {
+    PerSample,
+    /// Stored energy: constant between jumps.
+    Piecewise,
+}
+
+pub const MAX_VARYING: usize = 2;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Params {
@@ -92,6 +102,29 @@ impl Params {
         }
     }
 
+    /// Read every sample, in order.
+    pub fn varying(&self) -> &'static [(&'static str, Varies)] {
+        varying(self.name())
+    }
+
+    pub fn structural(&self) -> Params {
+        match self {
+            Params::ChaigneAskenfelt(p) => Params::ChaigneAskenfelt(ChaigneAskenfeltParams {
+                damper_r: 0.0,
+                damper_k: 0.0,
+                ..p.clone()
+            }),
+            Params::WillemsenBilbaoSerafin(p) => {
+                Params::WillemsenBilbaoSerafin(WillemsenBilbaoSerafinParams {
+                    bow_vel: 0.0,
+                    bow_force: 1.0,
+                    ..p.clone()
+                })
+            }
+            other => other.clone(),
+        }
+    }
+
     pub fn valid(&self) -> bool {
         match self {
             Params::ChaigneAskenfelt(p) => p.valid(),
@@ -101,6 +134,14 @@ impl Params {
             Params::ChaigneDoutaut(p) => p.valid(),
             Params::Botteldooren(p) => p.valid(),
         }
+    }
+}
+
+pub fn varying(model: &str) -> &'static [(&'static str, Varies)] {
+    match model {
+        "chaigne_askenfelt" => chaigne_askenfelt::VARYING,
+        "willemsen_bilbao_serafin" => willemsen_bilbao_serafin::VARYING,
+        _ => &[],
     }
 }
 

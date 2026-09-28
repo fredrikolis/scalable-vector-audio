@@ -247,7 +247,7 @@ fn a_friction_solve_that_does_not_settle_refuses() {
     });
     let mut solver = site(&p, 44_100).expect("a grid this rate holds");
     let refused = (0..44_100)
-        .find_map(|_| solver.step().err())
+        .find_map(|_| solver.step(&[]).err())
         .expect("the solve fails to settle within a second");
     assert_eq!(refused.code(), "samples.contact_unsettled", "{refused}");
 }

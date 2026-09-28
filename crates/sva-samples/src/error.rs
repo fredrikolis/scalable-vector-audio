@@ -38,6 +38,14 @@ pub enum SampleError {
     },
     /// State held for other call sites than the ones it is handed to.
     StateMismatch,
+    /// A varying parameter outside the range its model holds, at one sample.
+    ArgumentOutOfRange {
+        model: &'static str,
+        name: &'static str,
+        /// The value's bits, which keep the error `Eq`.
+        bits: u64,
+        sample: u64,
+    },
 }
 
 /// What a collapse refuses, per FORMAT 16.3.
@@ -150,6 +158,7 @@ impl SampleError {
             SampleError::BridgeUnstable { .. } => "samples.bridge_unstable",
             SampleError::ContactUnsettled { .. } => "samples.contact_unsettled",
             SampleError::StateMismatch => "samples.state_mismatch",
+            SampleError::ArgumentOutOfRange { .. } => "samples.argument_out_of_range",
         }
     }
 }
@@ -202,6 +211,17 @@ impl std::fmt::Display for SampleError {
                 f,
                 "the state held is for other call sites than these: a site that moved takes \
                  only a chaigne_askenfelt string's motion, and only across a new release"
+            ),
+            SampleError::ArgumentOutOfRange {
+                model,
+                name,
+                bits,
+                sample,
+            } => write!(
+                f,
+                "`{model}`'s `{name}` is {} at sample {sample}, outside the range it \
+                 models. `sva-cli builtins` names each argument's range",
+                f64::from_bits(*bits)
             ),
         }
     }

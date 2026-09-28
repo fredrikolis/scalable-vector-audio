@@ -61,7 +61,7 @@ impl<'a> Supports<'a> {
                 Err(count) => moved(self.of(*source), -count),
             },
             Value::Filter { x, .. } => stateful(self.of(*x)),
-            Value::Solver(_) => Extent::from(0),
+            Value::Solver { .. } => Extent::from(0),
         }
     }
 
@@ -166,7 +166,7 @@ impl<'a> Supports<'a> {
                 .fold(starting(self.of(id)), |held, arg| {
                     earliest(held, self.state_start(arg, owner))
                 }),
-            Value::Solver(_) => Some(0),
+            Value::Solver { .. } => Some(0),
             Value::SelfAt(_) => starting(self.of(owner)),
             Value::Op { args, .. } => args.iter().fold(None, |held, arg| {
                 earliest(held, self.state_start(*arg, owner))
@@ -702,6 +702,7 @@ pub(crate) fn leaves(renderer: &NodeRenderer, found: &mut dyn FnMut(&NodeRendere
         } => [x, cutoff, q, gain]
             .into_iter()
             .for_each(|p| leaves(p, found)),
+        NodeRenderer::Physics { args, .. } => args.iter().for_each(|p| leaves(p, found)),
         leaf => found(leaf),
     }
 }

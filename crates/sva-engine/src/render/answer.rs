@@ -657,7 +657,8 @@ fn arguments_under(render: &Render, node: sva_formula::NodeId) -> Vec<crate::Arg
             Value::Filter {
                 x, cutoff, q, gain, ..
             } => vec![*x, *cutoff, *q, *gain],
-            Value::SelfAt(_) | Value::Grid(_) | Value::Solver(_) => Vec::new(),
+            Value::Solver { varying, .. } => varying.iter().map(|(_, a)| *a).collect(),
+            Value::SelfAt(_) | Value::Grid(_) => Vec::new(),
         }
     };
     let mut names: Vec<&str> = Vec::new();

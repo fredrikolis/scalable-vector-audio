@@ -42,6 +42,7 @@ pub(crate) enum Op {
     Physics {
         site: SiteId,
         from: i64,
+        arity: usize,
     },
 }
 
@@ -177,10 +178,14 @@ pub(crate) fn lower(
             };
             push(op, width, ops, widths)
         }
-        NodeRenderer::Physics { site, from } => {
+        NodeRenderer::Physics { site, from, args } => {
+            for arg in args {
+                meet(1, lower(arg, layout, ops, widths)?)?;
+            }
             let op = Op::Physics {
                 site: *site,
                 from: *from,
+                arity: args.len(),
             };
             push(op, 1, ops, widths)
         }

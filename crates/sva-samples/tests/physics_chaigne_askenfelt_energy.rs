@@ -15,14 +15,16 @@ fn note(f0: f64) -> ChaigneAskenfeltParams {
 
 fn samples(p: &ChaigneAskenfeltParams, len: usize) -> Vec<f64> {
     let mut site = ChaigneAskenfeltSite::new(p, f64::from(RATE)).expect("a grid");
-    (0..len).map(|_| site.step().expect("a sample")).collect()
+    (0..len)
+        .map(|_| site.step(&[]).expect("a sample"))
+        .collect()
 }
 
 /// Steps `steps` more, and refuses the first step whose energy rose.
 fn never_gains(site: &mut ChaigneAskenfeltSite, steps: usize, what: &str) {
     let mut held = site.energy();
     for k in 0..steps {
-        site.step().expect("a sample");
+        site.step(&[]).expect("a sample");
         let now = site.energy();
         assert!(
             now <= held * (1.0 + 1e-10),
@@ -37,7 +39,7 @@ fn a_free_string_never_gains_energy_once_let_go() {
     for f0 in [65.406, 261.63, 2093.0] {
         let mut site = ChaigneAskenfeltSite::new(&note(f0), f64::from(RATE)).expect("a grid");
         while !site.let_go() {
-            site.step().expect("a sample");
+            site.step(&[]).expect("a sample");
         }
         never_gains(&mut site, RATE as usize, &format!("f0 {f0}"));
     }
@@ -53,7 +55,7 @@ fn a_felted_string_never_gains_energy_once_pressed() {
         };
         let mut site = ChaigneAskenfeltSite::new(&p, f64::from(RATE)).expect("a grid");
         for _ in 0..=(0.1 * f64::from(RATE)).ceil() as usize {
-            site.step().expect("a sample");
+            site.step(&[]).expect("a sample");
         }
         never_gains(&mut site, RATE as usize / 2, &format!("f0 {f0}"));
     }

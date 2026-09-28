@@ -241,7 +241,7 @@ impl Solver for ChaigneDoutautSite {
             + super::floats(&bar.u_next)
     }
 
-    fn step(&mut self) -> Result<f64, SampleError> {
+    fn step(&mut self, _args: &[f64]) -> Result<f64, SampleError> {
         Ok(self.advance())
     }
 }

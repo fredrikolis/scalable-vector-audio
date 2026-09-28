@@ -336,7 +336,7 @@ impl Solver for RhaoutiChaigneJolySite {
             + super::floats(&patch.weights)
     }
 
-    fn step(&mut self) -> Result<f64, SampleError> {
+    fn step(&mut self, _args: &[f64]) -> Result<f64, SampleError> {
         Ok(self.advance())
     }
 }

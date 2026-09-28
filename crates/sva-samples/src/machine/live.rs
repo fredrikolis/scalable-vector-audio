@@ -145,6 +145,7 @@ fn operands(r: &NodeRenderer) -> Vec<&NodeRenderer> {
         NodeRenderer::Filter {
             x, cutoff, q, gain, ..
         } => vec![x, cutoff, q, gain],
+        NodeRenderer::Physics { args, .. } => args.iter().collect(),
         _ => Vec::new(),
     }
 }
@@ -196,6 +197,11 @@ fn rebuilt(r: &NodeRenderer, each: &mut Each) -> Result<NodeRenderer, SampleErro
             cutoff: one(cutoff)?,
             q: one(q)?,
             gain: one(gain)?,
+        },
+        NodeRenderer::Physics { site, from, args } => NodeRenderer::Physics {
+            site: *site,
+            from: *from,
+            args: args.iter().map(&mut *each).collect::<Result<_, _>>()?,
         },
         leaf => leaf.clone(),
     })

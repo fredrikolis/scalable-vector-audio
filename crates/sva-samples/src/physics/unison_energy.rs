@@ -165,12 +165,12 @@ mod tests {
             let p = unison(f0, bridge_mass, release);
             let mut site = ChaigneAskenfeltSite::new(&p, 44_100.0).expect("a grid");
             while !site.let_go() {
-                site.step().expect("a sample");
+                site.step(&[]).expect("a sample");
             }
             for step in 0..4410 {
                 let older: Vec<Vec<f64>> = site.strings.iter().map(|g| g.y_prev.clone()).collect();
                 let (before, share) = (site.energy(), site.pressing());
-                site.step().expect("a sample");
+                site.step(&[]).expect("a sample");
                 let residual = site.energy() - before + dissipated(&site, &older, share);
                 assert!(
                     residual.abs() <= 1e-12 * before,
@@ -178,6 +178,53 @@ mod tests {
                      by {residual}"
                 );
             }
+        }
+    }
+
+    /// A dashpot moving every sample dissipates what it removes that sample; a spring that
+    /// jumps adds, at the jump, its new stiffness's energy over the motion it finds.
+    #[test]
+    fn a_moving_felt_loses_what_it_dissipates_and_a_spring_jump_adds_its_own_energy() {
+        let mut site =
+            ChaigneAskenfeltSite::new(&unison(261.63, 1.0, 0.0), 44_100.0).expect("a grid");
+        while !site.let_go() {
+            site.step(&[0.0, 0.0]).expect("a sample");
+        }
+        let mut seed: u64 = 0x5eed;
+        for step in 0..4410 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let r = 0.2 * (seed >> 11) as f64 / (1u64 << 53) as f64;
+            let k = if step < 2000 { 0.0 } else { 2e3 };
+            let older: Vec<Vec<f64>> = site.strings.iter().map(|g| g.y_prev.clone()).collect();
+            let found: Vec<(Vec<f64>, Vec<f64>)> = site
+                .strings
+                .iter()
+                .map(|g| (g.y_now.clone(), g.y_prev.clone()))
+                .collect();
+            let (before, share, springs) = (site.energy(), site.pressing(), site.felt.clone());
+            site.step(&[r, k]).expect("a sample");
+            let jumped: f64 = site
+                .strings
+                .iter()
+                .enumerate()
+                .map(|(i, grid)| {
+                    let (y, yp) = &found[i];
+                    let w = grid.rho * grid.dx / (site.dt * site.dt) / 2.0;
+                    let moved: f64 = site.felt[i]
+                        .iter()
+                        .zip(&springs[i])
+                        .map(|(&(j, now, _), &(_, was, _))| {
+                            (now - was) * (y[j] * y[j] + yp[j] * yp[j]) / 2.0
+                        })
+                        .sum();
+                    w * moved
+                })
+                .sum();
+            let residual = site.energy() - before + dissipated(&site, &older, share) - jumped;
+            assert!(
+                residual.abs() <= 1e-12 * before,
+                "step {step}: E {before} misses its balance by {residual} (jump {jumped})"
+            );
         }
     }
 }

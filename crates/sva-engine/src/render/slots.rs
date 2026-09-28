@@ -198,6 +198,11 @@ fn silenced(r: &NodeRenderer, kept: &dyn Fn(BufId) -> bool) -> NodeRenderer {
             q: one(q, kept),
             gain: one(gain, kept),
         },
+        NodeRenderer::Physics { site, from, args } => NodeRenderer::Physics {
+            site: *site,
+            from: *from,
+            args: each(args, kept),
+        },
         leaf => leaf.clone(),
     }
 }
@@ -227,6 +232,7 @@ fn operands(r: &NodeRenderer) -> Vec<&NodeRenderer> {
         NodeRenderer::Filter {
             x, cutoff, q, gain, ..
         } => vec![x, cutoff, q, gain],
+        NodeRenderer::Physics { args, .. } => args.iter().collect(),
         _ => Vec::new(),
     }
 }

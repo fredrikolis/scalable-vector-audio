@@ -147,6 +147,25 @@ pub(super) fn params(name: &str, first: f64, named: &[(&str, f64)]) -> Params {
     }
 }
 
+/// The field of `params` a written name reads and writes.
+pub(crate) fn field<'p>(params: &'p mut Params, key: &str) -> Option<&'p mut f64> {
+    fn find<'p, P>(p: &'p mut P, fields: &[Field<P>], key: &str) -> Option<&'p mut f64> {
+        fields.iter().find(|(k, _)| *k == key).map(|(_, f)| f(p))
+    }
+    match params {
+        Params::ChaigneAskenfelt(p) => find(p, CHAIGNE_ASKENFELT, key),
+        Params::WillemsenBilbaoSerafin(p) => find(p, WILLEMSEN_BILBAO_SERAFIN, key),
+        Params::DarabunditScavone(p) => find(p, DARABUNDIT_SCAVONE, key),
+        Params::RhaoutiChaigneJoly(p) => find(p, RHAOUTI_CHAIGNE_JOLY, key),
+        Params::ChaigneDoutaut(p) => find(p, CHAIGNE_DOUTAUT, key),
+        Params::Botteldooren(p) => find(p, BOTTELDOOREN, key),
+    }
+}
+
+pub(crate) fn value_of(params: &Params, key: &str) -> Option<f64> {
+    field(&mut params.clone(), key).map(|v| *v)
+}
+
 /// The positional is the reference set's own; only a named field is overridden.
 fn written<P>(mut p: P, fields: &[Field<P>], named: &[(&str, f64)]) -> P {
     for (key, field) in &fields[1..] {

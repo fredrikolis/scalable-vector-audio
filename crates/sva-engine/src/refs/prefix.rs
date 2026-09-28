@@ -2,10 +2,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use sva_formula::{Body, C64, ClosedForm, Hash, NodeId, normalize_closed_form};
+use sva_formula::closed_form::map_children;
+use sva_formula::{Body, C64, ClosedForm, Edge, Hash, NodeId, Part, normalize_closed_form};
 
 use super::identity::{Sink, closed_form_identity, identity_in};
+use super::substituted_closed_form;
 use crate::error::EngineError;
+use crate::lower::field;
 use crate::typing::{Typing, Value};
 
 /// What a render has asked of its nodes' switches, kept for every later ask.
@@ -59,7 +62,12 @@ impl<'a> Walk<'a> {
                 x, cutoff, q, gain, ..
             } => {
                 for operand in [*x, *cutoff, *q, *gain] {
-                    out.extend(self.change_points(operand));
+                    out.extend(self.argument_points(operand));
+                }
+            }
+            Value::Solver { varying, .. } => {
+                for (_, arg) in varying.clone() {
+                    out.extend(self.argument_points(arg));
                 }
             }
             Value::Op { name, args } => {
@@ -70,21 +78,48 @@ impl<'a> Walk<'a> {
                     out.extend(window.switches(self.rate));
                 }
             }
-            Value::ClosedForm(_)
-            | Value::Cast(..)
-            | Value::SelfAt(_)
-            | Value::Grid(_)
-            | Value::Solver(_) => {}
+            Value::ClosedForm(_) | Value::Cast(..) | Value::SelfAt(_) | Value::Grid(_) => {}
         }
         self.held.points.insert(id, out.clone());
         out
+    }
+
+    /// A closed form a machine reads as an argument is evaluated there instant by instant, so
+    /// its crops switch where the machine's own would.
+    fn argument_points(&mut self, arg: NodeId) -> BTreeSet<i64> {
+        let mut out = BTreeSet::new();
+        match self.pointwise(arg) {
+            Some(form) => body_points(&form.body, self.rate, &mut out),
+            None => out = self.change_points(arg),
+        }
+        out
+    }
+
+    fn pointwise(&self, arg: NodeId) -> Option<ClosedForm> {
+        crate::lower::inline::renderer(self.typing, arg)?;
+        substituted_closed_form(self.typing, arg)
+    }
+
+    /// An argument before `at`: the number its prefix form folds to, or that form's identity.
+    fn argument_before(&mut self, arg: NodeId, at: i64) -> Result<Argued, EngineError> {
+        let Some(form) = self.pointwise(arg) else {
+            return self.prefix_identity(arg, at).map(Argued::Node);
+        };
+        if !self.argument_points(arg).iter().any(|c| *c >= at) {
+            return identity_in(self.typing, arg, self.named).map(Argued::Node);
+        }
+        let body = before(&form.body, at, self.rate);
+        Ok(match crate::lower::constant_value(&body, form.var) {
+            Some(v) => Argued::Number(v + 0.0),
+            None => Argued::Node(form_identity(ClosedForm { body, ..form })),
+        })
     }
 
     /// `id` as it stands before grid index `at`: every switch at or past it is what it
     /// switches from, and a node with none there is its own identity.
     pub(crate) fn prefix_identity(&mut self, id: NodeId, at: i64) -> Result<Hash, EngineError> {
         if !self.change_points(id).iter().any(|c| *c >= at) {
-            return identity_in(self.typing, id, &mut self.named);
+            return identity_in(self.typing, id, self.named);
         }
         if let Some(held) = self.held.prefixed.get(&(id, at)) {
             return Ok(*held);
@@ -122,8 +157,30 @@ impl<'a> Walk<'a> {
                 gain,
             } => {
                 sink.text(shape.name());
-                for operand in [*x, *cutoff, *q, *gain] {
-                    sink.hash(self.prefix_identity(operand, at)?);
+                sink.hash(self.prefix_identity(*x, at)?);
+                for operand in [*cutoff, *q, *gain] {
+                    sink.hash(match self.argument_before(operand, at)? {
+                        Argued::Number(v) => constant_identity(v, typing.var(operand)),
+                        Argued::Node(held) => held,
+                    });
+                }
+            }
+            Value::Solver { params, varying } => {
+                let mut held = (**params).clone();
+                let mut read = Vec::new();
+                for (key, arg) in varying {
+                    match self.argument_before(*arg, at)? {
+                        Argued::Number(v) => *field(&mut held, key).expect("a varying field") = v,
+                        Argued::Node(h) => read.push((*key, h)),
+                    }
+                }
+                for (key, _) in &read {
+                    *field(&mut held, key).expect("a varying field") = f64::NAN;
+                }
+                sink.text(&format!("{held:?}"));
+                for (key, h) in read {
+                    sink.text(key);
+                    sink.hash(h);
                 }
             }
             Value::Op { name, args } => {
@@ -146,11 +203,9 @@ impl<'a> Walk<'a> {
                     }
                 }
             }
-            Value::ClosedForm(_)
-            | Value::Cast(..)
-            | Value::SelfAt(_)
-            | Value::Grid(_)
-            | Value::Solver(_) => return identity_in(typing, id, self.named),
+            Value::ClosedForm(_) | Value::Cast(..) | Value::SelfAt(_) | Value::Grid(_) => {
+                return identity_in(typing, id, self.named);
+            }
         }
         Ok(sink.finish())
     }
@@ -186,6 +241,12 @@ struct Window {
     r: f64,
     rise: f64,
     fall: f64,
+}
+
+/// An argument before an instant: one number, or a form still moving.
+enum Argued {
+    Number(f64),
+    Node(Hash),
 }
 
 enum Before {
@@ -243,6 +304,58 @@ fn closes(rate: u32, r: f64, fall: f64) -> Option<i64> {
         true => first - 1,
         false => first,
     })
+}
+
+fn body_points(f: &Body, rate: u32, out: &mut BTreeSet<i64>) {
+    match f {
+        // A time moved or warped reads its switches at instants this does not place.
+        Body::Shift { .. } | Body::Warp { .. } => {}
+        Body::Crop { of, l, r, fall, .. } => {
+            out.extend(opens(rate, l.value()));
+            out.extend(closes(rate, r.value(), *fall));
+            body_points(&of.body, rate, out);
+        }
+        other => {
+            for p in sva_formula::closed_form::children(other) {
+                body_points(&p.body, rate, out);
+            }
+        }
+    }
+}
+
+fn before(f: &Body, at: i64, rate: u32) -> Body {
+    match f {
+        Body::Shift { .. } | Body::Warp { .. } => f.clone(),
+        Body::Crop {
+            of,
+            l,
+            r,
+            rise,
+            fall,
+        } => {
+            if opens(rate, l.value()).is_some_and(|c| c >= at) {
+                return Body::Const(C64::ZERO);
+            }
+            let inner = Part::new(of.origin, before(&of.body, at, rate));
+            match closes(rate, r.value(), *fall) {
+                Some(c) if c >= at => Body::Crop {
+                    of: inner,
+                    l: *l,
+                    r: Edge::PosInf,
+                    rise: *rise,
+                    fall: 0.0,
+                },
+                _ => Body::Crop {
+                    of: inner,
+                    l: *l,
+                    r: *r,
+                    rise: *rise,
+                    fall: *fall,
+                },
+            }
+        }
+        other => map_children(other, |p| Part::new(p.origin, before(&p.body, at, rate))),
+    }
 }
 
 fn form_identity(form: ClosedForm) -> Hash {

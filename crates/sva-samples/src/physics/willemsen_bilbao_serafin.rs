@@ -5,7 +5,13 @@
 //! Willemsen/Bilbao/Serafin, DAFx-19 pp. 40-46. Reuses `stiff_string`'s FD string.
 
 use crate::error::SampleError;
-use crate::physics::Solver;
+use crate::physics::{Solver, Varies};
+
+/// The bow drives the string: its speed and its force may move every sample.
+pub const VARYING: &[(&str, Varies)] = &[
+    ("bow_vel", Varies::PerSample),
+    ("bow_force", Varies::PerSample),
+];
 
 use crate::physics::bound::Bound::*;
 use crate::physics::bound::all;
@@ -214,6 +220,11 @@ pub struct WillemsenBilbaoSerafinSite {
     tension: f64,
     dt: f64,
     bow_vel: f64,
+    /// The `(bow_vel, bow_force)` the site was opened with, and the force `f_c`, `f_s` and
+    /// `z_ba` are derived for.
+    own: (f64, f64),
+    force: f64,
+    mu: (f64, f64),
     f_c: f64,
     f_s: f64,
     stribeck_vel: f64,
@@ -250,6 +261,9 @@ impl WillemsenBilbaoSerafinSite {
             tension,
             dt: 1.0 / sr,
             bow_vel: params.bow_vel,
+            own: (params.bow_vel, params.bow_force),
+            force: params.bow_force,
+            mu: (params.mu_c, params.mu_s),
             f_c,
             f_s,
             stribeck_vel: params.stribeck_vel,
@@ -273,7 +287,29 @@ impl Solver for WillemsenBilbaoSerafinSite {
         size_of::<Self>() + grids + super::floats(&self.bow)
     }
 
-    fn step(&mut self) -> Result<f64, SampleError> {
+    fn step(&mut self, args: &[f64]) -> Result<f64, SampleError> {
+        let vel = args.first().copied().unwrap_or(self.own.0);
+        let force = args.get(1).copied().unwrap_or(self.own.1);
+        for ((name, _), value, holds) in [
+            (VARYING[0], vel, vel.is_finite()),
+            (VARYING[1], force, force > 0.0 && force.is_finite()),
+        ] {
+            if !holds {
+                return Err(SampleError::ArgumentOutOfRange {
+                    model: "willemsen_bilbao_serafin",
+                    name,
+                    bits: value.to_bits(),
+                    sample: self.steps as u64,
+                });
+            }
+        }
+        self.bow_vel = vel;
+        if force.to_bits() != self.force.to_bits() {
+            self.force = force;
+            self.f_c = self.mu.0 * force;
+            self.f_s = self.mu.1 * force;
+            self.z_ba = 0.7 * self.f_c / self.s0;
+        }
         let dt = self.dt;
         let coupling_prev = (self.z, self.r_prev);
 

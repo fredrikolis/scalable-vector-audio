@@ -391,7 +391,7 @@ impl Solver for BoreSite {
             + std::mem::size_of_val(duct.toneholes.as_slice())
     }
 
-    fn step(&mut self) -> Result<f64, SampleError> {
+    fn step(&mut self, _args: &[f64]) -> Result<f64, SampleError> {
         Ok(self.advance())
     }
 }
