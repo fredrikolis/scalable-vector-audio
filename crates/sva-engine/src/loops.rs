@@ -180,10 +180,94 @@ fn read(inst: &Instances, e: &Expr, cx: Cx, gain: C64) -> Reading {
                 Arg::Named(..) => Reading::Nonlinear,
             })
             .fold(Reading::Free, beside),
+        other @ Node::Call { name, args, .. } => match holds_in(inst, &other, cx) {
+            true => called_on_self(inst, (name, args), cx, gain),
+            false => Reading::Free,
+        },
         other => match holds_in(inst, &other, cx) {
             true => Reading::Nonlinear,
             false => Reading::Free,
         },
+    }
+}
+
+/// A call over the loop's own past, bounded by how far its output moves per unit its signal
+/// does: a fixed filter by its impulse response's sum, a crop by one, and the Lipschitz
+/// constant of each unary this knows one for. Any other stays unbounded.
+fn called_on_self(inst: &Instances, (name, args): (&str, &[Arg]), cx: Cx, gain: C64) -> Reading {
+    let positional: Vec<&Expr> = args
+        .iter()
+        .filter_map(|a| match a {
+            Arg::Pos(x) => Some(x),
+            Arg::Named(..) => None,
+        })
+        .collect();
+    let written = |slot: usize, key: &str| {
+        positional.get(slot).copied().or_else(|| {
+            args.iter().find_map(|a| match a {
+                Arg::Named(k, x) if k == key => Some(x),
+                _ => None,
+            })
+        })
+    };
+    let fixed = |x: Option<&Expr>, fallback: f64| match x {
+        Some(x) if !holds(inst, x, cx) => {
+            constant(inst, x, cx).filter(|c| c.im == 0.0).map(|c| c.re)
+        }
+        Some(_) => None,
+        None => Some(fallback),
+    };
+    let Some(&signal) = positional.first() else {
+        return Reading::Nonlinear;
+    };
+    let others_free = |from: usize| positional[from..].iter().all(|x| !holds(inst, x, cx));
+    let (by, lti) = match name {
+        _ if let Some(shape) = sva_formula::filter::Shape::from_name(name) => {
+            let parameters = (
+                fixed(written(1, "cutoff"), f64::NAN),
+                fixed(written(2, "q"), shape.default_q()),
+                fixed(written(3, "gain"), 0.0),
+            );
+            let (Some(cutoff), Some(q), Some(db)) = parameters else {
+                return Reading::Nonlinear;
+            };
+            let rate = f64::from(lattice());
+            let (coeffs, _) = sva_samples::filters::coefficients(shape, cutoff, q, db, rate);
+            match cutoff
+                .is_finite()
+                .then(|| sva_samples::gain::l1(&coeffs))
+                .flatten()
+            {
+                Some(l1) => (l1, true),
+                None => return Reading::Nonlinear,
+            }
+        }
+        "crop" if others_free(1) => (1.0, false),
+        "tanh" | "sin" | "cos" | "abs" if positional.len() == 1 => (1.0, false),
+        "sat" if positional.len() == 1 => match fixed(written(1, "drive"), 1.0) {
+            Some(drive) => (drive.abs(), false),
+            None => return Reading::Nonlinear,
+        },
+        "max" | "min" => {
+            return positional
+                .iter()
+                .map(|x| scaled(opaque(read(inst, x, cx, gain)), 1.0, false))
+                .fold(Reading::Free, beside);
+        }
+        _ => return Reading::Nonlinear,
+    };
+    scaled(opaque(read(inst, signal, cx, gain)), by, lti)
+}
+
+/// Its gain times `by`, and no longer time-invariant unless `lti`.
+fn scaled(r: Reading, by: f64, lti: bool) -> Reading {
+    match r {
+        Reading::Linear { taps, plain, norm } => Reading::Linear {
+            taps,
+            plain,
+            norm: norm.scaled(by, lti),
+        },
+        other => other,
     }
 }
 
@@ -204,11 +288,7 @@ fn beside(a: Reading, b: Reading) -> Reading {
         Reading::Linear { norm, .. } => *norm,
         _ => Gain::default(),
     };
-    let (x, y) = (norms(&a), norms(&b));
-    let widest = Gain {
-        whole: x.whole.max(y.whole),
-        kernel: x.kernel.max(y.kernel),
-    };
+    let widest = norms(&a).widest(norms(&b));
     match join(a, b) {
         Reading::Linear { taps, plain, .. } => Reading::Linear {
             taps,
@@ -248,10 +328,7 @@ fn join(a: Reading, b: Reading) -> Reading {
             Reading::Linear {
                 taps: held,
                 plain: p1 && p2,
-                norm: Gain {
-                    whole: n1.whole + n2.whole,
-                    kernel: n1.kernel + n2.kernel,
-                },
+                norm: n1.plus(n2),
             }
         }
     }
@@ -482,12 +559,21 @@ pub(crate) fn tap_gain(tap: Tap, g: f64) -> Gain {
         Tap::Back(d) if on_lattice(d) => Gain {
             whole: g,
             kernel: 0.0,
+            lti: true,
         },
         _ => Gain {
             whole: 0.0,
             kernel: g,
+            lti: tap != Tap::Moving,
         },
     }
+}
+
+/// Fixed taps on a loop's own past, each `(delay, coefficient)`.
+pub(crate) fn own_gain(own: &[(Q, f64)]) -> Gain {
+    own.iter().fold(Gain::default(), |held, (d, c)| {
+        held.plus(tap_gain(Tap::Back(*d), c.abs()))
+    })
 }
 
 /// A delay of whole lattice steps, which a loop reads with no kernel.

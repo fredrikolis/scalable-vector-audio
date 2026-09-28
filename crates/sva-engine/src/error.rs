@@ -205,7 +205,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 77] = [
+pub static REGISTRY: [(&str, &str); 80] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -423,7 +423,19 @@ pub static REGISTRY: [(&str, &str); 77] = [
     ),
     (
         "engine.loop_reads_ahead",
-        "a loop reading its own past between samples closer than the kernel reaches",
+        "a loop reading its own past between samples closer than the shortest kernel reaches",
+    ),
+    (
+        "engine.loop_error_unproven",
+        "a loop read between samples through an operation no error bound is known for",
+    ),
+    (
+        "engine.position_unbounded",
+        "a moving read whose computed position no rounding bound holds for over its extent",
+    ),
+    (
+        "engine.reading_past_precision",
+        "a moving read whose bound, its position's rounding counted, passes the precision",
     ),
     (
         "engine.loop_error_past_precision",

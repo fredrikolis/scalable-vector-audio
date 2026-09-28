@@ -225,7 +225,7 @@ impl Stream {
         }
         let planes = sva_samples::machine::resample(
             self.stage.window(),
-            map,
+            (map, sva_samples::plain().half_width()),
             Extent::new(from, to),
             self.stage.width(),
         )
@@ -330,7 +330,7 @@ impl Stream {
         let map = self.shell.out_map();
         let reading = match map.whole() && map.a == 1 {
             true => 0,
-            false => 2 * (self.config.block + sva_samples::kernel().half_width()),
+            false => 2 * (self.config.block + sva_samples::plain().half_width()),
         };
         let root_keep = framed.max(reading);
         Hold::Trailing {
@@ -374,7 +374,7 @@ fn shelled(
     let audio = schedule.materialize.clone();
     let mut shell = Render::shell(held.tys, held.root, config.clone(), schedule);
     reach::streamed(&mut shell, &audio)?;
-    shell.loops_bounded()?;
+    shell.readings_bounded()?;
     Ok(shell)
 }
 

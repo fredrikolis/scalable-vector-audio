@@ -12,6 +12,7 @@ mod lower;
 mod meaning;
 pub mod overload;
 pub mod query;
+mod recirculation;
 mod refs;
 pub mod render;
 mod schedule;

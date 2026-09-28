@@ -531,32 +531,34 @@ fn machine(
         .iter()
         .map(|r| index.get(r).copied().ok_or_else(|| unheld(shell, *r)))
         .collect::<Result<_, _>>()?;
-    let half = sva_samples::kernel().half_width();
     let (mut reads, mut own, mut ahead, mut held) = (Vec::new(), 0, false, Vec::new());
     crate::render::extent::leaves(&program.renderer, &mut |leaf| match leaf {
         NodeRenderer::Read {
             slot: Slot::Read(id),
             at: At::Map(at),
+            half_width,
         } if at.a == at.d => {
             ahead |= at.b > 0;
-            let lead = at.lead(half);
+            let lead = at.lead(*half_width);
             reads.push((slots[id.0 as usize], lead));
             if !at.whole() {
-                reads.push((slots[id.0 as usize], lead + 1 - 2 * half as i64));
+                reads.push((slots[id.0 as usize], lead + 1 - 2 * *half_width as i64));
             }
         }
         NodeRenderer::Read {
             slot: Slot::Read(id),
+            half_width,
             ..
         } => {
-            reads.push((slots[id.0 as usize], half as i64));
+            reads.push((slots[id.0 as usize], *half_width as i64));
             held.push(slots[id.0 as usize]);
         }
         NodeRenderer::Read {
             slot: Slot::Own,
             at: At::Map(at),
+            half_width,
         } if at.a == at.d => {
-            let back = -at.lead(0) + i64::from(!at.whole()) * half as i64;
+            let back = -at.lead(0) + i64::from(!at.whole()) * *half_width as i64;
             own = own.max(back.max(0) as usize);
         }
         NodeRenderer::Read {

@@ -15,7 +15,7 @@ use sva_formula::{Body, ClosedForm, Held, IndexId, NodeId, Part, Ty, Var};
 use crate::cast::{Cast, Mismatch};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Cx, Instances, Node};
-use crate::loops::{self, SelfKind, Tap};
+use crate::loops::{self, SelfKind};
 use crate::overload;
 use crate::time::Affine;
 use crate::typing::{Gain, Node as Typed, Typing, Value, When};
@@ -71,11 +71,10 @@ pub fn node(path: &str, inst: &Instances, typing: &mut Typing) -> Result<NodeId,
         Some(SelfKind::Refuse(e)) => return Err(*e),
         Some(SelfKind::Series { gain, delay }) => Some((gain, delay)),
         Some(SelfKind::Sampled { gain, taps }) => {
-            let expansion = taps
-                .as_deref()
-                .map(|taps| loops::expanded(taps, sva_samples::kernel().half_width()));
-            if let Some(loops::Expanded::Taps { rest, own }) = expansion {
-                return expanded_loop(path, inst, typing, (expr, cx), var, (rest, own));
+            if let (Some(taps), Some(gain)) = (taps.as_deref(), gain)
+                && let Some(expansion) = crate::recirculation::expansion(taps, gain)
+            {
+                return expanded_loop(path, inst, typing, (expr, cx), var, expansion);
             }
             return sampled_loop(path, inst, typing, (expr, cx), var, gain);
         }
@@ -140,13 +139,7 @@ fn expanded_loop(
     };
     let body = low.walk(expr, cx, var)?;
     let body = low.seal(body, var, None)?;
-    let gain = own.iter().fold(Gain::default(), |held, (d, c)| {
-        let tap = loops::tap_gain(Tap::Back(*d), c.abs());
-        Gain {
-            whole: held.whole + tap.whole,
-            kernel: held.kernel + tap.kernel,
-        }
-    });
+    let gain = loops::own_gain(&own);
     let back = |d: crate::time::Q| {
         When::Time(Affine {
             scale: crate::time::Q::ONE,

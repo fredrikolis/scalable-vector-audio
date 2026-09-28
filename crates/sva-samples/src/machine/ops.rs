@@ -11,17 +11,21 @@ pub(crate) enum Op {
     Read {
         slot: Slot,
         at: Map,
+        half_width: usize,
     },
     /// A read times a constant, the bits of `Mul` over the two.
     ReadScaled {
         slot: Slot,
         at: Map,
+        half_width: usize,
         by: f64,
     },
     /// A reading at the position the operand below it names, in seconds.
     Moving {
         slot: Slot,
         per_sec: f64,
+        line: bool,
+        half_width: usize,
     },
     Add(usize),
     Mul(usize),
@@ -97,10 +101,12 @@ pub(crate) fn lower(
         NodeRenderer::Read {
             slot,
             at: At::Map(at),
+            half_width,
         } => push(
             Op::Read {
                 slot: *slot,
                 at: *at,
+                half_width: *half_width,
             },
             slot_width(*slot, layout),
             ops,
@@ -108,21 +114,36 @@ pub(crate) fn lower(
         ),
         NodeRenderer::Read {
             slot,
-            at: At::Moving { per_sec, time },
+            at:
+                At::Moving {
+                    per_sec,
+                    line,
+                    time,
+                },
+            half_width,
         } => {
             meet(1, lower(time, layout, ops, widths)?)?;
             let op = Op::Moving {
                 slot: *slot,
                 per_sec: *per_sec,
+                line: *line,
+                half_width: *half_width,
             };
             push(op, slot_width(*slot, layout), ops, widths)
         }
-        NodeRenderer::Mul(parts) if let Some((slot, at, by)) = scaled_read(parts) => push(
-            Op::ReadScaled { slot, at, by },
-            slot_width(slot, layout),
-            ops,
-            widths,
-        ),
+        NodeRenderer::Mul(parts) if let Some((slot, at, half_width, by)) = scaled_read(parts) => {
+            push(
+                Op::ReadScaled {
+                    slot,
+                    at,
+                    half_width,
+                    by,
+                },
+                slot_width(slot, layout),
+                ops,
+                widths,
+            )
+        }
         NodeRenderer::Add(parts) | NodeRenderer::Mul(parts) => {
             let mut width = 1;
             for p in parts {
@@ -238,12 +259,13 @@ fn slot_width(slot: Slot, layout: &Layout) -> usize {
     }
 }
 
-fn scaled_read(parts: &[NodeRenderer]) -> Option<(Slot, Map, f64)> {
+fn scaled_read(parts: &[NodeRenderer]) -> Option<(Slot, Map, usize, f64)> {
     match parts {
         [
             NodeRenderer::Read {
                 slot,
                 at: At::Map(at),
+                half_width,
             },
             NodeRenderer::Const(by),
         ]
@@ -252,8 +274,9 @@ fn scaled_read(parts: &[NodeRenderer]) -> Option<(Slot, Map, f64)> {
             NodeRenderer::Read {
                 slot,
                 at: At::Map(at),
+                half_width,
             },
-        ] => Some((*slot, *at, *by)),
+        ] => Some((*slot, *at, *half_width, *by)),
         _ => None,
     }
 }

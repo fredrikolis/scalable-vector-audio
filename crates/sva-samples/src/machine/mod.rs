@@ -3,8 +3,10 @@
 mod live;
 pub mod ops;
 mod read;
+mod rounding;
 
 pub use read::{read_at, resample};
+pub use rounding::position_error;
 pub mod renderer;
 pub mod tape;
 
@@ -400,16 +402,33 @@ fn fill(
         Op::Const(v) => result[0] = *v,
         Op::Time => result[0] = t,
         Op::Noise(seed) => result[0] = sva_formula::draw(*seed, n as f64),
-        Op::Read { slot, at } => here.source(*slot).mapped(*at, n, memo, result)?,
-        Op::ReadScaled { slot, at, by } => {
-            here.source(*slot).mapped(*at, n, memo, result)?;
+        Op::Read {
+            slot,
+            at,
+            half_width,
+        } => here
+            .source(*slot)
+            .mapped((*at, *half_width), n, memo, result)?,
+        Op::ReadScaled {
+            slot,
+            at,
+            half_width,
+            by,
+        } => {
+            here.source(*slot)
+                .mapped((*at, *half_width), n, memo, result)?;
             for v in result.iter_mut() {
                 *v *= by;
             }
         }
-        Op::Moving { slot, per_sec } => {
-            let p = arg(0)[0] * per_sec;
-            here.source(*slot).at(p, memo, result)?;
+        Op::Moving {
+            slot,
+            per_sec,
+            line,
+            half_width,
+        } => {
+            let p = renderer::At::position(*line, *per_sec, n, arg(0)[0]);
+            here.source(*slot).at(p, *half_width, memo, result)?;
         }
         Op::Add(_) | Op::Mul(_) => {
             let product = matches!(op, Op::Mul(_));

@@ -89,11 +89,10 @@ fn step(
     i: i64,
 ) -> f64 {
     if (cutoff, q, gain_db) != lane.designed_for {
-        let (cc, c_clamped) = clamp_cutoff(cutoff, sr);
-        let (qq, q_clamped) = clamp_q(q);
-        lane.coeffs = design(shape, cc, qq, gain_db, sr);
+        let (coeffs, hit) = coefficients(shape, cutoff, q, gain_db, sr);
+        lane.coeffs = coeffs;
         lane.designed_for = (cutoff, q, gain_db);
-        *clamped |= c_clamped || q_clamped;
+        *clamped |= hit;
     }
     if i.rem_euclid(stride as i64) == 0 {
         lane.frames.push(AutomationFrame {
@@ -128,17 +127,22 @@ struct Lane {
     frames: Vec<AutomationFrame>,
 }
 
+pub fn coefficients(shape: Shape, cutoff: f64, q: f64, gain_db: f64, sr: f64) -> (Coeffs, bool) {
+    let (c, c_clamped) = clamp_cutoff(cutoff, sr);
+    let (qq, q_clamped) = clamp_q(q);
+    (design(shape, c, qq, gain_db, sr), c_clamped || q_clamped)
+}
+
 impl Lane {
     fn new(shape: Shape, cutoff: f64, q: f64, gain_db: f64, sr: f64) -> (Lane, bool) {
-        let (c, c_clamped) = clamp_cutoff(cutoff, sr);
-        let (qq, q_clamped) = clamp_q(q);
+        let (coeffs, clamped) = coefficients(shape, cutoff, q, gain_db, sr);
         let lane = Lane {
             state: crate::biquad::State::default(),
-            coeffs: design(shape, c, qq, gain_db, sr),
+            coeffs,
             designed_for: (cutoff, q, gain_db),
             frames: Vec::new(),
         };
-        (lane, c_clamped || q_clamped)
+        (lane, clamped)
     }
 }
 

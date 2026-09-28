@@ -175,7 +175,7 @@ impl Render {
 
     pub(crate) fn on_lattice(&self, over: Extent) -> Extent {
         self.out_map()
-            .image(over, sva_samples::kernel().half_width())
+            .image(over, sva_samples::plain().half_width())
     }
 
     pub(crate) fn to_output(&self, over: Extent) -> Extent {
@@ -220,8 +220,13 @@ impl Render {
         }
         let window = sva_samples::Window::of(&self.buffers[&node], self.extents.support(node));
         let over = self.output?;
-        let planes = sva_samples::machine::resample(window, map, over, self.buffers[&node].width)
-            .expect("a range's lattice samples are all held");
+        let planes = sva_samples::machine::resample(
+            window,
+            (map, sva_samples::plain().half_width()),
+            over,
+            self.buffers[&node].width,
+        )
+        .expect("a range's lattice samples are all held");
         let mut out = Buffer::of_planes(self.config.rate, planes);
         out.start = over.start;
         Some(out)
@@ -276,7 +281,7 @@ impl Render {
 pub(crate) fn cut(output: Extent, map: sva_samples::Map, stop: i64) -> Extent {
     let reach = match map.whole() {
         true => 0,
-        false => sva_samples::kernel().half_width() as i64,
+        false => sva_samples::plain().half_width() as i64,
     };
     let inside = map.preimage(Extent::new(i64::MIN, stop - reach), 0);
     Extent::new(output.start, inside.end.clamp(output.start, output.end))

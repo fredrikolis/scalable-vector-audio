@@ -49,16 +49,51 @@ pub enum Value {
     },
 }
 
-/// A loop's gain via whole-sample taps and kernel reads.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// A loop's gain via whole-sample taps and kernel reads, and whether it is LTI in them.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Gain {
     pub whole: f64,
     pub kernel: f64,
+    pub lti: bool,
+}
+
+impl Default for Gain {
+    fn default() -> Gain {
+        Gain {
+            whole: 0.0,
+            kernel: 0.0,
+            lti: true,
+        }
+    }
 }
 
 impl Gain {
     pub fn total(self) -> f64 {
         self.whole + self.kernel
+    }
+
+    pub fn plus(self, other: Gain) -> Gain {
+        Gain {
+            whole: self.whole + other.whole,
+            kernel: self.kernel + other.kernel,
+            lti: self.lti && other.lti,
+        }
+    }
+
+    pub fn widest(self, other: Gain) -> Gain {
+        Gain {
+            whole: self.whole.max(other.whole),
+            kernel: self.kernel.max(other.kernel),
+            lti: self.lti && other.lti,
+        }
+    }
+
+    pub fn scaled(self, by: f64, lti: bool) -> Gain {
+        Gain {
+            whole: self.whole * by,
+            kernel: self.kernel * by,
+            lti: self.lti && lti,
+        }
     }
 }
 

@@ -16,9 +16,8 @@ pub(super) struct Tails {
 }
 
 impl Tails {
-    pub(super) fn new(beta: f64, n: f64) -> Tails {
+    pub(super) fn new(beta: f64, n: f64, lobe: f64) -> Tails {
         let norm = i0(beta);
-        let lobe = beta / (2.0 * PI * n);
         Tails {
             c: 1.0 / (PI * PI * n * norm),
             p: 1.0 / (PI * norm),

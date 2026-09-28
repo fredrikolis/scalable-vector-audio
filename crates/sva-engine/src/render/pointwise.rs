@@ -147,8 +147,13 @@ impl Refs for Reads<'_> {
 fn read(held: &Render, id: NodeId, component: usize, t: f64) -> Result<C64, CollapseError> {
     let buffer = held.buffers.get(&id).expect("a read is materialized first");
     let window = Window::of(buffer, held.extents.support(id));
-    let at = sva_samples::machine::read_at(window, t * f64::from(buffer.rate), buffer.width)
-        .map_err(|_| CollapseError::NotEvaluable("a sample past what the render holds"))?;
+    let at = sva_samples::machine::read_at(
+        window,
+        t * f64::from(buffer.rate),
+        sva_samples::plain().half_width(),
+        buffer.width,
+    )
+    .map_err(|_| CollapseError::NotEvaluable("a sample past what the render holds"))?;
     Ok(C64::real(at[component.min(buffer.width.saturating_sub(1))]))
 }
 

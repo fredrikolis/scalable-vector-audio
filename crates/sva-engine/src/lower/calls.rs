@@ -625,8 +625,8 @@ pub(crate) fn noise_at(seed: u64, at: crate::time::Q) -> f64 {
         return draw(floor);
     }
     let mut weights = Vec::new();
-    sva_samples::kernel().weights(rem as f64 / p.den() as f64, &mut weights);
-    let taps = sva_samples::reconstruct::taps(floor, sva_samples::kernel().half_width());
+    sva_samples::plain().weights(rem as f64 / p.den() as f64, &mut weights);
+    let taps = sva_samples::reconstruct::taps(floor, sva_samples::plain().half_width());
     taps.zip(&weights)
         .fold(0.0, |acc, (n, w)| acc + w * draw(n))
 }

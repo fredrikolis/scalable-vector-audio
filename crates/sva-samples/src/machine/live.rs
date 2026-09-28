@@ -42,11 +42,10 @@ impl NodeRenderer {
     ) -> Result<Vec<Span>, SampleError> {
         let mut leaves = Vec::new();
         buffers(self, &mut leaves);
-        let half = crate::reconstruct::kernel().half_width();
-        let reach = |id: BufId, at: Map| at.preimage(live[id.0 as usize], half);
+        let reach = |(id, at, half): Leaf| at.preimage(live[id.0 as usize], half);
         let mut edges = vec![from, to];
-        for (id, at) in &leaves {
-            let held = reach(*id, *at);
+        for leaf in &leaves {
+            let held = reach(*leaf);
             edges.extend(
                 [held.start, held.end]
                     .into_iter()
@@ -58,7 +57,7 @@ impl NodeRenderer {
         let mut out: Vec<Span> = Vec::new();
         for pair in edges.windows(2) {
             let span = Extent::new(pair[0], pair[1]);
-            let dead = |id: BufId, at: Map| reach(id, at).intersect(span).is_empty();
+            let dead = |leaf: Leaf| reach(leaf).intersect(span).is_empty();
             let renderer = pruned(self, &dead, layout)?;
             match out.last_mut() {
                 Some(last) if last.renderer == renderer => last.to = span.end,
@@ -77,16 +76,17 @@ impl NodeRenderer {
     pub fn ops(&self, layout: &Layout) -> Result<usize, SampleError> {
         let (mut ops, mut widths) = (Vec::new(), Vec::new());
         lower(self, layout, &mut ops, &mut widths)?;
-        let taps = 2 * crate::reconstruct::kernel().half_width();
         Ok(ops
             .iter()
             .zip(&widths)
             .map(|(op, width)| match op {
-                Op::Read { at, .. } | Op::ReadScaled { at, .. } if !at.whole() => {
+                Op::Read { at, half_width, .. } | Op::ReadScaled { at, half_width, .. }
+                    if !at.whole() =>
+                {
                     let held = at.a % at.d == 0 || at.d <= 1024;
-                    2 * taps * width + usize::from(!held) * 10 * taps
+                    4 * half_width * width + usize::from(!held) * 20 * half_width
                 }
-                Op::Moving { .. } => 2 * taps * width + 10 * taps,
+                Op::Moving { half_width, .. } => 4 * half_width * width + 20 * half_width,
                 _ => 1,
             })
             .sum())
@@ -98,13 +98,17 @@ fn width(r: &NodeRenderer, layout: &Layout) -> Result<usize, SampleError> {
     lower(r, layout, &mut ops, &mut widths)
 }
 
-fn buffers(r: &NodeRenderer, out: &mut Vec<(BufId, Map)>) {
+/// A buffer read at a fixed map, and its kernel's half width.
+type Leaf = (BufId, Map, usize);
+
+fn buffers(r: &NodeRenderer, out: &mut Vec<Leaf>) {
     if let NodeRenderer::Read {
         slot: Slot::Read(id),
         at: At::Map(at),
+        half_width,
     } = r
     {
-        out.push((*id, *at));
+        out.push((*id, *at, *half_width));
     }
     for part in operands(r) {
         buffers(part, out);
@@ -115,7 +119,7 @@ fn buffers(r: &NodeRenderer, out: &mut Vec<(BufId, Map)>) {
 /// where that keeps its width.
 fn pruned(
     r: &NodeRenderer,
-    dead: &dyn Fn(BufId, Map) -> bool,
+    dead: &dyn Fn(Leaf) -> bool,
     layout: &Layout,
 ) -> Result<NodeRenderer, SampleError> {
     let whole = width(r, layout)?;
@@ -138,12 +142,13 @@ fn pruned(
 }
 
 /// Exactly +0.0 at every sample of the span.
-fn zero(r: &NodeRenderer, dead: &dyn Fn(BufId, Map) -> bool) -> bool {
+fn zero(r: &NodeRenderer, dead: &dyn Fn(Leaf) -> bool) -> bool {
     match r {
         NodeRenderer::Read {
             slot: Slot::Read(id),
             at: At::Map(at),
-        } => dead(*id, *at),
+            half_width,
+        } => dead((*id, *at, *half_width)),
         NodeRenderer::Const(v) => v.to_bits() == 0,
         NodeRenderer::Crop { x, .. } => zero(x, dead),
         NodeRenderer::Add(parts) => parts.iter().all(|p| zero(p, dead)),
@@ -231,13 +236,21 @@ fn rebuilt(r: &NodeRenderer, each: &mut Each) -> Result<NodeRenderer, SampleErro
         },
         NodeRenderer::Read {
             slot,
-            at: At::Moving { per_sec, time },
+            at:
+                At::Moving {
+                    per_sec,
+                    line,
+                    time,
+                },
+            half_width,
         } => NodeRenderer::Read {
             slot: *slot,
             at: At::Moving {
                 per_sec: *per_sec,
+                line: *line,
                 time: one(time)?,
             },
+            half_width: *half_width,
         },
         leaf => leaf.clone(),
     })

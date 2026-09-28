@@ -1,6 +1,6 @@
 // Concern: the named tolerance set every label cites, and the ceiling and floor it puts on a rate | Non-concern: what a collapse does with either (collapse/) | IO: (name) -> Profile
 
-use crate::reconstruct::KernelSpec;
+use crate::reconstruct::KernelFamily;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Profile {
@@ -15,7 +15,7 @@ pub struct Profile {
     pub precision_bits: i32,
     /// The step every stateful node runs at, and `1sp`.
     pub lattice_hz: u32,
-    pub kernel: KernelSpec,
+    pub kernel: KernelFamily,
 }
 
 pub const PSYCHOACOUSTIC_V1: Profile = Profile {
@@ -28,9 +28,10 @@ pub const PSYCHOACOUSTIC_V1: Profile = Profile {
     flop_budget: 10_000_000_000,
     precision_bits: 24,
     lattice_hz: 44_100,
-    kernel: KernelSpec {
+    kernel: KernelFamily {
         name: "kaiser-sinc",
-        half_width: 60,
+        step: 4,
+        most: 256,
         oversample: 512,
     },
 };

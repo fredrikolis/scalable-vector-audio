@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sva_formula::{Body, C64, Fold, Held, NodeId, Unary, exp_zero_at};
-use sva_samples::{At, Extent, NodeRenderer, Slot, kernel};
+use sva_samples::{At, Extent, NodeRenderer, Slot, plain};
 
 use super::Render;
 use super::pointwise::{self, Point};
@@ -60,7 +60,7 @@ impl<'a> Supports<'a> {
                 at: When::Time(time),
                 ..
             } => match time.map(self.rate, self.rate) {
-                Some(map) => map.preimage(self.of(*source), kernel().half_width()),
+                Some(map) => map.preimage(self.of(*source), plain().half_width()),
                 None => Extent::EVERYWHERE,
             },
             Value::Read { .. } => Extent::EVERYWHERE,
@@ -624,7 +624,8 @@ fn reads(
             Ok(vec![(*frames, supports.of(*frames))])
         }
         (Held::Sampled, _) => {
-            let program = super::sampled::program(held, id)?;
+            let widths = |r: NodeId| held.buffers.get(&r).map_or(1, |b| b.width);
+            let program = super::sampled::program_over(held, id, &widths, extent)?;
             let mut out = Vec::new();
             let rate = held.lattice();
             windowed(
@@ -635,16 +636,18 @@ fn reads(
                     NodeRenderer::Read {
                         slot: Slot::Read(slot),
                         at: At::Map(at),
+                        half_width,
                     } => {
                         let source = program.reads[slot.0 as usize];
-                        out.push((source, at.image(over, kernel().half_width())));
+                        out.push((source, at.image(over, *half_width)));
                     }
                     NodeRenderer::Read {
                         slot: Slot::Read(slot),
-                        at: At::Moving { per_sec, time },
+                        at: at @ At::Moving { .. },
+                        half_width,
                     } => {
                         let source = program.reads[slot.0 as usize];
-                        let reached = reached(time, *per_sec, over, rate);
+                        let reached = reached(at, *half_width, over, rate);
                         out.push((source, reached.unwrap_or_else(|| supports.of(source))));
                     }
                     _ => {}
@@ -702,7 +705,15 @@ fn body_reads(
 
 /// The source samples a moving read touches over `extent`, found by computing its time at
 /// every instant; `None` where that time itself reads samples.
-fn reached(time: &NodeRenderer, per_sec: f64, extent: Extent, lattice: u32) -> Option<Extent> {
+fn reached(at: &At, half_width: usize, extent: Extent, lattice: u32) -> Option<Extent> {
+    let At::Moving {
+        per_sec,
+        line,
+        time,
+    } = at
+    else {
+        return None;
+    };
     let mut reads = false;
     leaves(time, &mut |leaf| {
         reads |= matches!(leaf, NodeRenderer::Read { .. })
@@ -722,25 +733,27 @@ fn reached(time: &NodeRenderer, per_sec: f64, extent: Extent, lattice: u32) -> O
         reads: &[],
     };
     let times = time.run(&layout, &ctx).ok()?;
-    let (lo, hi) = times
-        .plane(0)
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), t| {
-            (lo.min(t * per_sec), hi.max(t * per_sec))
-        });
+    let (lo, hi) = times.plane(0).iter().zip(extent.start..).fold(
+        (f64::INFINITY, f64::NEG_INFINITY),
+        |(lo, hi), (t, n)| {
+            let (whole, part) = At::position(*line, *per_sec, n, *t);
+            let p = whole as f64 + part;
+            (lo.min(p), hi.max(p))
+        },
+    );
     if !(lo.is_finite() && hi.is_finite()) {
         return None;
     }
-    let reach = kernel().half_width() as i64;
+    let reach = half_width as i64;
     Some(Extent::new(
-        lo.floor() as i64 - reach,
-        hi.floor() as i64 + reach + 1,
+        lo.floor() as i64 - reach - 1,
+        hi.floor() as i64 + reach + 2,
     ))
 }
 
 /// A buffer read between its samples touches the kernel's taps either side.
 fn kernel_reach(e: Extent) -> Extent {
-    let reach = kernel().half_width() as i64;
+    let reach = plain().half_width() as i64;
     match e.is_empty() || e == Extent::EVERYWHERE {
         true => e,
         false => Extent::new(e.start.saturating_sub(reach), e.end.saturating_add(reach)),

@@ -131,8 +131,8 @@ names an interval; with none, a render ends where `master`'s support does.
 Every reading says whether it is `exact` or `measured`, under which profile and at which
 rate. `--rate` sets only the instants the output is read at: a filter, loop, solver or `rand`
 steps on the lattice whatever it is, and a read between two lattice samples is a windowed-sinc
-reading of them, listed under `bounds` with the error it may carry. `--rate` is legal with
-every representation.
+reading of them, as long as its bound needs, listed under `bounds` with the error it may carry.
+`--rate` is legal with every representation.
 
 `sva-cli builtins` prints every builtin with its arity and named arguments, the unit suffixes
 and the note-name grammar; the vocabulary is closed, so a name outside it does not parse.

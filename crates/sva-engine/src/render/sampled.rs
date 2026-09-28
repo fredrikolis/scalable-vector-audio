@@ -84,10 +84,22 @@ pub(super) fn program_reading(
     id: NodeId,
     width_of: &dyn Fn(NodeId) -> usize,
 ) -> Result<Program, EngineError> {
+    let extent = held.extents.decided.get(&id).copied();
+    program_over(held, id, width_of, extent.unwrap_or(Extent::EVERYWHERE))
+}
+
+/// Over `extent`, which a loop's kernel is chosen for, before the render holds it.
+pub(super) fn program_over(
+    held: &Render,
+    id: NodeId,
+    width_of: &dyn Fn(NodeId) -> usize,
+    extent: Extent,
+) -> Result<Program, EngineError> {
     let mut build = Build {
         held,
         supports: Supports::new(held),
         owner: id,
+        extent,
         reads: Vec::new(),
         sites: Vec::new(),
     };
@@ -188,6 +200,7 @@ struct Build<'a> {
     held: &'a Render,
     supports: Supports<'a>,
     owner: NodeId,
+    extent: Extent,
     reads: Vec<NodeId>,
     sites: Vec<Site>,
 }
@@ -195,19 +208,13 @@ struct Build<'a> {
 impl Build<'_> {
     fn of(&mut self, id: NodeId) -> Result<NodeRenderer, EngineError> {
         match self.held.tys.value(id).clone() {
-            Value::ClosedForm(sva_formula::ClosedForm {
-                body: sva_formula::Body::Const(c),
-                ..
-            }) if c.im == 0.0 => Ok(NodeRenderer::Const(c.re)),
-            Value::ClosedForm(form) => match crate::lower::constant_value(&form.body, form.var) {
-                Some(v) => Ok(NodeRenderer::Const(v)),
-                None => crate::lower::inline::renderer(&self.held.tys, id)
-                    .ok_or_else(|| uncollapsed(self.held, id)),
-            },
+            Value::ClosedForm(_) => {
+                closed_renderer(&self.held.tys, id).ok_or_else(|| uncollapsed(self.held, id))
+            }
             Value::Cast(Cast::Sample, source) => Ok(self.buffer(source, At::Map(Map::shift(0)))),
             Value::Cast(..) => Err(uncollapsed(self.held, id)),
             Value::Read { source, at, .. } => {
-                let at = self.at(at, self.held.lattice())?;
+                let at = self.at(at, self.held.lattice(), false)?;
                 Ok(self.buffer(source, at))
             }
             Value::SelfAt { at, .. } => self.own(id, at),
@@ -250,43 +257,46 @@ impl Build<'_> {
 
     /// Where one reading of a node on `source`'s lattice lands, from this program's.
     /// A time whose rationals pass one map is read as the time it spells, each sample.
-    fn at(&mut self, at: When, source: u32) -> Result<At, EngineError> {
-        let reader = self.held.lattice();
+    fn at(&mut self, at: When, source: u32, by_delay: bool) -> Result<At, EngineError> {
+        let reader = f64::from(self.held.lattice());
         let per_sec = f64::from(source);
         match at {
-            When::Time(time) => Ok(match time.map(reader, source) {
+            When::Time(time) => Ok(match time.map(self.held.lattice(), source) {
                 Some(map) => At::Map(map),
-                None => At::Moving {
-                    per_sec,
-                    time: Box::new(NodeRenderer::Add(vec![
-                        NodeRenderer::Mul(vec![
+                None => {
+                    let line = match time.scale == crate::time::Q::ONE {
+                        true => NodeRenderer::Time,
+                        false => NodeRenderer::Mul(vec![
                             NodeRenderer::Const(time.scale.to_f64()),
                             NodeRenderer::Time,
                         ]),
-                        NodeRenderer::Const(time.shift.to_f64()),
-                    ])),
-                },
+                    };
+                    let time =
+                        NodeRenderer::Add(vec![line, NodeRenderer::Const(time.shift.to_f64())]);
+                    At::moving(per_sec, reader, time, by_delay)
+                }
             }),
-            When::Moving(time) => Ok(At::Moving {
-                per_sec,
-                time: Box::new(self.of(time)?),
-            }),
+            When::Moving(time) => Ok(At::moving(per_sec, reader, self.of(time)?, by_delay)),
         }
     }
 
-    /// A loop's own past: a whole step back, or a kernel reading whose taps all fall before
-    /// the sample being written.
+    /// A loop's own past through the kernel its bound chose, every tap before the sample
+    /// being written.
     fn own(&mut self, id: NodeId, at: When) -> Result<NodeRenderer, EngineError> {
-        let at = self.at(at, self.held.lattice())?;
-        if let At::Map(map) = at
-            && !map.whole()
-            && map.lead(sva_samples::kernel().half_width()) >= 0
-        {
-            return Err(short_tap(&self.held.tys, id, map));
-        }
+        let at = self.at(at, self.held.lattice(), true)?;
+        let half_width = match &at {
+            At::Map(map) if map.whole() => 0,
+            _ => {
+                self.held
+                    .loop_kernel(id, self.extent)?
+                    .expect("a loop reading between samples has a kernel")
+                    .half_width
+            }
+        };
         Ok(NodeRenderer::Read {
             slot: Slot::Own,
             at,
+            half_width,
         })
     }
 
@@ -294,9 +304,14 @@ impl Build<'_> {
     fn buffer(&mut self, source: NodeId, at: At) -> NodeRenderer {
         let id = BufId(self.reads.len() as u32);
         self.reads.push(source);
+        let half_width = match &at {
+            At::Map(map) if map.whole() => 0,
+            _ => sva_samples::plain().half_width(),
+        };
         NodeRenderer::Read {
             slot: Slot::Read(id),
             at,
+            half_width,
         }
     }
 
@@ -388,6 +403,20 @@ impl Build<'_> {
     }
 }
 
+/// A closed-form node as the machine evaluates it each sample.
+pub(super) fn closed_renderer(tys: &Typing, id: NodeId) -> Option<NodeRenderer> {
+    let Value::ClosedForm(form) = tys.value(id) else {
+        return None;
+    };
+    match &form.body {
+        sva_formula::Body::Const(c) if c.im == 0.0 => Some(NodeRenderer::Const(c.re)),
+        body => match crate::lower::constant_value(body, form.var) {
+            Some(v) => Some(NodeRenderer::Const(v)),
+            None => crate::lower::inline::renderer(tys, id),
+        },
+    }
+}
+
 pub fn refused(held: &Render, id: NodeId, e: &SampleError) -> EngineError {
     let mut refusal = collapse_refused(&held.tys, id, &e.to_string(), e.code());
     if let (SampleError::ArgumentOutOfRange { .. }, EngineError::Refused(d)) = (e, &mut refusal) {
@@ -414,20 +443,6 @@ fn uncollapsed(held: &Render, id: NodeId) -> EngineError {
         "a closed form reaches the grid with no collapse written for it",
         "type.samples_in_closed_form",
     )
-}
-
-fn short_tap(tys: &Typing, id: NodeId, map: Map) -> EngineError {
-    let half = sva_samples::kernel().half_width();
-    EngineError::refused(Diagnostic {
-        code: "engine.loop_reads_ahead".to_string(),
-        message: format!(
-            "this loop reads its own past {} samples back, between two samples, and a \
-             reading there takes {half} samples either side, some not yet written",
-            -(map.b as f64 / map.d as f64)
-        ),
-        location: Located::at(tys.name(id), None),
-        help: format!("write a delay of more than {half} samples, or a whole number of sp"),
-    })
 }
 
 fn missing(held: &Render, id: NodeId) -> EngineError {

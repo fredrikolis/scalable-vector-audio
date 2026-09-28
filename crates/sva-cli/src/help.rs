@@ -81,12 +81,18 @@ RENDER:
   sample rate and sets only the instants it is read at: filters, loops,
   solvers and `rand` step on the profile's 44.1 kHz lattice, where `1sp` is
   one step, and a read between two lattice samples is a windowed-sinc reading
-  of them. `data.bounds` lists each such reading with the error it may carry
-  per source component below and above the band edge, and `lebesgue`, the
-  most it amplifies an error already in the samples. A linear loop read that
-  way carries `looped`, the proven error of its own output relative to its
-  full scale over its extent, and refuses where that passes the profile's
-  precision or, with no end, where no bound holds. `--flop-budget <n>` is the operation count paid
+  of them, the shortest of the profile's family whose bound meets its
+  precision. `data.bounds` lists each such reading with its `taps`, the error
+  it may carry per source component below and above the band edge, `position`,
+  the samples a moving read's computed position may stray, and `lebesgue`, the
+  most it amplifies an error already in the samples. A loop read that way
+  carries `looped`, the proven error of its own output relative to its full
+  scale over its extent: per component where it is linear and time-invariant,
+  per pass through its readings where its delay moves or a crop, tanh, sat,
+  sin, cos, abs, min or max is in it. A longer kernel is taken where a loop
+  needs one; a loop refuses where no kernel its delay leaves room for meets
+  the precision, where it has no end and no bound holds, or where it reads its
+  past through anything else. `--flop-budget <n>` is the operation count paid
   before a render refuses.
 
   `ledger` prints one row per node under the target. A row's `share` is the

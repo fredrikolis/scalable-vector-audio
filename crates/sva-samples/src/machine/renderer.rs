@@ -196,14 +196,41 @@ pub enum Slot {
     Own,
 }
 
-/// A map fixed by the lattices, or a time in seconds the renderer computes each sample.
+/// A map fixed by the lattices, or a time in seconds each sample; on a `line`, less the
+/// sample's own instant.
 #[derive(Clone, Debug, PartialEq)]
 pub enum At {
     Map(Map),
     Moving {
         per_sec: f64,
+        line: bool,
         time: Box<NodeRenderer>,
     },
+}
+
+impl At {
+    /// `by_delay`, a time spelled `t + r` is read as the sample less a delay, keeping its fraction.
+    pub fn moving(per_sec: f64, reader: f64, time: NodeRenderer, by_delay: bool) -> At {
+        match time.less_time().filter(|_| by_delay && per_sec == reader) {
+            Some(rest) => At::Moving {
+                per_sec,
+                line: true,
+                time: Box::new(rest),
+            },
+            None => At::Moving {
+                per_sec,
+                line: false,
+                time: Box::new(time),
+            },
+        }
+    }
+
+    pub fn position(line: bool, per_sec: f64, n: i64, time: f64) -> (i64, f64) {
+        match line {
+            true => (n, time * per_sec),
+            false => (0, time * per_sec),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -235,6 +262,7 @@ pub enum NodeRenderer {
     Read {
         slot: Slot,
         at: At,
+        half_width: usize,
     },
     Noise(u64),
     Add(Vec<NodeRenderer>),
@@ -274,6 +302,19 @@ pub enum NodeRenderer {
 }
 
 impl NodeRenderer {
+    pub fn less_time(&self) -> Option<NodeRenderer> {
+        match self {
+            NodeRenderer::Time => Some(NodeRenderer::Const(0.0)),
+            NodeRenderer::Add(parts) => parts.iter().enumerate().find_map(|(at, p)| {
+                let mut rest = parts.clone();
+                rest[at] = p.less_time()?;
+                Some(NodeRenderer::Add(rest))
+            }),
+            NodeRenderer::Sub(a, b) => Some(NodeRenderer::Sub(Box::new(a.less_time()?), b.clone())),
+            _ => None,
+        }
+    }
+
     /// Holds no call site and reads none of its own past, so skipping a sample of it changes
     /// no later one.
     pub fn stateless(&self) -> bool {

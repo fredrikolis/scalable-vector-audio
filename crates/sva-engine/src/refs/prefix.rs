@@ -239,7 +239,7 @@ fn lead(at: &When) -> Option<i64> {
     };
     let lattice = crate::loops::lattice();
     let map = time.map(lattice, lattice)?;
-    (map.a == map.d).then(|| map.lead(sva_samples::kernel().half_width()))
+    (map.a == map.d).then(|| map.lead(sva_samples::plain().half_width()))
 }
 
 /// A crop's `[l, r)` and shoulders, as its evaluators read them.

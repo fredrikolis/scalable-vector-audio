@@ -1,12 +1,14 @@
-// Concern: each reading between lattice samples and its bound, a loop's over its extent, refused past precision | Non-concern: one reading's proof (sva-samples) | IO: (&Render) -> bounds or a refusal
+// Concern: each reading between lattice samples, the kernel it takes and its bound, refused past precision | Non-concern: one reading's proof (sva-samples) | IO: (&Render) -> bounds or a refusal
 
 use sva_formula::spectral_sum::sup::sup_from;
 use sva_formula::{Held, NodeId, Var};
-use sva_samples::{At, Bound, Extent, NodeRenderer, Slot, kernel};
+use sva_samples::machine::position_error;
+use sva_samples::{At, Bound, Extent, NodeRenderer, PSYCHOACOUSTIC_V1, Slot, kernel, plain};
 
 use super::{Render, extent, pointwise, sampled};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::loops;
+use crate::recirculation::Loop;
 use crate::typing::{Gain, Typing, Value, When};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -16,19 +18,27 @@ pub struct Reconstruction {
     /// `shift`, `scale`, `moving`, `loop`, `point`, `constant` or `output`.
     pub reading: &'static str,
     pub bound: Bound,
-    /// A linear loop's proven bound on its own output, relative to its full scale.
+    /// A loop's proven bound on its own output, relative to its full scale.
     pub looped: Option<f64>,
+}
+
+/// The kernel a loop reads its own past through and the proven error of its output.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Looped {
+    pub half_width: usize,
+    pub error: f64,
+    pub bound: Bound,
 }
 
 impl Render {
     pub fn reconstructions(&self) -> Vec<Reconstruction> {
-        let Some(bound) = kernel().bound(self.config.profile.ceiling_hz, self.lattice()) else {
+        let Some(bound) = plain_bound() else {
             return Vec::new();
         };
         let mut out = Vec::new();
         for &id in &self.schedule.materialize {
             match self.tys.ty(id).held {
-                Held::Sampled => self.programmed(id, bound, &mut out),
+                Held::Sampled => self.programmed(id, &mut out),
                 Held::Form(_) => {
                     if pointwise::plan(self, id).is_ok_and(|tree| pointwise::reads_samples(&tree)) {
                         out.push(self.named(id, id, "point", bound, None));
@@ -59,44 +69,90 @@ impl Render {
         once
     }
 
-    fn programmed(&self, id: NodeId, bound: Bound, out: &mut Vec<Reconstruction>) {
+    fn programmed(&self, id: NodeId, out: &mut Vec<Reconstruction>) {
         let Ok(program) = sampled::program(self, id) else {
             return;
         };
+        let extent = self.extents.of(id);
         extent::leaves(&program.renderer, &mut |leaf| {
-            let NodeRenderer::Read { slot, at } = leaf else {
+            let NodeRenderer::Read {
+                slot,
+                at,
+                half_width,
+            } = leaf
+            else {
                 return;
             };
             let source = match slot {
                 Slot::Read(buf) => program.reads[buf.0 as usize],
                 Slot::Own => id,
             };
-            let (reading, looped) = match (slot, at) {
+            let row = match (slot, at) {
                 (_, At::Map(map)) if map.whole() => return,
-                (Slot::Own, _) => ("loop", self.looped(id, bound).and_then(Result::ok)),
-                (Slot::Read(_), At::Map(map)) if map.a == map.d => ("shift", None),
-                (Slot::Read(_), At::Map(_)) => ("scale", None),
-                (Slot::Read(_), At::Moving { .. }) => ("moving", None),
+                (Slot::Own, _) => match self.loop_kernel(id, extent) {
+                    Ok(Some(held)) => ("loop", Some(held.bound), Some(held.error)),
+                    _ => return,
+                },
+                (Slot::Read(_), At::Map(map)) if map.a == map.d => ("shift", plain_bound(), None),
+                (Slot::Read(_), At::Map(_)) => ("scale", plain_bound(), None),
+                (Slot::Read(_), At::Moving { .. }) => ("moving", self.moved(at, extent), None),
             };
-            out.push(self.named(id, source, reading, bound, looped));
+            if let (reading, Some(bound), looped) = row {
+                debug_assert!(reading == "loop" || *half_width == plain().half_width());
+                out.push(self.named(id, source, reading, bound, looped));
+            }
         });
     }
 
-    /// Refuses, before a sample is computed, a loop no bound holds for or one past precision.
-    pub(super) fn loops_bounded(&self) -> Result<(), EngineError> {
-        let Some(bound) = kernel().bound(self.config.profile.ceiling_hz, self.lattice()) else {
-            return Ok(());
-        };
+    /// Refuses, before a sample is computed, a reading or a loop no bound within precision holds for.
+    pub(super) fn readings_bounded(&self) -> Result<(), EngineError> {
+        let precision = self.config.profile.half_lsb();
         for &id in &self.schedule.materialize {
-            if let Some(looped) = self.looped(id, bound) {
-                looped?;
+            if self.tys.ty(id).held != Held::Sampled {
+                continue;
+            }
+            let extent = self.extents.of(id);
+            self.loop_kernel(id, extent)?;
+            let Ok(program) = sampled::program(self, id) else {
+                continue;
+            };
+            let mut refused = None;
+            extent::leaves(&program.renderer, &mut |leaf| {
+                if let NodeRenderer::Read {
+                    slot: Slot::Read(_),
+                    at: at @ At::Moving { .. },
+                    ..
+                } = leaf
+                    && refused.is_none()
+                {
+                    refused = match self.moved(at, extent) {
+                        None => Some(unplaced(self.tys.name(id))),
+                        Some(b) if b.in_band > precision => {
+                            Some(placed_past(self.tys.name(id), b, precision))
+                        }
+                        Some(_) => None,
+                    };
+                }
+            });
+            if let Some(refused) = refused {
+                return Err(refused);
             }
         }
         Ok(())
     }
 
-    /// `None` where no kernel reads a linear loop's own past.
-    fn looped(&self, id: NodeId, bound: Bound) -> Option<Result<f64, EngineError>> {
+    /// The plain kernel's bound over `extent`, with a moving position's rounding counted.
+    fn moved(&self, at: &At, extent: Extent) -> Option<Bound> {
+        let delta = position_error(at, (extent.start, extent.end), self.lattice())?;
+        Some(plain_bound()?.moved(delta, self.lattice()))
+    }
+
+    /// `None` where no tap reads the loop's own past between lattice samples.
+    pub(crate) fn loop_kernel(
+        &self,
+        id: NodeId,
+        extent: Extent,
+    ) -> Result<Option<Looped>, EngineError> {
         let name = self.tys.name(id);
         let taps: Vec<(When, Option<Gain>)> = (0..self.tys.len())
             .map(|n| NodeId(n as u32))
@@ -106,59 +162,44 @@ impl Render {
                 _ => None,
             })
             .collect();
-        let read = |at: &When| match at {
+        let kernel_read = |at: &When| match at {
             When::Time(back) => !loops::on_lattice(back.shift.neg()),
             When::Moving(_) => true,
         };
-        if !taps.iter().any(|(at, _)| read(at)) {
-            return None;
+        if !taps.iter().any(|(at, _)| kernel_read(at)) {
+            return Ok(None);
         }
-        let gain = taps.iter().find_map(|(_, gain)| *gain)?;
-        let extent = self.extents.of(id);
-        let gap = || {
-            taps.iter()
-                .map(|(at, _)| self.gap(at, extent))
-                .min()
-                .expect("a loop reads a tap")
+        let Some(gain) = taps.iter().find_map(|(_, gain)| *gain) else {
+            return Err(unproven(name));
         };
-        let loop_ = Loop {
-            gain,
-            fixed: taps.iter().all(|(at, _)| matches!(at, When::Time(_))),
-            bound,
-            generations: extent
-                .is_bounded()
-                .then(|| (extent.len() as f64 / gap() as f64).ceil()),
-        };
-        let (profile, lattice) = (&self.config.profile, f64::from(self.lattice()));
-        let precision = profile.half_lsb();
-        Some(match loop_.error() {
-            Some(error) if error <= precision => Ok(error),
-            Some(error) => Err(past_precision(
-                name,
-                error,
-                profile.precision_bits,
-                extent.is_bounded().then(|| extent.len() as f64 / lattice),
-                loop_.passes(precision) * gap() as f64 / lattice,
-            )),
-            None => Err(unending(name, loop_.amplified())),
-        })
-    }
-
-    /// Samples from the one a tap writes back to the latest its reading takes; one where no
-    /// bound on the delay holds.
-    fn gap(&self, at: &When, extent: Extent) -> i64 {
-        let lattice = f64::from(self.lattice());
-        let least = match at {
-            When::Time(back) if loops::on_lattice(back.shift.neg()) => {
-                return (back.shift.neg().to_f64() * lattice).round() as i64;
+        let lattice = self.lattice();
+        let mut held = Loop::over(gain, extent.is_bounded().then(|| extent.len() as i64));
+        for (at, _) in &taps {
+            match at {
+                When::Time(back) => held.back(back.shift.neg()),
+                When::Moving(time) => {
+                    let at = sampled::closed_renderer(&self.tys, *time)
+                        .map(|r| At::moving(f64::from(lattice), f64::from(lattice), r, true));
+                    let Some(delta) =
+                        at.and_then(|at| position_error(&at, (extent.start, extent.end), lattice))
+                    else {
+                        return Err(unplaced(name));
+                    };
+                    let from = extent.start as f64 / f64::from(lattice);
+                    let least = least_delay(&self.tys, *time, from)
+                        .map_or(1, |d| (d * f64::from(lattice) - delta).ceil() as i64);
+                    held.moving(least, delta);
+                }
             }
-            When::Time(back) => Some(back.shift.neg().to_f64()),
-            When::Moving(time) => least_delay(&self.tys, *time, extent.start as f64 / lattice),
-        };
-        // Floored: a position's rounding stays under a sample.
-        least.map_or(1, |d| {
-            ((d * lattice).floor() as i64 - kernel().half_width() as i64).max(1)
-        })
+        }
+        match held.kernel() {
+            Some((k, error)) => Ok(Some(Looped {
+                half_width: k.half_width(),
+                error,
+                bound: held.bound(k).expect("a kernel the loop took has a bound"),
+            })),
+            None => Err(past(name, &held, extent)),
+        }
     }
 
     fn named(
@@ -177,6 +218,11 @@ impl Render {
             looped,
         }
     }
+}
+
+fn plain_bound() -> Option<Bound> {
+    let p = PSYCHOACOUSTIC_V1;
+    plain().bound(p.ceiling_hz, p.lattice_hz)
 }
 
 /// `t - time(t)` from `from` on, where `time` is `t` plus a sum each of whose atoms is bounded.
@@ -202,91 +248,105 @@ fn least_delay(tys: &Typing, time: NodeId, from: f64) -> Option<f64> {
     line.then_some(least)
 }
 
-/// Each kernel reading errs by `e` of full scale and amplifies an error in its samples at
-/// most `L`-fold; `W`, `G` gain through whole and kernel taps. Each generation an error `x`
-/// grows to `e G + a x`, `a = W + L G`: `e G (1 + ... + a^(K-1))` over `K`, `e G / (1 - a)`.
-struct Loop {
-    gain: Gain,
-    fixed: bool,
-    bound: Bound,
-    generations: Option<f64>,
-}
-
-impl Loop {
-    fn amplified(&self) -> f64 {
-        self.gain.whole + self.bound.lebesgue * self.gain.kernel
-    }
-
-    fn injected(&self) -> f64 {
-        self.bound.in_band * self.gain.kernel
-    }
-
-    fn error(&self) -> Option<f64> {
-        let a = self.amplified();
-        let horizon = self.generations.map(|k| self.injected() * geometric(a, k));
-        let lasting = (a < 1.0).then(|| self.injected() / (1.0 - a));
-        [
-            spectral(self.fixed, self.gain.total(), self.bound),
-            horizon,
-            lasting,
-        ]
-        .into_iter()
-        .flatten()
-        .min_by(f64::total_cmp)
-    }
-
-    /// The most generations whose bound stays within `precision`.
-    fn passes(&self, precision: f64) -> f64 {
-        let (a, room) = (self.amplified(), precision / self.injected());
-        let mut k = match a == 1.0 {
-            true => room.floor(),
-            false => ((1.0 + room * (a - 1.0)).ln() / a.ln()).floor().max(0.0),
-        };
-        while k > 0.0 && geometric(a, k) > room {
-            k -= 1.0;
-        }
-        k
-    }
-}
-
-fn geometric(a: f64, k: f64) -> f64 {
-    match a == 1.0 {
-        true => k,
-        false => (a.powf(k) - 1.0) / (a - 1.0),
-    }
-}
-
-/// A fixed-delay linear loop `Y = X / (1 - g A H)` against `X / (1 - g A)`: with `|H - 1| <= e`
-/// and `|g A| <= G`, each component errs by at most `G e / (1 - G (1 + e))` of its own.
-fn spectral(fixed: bool, gain: f64, bound: Bound) -> Option<f64> {
-    let e = bound.in_band;
-    let settles = fixed && gain * (1.0 + e) < 1.0;
-    settles.then(|| gain * e / (1.0 - gain * (1.0 + e)))
-}
-
-fn past_precision(name: &str, error: f64, bits: i32, secs: Option<f64>, fits: f64) -> EngineError {
-    let over = secs.map_or("with no end".to_string(), |s| format!("over its {s:.3} s"));
+fn refusal(code: &str, name: &str, message: String, help: String) -> EngineError {
     EngineError::refused(Diagnostic {
-        code: "engine.loop_error_past_precision".to_string(),
-        message: format!(
-            "this loop's readings between lattice samples may put its output off by {error:e} \
-             of full scale {over}, past the profile's 2^-{bits}"
-        ),
+        code: code.to_string(),
+        message,
         location: Located::at(name, None),
-        help: format!(
-            "render at most {fits:.3} s of it, or lower its gain or lengthen its shortest delay"
-        ),
+        help,
     })
 }
 
-fn unending(name: &str, amplified: f64) -> EngineError {
-    EngineError::refused(Diagnostic {
-        code: "engine.loop_error_unbounded".to_string(),
-        message: format!(
+/// The widest kernel a loop's delay leaves room for says how far it runs within precision.
+fn past(name: &str, held: &Loop, extent: Extent) -> EngineError {
+    let family = PSYCHOACOUSTIC_V1.kernel;
+    let Some(widest) = family.lengths(held.most()).last().map(kernel) else {
+        return refusal(
+            "engine.loop_reads_ahead",
+            name,
+            format!(
+                "this loop reads its own past {} samples back, between two samples, and the \
+                 shortest kernel takes {} samples either side, some not yet written",
+                held.least_delay, family.step
+            ),
+            format!(
+                "write a delay of more than {} samples, or a whole number of sp",
+                family.step
+            ),
+        );
+    };
+    let bits = PSYCHOACOUSTIC_V1.precision_bits;
+    let lattice = f64::from(PSYCHOACOUSTIC_V1.lattice_hz);
+    let error = held.bound(widest).and_then(|b| held.error(&b));
+    match (error, extent.is_bounded()) {
+        (None, false) => refusal(
+            "engine.loop_error_unbounded",
+            name,
             "this loop has no end, and each pass through its readings between lattice samples \
-             may grow an error {amplified}-fold, so no bound on its output holds"
+             may grow an error, so no bound on its output holds"
+                .to_string(),
+            "give it an end, or lower its gain until each pass shrinks an error".to_string(),
         ),
-        location: Located::at(name, None),
-        help: "give it an end, or lower its gain until each pass shrinks an error".to_string(),
-    })
+        (error, bounded) => {
+            let over = match bounded {
+                true => format!("over its {:.3} s", extent.len() as f64 / lattice),
+                false => "with no end".to_string(),
+            };
+            let fits = held.fits(widest).unwrap_or(0.0) / lattice;
+            refusal(
+                "engine.loop_error_past_precision",
+                name,
+                format!(
+                    "this loop's readings between lattice samples may put its output off by \
+                     {} of full scale {over} through its widest kernel, {} taps, past the \
+                     profile's 2^-{bits}",
+                    error.map_or("an unbounded amount".to_string(), |e| format!("{e:e}")),
+                    2 * widest.half_width()
+                ),
+                format!(
+                    "render at most {fits:.3} s of it, or lower its gain or lengthen its \
+                     shortest delay"
+                ),
+            )
+        }
+    }
+}
+
+fn unproven(name: &str) -> EngineError {
+    refusal(
+        "engine.loop_error_unproven",
+        name,
+        "this loop reads its own past between lattice samples through an operation no bound on \
+         the error it passes on is known for"
+            .to_string(),
+        "write the loop from gains, fixed filters, crops, tanh, sat, sin, cos, abs, min and \
+         max, or read its past at whole samples"
+            .to_string(),
+    )
+}
+
+fn unplaced(name: &str) -> EngineError {
+    refusal(
+        "engine.position_unbounded",
+        name,
+        "a read here moves through a time whose computed value no rounding bound holds for over \
+         its extent, so where it reads is not known closely enough"
+            .to_string(),
+        "write the time as a closed form of t over a bounded extent, away from a jump any \
+         sample could round across"
+            .to_string(),
+    )
+}
+
+fn placed_past(name: &str, bound: Bound, precision: f64) -> EngineError {
+    refusal(
+        "engine.reading_past_precision",
+        name,
+        format!(
+            "a moving read here may err by {:e} of each component, {} samples of it its \
+             position's rounding, past the profile's {precision:e}",
+            bound.in_band, bound.position
+        ),
+        "read over a shorter extent, or write the time as t less a delay".to_string(),
+    )
 }

@@ -7,6 +7,7 @@ pub mod error;
 pub mod fft;
 pub mod filters;
 pub mod frames;
+pub mod gain;
 pub mod label;
 pub mod machine;
 pub mod measure;
@@ -46,5 +47,5 @@ pub use measure::spectrum::{
 pub use measure::stereo::{StereoFrame, StereoImage};
 pub use physics::{Params, Solver, site};
 pub use profile::{PSYCHOACOUSTIC_V1, Profile};
-pub use reconstruct::{Bound, Kernel, KernelSpec, kernel};
+pub use reconstruct::{Bound, Kernel, KernelFamily, kernel, plain, shortest};
 pub use sva_formula::Shape;

@@ -1,41 +1,36 @@
-// Concern: bounds how far a kernel reading amplifies an error in the samples it takes | Non-concern: its error on a source component (bound.rs) | IO: (spec, table) -> f64
+// Concern: bounds how far a kernel reading amplifies an error in the samples it takes | Non-concern: its error on a source component (bound.rs) | IO: (N, window table) -> f64
 
-use super::KernelSpec;
+use std::f64::consts::PI;
 
-const PIECES: usize = 16;
-
-/// `sup sum_j |w_j|` of `Kernel::weights`: each weight is a cubic in `t` per table cell,
-/// bounded on a piece by its exact Taylor sum about the middle.
-pub(super) fn of(spec: KernelSpec, table: &[f64], center: i64) -> f64 {
-    let (n, step) = (spec.half_width as i64, spec.oversample as i64);
-    let r = 0.5 / PIECES as f64;
+/// `sup_f sum_j |sinc(j - f) w(j - f)|`, each of `oversample` pieces of `f` bounded by the
+/// sup of every factor: `sin(pi f)` at the point nearest a half, `1/d` and the falling window
+/// at the least distance, and the two nearest taps by `sinc` falling on `[0, 1]`.
+pub(super) fn of(half_width: usize, oversample: usize, window: &[f64], table: f64) -> f64 {
+    let (n, m) = (half_width as i64, oversample as i64);
+    let w = |k: i64| window[(k + 1) as usize];
+    let sinc = |x: f64| match x == 0.0 {
+        true => 1.0,
+        false => (PI * x).sin() / (PI * x),
+    };
     let mut most = 1.0f64;
-    for at in -step..0 {
-        let cubics: Vec<[f64; 4]> = ((1 - n)..=n)
+    for piece in 0..m {
+        let (a, b) = (piece as f64 / m as f64, (piece + 1) as f64 / m as f64);
+        let top = (PI * 0.5f64.clamp(a, b)).sin();
+        let sum: f64 = ((1 - n)..=n)
             .map(|j| {
-                let base = (center + j * step + at - 1) as usize;
-                let c = &table[base..base + 4];
-                [
-                    c[1],
-                    -c[0] / 3.0 - c[1] / 2.0 + c[2] - c[3] / 6.0,
-                    c[0] / 2.0 - c[1] + c[2] / 2.0,
-                    (c[3] - c[0]) / 6.0 + (c[1] - c[2]) / 2.0,
-                ]
+                let near = match j >= 1 {
+                    true => (j - 1) * m + (m - piece - 1),
+                    false => -j * m + piece,
+                };
+                let d = near as f64 / m as f64;
+                let lobe = match j {
+                    0 | 1 => sinc(d),
+                    _ => top / (PI * d),
+                };
+                lobe * w(near)
             })
-            .collect();
-        for piece in 0..PIECES {
-            let m = (2 * piece + 1) as f64 * r;
-            let sum: f64 = cubics
-                .iter()
-                .map(|[a0, a1, a2, a3]| {
-                    let value = a0 + m * (a1 + m * (a2 + m * a3));
-                    let slope = a1 + m * (2.0 * a2 + 3.0 * m * a3);
-                    let curve = 2.0 * a2 + 6.0 * m * a3;
-                    value.abs() + r * (slope.abs() + r * (curve.abs() / 2.0 + r * a3.abs()))
-                })
-                .sum();
-            most = most.max(sum);
-        }
+            .sum();
+        most = most.max(sum);
     }
-    most + super::bound::ROUNDING
+    most + table + super::bound::ROUNDING
 }
