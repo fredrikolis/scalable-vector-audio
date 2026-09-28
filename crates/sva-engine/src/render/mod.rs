@@ -11,6 +11,7 @@ mod reach;
 mod sampled;
 mod slots;
 mod stream;
+mod terms;
 pub mod until;
 mod volatile;
 

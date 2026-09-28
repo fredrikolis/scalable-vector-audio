@@ -15,14 +15,16 @@ enum Carry {
 
 /// Readers first, each node carries on the old node of its identity, else a run in the store,
 /// else the node its carried reader read at the same shift where the structure takes its
-/// state, else starts at `now`. One whose predecessor lacks what is asked steps again.
+/// state, else starts at `now`. One whose predecessor lacks what is asked steps again, or,
+/// `live`, starts silent at `now` where that means computing its past: those are returned.
 pub(in crate::render) fn carried(
     nodes: &mut [Driven],
     old: &mut [Driven],
     same: &[Option<usize>],
     roots: (Option<usize>, Option<usize>),
-    now: i64,
-) {
+    (now, live): (i64, bool),
+) -> Vec<usize> {
+    let mut dropped = Vec::new();
     let mut readers: Vec<Vec<(usize, i64)>> = vec![Vec::new(); nodes.len()];
     for (r, node) in nodes.iter().enumerate() {
         for &(read, shift) in &node.reads {
@@ -77,11 +79,16 @@ pub(in crate::render) fn carried(
         };
         match carry {
             Carry::Taken => paired[at] = paired[at].or(same[at]),
+            Carry::Unheld if live && !nodes[at].stateless() && local > nodes[at].extent.start => {
+                nodes[at].starts_at(local);
+                dropped.push(at);
+            }
             Carry::Unheld => nodes[at].steps_again(need),
             Carry::Unlike => nodes[at].starts_at(local),
         }
         next[at] = nodes[at].tape.end();
     }
+    dropped
 }
 
 impl Driven {
@@ -132,13 +139,16 @@ impl Driven {
         Carry::Taken
     }
 
-    /// A node holding no state of its own starts where its readers first read.
-    fn steps_again(&mut self, need: i64) {
-        let stateless = match &self.kind {
+    fn stateless(&self) -> bool {
+        match &self.kind {
             Kind::Machine { machine, .. } => !machine.stateful() && self.own == 0,
             _ => true,
-        };
-        let start = match stateless {
+        }
+    }
+
+    /// A node holding no state of its own starts where its readers first read.
+    fn steps_again(&mut self, need: i64) {
+        let start = match self.stateless() {
             true => need.max(self.extent.start),
             false => self.extent.start,
         };

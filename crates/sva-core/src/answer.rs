@@ -486,6 +486,16 @@ pub fn work_json(work: &Work) -> String {
 /// `computed` counts every miss, `stored` the misses the store kept and `replaced` the volatile
 /// misses kept in place of their last value; the store's figures are as the render left it.
 pub fn stats_json(stats: &CacheStats) -> String {
+    stats_with(stats, "")
+}
+
+/// `stats_json`, and `dropped`: each node a live stream's edits started silent.
+pub fn stream_stats_json(stats: &CacheStats, dropped: &[String]) -> String {
+    let dropped = list(dropped, |name| format!("\"{}\"", escape(name)));
+    stats_with(stats, &format!(", \"dropped\": {dropped}"))
+}
+
+fn stats_with(stats: &CacheStats, extra: &str) -> String {
     let lookups = list(&stats.lookups, |l| {
         let outcome = match l.outcome {
             Outcome::Hit => "hit",
@@ -509,7 +519,7 @@ pub fn stats_json(stats: &CacheStats) -> String {
     format!(
         "{{ \"nodes\": {}, \"hits\": {}, \"computed\": {}, \"stored\": {}, \"replaced\": {}, \"extended\": {}, \
          \"bytes\": {}, \"max_bytes\": {}, \"entries\": {}, \"evictions\": {}, \
-         \"lookups\": {lookups} }}",
+         \"lookups\": {lookups}{extra} }}",
         stats.nodes(),
         stats.hits(),
         stats.computed(),

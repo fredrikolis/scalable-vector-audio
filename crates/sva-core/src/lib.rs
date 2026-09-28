@@ -13,8 +13,8 @@ mod tempo;
 mod until;
 
 pub use answer::{
-    Printed, Report, SAMPLE_LIMIT, answer_json, label_json, query_data, stats_json, value_json,
-    work_json,
+    Printed, Report, SAMPLE_LIMIT, answer_json, label_json, query_data, stats_json,
+    stream_stats_json, value_json, work_json,
 };
 pub use builtins::{Builtins, Callable, Crossing, builtins, builtins_data};
 pub use cli_error::{CliError, LintViolation, lint_diagnostic};

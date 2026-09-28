@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use sva_ast::{Expr, Graph};
 
-use super::drive::node::{self, Driven, Hold};
+use super::drive::node::{self, Driven, Hold, Kind};
 use super::drive::{self, Block, Driver, edit};
+use super::terms::Terms;
 use super::{Lenses, Render, RenderConfig, prepared, reach, sampled};
 use crate::cache::{Cache, CacheStats, Recording};
 use crate::error::{Diagnostic, EngineError, Located};
@@ -28,6 +29,11 @@ pub struct Stream {
     lenses: Lenses<'static>,
     driver: Driver,
     recording: Option<Recording>,
+    expr: Expr,
+    terms: Terms,
+    ended: usize,
+    live: bool,
+    dropped: Vec<String>,
 }
 
 impl Stream {
@@ -41,9 +47,14 @@ impl Stream {
         if config.block == 0 {
             return Err(refusal("a block of no samples".to_string()));
         }
-        let shell = shelled(graph, target, &config.render)?;
+        let (shell, terms) = shelled(graph, target, &config.render)?;
         let range = shell.range.expect("audio out decides a range");
         let mut stream = Stream {
+            expr: target.clone(),
+            terms,
+            ended: 0,
+            live: false,
+            dropped: Vec::new(),
             driver: Driver::new(
                 Vec::new(),
                 None,
@@ -72,7 +83,7 @@ impl Stream {
     pub fn edit(&mut self, graph: &Graph, target: &Expr) -> Result<(), EngineError> {
         let mut render = self.config.render.clone();
         render.range.start = Some(self.driver.start);
-        let shell = shelled(graph, target, &render)?;
+        let (shell, terms) = shelled(graph, target, &render)?;
         let range = shell.range.expect("audio out decides a range");
         let order = order(&shell);
         let mut kept: BTreeMap<sva_formula::Hash, usize> = BTreeMap::new();
@@ -101,23 +112,79 @@ impl Stream {
         drop((was, now));
         let root = root_of(&shell, &nodes)?;
         let old_root = self.driver.root;
-        edit::carried(
+        let dropped = edit::carried(
             &mut nodes,
             &mut self.driver.nodes,
             &same,
             (Some(root), old_root),
-            self.driver.at,
+            (self.driver.at, self.live),
+        );
+        self.dropped.extend(
+            dropped
+                .into_iter()
+                .map(|at| shell.tys.name(nodes[at].id).to_string()),
         );
         self.driver.replace(nodes, Some(root), range.end);
         self.shell = shell;
         self.lenses = next;
+        self.expr = target.clone();
+        self.terms = terms;
+        self.ended = 0;
+        self.prune();
         Ok(())
     }
 
     /// The next block, cut where the stream ends; `None` from there on.
     pub fn next_block(&mut self) -> Result<Option<Block>, EngineError> {
         let lenses = self.lenses.with(self.recording.as_ref());
-        self.driver.next_block(&self.shell, &lenses)
+        let block = self.driver.next_block(&self.shell, &lenses)?;
+        drop(lenses);
+        self.prune();
+        Ok(block)
+    }
+
+    /// What it plays, less each summand whose node ended bar a sum's last: the one to edit from.
+    pub fn expression(&self) -> &Expr {
+        &self.expr
+    }
+
+    /// An edit starts a changed node with no state at its instant silent there, never
+    /// computing its past.
+    pub fn go_live(&mut self) {
+        self.live = true;
+    }
+
+    /// Each node a live edit started silent.
+    pub fn dropped(&self) -> &[String] {
+        &self.dropped
+    }
+
+    fn prune(&mut self) {
+        let nodes = &self.driver.nodes;
+        let ended = nodes
+            .iter()
+            .filter(|n| matches!(n.kind, Kind::Ended))
+            .count();
+        if ended == self.ended {
+            return;
+        }
+        self.ended = ended;
+        let mut read = vec![false; nodes.len()];
+        read[self.driver.root.expect("a stream reads its root")] = true;
+        for node in nodes {
+            for &(at, _) in &node.reads {
+                read[at] = true;
+            }
+        }
+        let gone = |id| {
+            nodes
+                .iter()
+                .zip(&read)
+                .any(|(n, read)| *read && n.id == id && matches!(n.kind, Kind::Ended))
+        };
+        if let Some(pruned) = self.terms.pruned(&self.expr, &gone) {
+            self.expr = pruned;
+        }
     }
 
     pub fn position(&self) -> i64 {
@@ -167,7 +234,11 @@ impl Stream {
 }
 
 /// The graph with `streamed` defined as `target`, typed, scheduled and ranged.
-fn shelled(graph: &Graph, target: &Expr, config: &RenderConfig) -> Result<Render, EngineError> {
+fn shelled(
+    graph: &Graph,
+    target: &Expr,
+    config: &RenderConfig,
+) -> Result<(Render, Terms), EngineError> {
     let mut wrapped = graph.clone();
     if !wrapped.define(STREAMED, target.clone()) {
         return Err(refusal(format!(
@@ -175,12 +246,17 @@ fn shelled(graph: &Graph, target: &Expr, config: &RenderConfig) -> Result<Render
         )));
     }
     let held = prepared(&wrapped, STREAMED)?;
+    let terms = Terms::of(
+        &held.instances,
+        &held.tys,
+        &held.instances.instance_of(STREAMED)?,
+    );
     sampled::on_the_grid(&held.tys, config.rate)?;
     let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
     let audio = schedule.materialize.clone();
     let mut shell = Render::shell(held.tys, held.root, config.clone(), schedule);
     reach::streamed(&mut shell, &audio)?;
-    Ok(shell)
+    Ok((shell, terms))
 }
 
 fn order(shell: &Render) -> Vec<sva_formula::NodeId> {

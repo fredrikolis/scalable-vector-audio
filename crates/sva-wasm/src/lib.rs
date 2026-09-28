@@ -6,7 +6,7 @@
 
 use sva_core::{
     Asked, CliError, Diagnostic, Job, Printed, Rendered, Report, SAMPLE_LIMIT, error_envelope,
-    execute, query_data, stats_json, work_json,
+    execute, query_data, stats_json, stream_stats_json, work_json,
 };
 use sva_engine::{Buffer, Cache, CachePolicy, CacheStats, PrunePolicy};
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -59,6 +59,7 @@ struct Options {
     until: Option<String>,
     volatile: Vec<String>,
     cache: Option<CachePolicy>,
+    live: bool,
 }
 
 /// `keys` are the options this call reads; any other is refused by name.
@@ -89,6 +90,11 @@ fn options_of(options: &JsValue, keys: &[&str]) -> Result<Options, JsValue> {
             "flop_budget" => held.flop_budget = Some(whole(&key, &value)?),
             "until" => held.until = Some(text(&key, &value)?),
             "cache" => held.cache = Some(cache_policy(&text(&key, &value)?)?),
+            "live" => {
+                held.live = value
+                    .as_bool()
+                    .ok_or_else(|| refuse("`live` is not a boolean".into(), "pass true or false"))?
+            }
             _ => {
                 let names = value.dyn_ref::<js_sys::Array>().ok_or_else(|| {
                     refuse(
@@ -220,9 +226,10 @@ impl Composition {
             .map_err(|e| thrown(&e))
     }
 
-    /// `target` block by block, through this store. `options`: `rate`, `bits`, `until`, `cache`.
+    /// `target` block by block, through this store. `options`: `rate`, `bits`, `until`, `cache`,
+    /// `live`.
     pub fn stream(&self, target: &str, block: usize, options: JsValue) -> Result<Stream, JsValue> {
-        let options = options_of(&options, &["rate", "bits", "until", "cache"])?;
+        let options = options_of(&options, &["rate", "bits", "until", "cache", "live"])?;
         let job = Job {
             until: options.until.as_deref(),
             rate: options.rate,
@@ -231,12 +238,14 @@ impl Composition {
             cache_policy: options.cache,
             ..Job::over(&self.inner, target)
         };
-        sva_core::stream(&job, block)
-            .map(|inner| Stream {
-                inner,
-                source: self.inner.clone(),
-            })
-            .map_err(|e| thrown(&e))
+        let mut inner = sva_core::stream(&job, block).map_err(|e| thrown(&e))?;
+        if options.live {
+            inner.go_live();
+        }
+        Ok(Stream {
+            inner,
+            source: self.inner.clone(),
+        })
     }
 
     #[wasm_bindgen(getter)]
@@ -466,7 +475,16 @@ impl Stream {
     }
 
     pub fn stats(&self) -> Result<JsValue, JsValue> {
-        parse(&stats_json(&self.inner.stats()))
+        parse(&stream_stats_json(
+            &self.inner.stats(),
+            self.inner.dropped(),
+        ))
+    }
+
+    /// What it plays, less each ended summand: the one to edit from.
+    #[wasm_bindgen(getter)]
+    pub fn expression(&self) -> String {
+        sva_ast::render_expr(self.inner.expression())
     }
 
     #[wasm_bindgen(getter)]

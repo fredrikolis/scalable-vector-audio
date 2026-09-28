@@ -179,6 +179,71 @@ fn a_note_pressed_and_released_mid_stream_is_the_whole_render_of_the_last_edit()
     assert_eq!(heard, want);
 }
 
+/// An ended summand leaves the stream's expression, bar a sum's last; a player editing from
+/// it hears the whole render of every note it gave, echo and all.
+#[test]
+fn a_note_past_its_end_leaves_the_expression_and_its_echo_rings_on() {
+    let g = composition(1.0);
+    let echoed = |x: &str| format!("@echo(t, x={x})");
+    let (a, b) = ("@blip(t - 1024sp, f0=200)", "@blip(t - 8192sp, f0=300)");
+    let mut stream = opened(&g, &echoed(&format!("{a} + {b}")), None);
+    let mut heard = blocks(&mut stream, 20);
+    assert_eq!(
+        stream.expression(),
+        &expr(&echoed(b)),
+        "the first note ended"
+    );
+    heard.extend(blocks(&mut stream, 10));
+    assert_eq!(
+        stream.expression(),
+        &expr(&echoed(b)),
+        "a sum keeps its last"
+    );
+    let c = "@blip(t - 30720sp, f0=250)";
+    let from = sva_ast::render_expr(stream.expression());
+    edit(&mut stream, &g, &from.replacen(b, &format!("{b} + {c}"), 1));
+    heard.extend(blocks(&mut stream, 30));
+    assert_eq!(stream.expression(), &expr(&echoed(c)));
+
+    let mut whole_g = g.clone();
+    assert!(whole_g.define("final", expr(&echoed(&format!("{a} + {b} + {c}")))));
+    let want = whole(&whole_g, "final", heard.len());
+    let gap = 8192 + 17_640..30 * BLOCK;
+    assert!(
+        heard[gap].iter().any(|v| *v != 0.0),
+        "the echo rings between notes"
+    );
+    assert_eq!(heard, want);
+}
+
+/// Key-up on a note the store answered finds no state at the edit's instant: an exact stream
+/// computes the string again from its start, a live one starts it silent and names it dropped.
+#[test]
+fn a_live_edit_starts_a_node_with_no_state_silent_and_names_it() {
+    let g = composition(1.0);
+    let cache = Cache::new();
+    render(&g, "string", RenderConfig::seconds(RATE, 0.5), Some(&cache)).expect("a render");
+    let held = "@echo(t, x=@pluck(t, f0=523.25))";
+    let released = "@echo(t, x=@pluck(t, f0=523.25, release=0.1))";
+    let (mut exact, mut live) = (
+        opened(&g, held, Some(&cache)),
+        opened(&g, held, Some(&cache)),
+    );
+    live.go_live();
+    let before = blocks(&mut live, 8);
+    assert_eq!(before, blocks(&mut exact, 8));
+    edit(&mut exact, &g, released);
+    edit(&mut live, &g, released);
+    assert!(exact.dropped().is_empty());
+    assert_eq!(live.dropped().len(), 1, "{:?}", live.dropped());
+    assert!(
+        live.dropped()[0].starts_with("pluck("),
+        "{:?}",
+        live.dropped()
+    );
+    assert_ne!(blocks(&mut live, 4), blocks(&mut exact, 4));
+}
+
 /// A constant moved inside a loop is a changed node read where its predecessor was: it takes
 /// the loop's own past, so the tail rings on under the new constant from the next block.
 #[test]
