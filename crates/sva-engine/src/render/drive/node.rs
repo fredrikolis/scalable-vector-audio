@@ -253,7 +253,7 @@ pub(in crate::render) fn built(
 }
 
 /// A keep past any extent: a reader at a moving time may come back to any sample.
-const WHOLE: usize = 1 << 48;
+const WHOLE: usize = usize::MAX;
 
 /// Each node's lag, the least its readers need, and its keep, the most they reach back.
 fn clocked(nodes: &mut [Driven], root: Option<usize>, trailing: bool) {
@@ -665,8 +665,7 @@ impl Driven {
         to: i64,
     ) -> Result<(i64, i64), EngineError> {
         if self.forgets() {
-            self.tape
-                .forget_before(from.saturating_sub(self.keep as i64));
+            self.tape.forget_before(from.saturating_sub(self.back()));
         }
         let to = to.min(self.extent.end);
         let start = self.tape.end();
@@ -748,10 +747,15 @@ impl Driven {
         }
     }
 
+    /// `keep` in samples, where `WHOLE` reaches back past any instant.
+    fn back(&self) -> i64 {
+        i64::try_from(self.keep).unwrap_or(i64::MAX)
+    }
+
     pub(in crate::render) fn spent(&self, local: i64) -> bool {
         !matches!(self.kind, Kind::Ended)
             && !self.extent.is_empty()
-            && local.saturating_sub(self.keep as i64) >= self.extent.end
+            && local.saturating_sub(self.back()) >= self.extent.end
     }
 
     pub(in crate::render) fn end(&mut self, shell: &Render, lenses: &Lenses) {
