@@ -58,7 +58,8 @@ fn at_rate(files: &[(&str, &str)]) -> Result<Vec<f64>, sva_engine::EngineError> 
 
 /// `step` of a rising line is the crop opening where the line crosses zero, one at zero
 /// itself; a window opening at `inf` holds nothing whatever it crops; `inf` arithmetic that
-/// names no number, or stands in a term that moves, refuses.
+/// names no number, stands in a term that moves or reaches a filter or a named argument,
+/// refuses.
 #[test]
 fn step_is_the_crop_at_its_zero_and_a_window_at_inf_holds_nothing() {
     let tone = "sin(2*pi*300*t)";
@@ -81,6 +82,8 @@ fn step_is_the_crop_at_its_zero_and_a_window_at_inf_holds_nothing() {
     for undefined in [
         "sin(t)*(inf - inf)\n",
         "r = inf\ncrop(exp(-(t - r)/0.3), 0s, 1s)\n",
+        "crop(lowpass(sample(sin(t)), cutoff=pow(2, inf)), 0s, 1s)\n",
+        "crop(sat(sample(sin(t)), drive=pow(2, inf)), 0s, 1s)\n",
     ] {
         let e = at_rate(&[("node", undefined)]).expect_err(undefined);
         assert_eq!(e.code(), "engine.infinite_value", "{undefined}: {e}");

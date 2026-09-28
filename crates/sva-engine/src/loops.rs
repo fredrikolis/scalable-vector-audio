@@ -429,10 +429,10 @@ fn folded(
                 BinOp::Sub => (a.0 - b.0, a.1 - b.1),
                 BinOp::Mul => scaled(a, b)?,
                 BinOp::Div => {
-                    let by = plain(b)?;
+                    let by = number(b)?;
                     (a.0 / by, a.1 / by)
                 }
-                BinOp::Mod => (crate::lower::constant_modulo(plain(a)?, plain(b)?)?, 0.0),
+                BinOp::Mod => (crate::lower::constant_modulo(number(a)?, number(b)?)?, 0.0),
             })
         }
         Node::Call { name, args, span } => called(inst, (name, span), args, cx, chosen),
@@ -447,7 +447,7 @@ fn folded(
 
 /// One side of a product carries the unit and the other is the plain number scaling it.
 fn scaled(a: (f64, f64), b: (f64, f64)) -> Option<(f64, f64)> {
-    match (plain(a), plain(b)) {
+    match (number(a), number(b)) {
         (Some(k), _) => Some((k * b.0, k * b.1)),
         (_, Some(k)) => Some((k * a.0, k * a.1)),
         _ => None,
@@ -465,9 +465,9 @@ fn called(
     let mut named = Vec::new();
     for arg in args {
         match arg {
-            Arg::Pos(x) => positional.push(plain(folded(inst, x, cx, chosen)?)?),
+            Arg::Pos(x) => positional.push(number(folded(inst, x, cx, chosen)?)?),
             Arg::Named(key, x) => {
-                named.push((key.as_str(), plain(folded(inst, x, cx, chosen)?)?));
+                named.push((key.as_str(), number(folded(inst, x, cx, chosen)?)?));
             }
         }
     }
@@ -485,5 +485,10 @@ fn called(
 }
 
 pub(crate) fn plain(amount: (f64, f64)) -> Option<f64> {
-    (amount.1 == 0.0 && amount.0.is_finite()).then_some(amount.0)
+    number(amount).filter(|v| v.is_finite())
+}
+
+/// A number with no grid step, `inf` carried through.
+fn number(amount: (f64, f64)) -> Option<f64> {
+    (amount.1 == 0.0).then_some(amount.0)
 }

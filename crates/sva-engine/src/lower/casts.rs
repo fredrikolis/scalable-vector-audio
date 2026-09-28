@@ -116,10 +116,10 @@ impl Lowering<'_, '_> {
             let Some(cutoff) = arguments[0] else {
                 return Err(EngineError::BadArity(shape.name().to_string()));
             };
-            let mut held = [self.automation(cutoff, span, cx, var)?; 3];
-            for (slot, fallback) in [(1, shape.default_q()), (2, 0.0)] {
+            let mut held = [self.automation((shape.name(), "cutoff"), cutoff, span, cx, var)?; 3];
+            for (slot, key, fallback) in [(1, "q", shape.default_q()), (2, "gain", 0.0)] {
                 held[slot] = match arguments[slot] {
-                    Some(x) => self.automation(x, span, cx, var)?,
+                    Some(x) => self.automation((shape.name(), key), x, span, cx, var)?,
                     None => self.constant_node(fallback, var),
                 };
             }
@@ -187,15 +187,18 @@ impl Lowering<'_, '_> {
         }
     }
 
-    /// A parameter the recurrence reads once a sample: a number stays a number, a closed form
-    /// the machine evaluates stays one, and any other is collapsed on the grid it runs on.
+    /// A parameter the recurrence reads once a sample: inf is refused, a number stays a number,
+    /// a closed form the machine evaluates stays one, and any other is collapsed on the grid.
     pub(super) fn automation(
         &mut self,
+        (name, key): (&str, &str),
         written: &Expr,
         span: ByteSpan,
         cx: Cx,
         var: Var,
     ) -> Result<NodeId, EngineError> {
+        let folded = crate::loops::amount(self.inst, written, cx);
+        self.finite_argument(name, key, written, folded)?;
         let piece = self.walk(written, cx, var)?;
         let id = self.seal(piece, var, None)?;
         let held = self.typing.ty(id);

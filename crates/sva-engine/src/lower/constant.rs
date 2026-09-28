@@ -33,7 +33,7 @@ pub fn constant_value(body: &Body, var: Var) -> Option<f64> {
 }
 
 pub fn constant_modulo(a: f64, b: f64) -> Option<f64> {
-    constant_value(&Body::Fold(Fold::Mod, vec![number(a), number(b)]), Var::T)
+    folded_number(&Body::Fold(Fold::Mod, vec![number(a), number(b)]))
 }
 
 /// Through what `arithmetic` builds; a name it omits names no number.
@@ -42,8 +42,17 @@ pub fn constant_call(name: &str, positional: &[f64], named: &[(&str, f64)]) -> O
         .iter()
         .map(|x| Body::Const(C64::real(*x)))
         .collect();
-    let folded = super::calls::arithmetic(name, &bodies, named, Var::T, Origin::UNKNOWN)?;
-    constant_value(&folded, Var::T)
+    folded_number(&super::calls::arithmetic(
+        name,
+        &bodies,
+        named,
+        Var::T,
+        Origin::UNKNOWN,
+    )?)
+}
+
+fn folded_number(body: &Body) -> Option<f64> {
+    unbounded(body).or_else(|| constant_value(body, Var::T))
 }
 
 fn number(x: f64) -> Part {
@@ -81,8 +90,7 @@ fn scalar(f: &Body) -> Option<f64> {
     })
 }
 
-/// The one number a node holds at `rate`, `inf` included: a constant closed form, or a grid
-/// count, which is a number of seconds once a rate is named.
+/// The one number a node holds at `rate`, `inf` included.
 pub(crate) fn number_at(
     tys: &crate::typing::Typing,
     id: sva_formula::NodeId,

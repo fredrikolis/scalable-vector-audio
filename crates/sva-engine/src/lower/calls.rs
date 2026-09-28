@@ -332,8 +332,25 @@ impl<'g> Lowering<'_, 'g> {
             .collect()
     }
 
-    /// Every named number a call reads. One the vocabulary lets move is its builtin's to route
-    /// when it folds to none; any other that folds to none is refused, never defaulted.
+    /// An argument that folds to inf, or to no number, names none any builtin reads.
+    pub(super) fn finite_argument(
+        &self,
+        name: &str,
+        key: &str,
+        written: &Expr,
+        folded: Option<(f64, f64)>,
+    ) -> Result<(), EngineError> {
+        match folded {
+            Some((v, 0.0)) if !v.is_finite() => Err(self.infinite(&format!(
+                "`{name}` reads `{key}={}`, which is {v}, and an argument is a finite number",
+                sva_ast::render_expr(written)
+            ))),
+            _ => Ok(()),
+        }
+    }
+
+    /// Every named number a call reads. One that folds to inf is refused; one the vocabulary
+    /// lets move is its builtin's to route when it folds to none; any other is refused.
     fn named_values(
         &self,
         name: &str,
@@ -347,7 +364,9 @@ impl<'g> Lowering<'_, 'g> {
             let Arg::Named(key, value) = arg else {
                 continue;
             };
-            match self.chosen_value(value, cx, chosen) {
+            let folded = crate::loops::amount_choosing(self.inst, value, cx, chosen);
+            self.finite_argument(name, key, value, folded)?;
+            match folded.and_then(crate::loops::plain) {
                 Some(v) => out.push((key.clone(), v)),
                 None if crate::vocabulary::named_may_move(name, key) => {}
                 None => {
@@ -413,7 +432,7 @@ impl<'g> Lowering<'_, 'g> {
             let Some(written) = written.filter(|_| !view.iter().any(|(k, _)| k == key)) else {
                 continue;
             };
-            let id = self.automation(written, span, cx, var)?;
+            let id = self.automation((name, key), written, span, cx, var)?;
             if let Value::ClosedForm(form) = self.typing.value(id)
                 && let Some(v) = super::constant_value(&form.body, form.var)
             {
