@@ -8,6 +8,7 @@ use crate::arguments::Chosen;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Cx, Instances, Node};
 use crate::time::{Affine, Q};
+use crate::typing::Gain;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum SelfKind {
@@ -18,7 +19,7 @@ pub(crate) enum SelfKind {
     /// Run on the lattice; `gain` bounds how far the output moves per unit its taps move,
     /// where the body is linear in them, and `taps` names each one where all are fixed.
     Sampled {
-        gain: Option<f64>,
+        gain: Option<Gain>,
         taps: Option<Vec<(f64, Q)>>,
     },
     Refuse(Box<EngineError>),
@@ -125,7 +126,7 @@ enum Reading {
     Linear {
         taps: Vec<(C64, Tap)>,
         plain: bool,
-        norm: f64,
+        norm: Gain,
     },
     Refused(Tap),
     Nonlinear,
@@ -140,7 +141,7 @@ fn read(inst: &Instances, e: &Expr, cx: Cx, gain: C64) -> Reading {
             tap @ (Tap::Back(_) | Tap::Moving) => Reading::Linear {
                 taps: vec![(gain, tap)],
                 plain: true,
-                norm: gain.abs(),
+                norm: tap_gain(tap, gain.abs()),
             },
             refused => Reading::Refused(refused),
         },
@@ -201,9 +202,13 @@ fn opaque(r: Reading) -> Reading {
 fn beside(a: Reading, b: Reading) -> Reading {
     let norms = |r: &Reading| match r {
         Reading::Linear { norm, .. } => *norm,
-        _ => 0.0,
+        _ => Gain::default(),
     };
-    let widest = norms(&a).max(norms(&b));
+    let (x, y) = (norms(&a), norms(&b));
+    let widest = Gain {
+        whole: x.whole.max(y.whole),
+        kernel: x.kernel.max(y.kernel),
+    };
     match join(a, b) {
         Reading::Linear { taps, plain, .. } => Reading::Linear {
             taps,
@@ -243,7 +248,10 @@ fn join(a: Reading, b: Reading) -> Reading {
             Reading::Linear {
                 taps: held,
                 plain: p1 && p2,
-                norm: n1 + n2,
+                norm: Gain {
+                    whole: n1.whole + n2.whole,
+                    kernel: n1.kernel + n2.kernel,
+                },
             }
         }
     }
@@ -466,6 +474,27 @@ fn walk(inst: &Instances, e: &Expr, cx: Cx) -> Option<Term> {
         )),
         _ => Q::decimal(plain(amount(inst, e, cx)?)?).map(Term::Number),
     }
+}
+
+/// A tap's gain `g`, whole where it reads a lattice sample and through the kernel elsewhere.
+pub(crate) fn tap_gain(tap: Tap, g: f64) -> Gain {
+    match tap {
+        Tap::Back(d) if on_lattice(d) => Gain {
+            whole: g,
+            kernel: 0.0,
+        },
+        _ => Gain {
+            whole: 0.0,
+            kernel: g,
+        },
+    }
+}
+
+/// A delay of whole lattice steps, which a loop reads with no kernel.
+pub(crate) fn on_lattice(delay: Q) -> bool {
+    delay
+        .mul(Q::int(i64::from(lattice())))
+        .is_some_and(|samples| samples.is_integer())
 }
 
 /// The step every stateful node runs at, which `1sp` is one of.

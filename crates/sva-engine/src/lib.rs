@@ -47,7 +47,7 @@ pub use sva_samples::{
     StereoFrame, StereoImage, measure_alias, pinned_frame,
 };
 pub use trace::{Traced, Up, trace};
-pub use typing::{Typing, Value, When};
+pub use typing::{Gain, Typing, Value, When};
 pub use vocabulary::{BUILTINS, MAX_WIDTH, RESERVED, is_builtin, named_may_move, recognized_named};
 
 use sva_ast::Graph;

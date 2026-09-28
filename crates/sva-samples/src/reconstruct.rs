@@ -1,6 +1,7 @@
 // Concern: the band-limited value of a lattice between its samples | Non-concern: the bound it carries (bound.rs), where positions come from | IO: (samples, fraction) -> f64
 
 mod bound;
+mod lebesgue;
 mod table;
 mod tails;
 
@@ -24,6 +25,7 @@ pub struct Kernel {
     beta: f64,
     table: Vec<f64>,
     center: i64,
+    lebesgue: f64,
 }
 
 pub fn kernel() -> &'static Kernel {
@@ -65,10 +67,11 @@ impl Kernel {
                     sinc * i0_series(beta * beta * (1.0 - x * x / (n * n)) / 4.0) / norm
                 }
             })
-            .collect();
+            .collect::<Vec<f64>>();
         Kernel {
             spec,
             beta,
+            lebesgue: lebesgue::of(spec, &table, reach),
             table,
             center: reach,
         }
@@ -109,8 +112,13 @@ impl Kernel {
 
     /// `None` where the band edge folds back inside the main lobe.
     pub fn bound(&self, band_hz: f64, source_rate: u32) -> Option<Bound> {
-        bound::of(self.spec, self.beta, band_hz / f64::from(source_rate))
-            .map(|b| Bound { band_hz, ..b })
+        bound::of(
+            self.spec,
+            self.beta,
+            band_hz / f64::from(source_rate),
+            self.lebesgue,
+        )
+        .map(|b| Bound { band_hz, ..b })
     }
 }
 

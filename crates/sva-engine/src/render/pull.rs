@@ -31,6 +31,7 @@ pub(super) fn computed(
     let stop_key = stop_key(held, lenses)?;
     let recalled = stop_key.and_then(|key| recalled(held, lenses, key));
     affordable(held)?;
+    held.loops_bounded()?;
     let needed = lenses.needed(held);
     unlooped(held, &needed, looped)?;
     let keys = keys(held, lenses, &needed, costed, recalled)?;

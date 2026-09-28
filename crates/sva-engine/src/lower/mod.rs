@@ -15,10 +15,10 @@ use sva_formula::{Body, ClosedForm, Held, IndexId, NodeId, Part, Ty, Var};
 use crate::cast::{Cast, Mismatch};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Cx, Instances, Node};
-use crate::loops::{self, SelfKind};
+use crate::loops::{self, SelfKind, Tap};
 use crate::overload;
 use crate::time::Affine;
-use crate::typing::{Node as Typed, Typing, Value, When};
+use crate::typing::{Gain, Node as Typed, Typing, Value, When};
 
 pub(crate) use calls::{noise_at, rand_arguments};
 pub(crate) use constant::{
@@ -38,7 +38,7 @@ pub enum Piece {
 enum SelfMode {
     Absent,
     Zero,
-    Sampled { gain: Option<f64> },
+    Sampled { gain: Option<Gain> },
 }
 
 pub struct Lowering<'a, 'g> {
@@ -106,7 +106,7 @@ fn sampled_loop(
     typing: &mut Typing,
     (expr, cx): (&Expr, Cx),
     var: Var,
-    gain: Option<f64>,
+    gain: Option<Gain>,
 ) -> Result<NodeId, EngineError> {
     let mut low = Lowering {
         inst,
@@ -140,7 +140,13 @@ fn expanded_loop(
     };
     let body = low.walk(expr, cx, var)?;
     let body = low.seal(body, var, None)?;
-    let gain = own.iter().map(|(_, c)| c.abs()).sum::<f64>();
+    let gain = own.iter().fold(Gain::default(), |held, (d, c)| {
+        let tap = loops::tap_gain(Tap::Back(*d), c.abs());
+        Gain {
+            whole: held.whole + tap.whole,
+            kernel: held.kernel + tap.kernel,
+        }
+    });
     let back = |d: crate::time::Q| {
         When::Time(Affine {
             scale: crate::time::Q::ONE,

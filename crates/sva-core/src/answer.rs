@@ -565,7 +565,7 @@ fn bound_json(r: &sva_engine::Reconstruction) -> String {
     format!(
         "{{ \"node\": \"{}\", \"source\": \"{}\", \"reading\": \"{}\", \
          \"kernel\": \"{}\", \"taps\": {}, \"band_hz\": {}, \"in_band\": {}, \
-         \"above_band\": {}, \"looped\": {} }}",
+         \"above_band\": {}, \"lebesgue\": {}, \"looped\": {} }}",
         escape(&r.node),
         escape(&r.source),
         r.reading,
@@ -574,6 +574,7 @@ fn bound_json(r: &sva_engine::Reconstruction) -> String {
         num(r.bound.band_hz),
         num(r.bound.in_band),
         num(r.bound.above_band),
+        num(r.bound.lebesgue),
         r.looped.map_or(NONE.to_string(), num)
     )
 }

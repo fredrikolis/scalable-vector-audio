@@ -442,3 +442,29 @@ fn a_shifted_comb_keeps_its_lines() {
         }
     }
 }
+
+/// A moving tap recirculates its readings' error once per shortest delay, so its proven bound
+/// grows with the extent: reported within 2^-24 over a short one, refused over a long one.
+#[test]
+fn a_drifting_delay_is_bounded_over_its_extent_and_refused_past_precision() {
+    let g = graph_of(
+        "drifting",
+        &[(
+            "loop",
+            "sample(sin(2*pi*220*t)) + 0.34*self(t - 0.375s - 0.0035*sin(2*pi*0.19*t))\n",
+        )],
+    );
+    let short = render(&g, "loop", RenderConfig::seconds(44_100, 0.5), None).expect("it fits");
+    let looped = short
+        .reconstructions()
+        .into_iter()
+        .find(|r| r.reading == "loop")
+        .and_then(|r| r.looped)
+        .expect("the loop reports its bound");
+    assert!(looped > 0.0 && looped <= 2f64.powi(-24), "{looped}");
+
+    let Err(long) = render(&g, "loop", RenderConfig::seconds(44_100, 30.0), None) else {
+        panic!("its bound over 30 s passes 2^-24");
+    };
+    assert_eq!(long.code(), "engine.loop_error_past_precision", "{long:?}");
+}

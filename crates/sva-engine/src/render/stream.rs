@@ -374,6 +374,7 @@ fn shelled(
     let audio = schedule.materialize.clone();
     let mut shell = Render::shell(held.tys, held.root, config.clone(), schedule);
     reach::streamed(&mut shell, &audio)?;
+    shell.loops_bounded()?;
     Ok(shell)
 }
 

@@ -82,8 +82,12 @@ RENDER:
   solvers and `rand` step on the profile's 44.1 kHz lattice, where `1sp` is
   one step, and a read between two lattice samples is a windowed-sinc reading
   of them. `data.bounds` lists each such reading with the error it may carry
-  per source component below and above the band edge. `--flop-budget <n>` is
-  the operation count paid before a render refuses.
+  per source component below and above the band edge, and `lebesgue`, the
+  most it amplifies an error already in the samples. A linear loop read that
+  way carries `looped`, the proven error of its own output relative to its
+  full scale over its extent, and refuses where that passes the profile's
+  precision or, with no end, where no bound holds. `--flop-budget <n>` is the operation count paid
+  before a render refuses.
 
   `ledger` prints one row per node under the target. A row's `share` is the
   part of its reader's own energy that row accounts for, so one reader's refs

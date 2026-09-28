@@ -27,7 +27,7 @@ pub enum Value {
     /// far the loop's output moves per unit its taps move, where it is linear in them.
     SelfAt {
         at: When,
-        gain: Option<f64>,
+        gain: Option<Gain>,
     },
     Read {
         source: NodeId,
@@ -47,6 +47,19 @@ pub enum Value {
         params: Box<Params>,
         varying: Vec<(&'static str, NodeId)>,
     },
+}
+
+/// A loop's gain via whole-sample taps and kernel reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Gain {
+    pub whole: f64,
+    pub kernel: f64,
+}
+
+impl Gain {
+    pub fn total(self) -> f64 {
+        self.whole + self.kernel
+    }
 }
 
 /// A read's instant: exact, or a closed form of `t` held as a node.
