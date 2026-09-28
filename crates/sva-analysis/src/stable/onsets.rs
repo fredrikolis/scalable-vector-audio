@@ -17,11 +17,11 @@ pub const THRESHOLD_MULTIPLIER: f64 = 1.5;
 pub const THRESHOLD_DELTA: f64 = 1e-6;
 pub const IOI_BUCKET_SECS: f64 = 0.025;
 pub const IOI_MAX_SECS: f64 = 2.0;
-pub const RISE_FRACTION: f64 = 0.1;
 /// Under this share of the loudest frame a rise is leakage.
 pub const LEVEL_FRACTION: f64 = 0.03;
-/// A strike's swing crests within this of leaving the floor.
-pub const MAX_RISE_SECS: f64 = 0.012;
+pub const STRIKE_SPAN_SECS: f64 = 0.012;
+/// 6 dB over the span before: a swell or a tail rises a few dB in the same time.
+pub const JUMP_ENERGY_RATIO: f64 = 4.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Onset {
@@ -69,10 +69,15 @@ pub fn detect(
             )));
         }
     }
-    let frames = whole_frames(samples, sample_rate, start_secs);
+    let frames = spectral_frames(samples, sample_rate, start_secs, FRAME_SECS, HOP_SECS);
     let floor = LEVEL_FRACTION * frames.iter().map(|f| total(&f.mags)).fold(0.0, f64::max);
     let flux = flux_of(&frames, floor);
-    let onsets = pick_peaks(&flux, &frames, samples, sample_rate, start_secs, floor);
+    let onsets = pick_peaks(
+        &flux,
+        &frames,
+        &Energy::of(samples, sample_rate, start_secs),
+        floor,
+    );
     Ok(Onsets {
         ioi_histogram: ioi_histogram(&onsets),
         onsets_per_bar: tempo
@@ -81,12 +86,6 @@ pub fn detect(
         onsets,
         resolution_secs: HOP_SECS,
     })
-}
-
-fn whole_frames(samples: &[f32], sample_rate: f64, start_secs: f64) -> Vec<SpectralFrame> {
-    let mut frames = spectral_frames(samples, sample_rate, start_secs, FRAME_SECS, HOP_SECS);
-    frames.truncate(frames.iter().take_while(|f| f.filled).count());
-    frames
 }
 
 fn total(mags: &[f64]) -> f64 {
@@ -114,15 +113,9 @@ fn spectral_flux(prev: &[f64], curr: &[f64]) -> f64 {
     prev.iter().zip(curr).map(|(&p, &c)| (c - p).max(0.0)).sum()
 }
 
-/// A candidate clears the threshold, the floor and both rise bounds, peaks over the gap.
-fn pick_peaks(
-    flux: &[f64],
-    frames: &[SpectralFrame],
-    samples: &[f32],
-    sample_rate: f64,
-    start_secs: f64,
-    floor: f64,
-) -> Vec<Onset> {
+/// A candidate clears the threshold and the floor, peaks over the gap, and holds a strike;
+/// a frame past the buffer's end reads silence.
+fn pick_peaks(flux: &[f64], frames: &[SpectralFrame], energy: &Energy, floor: f64) -> Vec<Onset> {
     let mut onsets: Vec<Onset> = Vec::new();
     for i in 0..flux.len() {
         let lo = i.saturating_sub(ADAPTIVE_WINDOW_FRAMES);
@@ -133,22 +126,12 @@ fn pick_peaks(
         // A peak stands over the gap two onsets need, not the threshold's own window.
         let reach = (MIN_ONSET_GAP_SECS / HOP_SECS).round().max(1.0) as usize;
         let near = &flux[i.saturating_sub(reach)..(i + reach + 1).min(flux.len())];
-        if flux[i] <= threshold || near.iter().any(|&v| v > flux[i]) {
+        if flux[i] <= threshold || flux[i] < floor || near.iter().any(|&v| v > flux[i]) {
             continue;
         }
-        let span = frames[i].span_secs;
-        if flux[i] < floor || climb_secs(flux, i, floor) > span + HOP_SECS {
-            continue;
-        }
-        // A frame says which transient; its samples say when, and how fast it rose.
-        let from = frames[i].t_secs - start_secs;
-        let Some((at, rise_secs)) = attack(samples, sample_rate, from, span) else {
+        let Some(t) = energy.strike(frames[i].t_secs, frames[i].span_secs) else {
             continue;
         };
-        if rise_secs > MAX_RISE_SECS {
-            continue;
-        }
-        let t = start_secs + at;
         if onsets
             .last()
             .is_some_and(|o| t - o.t_secs < MIN_ONSET_GAP_SECS)
@@ -163,31 +146,66 @@ fn pick_peaks(
     onsets
 }
 
-/// How long the flux has been climbing; a swell climbs every frame it crosses.
-fn climb_secs(flux: &[f64], i: usize, floor: f64) -> f64 {
-    let mut from = i;
-    while from > 0 && flux[from - 1] >= floor {
-        from -= 1;
-    }
-    (i + 1 - from) as f64 * HOP_SECS
+/// The buffer's running energy.
+struct Energy {
+    running: Vec<f64>,
+    sample_rate: f64,
+    start_secs: f64,
+    reach: usize,
+    floor: f64,
 }
 
-/// When the swing left its window's floor, and its rise from there to the crest.
-fn attack(samples: &[f32], sample_rate: f64, from_secs: f64, span_secs: f64) -> Option<(f64, f64)> {
-    let at = |secs: f64| ((secs * sample_rate).round().max(0.0) as usize).min(samples.len());
-    let (from, to) = (at(from_secs), at(from_secs + span_secs));
-    let held = samples.get(from..to)?;
-    let peak = held.iter().fold(0.0f64, |a, s| a.max(f64::from(*s).abs()));
-    if peak == 0.0 {
-        return None;
+impl Energy {
+    fn of(samples: &[f32], sample_rate: f64, start_secs: f64) -> Energy {
+        let mut running = Vec::with_capacity(samples.len() + 1);
+        running.push(0.0);
+        for s in samples {
+            let held = running[running.len() - 1];
+            running.push(held + f64::from(*s) * f64::from(*s));
+        }
+        let reach = (STRIKE_SPAN_SECS * sample_rate).round().max(1.0) as usize;
+        let loudest = (0..samples.len())
+            .map(|n| running[(n + reach).min(samples.len())] - running[n])
+            .fold(0.0, f64::max);
+        Energy {
+            running,
+            sample_rate,
+            start_secs,
+            reach,
+            floor: LEVEL_FRACTION * LEVEL_FRACTION * loudest,
+        }
     }
-    let above = |bar: f64| held.iter().position(|s| f64::from(*s).abs() >= bar);
-    let struck = above(peak * RISE_FRACTION)?;
-    let crest = above(peak * (1.0 - RISE_FRACTION)).unwrap_or(struck);
-    Some((
-        (from + struck) as f64 / sample_rate,
-        crest.saturating_sub(struck) as f64 / sample_rate,
-    ))
+
+    /// The energy of samples `[from, to)`, silence outside the buffer.
+    fn over(&self, from: usize, to: usize) -> f64 {
+        let last = self.running.len() - 1;
+        self.running[to.min(last)] - self.running[from.min(last)]
+    }
+
+    /// The sample whose energy after most outweighs the energy before it and the floor, if
+    /// by a strike's jump.
+    fn strike(&self, from_secs: f64, span_secs: f64) -> Option<f64> {
+        let at = |secs: f64| {
+            ((secs - self.start_secs) * self.sample_rate)
+                .round()
+                .max(0.0) as usize
+        };
+        let (from, to) = (at(from_secs), at(from_secs + span_secs));
+        let mut best: Option<(f64, usize)> = None;
+        for n in from..to.min(self.running.len() - 1) {
+            let before = self.over(n.saturating_sub(self.reach), n) + self.floor;
+            let after = self.over(n, n + self.reach);
+            if before == 0.0 {
+                continue;
+            }
+            let ratio = after / before;
+            if best.is_none_or(|(r, _)| ratio >= r) {
+                best = Some((ratio, n));
+            }
+        }
+        let (ratio, n) = best?;
+        (ratio >= JUMP_ENERGY_RATIO).then(|| self.start_secs + n as f64 / self.sample_rate)
+    }
 }
 
 fn ioi_histogram(onsets: &[Onset]) -> Vec<IoiBucket> {

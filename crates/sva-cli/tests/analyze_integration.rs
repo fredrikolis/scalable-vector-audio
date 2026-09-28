@@ -398,6 +398,43 @@ fn strikes_close_to_the_minimum_gap_are_each_their_own_onset() {
     assert_eq!(found.len(), struck.len(), "every strike: {found:?}");
 }
 
+/// A strike is where the sound jumps, whatever it does next or stood on: one whose loudest
+/// swing lands 16 ms in, one landing on a swell that climbed to 9 dB under it, and one the
+/// buffer ends 5 ms after are each an onset, where it struck.
+#[test]
+fn a_strike_is_an_onset_after_a_swell_before_its_crest_and_at_the_end() {
+    let rate = 48_000u32;
+    let sr = f64::from(rate);
+    let mut samples = vec![0.0f32; (sr * 1.005) as usize];
+    let mut burst = |at: f64, secs: f64, gain: f64| {
+        for n in 0..(sr * secs) as usize {
+            let t = n as f64 / sr;
+            let shape = (1.0 - (-t / 0.0005).exp()) * (-t / 0.02).exp();
+            if let Some(s) = samples.get_mut((at * sr) as usize + n) {
+                *s += (gain * shape * (std::f64::consts::TAU * 440.0 * t).sin()) as f32;
+            }
+        }
+    };
+    burst(0.25, 0.08, 0.3);
+    burst(0.266, 0.08, 0.7);
+    burst(0.6, 0.08, 0.7);
+    burst(1.0, 0.005, 0.7);
+    for n in (0.5 * sr) as usize..(0.5985 * sr) as usize {
+        let t = n as f64 / sr;
+        let level = 0.25 * (-(0.5985 - t) / 0.03).exp();
+        samples[n] += (level * (std::f64::consts::TAU * 1500.0 * t).sin()) as f32;
+    }
+    let found = onsets_of(&written("onset-swell-end", rate, &[&samples]));
+    let struck = [0.25, 0.6, 1.0];
+    assert_eq!(found.len(), struck.len(), "every strike: {found:?}");
+    for (heard, wanted) in found.iter().zip(struck) {
+        assert!(
+            (heard - wanted).abs() <= 0.001,
+            "{heard} is more than a millisecond from {wanted}"
+        );
+    }
+}
+
 /// A file that is not there is the caller's typo; `internal_error` would tell an agent the
 /// tool broke instead, and the standard reserves exit 24 for exactly this.
 #[test]

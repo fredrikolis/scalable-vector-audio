@@ -11,8 +11,6 @@ pub struct SpectralFrame {
     pub bin_hz: f64,
     /// The window read, in seconds.
     pub span_secs: f64,
-    /// Whether the buffer filled that window.
-    pub filled: bool,
 }
 
 pub fn spectral_frames(
@@ -35,7 +33,6 @@ pub fn spectral_frames(
             mags,
             bin_hz,
             span_secs: frame_len as f64 / sample_rate,
-            filled: end - start == frame_len,
         });
         start += hop;
     }
