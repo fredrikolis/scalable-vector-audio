@@ -344,3 +344,53 @@ fn a_ledger_over_a_late_range_shares_that_range_alone() {
         "late is the whole of the second half: {late:?}"
     );
 }
+
+/// Depth counts refs from file to file: a factor two files down states what it holds over
+/// the whole range, past where its reader's crop stops reading it.
+#[test]
+fn a_factor_two_files_down_states_what_it_holds_over_the_range() {
+    let entries = ledger(
+        "nested-factor",
+        &[
+            ("noise", "2*sample(rand(t, seed=3)) - 1\n"),
+            ("shape", "crop(exp(-t/0.1), 0s, 0.25s)\n"),
+            (
+                "voice",
+                "lowpass(@noise, cutoff=2000, q=0.7)*sample(@shape)\n",
+            ),
+            ("master", "@voice\n"),
+        ],
+        2,
+    );
+    let noise = named(&entries, "noise");
+    assert_eq!(noise.share, None, "`noise` is a factor, not an addend");
+    assert!(
+        (noise.rms - (1.0f64 / 3.0).sqrt()).abs() < 0.05,
+        "`noise` states its own level over the whole second: {}",
+        noise.rms
+    );
+}
+
+/// A row read one step late is computed to the range's end, factors under it included.
+#[test]
+fn a_row_read_late_states_what_it_holds_to_the_end() {
+    let entries = ledger(
+        "late-row",
+        &[
+            ("noise", "2*sample(rand(t, seed=3)) - 1\n"),
+            ("shape", "crop(exp(-t/0.1), 0s, 2s)\n"),
+            (
+                "voice",
+                "lowpass(@noise, cutoff=2000, q=0.7)*sample(@shape)\n",
+            ),
+            ("master", "@voice(t - 18sp)\n"),
+        ],
+        3,
+    );
+    for node in ["noise", "shape"] {
+        let held = named(&entries, node);
+        assert_eq!(held.share, None, "`{node}` is a factor, not an addend");
+        assert!(held.rms > 0.0, "`{node}` states what it holds");
+    }
+    assert_eq!(named(&entries, "voice").share, Some(1.0));
+}

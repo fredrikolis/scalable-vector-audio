@@ -303,11 +303,15 @@ fn attributed(typing: &Typing, id: NodeId, depth: usize, wanted: &mut BTreeSet<N
     let mut level = vec![id];
     for _ in 0..depth {
         let mut next = Vec::new();
-        for held in level {
+        while let Some(held) = level.pop() {
             for operand in read_operands(typing, held) {
-                if seen.insert(operand) {
-                    wanted.insert(operand);
-                    next.push(operand);
+                if !seen.insert(operand) {
+                    continue;
+                }
+                wanted.insert(operand);
+                match typing.name(operand) == typing.name(held) {
+                    true => level.push(operand),
+                    false => next.push(operand),
                 }
             }
         }

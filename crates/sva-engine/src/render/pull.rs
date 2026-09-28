@@ -105,6 +105,7 @@ fn whole(
             continue;
         }
         let forced = out.contains(&id)
+            || held.schedule.rows.contains(&id)
             || !matches!(held.tys.ty(id).held, Held::Sampled)
             || matches!(held.tys.value(id), Value::Cast(Cast::Istft, _))
             || reads_ahead(held, id);

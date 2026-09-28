@@ -86,8 +86,9 @@ RENDER:
   sum to 1; a ref no addend isolates, such as one factor of a product, prints
   `null`. Each ref carrying a share is collapsed once on its own, so a ledger
   costs one collapse per attributed ref beyond the render, and `depth` bounds
-  how many. `brief=1` keeps only the rows that clipped, `skim=1` drops the
-  wider fields.
+  how many, counted in refs from one file to another. Every row is computed
+  whole over the range, however late a reader reads it. `brief=1` keeps only
+  the rows that clipped, `skim=1` drops the wider fields.
 
   `arguments` renders nothing: for every instance under the target it prints
   each builtin call's named arguments as the numbers the call was lowered
