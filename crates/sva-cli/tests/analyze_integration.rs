@@ -419,10 +419,16 @@ fn a_strike_is_an_onset_after_a_swell_before_its_crest_and_at_the_end() {
     burst(0.266, 0.08, 0.7);
     burst(0.6, 0.08, 0.7);
     burst(1.0, 0.005, 0.7);
-    for n in (0.5 * sr) as usize..(0.5985 * sr) as usize {
+    let swell = (0.5 * sr) as usize..(0.5985 * sr) as usize;
+    for (n, s) in samples
+        .iter_mut()
+        .enumerate()
+        .take(swell.end)
+        .skip(swell.start)
+    {
         let t = n as f64 / sr;
         let level = 0.25 * (-(0.5985 - t) / 0.03).exp();
-        samples[n] += (level * (std::f64::consts::TAU * 1500.0 * t).sin()) as f32;
+        *s += (level * (std::f64::consts::TAU * 1500.0 * t).sin()) as f32;
     }
     let found = onsets_of(&written("onset-swell-end", rate, &[&samples]));
     let struck = [0.25, 0.6, 1.0];
