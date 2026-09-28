@@ -126,6 +126,8 @@ LINT:
            long-expression-body  a body over 10000 characters, a backstop rather
                                  than a complexity budget
            literal-sample-rate   a written rate where `sp` belongs
+           arity                 a builtin called without an argument it reads,
+                                 or with one it does not, as `rand(seed=k)`
            quiet-tail            computed well past where it is under the
                                  output's resolution
   warning  grid-rows-per-bar     a TSV grid's row count does not divide evenly

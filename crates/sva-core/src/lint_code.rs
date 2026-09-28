@@ -11,6 +11,7 @@ pub enum LintCode {
     LongCommentBlock,
     LongExpressionBody,
     LiteralSampleRate,
+    Arity,
     KeyIsNotAPitch,
     QuietTail,
 }
@@ -24,6 +25,7 @@ impl LintCode {
         LintCode::LongCommentBlock,
         LintCode::LongExpressionBody,
         LintCode::LiteralSampleRate,
+        LintCode::Arity,
         LintCode::KeyIsNotAPitch,
         LintCode::QuietTail,
     ];
@@ -37,6 +39,7 @@ impl LintCode {
             LintCode::LongCommentBlock => "long-comment-block",
             LintCode::LongExpressionBody => "long-expression-body",
             LintCode::LiteralSampleRate => "literal-sample-rate",
+            LintCode::Arity => "arity",
             LintCode::KeyIsNotAPitch => "key-is-not-a-pitch",
             LintCode::QuietTail => "quiet-tail",
         }
@@ -60,6 +63,7 @@ impl LintCode {
             LintCode::LiteralSampleRate => {
                 "write the sample period as `sp` and let the render choose its rate"
             }
+            LintCode::Arity => "give the call what its builtin reads, as `sva-cli builtins` lists",
             LintCode::KeyIsNotAPitch => {
                 "hold one note name or a number of hertz in `variables/key`"
             }

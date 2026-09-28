@@ -83,6 +83,38 @@ fn a_literal_sample_rate_refuses() {
     assert!(found[0].message.contains("1sp"), "the repair is named");
 }
 
+/// A random source is a function of time, so a draw with no key is refused rather than
+/// read as one constant, at lint as at render.
+#[test]
+fn a_draw_with_no_key_refuses() {
+    let dir = composition(
+        "keyless-draw",
+        &[
+            ("still", "crop(2*rand(seed=3) - 1, 0s, 1s)\n"),
+            ("moving", "crop(2*rand(t, seed=3) - 1, 0s, 1s)\n"),
+        ],
+    );
+    let Err(sva_core::CliError::LintRefused(found)) = lint(&dir, None) else {
+        panic!("a keyless draw refuses")
+    };
+    let refused: Vec<&str> = found
+        .iter()
+        .filter(|f| f.code == LintCode::Arity)
+        .map(|f| f.subject.as_str())
+        .collect();
+    assert_eq!(refused, vec!["still"], "only the node that drew no key");
+    assert!(
+        found[0].message.contains("rand(t, seed=k)"),
+        "the repair is named"
+    );
+    let rendered = sva_core::execute(sva_core::Job::over(&sva_ast::Dir::at(&dir), "@still"));
+    let Err(refused) = rendered else {
+        panic!("a render of the keyless draw refuses too")
+    };
+    let codes: Vec<String> = refused.diagnostics().into_iter().map(|d| d.code).collect();
+    assert_eq!(codes, vec!["grammar.arity"], "{codes:?}");
+}
+
 /// A reserved `variables/` node is read by name, so no ref walk reaches one.
 #[test]
 fn lint_of_one_node_sees_the_tempo() {

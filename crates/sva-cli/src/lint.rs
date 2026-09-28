@@ -206,6 +206,7 @@ fn lint_violations(source: &dyn Source, graph: &Graph) -> Vec<LintViolation> {
     violations.extend(long_comment_block_violations(source, graph));
     violations.extend(long_expression_body_violations(source, graph));
     violations.extend(crate::rates::rate_violations(graph));
+    violations.extend(crate::arity::arity_violations(graph));
     violations
 }
 

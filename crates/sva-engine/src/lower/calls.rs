@@ -502,11 +502,7 @@ impl<'g> Lowering<'_, 'g> {
         var: Var,
     ) -> Result<Piece, EngineError> {
         let (key, seed) = match positional {
-            [] => {
-                let seed = named_or(named, "seed", 0.0) as u64;
-                let drawn = hash::keyed("", seed) as f64 / u64::MAX as f64;
-                return Ok(Piece::ClosedForm(Body::Const(C64::real(drawn))));
-            }
+            [] => return Err(EngineError::BadArity("rand".to_string())),
             [key] => (*key, named_or(named, "seed", 0.0)),
             [key, seed, ..] => (
                 *key,

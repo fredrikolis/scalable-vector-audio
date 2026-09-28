@@ -1,6 +1,7 @@
 // Concern: wires this CLI's subcommand modules atop sva-core's pipeline | Non-concern: the pipeline itself (sva-core), JS bindings (sva-wasm) | IO: none
 
 mod args;
+mod arity;
 mod composition;
 mod destination;
 mod help;

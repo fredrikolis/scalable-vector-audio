@@ -72,7 +72,7 @@ const DRIVEN: &[Param] = &[
     opt("drive", ParamKind::Scalar),
 ];
 const RAND: &[Param] = &[
-    opt("key", ParamKind::Signal),
+    need("key", ParamKind::Signal),
     opt("seed", ParamKind::Scalar),
 ];
 const SERIES_PARAMS: &[Param] = &[
@@ -333,7 +333,6 @@ pub fn check_arity(name: &str, positional: usize, named: &[String]) -> Result<()
     } else {
         sig.params.len()
     };
-    let mut by_name = 0;
     for key in named {
         let Some(at) = sig.params.iter().position(|p| p.name == *key) else {
             if sig.named().contains(&key.as_str()) {
@@ -360,14 +359,32 @@ pub fn check_arity(name: &str, positional: usize, named: &[String]) -> Result<()
                 format!("give `{key}` to `{name}` by position or by name, not both"),
             ));
         }
-        by_name += usize::from(param.required);
     }
-    match positional + by_name >= sig.required() && positional <= ceiling {
-        true => Ok(()),
-        false => Err(Mismatch::new(
+    if positional > ceiling {
+        return Err(Mismatch::new(
             "grammar.arity",
             &[],
             format!("`{name}` takes {} arguments", sig.params.len()),
+        ));
+    }
+    match sig.params[positional.min(sig.params.len())..]
+        .iter()
+        .find(|p| p.required && !named.iter().any(|k| k == p.name))
+    {
+        None => Ok(()),
+        Some(p) if name == "rand" => Err(Mismatch::new(
+            "grammar.arity",
+            &[],
+            format!(
+                "a draw reads its `{}`, and a random source is a function of time: write \
+                 `rand(t, seed=k)`, or a constant key for one fixed draw",
+                p.name
+            ),
+        )),
+        Some(p) => Err(Mismatch::new(
+            "grammar.arity",
+            &[],
+            format!("`{name}` reads `{}`, and none was written", p.name),
         )),
     }
 }

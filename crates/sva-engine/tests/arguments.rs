@@ -59,15 +59,15 @@ fn a_modulo_inside_a_constant_argument_folds() {
 
 #[test]
 fn a_modulo_inside_a_seed_is_not_dropped() {
-    let written = drawn("modulo-seed", "rand(seed=311 % 256)\n");
+    let written = drawn("modulo-seed", "rand(0, seed=311 % 256)\n");
     assert_eq!(
         written,
-        drawn("literal-seed", "rand(seed=55)\n"),
+        drawn("literal-seed", "rand(0, seed=55)\n"),
         "311 % 256 is 55"
     );
     assert_ne!(
         written,
-        drawn("fallback-seed", "rand(seed=0)\n"),
+        drawn("fallback-seed", "rand(0, seed=0)\n"),
         "the seed a `%` spells is not the seed a missing argument falls back to"
     );
 }
