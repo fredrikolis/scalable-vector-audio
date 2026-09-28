@@ -2,7 +2,7 @@
 
 mod fixtures;
 
-use fixtures::{DUAL, Fixed, constant, gaussian, line, part, sine, term};
+use fixtures::{DUAL, Fixed, constant, decay, gaussian, line, part, sine, term};
 use sva_formula::{
     Body, Bound, C64, ClosedForm, Code, Codomain, Edge, Env, Held, IndexId, LeftReason, NodeId,
     Origin, ParamId, Part, Series, Ty, Unary, Var, dual, infer, normalize,
@@ -196,4 +196,16 @@ fn a_growing_exponential_names_temperedness() {
         )),
     ]);
     assert_eq!(blocked(&growing).reason, LeftReason::NotTempered);
+}
+
+#[test]
+fn a_decay_read_long_before_its_onset_names_the_overflow() {
+    let early = Body::Crop {
+        of: part(decay(-500.0)),
+        l: Edge::at(-3.0),
+        r: Edge::at(1.0),
+        rise: 0.0,
+        fall: 0.0,
+    };
+    assert_eq!(blocked(&early).reason, LeftReason::Overflow);
 }

@@ -163,6 +163,7 @@ pub enum LeftReason {
     HilbertOfPolynomial,
     NotInTable,
     NoValue,
+    Overflow,
     Unsubstituted,
 }
 
@@ -216,6 +217,11 @@ impl LeftReason {
             }
             LeftReason::NoValue => {
                 "a division or a remainder by zero names no number, and no atom holds one"
+            }
+            LeftReason::Overflow => {
+                "a growing exponential passes the largest double inside its window, so its \
+                 transform has no finite weight; a decay read before its onset grows there, \
+                 and a crop at the onset keeps it finite"
             }
             LeftReason::Unsubstituted => {
                 "a node or a parameter reaches the closed form unsubstituted; the graph resolves one \

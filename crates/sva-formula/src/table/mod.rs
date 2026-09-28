@@ -98,8 +98,16 @@ fn flattened(a: &SpectralAtom) -> Result<SpectralAtom, Left> {
             LeftReason::NotTempered,
         ));
     };
+    let c = a.c * carried;
+    if !c.is_finite() {
+        return Err(Left::new(
+            a.origin,
+            AtomSketch::of(Factor::Exponential),
+            LeftReason::Overflow,
+        ));
+    }
     Ok(a.with(
-        a.c * carried,
+        c,
         Factors {
             exp: Some(held),
             ..a.factors()

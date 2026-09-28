@@ -15,15 +15,15 @@ pub(crate) fn row(a: &SpectralAtom) -> Result<Vec<SpectralAtom>, Left> {
 
     match (window.l, window.r) {
         (Edge::At(l), Edge::At(r)) => Ok([
-            edge_terms(a, alpha, pole, f64::from_bits(l), C64::ONE),
-            edge_terms(a, alpha, pole, f64::from_bits(r), -C64::ONE),
+            edge_terms(a, alpha, pole, f64::from_bits(l), C64::ONE)?,
+            edge_terms(a, alpha, pole, f64::from_bits(r), -C64::ONE)?,
         ]
         .concat()),
         (Edge::At(l), Edge::PosInf) if alpha.re < 0.0 => {
-            Ok(edge_terms(a, alpha, pole, f64::from_bits(l), C64::ONE))
+            edge_terms(a, alpha, pole, f64::from_bits(l), C64::ONE)
         }
         (Edge::NegInf, Edge::At(r)) if alpha.re > 0.0 => {
-            Ok(edge_terms(a, alpha, pole, f64::from_bits(r), -C64::ONE))
+            edge_terms(a, alpha, pole, f64::from_bits(r), -C64::ONE)
         }
         (Edge::At(l), Edge::PosInf) => heaviside(a, pole, f64::from_bits(l), C64::ONE),
         (Edge::NegInf, Edge::At(r)) => heaviside(a, pole, f64::from_bits(r), -C64::ONE),
@@ -35,8 +35,15 @@ pub(crate) fn row(a: &SpectralAtom) -> Result<Vec<SpectralAtom>, Left> {
     }
 }
 
-/// One end of `integral u^n e^{-s u} du`, `s = 2*pi*i*theta - alpha`.
-fn edge_terms(a: &SpectralAtom, alpha: C64, pole: C64, edge: f64, sign: C64) -> Vec<SpectralAtom> {
+/// One end of `integral u^n e^{-s u} du`, `s = 2*pi*i*theta - alpha`. An edge where the
+/// term is past the largest double has no finite weight to carry.
+fn edge_terms(
+    a: &SpectralAtom,
+    alpha: C64,
+    pole: C64,
+    edge: f64,
+    sign: C64,
+) -> Result<Vec<SpectralAtom>, Left> {
     let n = a.poly;
     let mut out = Vec::with_capacity(usize::from(n) + 1);
     let mut falling = 1.0f64;
@@ -45,6 +52,13 @@ fn edge_terms(a: &SpectralAtom, alpha: C64, pole: C64, edge: f64, sign: C64) -> 
         let weight = C64::real(falling * edge.powi(power));
         let scale = C64::new(0.0, TAU).powi(u32::from(k) + 1);
         let c = a.c * sign * weight * (alpha.scale(edge)).exp() / scale;
+        if !c.is_finite() {
+            return Err(Left::new(
+                a.origin,
+                AtomSketch::pair(Factor::Exponential, Factor::Indicator),
+                LeftReason::Overflow,
+            ));
+        }
         if !c.is_zero() {
             out.push(SpectralAtom::new(
                 c,
@@ -63,7 +77,7 @@ fn edge_terms(a: &SpectralAtom, alpha: C64, pole: C64, edge: f64, sign: C64) -> 
         }
         falling *= f64::from(n - k);
     }
-    out
+    Ok(out)
 }
 
 /// `1[l,inf)` at zero growth: half a delta beside a principal value.
