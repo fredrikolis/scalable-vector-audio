@@ -2,12 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use sva_formula::closed_form::map_children;
-use sva_formula::{Body, C64, ClosedForm, Edge, Hash, NodeId, Part, normalize_closed_form};
+use sva_formula::{Body, C64, ClosedForm, Hash, NodeId, normalize_closed_form};
 
 use super::identity::{Sink, closed_form_identity, identity_in};
-use super::substituted_closed_form;
-use crate::cast::Cast;
 use crate::error::EngineError;
 use crate::typing::{Typing, Value};
 
@@ -43,9 +40,8 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// Every grid index, on the node's own clock, a switch under it turns at: a crop's
-    /// opening, its closing, and each read's own switches moved by its shift. A switch this
-    /// cannot place on the grid is left out, which only shares less.
+    /// Where a machine's sampled crops open and close on its own clock, reads moved by their
+    /// shift. Rows sum a closed form and its prefix form in different orders, so they hold none.
     pub(crate) fn change_points(&mut self, id: NodeId) -> BTreeSet<i64> {
         if let Some(held) = self.held.points.get(&id) {
             return held.clone();
@@ -53,12 +49,6 @@ impl<'a> Walk<'a> {
         self.held.points.insert(id, BTreeSet::new());
         let mut out = BTreeSet::new();
         match self.typing.value(id) {
-            Value::ClosedForm(_) => {
-                if let Some(form) = substituted_closed_form(self.typing, id) {
-                    body_points(&form.body, self.rate, &mut out);
-                }
-            }
-            Value::Cast(Cast::Sample, source) => out = self.change_points(*source),
             Value::Read { source, at, .. } => {
                 if let Ok(shift) = at.steps_at(self.rate) {
                     let moved = self.change_points(*source);
@@ -80,7 +70,11 @@ impl<'a> Walk<'a> {
                     out.extend(window.switches(self.rate));
                 }
             }
-            Value::Cast(..) | Value::SelfAt(_) | Value::Grid(_) | Value::Solver(_) => {}
+            Value::ClosedForm(_)
+            | Value::Cast(..)
+            | Value::SelfAt(_)
+            | Value::Grid(_)
+            | Value::Solver(_) => {}
         }
         self.held.points.insert(id, out.clone());
         out
@@ -110,16 +104,6 @@ impl<'a> Walk<'a> {
         let typing = self.typing;
         let mut sink = Sink::new();
         match typing.value(id) {
-            Value::ClosedForm(_) => {
-                let form = substituted_closed_form(typing, id)
-                    .expect("a closed form with switches was substituted");
-                let body = before(&form.body, at, self.rate);
-                return Ok(form_identity(ClosedForm { body, ..form }));
-            }
-            Value::Cast(cast, source) => {
-                sink.text(cast.name());
-                sink.hash(self.prefix_identity(*source, at)?);
-            }
             Value::Read {
                 source, at: offset, ..
             } => {
@@ -162,9 +146,11 @@ impl<'a> Walk<'a> {
                     }
                 }
             }
-            Value::SelfAt(_) | Value::Grid(_) | Value::Solver(_) => {
-                return identity_in(typing, id, &mut self.named);
-            }
+            Value::ClosedForm(_)
+            | Value::Cast(..)
+            | Value::SelfAt(_)
+            | Value::Grid(_)
+            | Value::Solver(_) => return identity_in(typing, id, self.named),
         }
         Ok(sink.finish())
     }
@@ -259,58 +245,6 @@ fn closes(rate: u32, r: f64, fall: f64) -> Option<i64> {
     })
 }
 
-fn body_points(f: &Body, rate: u32, out: &mut BTreeSet<i64>) {
-    match f {
-        // A time moved or warped reads its switches at instants this does not place.
-        Body::Shift { .. } | Body::Warp { .. } => {}
-        Body::Crop { of, l, r, fall, .. } => {
-            out.extend(opens(rate, l.value()));
-            out.extend(closes(rate, r.value(), *fall));
-            body_points(&of.body, rate, out);
-        }
-        other => {
-            for p in sva_formula::closed_form::children(other) {
-                body_points(&p.body, rate, out);
-            }
-        }
-    }
-}
-
-fn before(f: &Body, at: i64, rate: u32) -> Body {
-    match f {
-        Body::Shift { .. } | Body::Warp { .. } => f.clone(),
-        Body::Crop {
-            of,
-            l,
-            r,
-            rise,
-            fall,
-        } => {
-            if opens(rate, l.value()).is_some_and(|c| c >= at) {
-                return Body::Const(C64::ZERO);
-            }
-            let inner = Part::new(of.origin, before(&of.body, at, rate));
-            match closes(rate, r.value(), *fall) {
-                Some(c) if c >= at => Body::Crop {
-                    of: inner,
-                    l: *l,
-                    r: Edge::PosInf,
-                    rise: *rise,
-                    fall: 0.0,
-                },
-                _ => Body::Crop {
-                    of: inner,
-                    l: *l,
-                    r: *r,
-                    rise: *rise,
-                    fall: *fall,
-                },
-            }
-        }
-        other => map_children(other, |p| Part::new(p.origin, before(&p.body, at, rate))),
-    }
-}
-
 fn form_identity(form: ClosedForm) -> Hash {
     let sum = normalize_closed_form(&form);
     closed_form_identity(&sum, Some(&form)).expect("a written form always hashes")
@@ -328,24 +262,29 @@ fn constant_identity(v: f64, var: sva_formula::Var) -> Hash {
 mod tests {
     use crate::render::{Render, RenderConfig, plan};
 
-    const PAD: &str = "lowpass(sample(0.3*vel*(saw(f0*8ct) + saw(f0/8ct))*(crop(min(t/0.005, 1)\
-        *(0.6 + 0.4*exp(-t/0.25)), 0s, release) + crop(min(release/0.005, 1)*(0.6 + 0.4\
-        *exp(-release/0.25))*exp(-(t - release)/0.3), release, 3600s))), \
-        cutoff=min(f0*(2 + 10*vel), 18000), q=0.9)\n";
+    const PAD: &str = "lowpass(sample(0.3*vel*saw(f0)*(crop(1, 0s, release) + crop(exp(-(t - \
+        release)/0.3), release, 3600s))), cutoff=900, q=0.9)\n";
 
     fn planned(root: &str) -> Render {
         let mut files = sva_ast::Composition::new();
         files
+            .insert("note", "crop(sample(sin(2*pi*f0*t)), 0s, release)\n")
+            .insert("held", "@note(t, f0=220)\n")
+            .insert("released", "@note(t, f0=220, release=0.61237)\n")
             .insert("pad", PAD)
-            .insert("held", "@pad(t, f0=220, vel=0.6)\n")
-            .insert("released", "@pad(t, f0=220, vel=0.6, release=0.61237)\n")
+            .insert(
+                "pad_released",
+                "@pad(t, f0=220, vel=0.6, release=0.61237)\n",
+            )
             .insert(
                 "spectrum",
                 "ifourier(fourier(crop(sin(2*pi*t), 0s, 0.5s)))\n",
             )
-            .insert("env", "crop(sin(2*pi*3*t), 0.25s, 0.5s, fall=0.1s)\n")
-            .insert("late", "@env(t - 100sp)\n")
-            .insert("now", "sample(@env)\n");
+            .insert(
+                "env",
+                "crop(sample(sin(2*pi*3*t)), 0.25s, 0.5s, fall=0.1s)\n",
+            )
+            .insert("late", "@env(t - 100sp)\n");
         let g = sva_ast::load(&files).expect("a composition");
         plan(&g, root, RenderConfig::seconds(44_100, 1.0)).expect("a plan")
     }
@@ -358,28 +297,25 @@ mod tests {
 
     /// Up to the index its release lands at, a released note is the held one.
     #[test]
-    fn a_released_pad_is_the_held_pad_before_its_release() {
-        let held = asked("held", |walk, id| walk.prefix_identity(id, i64::MAX));
+    fn a_released_note_is_the_held_note_before_its_release() {
+        let held =
+            asked("held", |walk, id| walk.prefix_identity(id, i64::MAX)).expect("an identity");
         let at = (0.61237f64 * 44_100.0).ceil() as i64;
         asked("released", |walk, id| {
             assert!(walk.change_points(id).contains(&at));
             for (before, same) in [(1, true), (at, true), (at + 1, false)] {
                 let prefix = walk.prefix_identity(id, before).expect("an identity");
-                assert_eq!(
-                    prefix == held.clone().expect("an identity"),
-                    same,
-                    "{before}"
-                );
+                assert_eq!(prefix == held, same, "{before}");
             }
         });
     }
 
-    /// A transform reads every instant, so none of its switches is one of its own; a read
-    /// moves its node's switches by its shift.
+    /// Neither a transform nor rows hold a switch; a read moves one by its shift.
     #[test]
-    fn a_transform_hides_its_switches_and_a_read_moves_them() {
+    fn only_the_machine_places_a_switch_and_a_read_moves_it() {
         assert!(asked("spectrum", |walk, id| walk.change_points(id)).is_empty());
-        let now = asked("now", |walk, id| walk.change_points(id));
+        assert!(asked("pad_released", |walk, id| walk.change_points(id)).is_empty());
+        let now = asked("env", |walk, id| walk.change_points(id));
         let late = asked("late", |walk, id| walk.change_points(id));
         assert_eq!(now, [11_025, 17_639].into());
         assert_eq!(late, now.iter().map(|c| c + 100).collect());
