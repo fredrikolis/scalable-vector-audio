@@ -179,34 +179,37 @@ fn a_note_pressed_and_released_mid_stream_is_the_whole_render_of_the_last_edit()
     assert_eq!(heard, want);
 }
 
-/// An ended summand leaves the stream's expression, bar a sum's last; a player editing from
-/// it hears the whole render of every note it gave, echo and all.
+/// A term whose node has ended leaves `@notes` with its handle; a player that only adds hears
+/// the whole render of every note it gave, echo and all.
 #[test]
-fn a_note_past_its_end_leaves_the_expression_and_its_echo_rings_on() {
+fn a_note_past_its_end_leaves_the_sum_and_its_echo_rings_on() {
     let g = composition(1.0);
-    let echoed = |x: &str| format!("@echo(t, x={x})");
+    let mut stream = opened(&g, "@echo(t, x=@notes)", None);
     let (a, b) = ("@blip(t - 1024sp, f0=200)", "@blip(t - 8192sp, f0=300)");
-    let mut stream = opened(&g, &echoed(&format!("{a} + {b}")), None);
+    let added = |stream: &mut Stream, term: &str| {
+        stream
+            .add(&g, &expr(term))
+            .unwrap_or_else(|e| panic!("`{term}`: {e}"))
+    };
+    let (held_a, held_b) = (added(&mut stream, a), added(&mut stream, b));
     let mut heard = blocks(&mut stream, 20);
     assert_eq!(
-        stream.expression(),
-        &expr(&echoed(b)),
+        stream.remove(held_a).ok(),
+        Some(false),
         "the first note ended"
     );
     heard.extend(blocks(&mut stream, 10));
-    assert_eq!(
-        stream.expression(),
-        &expr(&echoed(b)),
-        "a sum keeps its last"
-    );
     let c = "@blip(t - 30720sp, f0=250)";
-    let from = sva_ast::render_expr(stream.expression());
-    edit(&mut stream, &g, &from.replacen(b, &format!("{b} + {c}"), 1));
+    added(&mut stream, c);
+    assert_eq!(
+        stream.remove(held_b).ok(),
+        Some(false),
+        "the second note ended"
+    );
     heard.extend(blocks(&mut stream, 30));
-    assert_eq!(stream.expression(), &expr(&echoed(c)));
 
     let mut whole_g = g.clone();
-    assert!(whole_g.define("final", expr(&echoed(&format!("{a} + {b} + {c}")))));
+    assert!(whole_g.define("final", expr(&format!("@echo(t, x={a} + {b} + {c})"))));
     let want = whole(&whole_g, "final", heard.len());
     let gap = 8192 + 17_640..30 * BLOCK;
     assert!(

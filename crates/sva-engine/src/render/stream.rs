@@ -1,4 +1,4 @@
-// Concern: opens a target as a stream and edits its expression as it plays | Non-concern: pulling its blocks, what an edit carries on (edit.rs) | IO: (&Graph, target) -> a Stream; (&Graph, expr) -> ()
+// Concern: opens a target as a stream and edits it and its terms as it plays | Non-concern: pulling its blocks, what an edit carries on (edit.rs) | IO: (&Graph, target) -> Stream; (expr) -> Handle, bool
 
 use std::collections::BTreeMap;
 
@@ -6,7 +6,7 @@ use sva_ast::{Expr, Graph};
 
 use super::drive::node::{self, Driven, Hold, Kind};
 use super::drive::{self, Block, Driver, edit};
-use super::terms::Terms;
+use super::terms::{Handle, NOTES, Terms};
 use super::{Lenses, Render, RenderConfig, prepared, reach, sampled};
 use crate::cache::{Cache, CacheStats, Recording};
 use crate::error::{Diagnostic, EngineError, Located};
@@ -21,14 +21,16 @@ pub struct StreamConfig {
     pub render: RenderConfig,
 }
 
-/// A target rendered block by block, each node over the extent a whole render gives it; an
-/// edit replaces the expression from the next block on.
+/// A target rendered block by block, each node over the extent a whole render gives it. The
+/// target may read `@notes`, the sum of the terms added under handles; an edit to it or to a
+/// term plays from the next block on.
 pub struct Stream {
     config: StreamConfig,
     shell: Render,
     lenses: Lenses<'static>,
     driver: Driver,
     recording: Option<Recording>,
+    graph: Graph,
     expr: Expr,
     terms: Terms,
     ended: usize,
@@ -47,9 +49,11 @@ impl Stream {
         if config.block == 0 {
             return Err(refusal("a block of no samples".to_string()));
         }
-        let (shell, terms) = shelled(graph, target, &config.render)?;
+        let mut terms = Terms::default();
+        let shell = shelled(graph, target, &mut terms, &config.render)?;
         let range = shell.range.expect("audio out decides a range");
         let mut stream = Stream {
+            graph: graph.clone(),
             expr: target.clone(),
             terms,
             ended: 0,
@@ -78,12 +82,56 @@ impl Stream {
         Ok(stream)
     }
 
+    /// `graph` reaches `target` and every term.
+    pub fn edit(&mut self, graph: &Graph, target: &Expr) -> Result<(), EngineError> {
+        self.rebuilt(graph, target.clone(), self.terms.clone())
+    }
+
+    /// `graph` reaches `term` and all the stream plays.
+    pub fn add(&mut self, graph: &Graph, term: &Expr) -> Result<Handle, EngineError> {
+        let (terms, handle) = self.terms.added(term.clone());
+        self.rebuilt(graph, self.expr.clone(), terms)?;
+        Ok(handle)
+    }
+
+    /// False, and nothing edited, where the stream no longer holds `handle`.
+    pub fn replace(
+        &mut self,
+        graph: &Graph,
+        handle: Handle,
+        term: &Expr,
+    ) -> Result<bool, EngineError> {
+        let Some(terms) = self.terms.replaced(handle, term.clone()) else {
+            return Ok(false);
+        };
+        self.rebuilt(graph, self.expr.clone(), terms)?;
+        Ok(true)
+    }
+
+    pub fn remove(&mut self, handle: Handle) -> Result<bool, EngineError> {
+        let Some(terms) = self.terms.removed(handle) else {
+            return Ok(false);
+        };
+        let graph = self.graph.clone();
+        self.rebuilt(&graph, self.expr.clone(), terms)?;
+        Ok(true)
+    }
+
+    pub fn exprs(&self) -> impl Iterator<Item = &Expr> {
+        std::iter::once(&self.expr).chain(self.terms.exprs())
+    }
+
     /// Unchanged nodes carry on; a changed one read where its predecessor was, at the same
     /// shift, takes its state where its kind, width and call sites do; the rest start now.
-    pub fn edit(&mut self, graph: &Graph, target: &Expr) -> Result<(), EngineError> {
+    fn rebuilt(
+        &mut self,
+        graph: &Graph,
+        target: Expr,
+        mut terms: Terms,
+    ) -> Result<(), EngineError> {
         let mut render = self.config.render.clone();
         render.range.start = Some(self.driver.start);
-        let (shell, terms) = shelled(graph, target, &render)?;
+        let shell = shelled(graph, &target, &mut terms, &render)?;
         let range = shell.range.expect("audio out decides a range");
         let order = order(&shell);
         let mut kept: BTreeMap<sva_formula::Hash, usize> = BTreeMap::new();
@@ -127,7 +175,8 @@ impl Stream {
         self.driver.replace(nodes, Some(root), range.end);
         self.shell = shell;
         self.lenses = next;
-        self.expr = target.clone();
+        self.graph = graph.clone();
+        self.expr = target;
         self.terms = terms;
         self.ended = 0;
         self.prune();
@@ -141,11 +190,6 @@ impl Stream {
         drop(lenses);
         self.prune();
         Ok(block)
-    }
-
-    /// What it plays, less each summand whose node ended bar a sum's last: the one to edit from.
-    pub fn expression(&self) -> &Expr {
-        &self.expr
     }
 
     /// An edit starts a changed node with no state at its instant silent there, never
@@ -182,9 +226,7 @@ impl Stream {
                 .zip(&read)
                 .any(|(n, read)| *read && n.id == id && matches!(n.kind, Kind::Ended))
         };
-        if let Some(pruned) = self.terms.pruned(&self.expr, &gone) {
-            self.expr = pruned;
-        }
+        self.terms.prune(&gone);
     }
 
     pub fn position(&self) -> i64 {
@@ -233,30 +275,32 @@ impl Stream {
     }
 }
 
-/// The graph with `streamed` defined as `target`, typed, scheduled and ranged.
+/// The graph with `streamed` defined as `target` and `notes` as `terms`, typed, scheduled
+/// and ranged. A composition's own `notes` stands while there is no term.
 fn shelled(
     graph: &Graph,
     target: &Expr,
+    terms: &mut Terms,
     config: &RenderConfig,
-) -> Result<(Render, Terms), EngineError> {
+) -> Result<Render, EngineError> {
     let mut wrapped = graph.clone();
-    if !wrapped.define(STREAMED, target.clone()) {
-        return Err(refusal(format!(
-            "this composition already has a node named `{STREAMED}`"
-        )));
+    let own = terms.is_empty() && graph.defines(NOTES);
+    let sum = (!own).then(|| (NOTES, terms.sum()));
+    for (name, body) in std::iter::once((STREAMED, target.clone())).chain(sum) {
+        if !wrapped.define(name, body) {
+            return Err(refusal(format!(
+                "this composition already has a node named `{name}`"
+            )));
+        }
     }
     let held = prepared(&wrapped, STREAMED)?;
-    let terms = Terms::of(
-        &held.instances,
-        &held.tys,
-        &held.instances.instance_of(STREAMED)?,
-    );
+    terms.typed(&held.instances, &held.tys);
     sampled::on_the_grid(&held.tys, config.rate)?;
     let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
     let audio = schedule.materialize.clone();
     let mut shell = Render::shell(held.tys, held.root, config.clone(), schedule);
     reach::streamed(&mut shell, &audio)?;
-    Ok((shell, terms))
+    Ok(shell)
 }
 
 fn order(shell: &Render) -> Vec<sva_formula::NodeId> {

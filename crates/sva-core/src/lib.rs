@@ -36,7 +36,7 @@ use sva_engine::{
     Ask, DEFAULT_SAMPLE_RATE, EngineError, Range, RenderConfig, StreamConfig, render,
 };
 
-pub use sva_engine::{QuietTail, Stream, Until};
+pub use sva_engine::{Handle, QuietTail, Stream, Until};
 
 pub use sva_engine::{Answer, Extent, Label, Output, Representation};
 pub use sva_engine::{Cache, CachePolicy, PrunePolicy};
@@ -115,13 +115,16 @@ impl<'a> Job<'a> {
 }
 
 fn settle(job: &Job) -> Result<(Graph, RenderConfig), CliError> {
+    settle_reaching(job, &[])
+}
+
+fn settle_reaching(job: &Job, also: &[String]) -> Result<(Graph, RenderConfig), CliError> {
     let Target { expr, interval } = target(job.target)?;
+    let mut roots = roots_of(job.source, &expr)?;
+    roots.extend_from_slice(also);
     let mut graph = settled(sva_ast::load_reaching(
         job.source,
-        &roots_of(job.source, &expr)?
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
+        &roots.iter().map(String::as_str).collect::<Vec<_>>(),
     ))?;
     let parsed = sva_ast::parse_expr(&expr).map_err(|d| {
         CliError::BadProbe(format!(
@@ -254,19 +257,54 @@ pub fn stream(job: &Job, block: usize) -> Result<Stream, CliError> {
 /// `target`, an expression over `source` with no interval of its own, in place of what
 /// `stream` plays from its next block on.
 pub fn edit(stream: &mut Stream, source: &dyn Source, target: &str) -> Result<(), CliError> {
-    let (graph, config) = settle(&Job::over(source, target))?;
+    let (graph, expr) = streamed(stream, source, target)?;
+    stream
+        .edit(&graph, &expr)
+        .map_err(|e| CliError::Engine(as_written(e, target)))
+}
+
+/// `term` summed into the stream's `@notes` from its next block on.
+pub fn add(stream: &mut Stream, source: &dyn Source, term: &str) -> Result<Handle, CliError> {
+    let (graph, expr) = streamed(stream, source, term)?;
+    stream
+        .add(&graph, &expr)
+        .map_err(|e| CliError::Engine(as_written(e, term)))
+}
+
+/// False where the stream no longer holds `handle`.
+pub fn replace(
+    stream: &mut Stream,
+    source: &dyn Source,
+    handle: Handle,
+    term: &str,
+) -> Result<bool, CliError> {
+    let (graph, expr) = streamed(stream, source, term)?;
+    stream
+        .replace(&graph, handle, &expr)
+        .map_err(|e| CliError::Engine(as_written(e, term)))
+}
+
+/// `text` with no interval, and a graph reaching it and all the stream plays.
+fn streamed(
+    stream: &Stream,
+    source: &dyn Source,
+    text: &str,
+) -> Result<(Graph, sva_ast::Expr), CliError> {
+    let playing: Vec<String> = stream
+        .exprs()
+        .flat_map(|e| sva_ast::reads_of(PROBE, e))
+        .collect();
+    let (graph, config) = settle_reaching(&Job::over(source, text), &playing)?;
     if config.range != Range::default() {
         return Err(CliError::Usage(format!(
-            "`{target}` reads an interval, and an edit keeps the stream's own"
+            "`{text}` reads an interval, and a stream keeps its own"
         )));
     }
     let expr = graph
         .expr(PROBE)
         .cloned()
         .expect("the target was defined as the probe");
-    stream
-        .edit(&graph, &expr)
-        .map_err(|e| CliError::Engine(as_written(e, target)))
+    Ok((graph, expr))
 }
 
 /// A double holds no bit past its own mantissa, and one bit writes only zero.

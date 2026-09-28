@@ -96,6 +96,7 @@ pub use answer::{answer, answer_buffer, sketch_atom};
 pub use drive::Block;
 pub use quiet::{QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, quiet_tails};
 pub use stream::{STREAMED, Stream, StreamConfig};
+pub use terms::{Handle, NOTES};
 pub use until::Until;
 
 pub struct Render {

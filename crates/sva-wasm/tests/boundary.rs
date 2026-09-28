@@ -636,10 +636,11 @@ fn refused_as(refused: Option<JsValue>, code: &str) {
     );
 }
 
-/// A sampled filter over a closed form: the stream's blocks are the render's samples, and an
-/// edit binding `release` at the stream's position closes the envelope there.
+/// A sampled filter over a closed form: the stream's blocks are the render's samples. A term
+/// added to `@notes` crosses as a handle, and replacing it with one binding `release` at the
+/// stream's position closes the envelope there.
 #[wasm_bindgen_test]
-fn a_stream_crosses_block_by_block_and_an_edit_releases_it() {
+fn a_stream_crosses_block_by_block_and_a_replaced_term_releases_it() {
     let mut held = page();
     held.insert(
         "filtered",
@@ -652,14 +653,22 @@ fn a_stream_crosses_block_by_block_and_an_edit_releases_it() {
     let whole = plane(&render(&held, "filtered"));
     assert_eq!(heard[..], whole[..heard.len()]);
 
-    let mut gated = opened(&held, "gated");
+    let refusal = |e: JsValue| unreachable!("{}", as_text(&field(&e, "refusal")));
+    let mut gated = opened(&held, "notes");
+    let key = gated.add("@gated").unwrap_or_else(refusal);
     assert!(blocks(&mut gated, 3).iter().any(|v| *v != 0.0));
     let at = gated.position() / 8000.0;
-    gated
-        .edit(&format!("@gated(t, release={at})"))
-        .unwrap_or_else(|e| unreachable!("{}", as_text(&field(&e, "refusal"))));
+    let released = gated.replace(key, &format!("@gated(t, release={at})"));
+    assert_eq!(released.ok(), Some(true));
     assert!(blocks(&mut gated, 2).iter().all(|v| *v == 0.0));
-    refused_as(gated.edit("@gated([0, 1s])").err(), "validation_error");
+    assert_eq!(gated.remove(key).ok(), Some(true));
+    assert_eq!(
+        gated.remove(key).ok(),
+        Some(false),
+        "a handle removed is held no more"
+    );
+    refused_as(gated.add("@gated([0, 1s])").err(), "validation_error");
+    refused_as(gated.edit("@notes([0, 1s])").err(), "validation_error");
 }
 
 /// Component `c` of a block starts at `c * block` in the array a page hands over.

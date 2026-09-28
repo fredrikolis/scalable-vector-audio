@@ -8,7 +8,7 @@ use sva_core::{
     Asked, CliError, Diagnostic, Job, Printed, Rendered, Report, SAMPLE_LIMIT, error_envelope,
     execute, query_data, stats_json, stream_stats_json, work_json,
 };
-use sva_engine::{Buffer, Cache, CachePolicy, CacheStats, PrunePolicy};
+use sva_engine::{Buffer, Cache, CachePolicy, CacheStats, Handle, PrunePolicy};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -31,7 +31,7 @@ extern "C" {
 }
 
 /// One crossing for every refusal: `name` is the CLI's own error code and `refusal` the
-/// envelope it would have printed, never null — a page reads a slip as text, not absence.
+/// envelope it would have printed, never null.
 fn crossed(code: &str, message: &str, diagnostics: &[Diagnostic]) -> JsValue {
     let error = JsErr::new(message);
     error.set_name(code);
@@ -430,7 +430,9 @@ impl Rendering {
     }
 }
 
-/// A target block by block, for a player that cannot know how long a note is held.
+/// A target block by block, reading `@notes` as the sum of its terms, as `@hall(t, x=@notes)`.
+/// A key-up replaces a term with one binding `release`. A one-ref term leaves with its handle
+/// once its node ends, bar the last.
 #[wasm_bindgen]
 pub struct Stream {
     inner: sva_core::Stream,
@@ -464,9 +466,28 @@ impl Stream {
         Ok(held.len())
     }
 
-    /// `expr` in place of what plays from the next block on; its `t` is the stream's own.
+    /// `expr` in place of the target.
     pub fn edit(&mut self, expr: &str) -> Result<(), JsValue> {
         sva_core::edit(&mut self.inner, &self.source, expr).map_err(|e| thrown(&e))
+    }
+
+    /// `term` summed into `@notes`.
+    pub fn add(&mut self, term: &str) -> Result<u32, JsValue> {
+        sva_core::add(&mut self.inner, &self.source, term)
+            .map(|handle| handle.0)
+            .map_err(|e| thrown(&e))
+    }
+
+    /// False where the stream no longer holds `handle`.
+    pub fn replace(&mut self, handle: u32, term: &str) -> Result<bool, JsValue> {
+        sva_core::replace(&mut self.inner, &self.source, Handle(handle), term)
+            .map_err(|e| thrown(&e))
+    }
+
+    pub fn remove(&mut self, handle: u32) -> Result<bool, JsValue> {
+        self.inner
+            .remove(Handle(handle))
+            .map_err(|e| thrown(&CliError::Engine(e)))
     }
 
     /// `{ samples, priced_flops, waves }` since it opened.
@@ -479,12 +500,6 @@ impl Stream {
             &self.inner.stats(),
             self.inner.dropped(),
         ))
-    }
-
-    /// What it plays, less each ended summand: the one to edit from.
-    #[wasm_bindgen(getter)]
-    pub fn expression(&self) -> String {
-        sva_ast::render_expr(self.inner.expression())
     }
 
     #[wasm_bindgen(getter)]
