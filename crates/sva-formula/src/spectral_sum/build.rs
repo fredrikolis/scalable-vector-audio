@@ -1,6 +1,6 @@
 // Concern: lowers a Body to the canonical atom sum | Non-concern: the atom algebra (product.rs), typing (infer.rs) | IO: (&Body, Var) -> SpectralSum or Left
 
-use crate::affine::Coeff;
+use crate::affine::{Coeff, exact_affine};
 use crate::closed_form::{Body, ClosedForm, Part, Series, Var};
 use crate::complex::C64;
 use crate::origin::Origin;
@@ -13,8 +13,8 @@ use crate::spectral_sum::image::{
 };
 use crate::spectral_sum::merge::simplify;
 use crate::spectral_sum::product::times;
-use crate::spectral_sum::spread;
 use crate::spectral_sum::{Lane, SpectralSum};
+use crate::spectral_sum::{kink, spread};
 
 pub fn normalize_closed_form(t: &ClosedForm) -> Result<SpectralSum, Left> {
     lower(&t.body, t.origin, t.var)
@@ -87,8 +87,13 @@ fn lower(f: &Body, origin: Origin, var: Var) -> Result<SpectralSum, Left> {
             scale(lower_part(num, var)?, k.inv())
         }
         Body::Pow(base, n) => power(base, *n, var),
-        Body::Apply(op, arg) => apply(*op, arg, origin, var),
-        Body::Fold(op, args) => fold(*op, args, origin, var),
+        Body::Apply(op, arg) => {
+            apply(*op, arg, origin, var).or_else(|left| kinked(f, origin, var, left))
+        }
+        Body::Fold(op, args) => {
+            let values = args.iter().map(held_constant).collect();
+            fold(*op, values, origin, var).or_else(|left| kinked(f, origin, var, left))
+        }
         Body::Delta { at, order } => delta(at, *order, var),
         Body::Pv(at) => principal_value(at, var),
         Body::Shift { by, of } => shift(lower_part(of, var)?, *by),
@@ -163,6 +168,19 @@ fn lower(f: &Body, origin: Origin, var: Var) -> Result<SpectralSum, Left> {
 
 fn lower_part(p: &Part, var: Var) -> Result<SpectralSum, Left> {
     lower(&p.body, p.origin, var)
+}
+
+fn held_constant(p: &Part) -> Option<C64> {
+    exact_affine(&p.body).and_then(|(a, b)| a.is_zero().then_some(b))
+}
+
+/// A `min` or `max` of two lines is each line under its own window; a form refused whole
+/// may lower half by half. Either half refused keeps the first refusal.
+fn kinked(f: &Body, origin: Origin, var: Var, refused: Left) -> Result<SpectralSum, Left> {
+    match kink::split(f) {
+        Some(halves) => lower(&halves, origin, var).map_err(|_| refused),
+        None => Err(refused),
+    }
 }
 
 /// One operand of width 1 broadcasts against a wide one; equal widths pair off.

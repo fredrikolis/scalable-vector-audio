@@ -98,7 +98,15 @@ fn a_sampled_note_released_at_half_a_second_is_the_held_note_until_then() {
     let released = samples(&files, "released", 1.0);
     let held = samples(&files, "held", 1.0);
     let key_up = (0.5 * f64::from(RATE)) as usize;
-    assert_eq!(released[..key_up], held[..key_up]);
+    // The two windows cut the same atoms at different instants, which reorders one sum.
+    for i in 0..key_up {
+        assert!(
+            (released[i] - held[i]).abs() <= 1e-12,
+            "sample {i} before key-up: {} against {}",
+            released[i],
+            held[i]
+        );
+    }
     assert_ne!(released[key_up + 4410], held[key_up + 4410]);
 }
 

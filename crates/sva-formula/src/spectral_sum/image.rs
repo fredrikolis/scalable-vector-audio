@@ -92,15 +92,13 @@ fn line_atom(c: C64, alpha: C64, origin: Origin) -> SpectralAtom {
     )
 }
 
-pub fn fold(op: Fold, args: &[Part], origin: Origin, var: Var) -> Result<SpectralSum, Left> {
-    let values: Option<Vec<C64>> = args
-        .iter()
-        .map(|p| {
-            exact_affine(&p.body)
-                .filter(|(a, _)| a.is_zero())
-                .map(|x| x.1)
-        })
-        .collect();
+/// `values` is each argument's one number, `None` where one holds none.
+pub fn fold(
+    op: Fold,
+    values: Option<Vec<C64>>,
+    origin: Origin,
+    var: Var,
+) -> Result<SpectralSum, Left> {
     let Some(values) = values else {
         return Err(left(origin, Factor::Value, LeftReason::Nonlinearity));
     };

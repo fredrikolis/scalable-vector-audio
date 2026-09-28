@@ -3,6 +3,7 @@
 pub mod atom;
 pub mod build;
 pub mod image;
+mod kink;
 pub mod merge;
 pub mod product;
 pub mod spread;

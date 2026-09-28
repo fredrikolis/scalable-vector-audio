@@ -218,3 +218,43 @@ fn a_value_on_one_axis_inverts_correctly_rounded() {
         assert_eq!(by_i.im.to_bits(), (-1.0 / x).to_bits(), "1/({x}i)");
     }
 }
+
+/// Either operand may be the steeper one, and either may be written first.
+#[test]
+fn a_min_or_max_of_two_lines_is_the_lower_or_higher_line_at_every_instant() {
+    use sva_formula::Fold;
+    let ramp = |slope: f64, at: f64| {
+        Body::Add(vec![
+            part(Body::Mul(vec![part(constant(slope)), part(line())])),
+            part(constant(at)),
+        ])
+    };
+    let lines = [
+        (1.0, 0.0, 0.0, 0.5),
+        (-2.0, 1.0, 0.5, -1.0),
+        (0.25, -1.0, 3.0, 0.0),
+    ];
+    for (s1, b1, s2, b2) in lines {
+        for op in [Fold::Min, Fold::Max] {
+            for flipped in [false, true] {
+                let (p, q) = (ramp(s1, b1), ramp(s2, b2));
+                let args = if flipped {
+                    vec![part(q), part(p)]
+                } else {
+                    vec![part(p), part(q)]
+                };
+                let held = atoms(&Body::Fold(op, args));
+                for k in -40..40 {
+                    let t = f64::from(k) * 0.137;
+                    let got: f64 = held.iter().map(|a| a.smooth_at(t).unwrap().re).sum();
+                    let (x, y) = (s1 * t + b1, s2 * t + b2);
+                    let want = if op == Fold::Min { x.min(y) } else { x.max(y) };
+                    assert!(
+                        (got - want).abs() <= 1e-12,
+                        "{op:?} flipped={flipped} at {t}: {got} against {want}"
+                    );
+                }
+            }
+        }
+    }
+}
