@@ -3,9 +3,7 @@
 use sva_samples::machine::ops::Layout;
 use sva_samples::physics::Params;
 use sva_samples::physics::chaigne_askenfelt::ChaigneAskenfeltParams;
-use sva_samples::{
-    BufId, Buffer, Ctx, Machine, NodeRenderer, SampleError, Shape, Site, SiteId, Tape, Window,
-};
+use sva_samples::{BufId, Buffer, Ctx, Machine, NodeRenderer, Shape, Site, SiteId, Tape, Window};
 
 const RATE: u32 = 44_100;
 const LEN: usize = 3_000;
@@ -118,7 +116,7 @@ fn a_held_state_resumed_in_a_fresh_machine_writes_the_rest_of_the_run() {
     run(&mut machine, &mut tape, LEN as i64);
 
     let mut resumed = opened(f64::INFINITY);
-    resumed.carry(&held).expect("the same sites");
+    assert!(resumed.carry(&held), "the same sites");
     run(&mut resumed, &mut resumed_tape, LEN as i64);
     assert_eq!(resumed_tape.since(0, 0), want.as_slice());
     assert_eq!(tape.since(0, 0), want.as_slice());
@@ -137,7 +135,7 @@ fn a_string_held_unreleased_and_resumed_with_a_release_is_the_released_run() {
     run(&mut held, &mut tape, landing);
 
     let mut resumed = opened(release);
-    resumed.carry(&held.state()).expect("the same sites");
+    assert!(resumed.carry(&held.state()), "the same sites");
     run(&mut resumed, &mut tape, LEN as i64);
     assert_eq!(tape.since(0, 0), want.as_slice());
 }
@@ -153,7 +151,7 @@ fn a_state_held_for_other_parameters_is_refused() {
         ..layout()
     };
     let mut machine = Machine::open(&renderer(f64::INFINITY), &other, RATE).expect("a machine");
-    assert_eq!(machine.carry(&held).err(), Some(SampleError::StateMismatch));
+    assert!(!machine.carry(&held), "a highpass took a lowpass's state");
 }
 
 /// Outside what a node is nonzero over a read is zero; inside it, a sample the tape does

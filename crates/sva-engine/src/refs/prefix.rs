@@ -51,6 +51,9 @@ impl<'a> Walk<'a> {
         }
         self.held.points.insert(id, BTreeSet::new());
         let mut out = BTreeSet::new();
+        if self.typing.sum_slots(id).is_some() {
+            return out;
+        }
         match self.typing.value(id) {
             Value::Read { source, at, .. } => {
                 if let Ok(shift) = at.steps_at(self.rate) {

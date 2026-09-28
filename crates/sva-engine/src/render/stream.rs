@@ -108,8 +108,13 @@ impl Stream {
         Ok(true)
     }
 
+    /// A sounding term is cut where the stream stands, so what it played stays what it was.
     pub fn remove(&mut self, handle: Handle) -> Result<bool, EngineError> {
-        let Some(terms) = self.terms.removed(handle) else {
+        let notes = self.shell.id(NOTES);
+        let lag = self.driver.nodes.iter().find(|n| Some(n.id) == notes);
+        let at = self.driver.at - lag.map_or(0, |n| n.lag);
+        let at = at as f64 / f64::from(self.config.render.rate);
+        let Some(terms) = self.terms.removed(handle, at) else {
             return Ok(false);
         };
         let graph = self.graph.clone();
@@ -226,7 +231,8 @@ impl Stream {
                 .zip(&read)
                 .any(|(n, read)| *read && n.id == id && matches!(n.kind, Kind::Ended))
         };
-        self.terms.prune(&gone);
+        let shell = &self.shell;
+        self.terms.prune(&gone, &|leaf| shell.identity(leaf).ok());
     }
 
     pub fn position(&self) -> i64 {
@@ -284,6 +290,16 @@ fn shelled(
     config: &RenderConfig,
 ) -> Result<Render, EngineError> {
     let mut wrapped = graph.clone();
+    if !terms.is_empty() && graph.defines(NOTES) {
+        return Err(EngineError::refused(Diagnostic {
+            code: "engine.no_stream".to_string(),
+            message: format!(
+                "a term is added to `@{NOTES}`, and this composition defines its own `{NOTES}`"
+            ),
+            location: Located::at(NOTES, None),
+            help: format!("rename the composition's `{NOTES}`, or play it without adding terms"),
+        }));
+    }
     let own = terms.is_empty() && graph.defines(NOTES);
     let sum = (!own).then(|| (NOTES, terms.sum()));
     for (name, body) in std::iter::once((STREAMED, target.clone())).chain(sum) {
@@ -293,8 +309,8 @@ fn shelled(
             )));
         }
     }
-    let held = prepared(&wrapped, STREAMED)?;
-    terms.typed(&held.instances, &held.tys);
+    let mut held = prepared(&wrapped, STREAMED)?;
+    terms.typed(&held.instances, &mut held.tys);
     sampled::on_the_grid(&held.tys, config.rate)?;
     let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
     let audio = schedule.materialize.clone();

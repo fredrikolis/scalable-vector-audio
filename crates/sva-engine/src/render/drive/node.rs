@@ -590,7 +590,7 @@ impl Driven {
             (Kind::Machine { machine, .. }, _) if !machine.stateful() || end >= self.extent.end => {
                 true
             }
-            (Kind::Machine { machine, .. }, Some(last)) => machine.carry(last).is_ok(),
+            (Kind::Machine { machine, .. }, Some(last)) => machine.carry(last),
             (Kind::Machine { .. }, None) => false,
             _ => true,
         };

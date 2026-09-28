@@ -64,9 +64,29 @@ pub struct Typing {
     origins: Vec<Located>,
     pending: BTreeSet<NodeId>,
     indices: u32,
+    sum: Option<(NodeId, Vec<SumSlot>)>,
+}
+
+/// One term of a stream's note sum: its node, or the identity it had before it ended.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum SumSlot {
+    Node(NodeId),
+    Retired(sva_formula::Hash),
 }
 
 impl Typing {
+    /// `node` named by its terms in place, an ended one by the identity it had.
+    pub(crate) fn name_sum(&mut self, node: NodeId, slots: Vec<SumSlot>) {
+        self.sum = Some((node, slots));
+    }
+
+    pub(crate) fn sum_slots(&self, node: NodeId) -> Option<&[SumSlot]> {
+        self.sum
+            .as_ref()
+            .filter(|(held, _)| *held == node)
+            .map(|(_, slots)| slots.as_slice())
+    }
+
     pub(crate) fn next_index(&mut self) -> sva_formula::IndexId {
         self.indices += 1;
         sva_formula::IndexId(self.indices)

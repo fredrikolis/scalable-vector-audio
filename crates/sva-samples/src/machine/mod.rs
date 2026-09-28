@@ -209,7 +209,7 @@ impl Machine {
         self.steps(to, reads, own)
     }
 
-    /// `run_to`, the filters' frames kept: the same block, stopped where a state is taken.
+    /// `run_to`, the filters' frames kept.
     pub fn run_on(&mut self, to: i64, reads: &[Window], own: &mut Tape) -> Result<(), SampleError> {
         self.steps(to, reads, own)
     }
@@ -277,18 +277,22 @@ impl Machine {
         }
     }
 
+    pub fn restart(&mut self) {
+        self.states = open(&self.program, self.rate).expect("the sites opened once already");
+    }
+
     /// Whether `carry` takes `held`: the same sites, a varying parameter's values aside.
     pub fn accepts(&self, held: &MachineState) -> bool {
         held.sites == self.program.sites
     }
 
-    /// Takes `held`'s state whole, or refuses where its sites are not these.
-    pub fn carry(&mut self, held: &MachineState) -> Result<(), SampleError> {
-        if !self.accepts(held) {
-            return Err(SampleError::StateMismatch);
+    /// Takes `held`'s state whole where its sites are these; `false`, and nothing taken, else.
+    pub fn carry(&mut self, held: &MachineState) -> bool {
+        let taken = self.accepts(held);
+        if taken {
+            self.states.clone_from(&held.states);
         }
-        self.states.clone_from(&held.states);
-        Ok(())
+        taken
     }
 }
 

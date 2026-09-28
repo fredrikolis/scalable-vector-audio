@@ -205,7 +205,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 74] = [
+pub static REGISTRY: [(&str, &str); 73] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -319,10 +319,6 @@ pub static REGISTRY: [(&str, &str); 74] = [
     (
         "engine.moving_energy_parameter",
         "a stored-energy coefficient that moves between its jumps",
-    ),
-    (
-        "samples.state_mismatch",
-        "a held state handed to call sites other than the ones it was held for",
     ),
     (
         "grammar.unknown_name",

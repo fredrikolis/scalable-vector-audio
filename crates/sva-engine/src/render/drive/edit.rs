@@ -48,22 +48,31 @@ pub(in crate::render) fn carried(
             nodes[at].kind = Kind::Ended;
             continue;
         }
+        let loaded = nodes[at].run.as_ref().is_some_and(|run| run.loaded);
+        let caught_up = !live || nodes[at].stateless() || nodes[at].tape.end() >= local;
+        let mut candidates: Vec<usize> = Vec::new();
+        if Some(at) == roots.0 {
+            candidates.extend(roots.1);
+        }
+        for &(reader, shift) in &readers[at] {
+            if let Some(was) = paired[reader] {
+                let read = old[was].reads.iter().filter(|(_, s)| *s == shift);
+                candidates.extend(read.map(|(node, _)| *node));
+            }
+        }
+        candidates.retain(|was| !kept.contains(was));
         let carry = match same[at] {
             Some(was) => nodes[at].continues(&mut old[was], local, need, true),
-            None if nodes[at].run.as_ref().is_some_and(|run| run.loaded) => Carry::Taken,
+            None if loaded && caught_up => {
+                paired[at] = candidates.first().copied();
+                Carry::Taken
+            }
             None => {
-                let mut candidates: Vec<usize> = Vec::new();
-                if Some(at) == roots.0 {
-                    candidates.extend(roots.1);
-                }
-                for &(reader, shift) in &readers[at] {
-                    if let Some(was) = paired[reader] {
-                        let read = old[was].reads.iter().filter(|(_, s)| *s == shift);
-                        candidates.extend(read.map(|(node, _)| *node));
-                    }
+                if loaded {
+                    nodes[at].unload();
                 }
                 let mut carry = Carry::Unlike;
-                for was in candidates.into_iter().filter(|was| !kept.contains(was)) {
+                for was in candidates {
                     match nodes[at].continues(&mut old[was], local, need, false) {
                         Carry::Taken => {
                             paired[at] = Some(was);
@@ -119,7 +128,7 @@ impl Driven {
         {
             match state {
                 _ if same => std::mem::swap(machine, was),
-                Some(state) if machine.accepts(&state) && machine.carry(&state).is_ok() => {}
+                Some(state) if machine.carry(&state) => {}
                 Some(_) => return Carry::Unlike,
                 None => return Carry::Unheld,
             }
@@ -140,6 +149,18 @@ impl Driven {
         }
         old.kind = Kind::Ended;
         Carry::Taken
+    }
+
+    /// The node as it opened.
+    fn unload(&mut self) {
+        if let Kind::Machine { machine, .. } = &mut self.kind {
+            machine.restart();
+        }
+        self.tape = Tape::new(self.width, self.tape.capacity(), self.extent.start);
+        if let Some(run) = &mut self.run {
+            (run.loaded, run.stored) = (false, self.extent.start);
+            run.marks.clear();
+        }
     }
 
     fn stateless(&self) -> bool {

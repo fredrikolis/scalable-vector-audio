@@ -229,12 +229,39 @@ fn a_note_past_its_end_leaves_the_sum_and_its_echo_rings_on() {
     assert_eq!(heard, want);
 }
 
-/// Key-up on a note the store answered finds no state at the edit's instant: an exact stream
-/// computes the string again from its start, a live one starts it silent and names it dropped.
+/// A term removed while it sounds is cut where the stream stands: what it played stays, and
+/// the stream is the whole render of the terms it holds, the cut one among them.
+#[test]
+fn a_term_removed_while_it_sounds_is_cut_where_the_stream_stands() {
+    let g = composition(1.0);
+    let mut stream = opened(&g, "@echo(t, x=@notes)", None);
+    let mut added = |term: &str| {
+        stream
+            .add(&g, &expr(term))
+            .unwrap_or_else(|e| panic!("`{term}`: {e}"))
+    };
+    let first = added("@blip(t - 1024sp, f0=200)");
+    added("@blip(t - 4096sp, f0=300)");
+    let mut heard = blocks(&mut stream, 6);
+    assert_eq!(stream.remove(first).ok(), Some(true));
+    assert_eq!(stream.remove(first).ok(), Some(false), "a removed handle");
+    let held: Vec<String> = stream.exprs().skip(1).map(sva_ast::render_expr).collect();
+    heard.extend(blocks(&mut stream, 30));
+
+    let mut whole_g = g.clone();
+    let last = format!("@echo(t, x={})", held.join(" + "));
+    assert!(whole_g.define("final", expr(&last)));
+    assert_eq!(heard, whole(&whole_g, "final", heard.len()), "{last}");
+}
+
+/// Key-up on a note the store answered finds no state at the edit's instant, only one marked
+/// before it: an exact stream computes the string on from there, a live one computes none of
+/// its past and starts it silent, named dropped.
 #[test]
 fn a_live_edit_starts_a_node_with_no_state_silent_and_names_it() {
     let g = composition(1.0);
     let cache = Cache::new();
+    cache.set_mark_every(1_024);
     render(&g, "string", RenderConfig::seconds(RATE, 0.5), Some(&cache)).expect("a render");
     let held = "@echo(t, x=@pluck(t, f0=523.25))";
     let released = "@echo(t, x=@pluck(t, f0=523.25, release=0.1))";

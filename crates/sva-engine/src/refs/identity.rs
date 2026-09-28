@@ -8,7 +8,7 @@ use sva_formula::{
 
 use crate::error::{Diagnostic, EngineError};
 use crate::offset::Offset;
-use crate::typing::{Typing, Value};
+use crate::typing::{SumSlot, Typing, Value};
 
 use super::{cyclic, nodes_in, spectral_sum_of, substituted_closed_form};
 
@@ -40,7 +40,33 @@ fn identity_of(
     if let Some(held) = named.get(&node) {
         return Ok(*held);
     }
-    let found = match typing.ty(node).is_closed_form() {
+    let found = match typing.sum_slots(node) {
+        Some(slots) => {
+            let mut sink = Sink::new();
+            sink.text("terms");
+            for slot in slots {
+                sink.hash(match slot {
+                    SumSlot::Node(id) if *id == node => own(typing, node, open, named)?,
+                    SumSlot::Node(id) => identity_of(typing, *id, open, named)?,
+                    SumSlot::Retired(held) => *held,
+                });
+            }
+            sink.finish()
+        }
+        None => own(typing, node, open, named)?,
+    };
+    named.insert(node, found);
+    Ok(found)
+}
+
+/// What the node itself holds, a named sum's slots aside.
+fn own(
+    typing: &Typing,
+    node: NodeId,
+    open: &mut Vec<NodeId>,
+    named: &mut BTreeMap<NodeId, Hash>,
+) -> Result<Hash, EngineError> {
+    match typing.ty(node).is_closed_form() {
         true => match closed_form_identity(
             &spectral_sum_of(typing, node, typing.var(node)),
             substituted_closed_form(typing, node).as_ref(),
@@ -49,9 +75,7 @@ fn identity_of(
             Err(form) => built(typing, node, open, named).map_err(|tree| neither(form, tree)),
         },
         false => built(typing, node, open, named),
-    }?;
-    named.insert(node, found);
-    Ok(found)
+    }
 }
 
 /// Neither form names the node. Each refusal alone reads as the whole reason, so the one

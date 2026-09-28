@@ -36,8 +36,6 @@ pub enum SampleError {
         model: &'static str,
         sample: usize,
     },
-    /// State held for other call sites than the ones it is handed to.
-    StateMismatch,
     /// A varying parameter outside the range its model holds, at one sample.
     ArgumentOutOfRange {
         model: &'static str,
@@ -157,7 +155,6 @@ impl SampleError {
             SampleError::StringPastRate { .. } => "samples.string_past_rate",
             SampleError::BridgeUnstable { .. } => "samples.bridge_unstable",
             SampleError::ContactUnsettled { .. } => "samples.contact_unsettled",
-            SampleError::StateMismatch => "samples.state_mismatch",
             SampleError::ArgumentOutOfRange { .. } => "samples.argument_out_of_range",
         }
     }
@@ -207,9 +204,6 @@ impl std::fmt::Display for SampleError {
                 "`{model}`'s contact force settled on no value at sample {sample}. ask for a \
                  lower bow velocity or force, or a higher --rate"
             ),
-            SampleError::StateMismatch => {
-                write!(f, "the state held is for other call sites than these")
-            }
             SampleError::ArgumentOutOfRange {
                 model,
                 name,
