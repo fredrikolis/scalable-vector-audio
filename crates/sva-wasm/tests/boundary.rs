@@ -284,6 +284,27 @@ fn a_repeated_render_is_all_hits() {
     );
 }
 
+/// A note released after a held render reads the held run up to its release, and its lookup
+/// crosses as `prefix`; its samples are the cold render's.
+#[wasm_bindgen_test]
+fn a_release_after_a_held_render_reads_it_as_a_prefix() {
+    let mut held = Composition::new(None);
+    held.insert(
+        "string",
+        "release = inf\nchaigne_askenfelt(440, damper_r=0.1*crop(1, release, inf))\n",
+    );
+    held.insert("released", "@string(t, release=0.5)\n");
+    render(&held, "string");
+    let warm = render(&held, "released");
+    let outcomes: Vec<String> = items(&warm.stats().unwrap_or_else(|_| unreachable!()), "lookups")
+        .iter()
+        .filter_map(|l| field(&l, "outcome").as_string())
+        .collect();
+    assert!(outcomes.iter().any(|o| o == "prefix"), "{outcomes:?}");
+    held.clear_cache();
+    assert_eq!(plane(&warm), plane(&render(&held, "released")));
+}
+
 fn knobbed() -> Composition {
     let mut held = Composition::new(None);
     held.insert("note", "sample(sin(2*pi*220*t))*0.5\n");

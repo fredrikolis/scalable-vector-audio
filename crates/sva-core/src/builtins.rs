@@ -64,11 +64,16 @@ pub const NOTE_GRAMMAR: &str = "a bare identifier: a letter A-G, an optional acc
     twelve-tone equal temperament, up to G9 where MIDI's 128 notes end";
 
 /// `(name, what it resolves to)`.
-pub const RESERVED: [(&str, &str); 5] = [
+pub const RESERVED: [(&str, &str); 6] = [
     ("t", "time in seconds"),
     ("f", "frequency in hertz"),
     ("i", "the imaginary unit"),
     ("pi", "the constant pi"),
+    (
+        "inf",
+        "infinity, a value: a crop edge never reached, a sum's open bound; arithmetic that \
+         leaves no number refuses",
+    ),
     ("self", "a bounded self-reference, call-only: self(t - 1sp)"),
 ];
 
