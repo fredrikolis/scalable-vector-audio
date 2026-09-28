@@ -267,7 +267,7 @@ fn bound(f: &Body, band: Audible) -> Option<Bounded> {
             let ((num, _), (den, _)) = (under(a)?, under(b)?);
             held(Body::Div(num, den), false)
         }
-        Body::Apply(Unary::Sin | Unary::Cos | Unary::Tanh | Unary::Sat, arg) => {
+        Body::Apply(Unary::Sin | Unary::Cos | Unary::Tanh | Unary::Sat | Unary::Step, arg) => {
             held(Body::Const(C64::ONE), real(&arg.body))
         }
         Body::Crop { of, .. } | Body::Shift { of, .. } | Body::Warp { of, .. } => {

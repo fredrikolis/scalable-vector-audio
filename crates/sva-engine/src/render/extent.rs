@@ -266,7 +266,9 @@ impl Supports<'_> {
                 let reach = c0.abs() + c1.abs() * t + c2.abs() * t * t;
                 reach.is_finite().then_some(1.0)?
             }
-            Body::Apply(Unary::Tanh | Unary::Sat, arg) => of(&arg.body).map(|_| 1.0)?,
+            Body::Apply(Unary::Tanh | Unary::Sat | Unary::Step, arg) => {
+                of(&arg.body).map(|_| 1.0)?
+            }
             Body::Apply(Unary::Abs, arg) => of(&arg.body)?,
             Body::Apply(Unary::Exp, arg) => {
                 let [c0, c1, c2] = real_polynomial(&arg.body)?;

@@ -325,7 +325,10 @@ pub static REGISTRY: [(&str, &str); 73] = [
         "grammar.unknown_named_argument",
         "a named argument the builtin does not read",
     ),
-    ("grammar.inf_out_of_place", "inf outside a sum bound"),
+    (
+        "engine.infinite_value",
+        "inf where it names no number: inf - inf, 0*inf, or in a term that moves",
+    ),
     (
         "ref.fractional_shift_on_samples",
         "a sampled read offset that is not a whole sample",

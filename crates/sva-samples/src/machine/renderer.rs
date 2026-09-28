@@ -20,6 +20,7 @@ pub enum Unary {
     Tanh,
     Log,
     Sat,
+    Step,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,6 +95,7 @@ impl From<sva_formula::Unary> for Unary {
             sva_formula::Unary::Tanh => Unary::Tanh,
             sva_formula::Unary::Log => Unary::Log,
             sva_formula::Unary::Sat => Unary::Sat,
+            sva_formula::Unary::Step => Unary::Step,
         }
     }
 }
@@ -109,6 +111,7 @@ impl Unary {
             Unary::Tanh => x.tanh(),
             Unary::Log => x.ln(),
             Unary::Sat => x.clamp(-1.0, 1.0),
+            Unary::Step => sva_formula::affine::step(x),
         }
     }
 }

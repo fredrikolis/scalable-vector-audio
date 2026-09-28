@@ -1,5 +1,6 @@
 // Concern: folds a written subterm, or one call of numbers, to the number it holds | Non-concern: lowering a closed form (mod.rs) | IO: (&Body, or a call's arguments) -> Option<f64>
 
+use sva_formula::affine::apply_scalar;
 use sva_formula::closed_form::children;
 use sva_formula::{Body, C64, ClosedForm, Fold, Origin, Part, Var, normalize_closed_form};
 
@@ -47,4 +48,35 @@ pub fn constant_call(name: &str, positional: &[f64], named: &[(&str, f64)]) -> O
 
 fn number(x: f64) -> Part {
     Part::new(Origin::UNKNOWN, Body::Const(C64::real(x)))
+}
+
+/// A built body of numbers, one infinite, as IEEE arithmetic: no atom holds `inf`.
+pub fn unbounded(body: &Body) -> Option<f64> {
+    (is_constant(body) && holds_infinite(body))
+        .then(|| scalar(body))
+        .flatten()
+}
+
+pub fn holds_infinite(f: &Body) -> bool {
+    matches!(f, Body::Const(c) if !c.is_finite())
+        || children(f).iter().any(|p| holds_infinite(&p.body))
+}
+
+fn scalar(f: &Body) -> Option<f64> {
+    let of = |p: &Part| scalar(&p.body);
+    Some(match f {
+        Body::Const(c) if c.im == 0.0 => c.re,
+        Body::Add(parts) => parts.iter().try_fold(0.0, |a, p| Some(a + of(p)?))?,
+        Body::Mul(parts) => parts.iter().try_fold(1.0, |a, p| Some(a * of(p)?))?,
+        Body::Div(a, b) => of(a)? / of(b)?,
+        Body::Pow(base, n) => of(base)?.powi(*n),
+        Body::Apply(op, x) => apply_scalar(*op, C64::real(of(x)?)).re,
+        Body::Fold(op, parts) => match (op, parts.as_slice()) {
+            (Fold::Max, [a, b]) => of(a)?.max(of(b)?),
+            (Fold::Min, [a, b]) => of(a)?.min(of(b)?),
+            (Fold::Mod, [a, b]) => of(a)?.rem_euclid(of(b)?),
+            _ => return None,
+        },
+        _ => return None,
+    })
 }

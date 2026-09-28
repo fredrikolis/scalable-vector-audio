@@ -145,13 +145,7 @@ impl Lowering<'_, '_> {
             "pi" => C64::real(std::f64::consts::PI),
             RELEASE => C64::real(f64::INFINITY),
             "i" => C64::new(0.0, 1.0),
-            "inf" => {
-                return Err(self.refused(
-                    "grammar.inf_out_of_place",
-                    "inf is a bound, not a value".to_string(),
-                    "write inf only as the upper bound of a sum",
-                ));
-            }
+            "inf" => C64::real(f64::INFINITY),
             other => match note::frequency(other) {
                 Some(hz) => C64::real(hz),
                 None => return Err(EngineError::UnknownBuiltin(other.to_string())),
@@ -174,7 +168,7 @@ impl Lowering<'_, '_> {
             let (a, b) = (a.clone(), b.clone());
             let a = self.part(a, None);
             let b = self.part(b, None);
-            return Ok(Piece::ClosedForm(match op {
+            let body = match op {
                 BinOp::Add => Body::Add(vec![a, b]),
                 BinOp::Sub => {
                     let minus = self.part(Body::Const(C64::real(-1.0)), None);
@@ -184,7 +178,8 @@ impl Lowering<'_, '_> {
                 BinOp::Mul => Body::Mul(vec![a, b]),
                 BinOp::Div => Body::Div(a, b),
                 BinOp::Mod => Body::Fold(sva_formula::Fold::Mod, vec![a, b]),
-            }));
+            };
+            return self.folded(body);
         }
         let name = match op {
             BinOp::Add => "+",
@@ -194,6 +189,26 @@ impl Lowering<'_, '_> {
             BinOp::Mod => "%",
         };
         self.operation(name, vec![left, right], None, var)
+    }
+
+    /// A body of numbers holding `inf` is the one number it folds to, and `inf - inf` or
+    /// `0*inf` refuse; anything else stays the body it was built as.
+    pub(super) fn folded(&self, body: Body) -> Result<Piece, EngineError> {
+        match constant::unbounded(&body) {
+            Some(v) if v.is_nan() => Err(self
+                .infinite("arithmetic on inf folds to no number here, as inf - inf or 0*inf does")),
+            Some(v) => Ok(Piece::ClosedForm(Body::Const(C64::real(v)))),
+            None => Ok(Piece::ClosedForm(body)),
+        }
+    }
+
+    pub(super) fn infinite(&self, what: &str) -> EngineError {
+        self.refused(
+            "engine.infinite_value",
+            what.to_string(),
+            "write inf only where it names a number: a crop's edge, a parameter a crop \
+             reads, or a constant it folds away in",
+        )
     }
 
     /// A call whose operands did not all stay inside one closed form is a sampled operation: the
@@ -210,6 +225,11 @@ impl Lowering<'_, '_> {
         let mut signals = Vec::new();
         for (at, piece) in pieces.into_iter().enumerate() {
             let constant = matches!(&piece, Piece::ClosedForm(f) if constant::is_constant(f));
+            if matches!(&piece, Piece::ClosedForm(f) if constant::holds_infinite(f))
+                && !(name == "crop" && (1..=2).contains(&at))
+            {
+                return Err(self.infinite(&format!("`{name}` reads inf as a signal")));
+            }
             if !constant
                 && params
                     .get(at)

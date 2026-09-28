@@ -88,6 +88,9 @@ impl<'g> Lowering<'_, 'g> {
         for x in &positional {
             pieces.push(self.walk(x, cx, var)?);
         }
+        if let Some(held) = beside_infinity(name, &mut pieces) {
+            return Ok(held);
+        }
         if pieces.iter().any(|p| matches!(p, Piece::Value(_))) {
             return match (name, view.iter().find(|(k, _)| *k == "drive")) {
                 ("sat", Some((_, drive))) => self.driven(pieces, *drive, span, var),
@@ -125,7 +128,7 @@ impl<'g> Lowering<'_, 'g> {
         if numeric(name) {
             let origin = self.typing.mark(self.here(Some(span)));
             return match arithmetic(name, &bodies, named, var, origin) {
-                Some(body) => Ok(Piece::ClosedForm(body)),
+                Some(body) => self.folded(body),
                 None if name == "pow" && bodies.len() == 2 => {
                     Err(self.non_integer_power(written, span))
                 }
@@ -136,7 +139,10 @@ impl<'g> Lowering<'_, 'g> {
             "crop" => {
                 arity(3)?;
                 let (rise, fall) = shoulders_of(named);
-                let (l, r) = self.cropped(&bodies[1], &bodies[2], (rise, fall), var, span)?;
+                let Some((l, r)) = self.cropped(&bodies[1], &bodies[2], (rise, fall), var, span)?
+                else {
+                    return Ok(Piece::ClosedForm(Body::Const(C64::ZERO)));
+                };
                 let fall = match r {
                     Edge::PosInf => 0.0,
                     _ => fall,
@@ -201,8 +207,10 @@ impl<'g> Lowering<'_, 'g> {
         var: Var,
     ) -> Result<Piece, EngineError> {
         let (rise, fall) = shoulders_of(named);
-        if let [_, Piece::ClosedForm(l), Piece::ClosedForm(r)] = pieces.as_slice() {
-            self.cropped(l, r, (rise, fall), var, span)?;
+        if let [_, Piece::ClosedForm(l), Piece::ClosedForm(r)] = pieces.as_slice()
+            && self.cropped(l, r, (rise, fall), var, span)?.is_none()
+        {
+            return Ok(Piece::ClosedForm(Body::Const(C64::ZERO)));
         }
         if rise > 0.0 || fall > 0.0 {
             for shoulder in [rise, fall] {
@@ -245,7 +253,8 @@ impl<'g> Lowering<'_, 'g> {
         ))
     }
 
-    /// A crop's window and shoulders, for either representation of its operand.
+    /// A crop's window and shoulders, for either representation of its operand; `None`
+    /// where the window opens at or after it closes, which is zero whatever it crops.
     fn cropped(
         &mut self,
         l: &Body,
@@ -253,10 +262,13 @@ impl<'g> Lowering<'_, 'g> {
         (rise, fall): (f64, f64),
         var: Var,
         span: ByteSpan,
-    ) -> Result<(Edge, Edge), EngineError> {
+    ) -> Result<Option<(Edge, Edge)>, EngineError> {
         let (l, r) = self.window(l, r, var, "crop", span)?;
+        if l >= r {
+            return Ok(None);
+        }
         self.shoulders(rise, fall, r.value() - l.value(), span)?;
-        Ok((l, r))
+        Ok(Some((l, r)))
     }
 
     /// A shoulder opens inside the window it belongs to. Zero is a hard edge, a negative one
@@ -493,6 +505,17 @@ pub(super) fn arithmetic(
         let driven = Body::Mul(vec![part(x.clone()), part(drive)]);
         return Some(Body::Apply(Unary::Sat, part(driven)));
     }
+    if let ("step", [x]) = (name, bodies)
+        && let Some(at) = rising_zero(x)
+    {
+        return Some(Body::Crop {
+            of: part(Body::Const(C64::ONE)),
+            l: Edge::at(at),
+            r: Edge::PosInf,
+            rise: 0.0,
+            fall: 0.0,
+        });
+    }
     if let ([x], Some(op)) = (bodies, Unary::from_name(name)) {
         return Some(unary(op, x));
     }
@@ -502,6 +525,36 @@ pub(super) fn arithmetic(
         ("pow", [base, exponent]) => return power(base, exponent, var, origin),
         _ => return None,
     })
+}
+
+/// `min(x, inf)` is `x` and `min(x, -inf)` is `-inf`, `max` alike, whatever `x` holds.
+fn beside_infinity(name: &str, pieces: &mut Vec<Piece>) -> Option<Piece> {
+    let absorbs = match name {
+        "min" => f64::NEG_INFINITY,
+        "max" => f64::INFINITY,
+        _ => return None,
+    };
+    let infinite = |p: &Piece| match p {
+        Piece::ClosedForm(Body::Const(c)) if c.im == 0.0 && c.re.is_infinite() => Some(c.re),
+        _ => None,
+    };
+    let at = pieces.iter().position(|p| infinite(p).is_some())?;
+    if pieces.len() != 2 {
+        return None;
+    }
+    let held = infinite(&pieces[at]).expect("an infinite operand");
+    match held == absorbs {
+        true => Some(pieces.swap_remove(at)),
+        false => Some(pieces.swap_remove(1 - at)),
+    }
+}
+
+/// Where `a*t + b` with `a > 0` crosses zero, so `step` of it is the crop opening there.
+fn rising_zero(x: &Body) -> Option<f64> {
+    let (a, b) = sva_formula::affine::exact_affine(x)?;
+    let (a, b) = (a.is_real().then_some(a.re)?, b.is_real().then_some(b.re)?);
+    let at = -b / a;
+    (a > 0.0 && !at.is_nan()).then_some(at)
 }
 
 /// An integer exponent is a polynomial factor and stays one. A real exponent is

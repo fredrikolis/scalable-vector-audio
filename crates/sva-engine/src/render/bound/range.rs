@@ -408,5 +408,10 @@ fn mapped(op: Unary, s: Span) -> Option<Span> {
         }
         Unary::Log if lo - err > 0.0 => next(lo.ln(), hi.ln(), 1.0 / (lo - err)),
         Unary::Sqrt | Unary::Log => None,
+        // Exact wherever its argument cannot round across zero; there, anything in [0, 1].
+        Unary::Step if lo - err >= 0.0 => Some(Span::new(1.0, 1.0, 0.0)),
+        Unary::Step if hi + err < 0.0 => Some(Span::new(0.0, 0.0, 0.0)),
+        // The jump is the error.
+        Unary::Step => Some(Span::new(0.0, 1.0, 1.0)),
     }
 }

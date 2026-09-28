@@ -180,6 +180,7 @@ pub fn apply_scalar(op: Unary, x: C64) -> C64 {
             let half = x.im.atan2(x.re) / 2.0;
             C64::new(r * half.cos(), r * half.sin())
         }
+        Unary::Step => C64::real(step(x.re)),
     }
 }
 
@@ -341,4 +342,11 @@ fn trim(mut p: Vec<Coeff>) -> Vec<Coeff> {
         p.pop();
     }
     p
+}
+
+pub fn step(x: f64) -> f64 {
+    match x >= 0.0 {
+        true => 1.0,
+        false => 0.0,
+    }
 }

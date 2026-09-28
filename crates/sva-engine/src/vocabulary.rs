@@ -11,9 +11,9 @@ pub const MAX_WIDTH: usize = 8;
 pub use sva_ast::{JOIN, SERIES};
 pub const CHANNEL: &str = "ch";
 
-const ARITHMETIC: [&str; 21] = [
-    "sin", "cos", "exp", "log", "pow", "sqrt", "abs", "tanh", "max", "min", "saw", "square",
-    "triangle", "sat", "crop", "rand", "delta", "pv", SERIES, JOIN, CHANNEL,
+const ARITHMETIC: [&str; 22] = [
+    "sin", "cos", "exp", "log", "pow", "sqrt", "abs", "tanh", "step", "max", "min", "saw",
+    "square", "triangle", "sat", "crop", "rand", "delta", "pv", SERIES, JOIN, CHANNEL,
 ];
 
 /// The five written crossings of FORMAT 7, callable like any other name.
@@ -214,7 +214,8 @@ pub fn recognized_named(name: &str) -> Option<&'static [&'static str]> {
         return Some(FILTER_NAMED);
     }
     Some(match name {
-        "sin" | "cos" | "exp" | "sqrt" | "abs" | "tanh" | "max" | "min" | "pow" | "log" => NO_NAMED,
+        "sin" | "cos" | "exp" | "sqrt" | "abs" | "tanh" | "step" | "max" | "min" | "pow"
+        | "log" => NO_NAMED,
         "saw" | "square" | "triangle" => WAVE_NAMED,
         "sat" => SAT_NAMED,
         SERIES | "pv" => NO_NAMED,

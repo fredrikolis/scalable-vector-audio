@@ -289,7 +289,7 @@ pub enum Shift {
 /// written in seconds or in grid steps, but never in both.
 pub fn shift_of(inst: &Instances, e: &Expr, cx: Cx) -> Option<Shift> {
     let (time, secs, steps) = walk(inst, e, cx, 1.0)?;
-    if !time {
+    if !time || !secs.is_finite() || !steps.is_finite() {
         return None;
     }
     match (secs, steps) {
@@ -350,6 +350,7 @@ fn folded(
         Node::Lit(Literal::Num(n)) => Some((*n, 0.0)),
         Node::Lit(Literal::Samples(n)) => Some((0.0, *n)),
         Node::Name("pi") => Some((std::f64::consts::PI, 0.0)),
+        Node::Name("inf") => Some((f64::INFINITY, 0.0)),
         Node::Name(other) => sva_formula::note::frequency(other).map(|hz| (hz, 0.0)),
         Node::Bin(op, l, r) => {
             let (a, b) = (folded(inst, l, cx, chosen)?, folded(inst, r, cx, chosen)?);

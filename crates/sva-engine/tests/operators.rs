@@ -1,4 +1,4 @@
-// Concern: proves one unary name reaches its signature, its renderer and the point sampler | Non-concern: what any of them computes (sva-formula, sva-samples) | IO: (a name) -> two Buffers
+// Concern: proves each unary name reaches its signature, renderer and point sampler, and what step and inf mean | Non-concern: what the others compute (sva-formula, sva-samples) | IO: (a name) -> Buffer
 
 mod fixtures;
 
@@ -46,5 +46,43 @@ fn every_unary_operator_reaches_the_renderer_and_the_point_sampler_by_its_one_na
             pointed.iter().any(|s| *s != 0.0),
             "{name} over a filtered operand sounded"
         );
+    }
+}
+
+fn at_rate(files: &[(&str, &str)]) -> Result<Vec<f64>, sva_engine::EngineError> {
+    let g = graph_of("step", files);
+    let held = render(&g, "node", RenderConfig::seconds(8_000, 0.5), None)?;
+    let root = held.id("node").expect("the root");
+    Ok(held.output(root).expect("a buffer").plane(0).to_vec())
+}
+
+/// `step` of a rising line is the crop opening where the line crosses zero, one at zero
+/// itself; a window opening at `inf` holds nothing whatever it crops; `inf` arithmetic that
+/// names no number, or stands in a term that moves, refuses.
+#[test]
+fn step_is_the_crop_at_its_zero_and_a_window_at_inf_holds_nothing() {
+    let tone = "sin(2*pi*300*t)";
+    for (step, crop) in [("t - 0.25", "0.25s"), ("3*t - 0.3", "0.1s")] {
+        let stepped = at_rate(&[("node", &format!("{tone}*step({step})\n"))]);
+        let cropped = at_rate(&[("node", &format!("{tone}*crop(1, {crop}, inf)\n"))]);
+        assert_eq!(
+            stepped.expect("step"),
+            cropped.expect("crop"),
+            "step({step})"
+        );
+    }
+    let at_zero = at_rate(&[("node", "step(t - 0.25)\n")]).expect("step");
+    assert_eq!((at_zero[1_999], at_zero[2_000]), (0.0, 1.0));
+
+    let gated = "r = inf\ncrop(exp(-(t - r)/0.3), r, 3600s) + crop(1, 0s, r)*exp(-r)\n";
+    let silent = at_rate(&[("node", gated)]).expect("a gate at inf");
+    assert!(silent.iter().all(|v| v.to_bits() == 0), "{silent:?}");
+
+    for undefined in [
+        "sin(t)*(inf - inf)\n",
+        "r = inf\ncrop(exp(-(t - r)/0.3), 0s, 1s)\n",
+    ] {
+        let e = at_rate(&[("node", undefined)]).expect_err(undefined);
+        assert_eq!(e.code(), "engine.infinite_value", "{undefined}: {e}");
     }
 }

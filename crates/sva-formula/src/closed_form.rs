@@ -95,6 +95,8 @@ pub enum Unary {
     Abs,
     Log,
     Sqrt,
+    /// `step(0) = 1`, as a crop's `[l, r)` opens.
+    Step,
 }
 
 impl Unary {
@@ -108,6 +110,7 @@ impl Unary {
             Unary::Abs => "abs",
             Unary::Log => "log",
             Unary::Sqrt => "sqrt",
+            Unary::Step => "step",
         }
     }
 
@@ -120,6 +123,7 @@ impl Unary {
         Unary::Abs,
         Unary::Log,
         Unary::Sqrt,
+        Unary::Step,
     ];
 
     pub fn from_name(name: &str) -> Option<Unary> {

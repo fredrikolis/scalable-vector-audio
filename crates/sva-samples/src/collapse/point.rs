@@ -133,7 +133,7 @@ pub fn eval_body(
     match value.is_finite() {
         true => Ok(value),
         false => Err(CollapseError::NotEvaluable(
-            "a division or a remainder by zero",
+            "a division or a remainder by zero, or an infinite value",
         )),
     }
 }
@@ -201,6 +201,7 @@ pub fn unary(op: Unary, x: C64) -> C64 {
         Unary::Abs => C64::real(x.abs()),
         Unary::Log => C64::real(x.re.ln()),
         Unary::Sqrt => C64::real(x.re.sqrt()),
+        Unary::Step => C64::real(sva_formula::affine::step(x.re)),
     }
 }
 

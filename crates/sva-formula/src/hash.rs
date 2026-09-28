@@ -403,6 +403,7 @@ fn unary_tag(op: Unary) -> u8 {
         Unary::Abs => 5,
         Unary::Log => 6,
         Unary::Sqrt => 7,
+        Unary::Step => 8,
     }
 }
 

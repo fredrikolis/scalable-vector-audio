@@ -178,6 +178,9 @@ fn number(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Option<C64> 
     let Value::ClosedForm(form) = typing.value(node) else {
         return None;
     };
+    if let Body::Const(c) = form.body {
+        return Some(c);
+    }
     open.push(node);
     let body = folded(typing, &form.body, open);
     open.pop();

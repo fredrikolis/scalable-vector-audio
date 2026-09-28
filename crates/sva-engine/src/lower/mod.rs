@@ -20,7 +20,7 @@ use crate::overload;
 use crate::release::{self, Never};
 use crate::typing::{Node as Typed, Typing, Value};
 
-pub(crate) use constant::{constant_call, constant_modulo, constant_value};
+pub(crate) use constant::{constant_call, constant_modulo, constant_value, holds_infinite};
 
 /// An unbound `release` is never, and a crop's edge is the one place it may stand, alone or
 /// with a constant after it.
@@ -284,6 +284,11 @@ impl<'g> Lowering<'_, 'g> {
                 let origin = self.typing.mark(self.here(None));
                 // FORMAT 15.3: a ref naming one number is that number to the typing too.
                 let body = crate::refs::fold_constants(self.typing, &body);
+                if !matches!(body, Body::Const(_)) && holds_infinite(&body) {
+                    return Err(
+                        self.infinite("inf stands in a term that moves, which names no value")
+                    );
+                }
                 let form = ClosedForm { var, body, origin };
                 let ty = self.typing.infer_closed_form(&form)?;
                 let node = Typed {

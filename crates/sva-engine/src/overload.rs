@@ -256,6 +256,7 @@ pub static SIGNATURES: &[Signature] = &[
     plain("sqrt", SIGNAL, elementwise),
     plain("abs", SIGNAL, elementwise),
     plain("tanh", SIGNAL, elementwise),
+    plain("step", SIGNAL, elementwise),
     plain("sat", DRIVEN, elementwise),
     plain("pow", TWO, elementwise),
     plain("max", TWO, elementwise),
