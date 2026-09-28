@@ -1,7 +1,7 @@
 // Concern: the postfix op array one node renderer lowers to, and the width each slot holds | Non-concern: lowering into it or running it (mod.rs) | IO: (&NodeRenderer, &Layout) -> Vec<Op> + Vec<usize>
 
 use crate::error::SampleError;
-use crate::machine::renderer::{Binary, BufId, NodeRenderer, Site, SiteId, Unary};
+use crate::machine::renderer::{Binary, BufId, NodeRenderer, Remap, Site, SiteId, Unary};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Op {
@@ -9,12 +9,12 @@ pub(crate) enum Op {
     Time,
     Read {
         id: BufId,
-        shift: i64,
+        at: Remap,
     },
     /// A read times a constant, the bits of `Mul` over the two.
     ReadScaled {
         id: BufId,
-        shift: i64,
+        at: Remap,
         by: f64,
     },
     SelfAt {
@@ -81,24 +81,16 @@ pub(crate) fn lower(
     let w = match renderer {
         NodeRenderer::Const(v) => push(Op::Const(*v), 1, ops, widths),
         NodeRenderer::Time => push(Op::Time, 1, ops, widths),
-        NodeRenderer::Buffer { id, shift } => {
+        NodeRenderer::Buffer { id, at } => {
             let width = layout.read_widths[id.0 as usize];
-            push(
-                Op::Read {
-                    id: *id,
-                    shift: *shift,
-                },
-                width,
-                ops,
-                widths,
-            )
+            push(Op::Read { id: *id, at: *at }, width, ops, widths)
         }
         NodeRenderer::SelfAt { steps } => {
             push(Op::SelfAt { steps: *steps }, layout.width, ops, widths)
         }
-        NodeRenderer::Mul(parts) if let Some((id, shift, by)) = scaled_read(parts) => {
+        NodeRenderer::Mul(parts) if let Some((id, at, by)) = scaled_read(parts) => {
             let width = layout.read_widths[id.0 as usize];
-            push(Op::ReadScaled { id, shift, by }, width, ops, widths)
+            push(Op::ReadScaled { id, at, by }, width, ops, widths)
         }
         NodeRenderer::Add(parts) | NodeRenderer::Mul(parts) => {
             let mut width = 1;
@@ -193,10 +185,10 @@ pub(crate) fn lower(
     Ok(w)
 }
 
-fn scaled_read(parts: &[NodeRenderer]) -> Option<(BufId, i64, f64)> {
+fn scaled_read(parts: &[NodeRenderer]) -> Option<(BufId, Remap, f64)> {
     match parts {
-        [NodeRenderer::Buffer { id, shift }, NodeRenderer::Const(by)]
-        | [NodeRenderer::Const(by), NodeRenderer::Buffer { id, shift }] => Some((*id, *shift, *by)),
+        [NodeRenderer::Buffer { id, at }, NodeRenderer::Const(by)]
+        | [NodeRenderer::Const(by), NodeRenderer::Buffer { id, at }] => Some((*id, *at, *by)),
         _ => None,
     }
 }

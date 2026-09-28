@@ -111,11 +111,14 @@ fn extents(shell: &Render) -> BTreeMap<NodeId, Span> {
         match tys.value(id) {
             Value::ClosedForm(form) => reads(&form.body, own, 0.0, &mut ask),
             Value::Read { source, at, .. } => match at.steps_at(shell.config.rate) {
-                Ok(steps) => ask(
+                Ok(at) if at.scale == 1 => ask(
                     *source,
-                    (own.0 + steps as f64 / rate, own.1 + steps as f64 / rate),
+                    (
+                        own.0 + at.shift as f64 / rate,
+                        own.1 + at.shift as f64 / rate,
+                    ),
                 ),
-                Err(_) => ask(*source, EVERYWHERE),
+                _ => ask(*source, EVERYWHERE),
             },
             Value::Cast(Cast::Stft { .. } | Cast::Fourier | Cast::IFourier, source) => {
                 ask(*source, EVERYWHERE)

@@ -4,7 +4,7 @@ use sva_samples::biquad::{State, design};
 use sva_samples::machine::Ctx;
 use sva_samples::machine::ops::Layout;
 use sva_samples::machine::tape::Window;
-use sva_samples::{Buffer, NodeRenderer, Site, SiteId};
+use sva_samples::{Buffer, NodeRenderer, Remap, Site, SiteId};
 
 const RATE: u32 = 8_000;
 const LEN: usize = 64;
@@ -36,7 +36,7 @@ fn renderer() -> NodeRenderer {
             from: 0,
             x: Box::new(NodeRenderer::Buffer {
                 id: sva_samples::BufId(0),
-                shift: 0,
+                at: Remap::shift(0),
             }),
             cutoff: Box::new(NodeRenderer::Const(800.0)),
             q: Box::new(NodeRenderer::Const(0.7)),
@@ -104,7 +104,7 @@ fn a_channel_past_the_last_component_refuses() {
         &NodeRenderer::Channel {
             x: Box::new(NodeRenderer::Buffer {
                 id: sva_samples::BufId(0),
-                shift: 0,
+                at: Remap::shift(0),
             }),
             k: 3,
         },
@@ -130,7 +130,7 @@ fn a_mono_operand_widens_to_its_neighbours_components_without_crossing_them() {
             NodeRenderer::Channel {
                 x: Box::new(NodeRenderer::Buffer {
                     id: sva_samples::BufId(0),
-                    shift: 0,
+                    at: Remap::shift(0),
                 }),
                 k: 1,
             },
@@ -139,7 +139,7 @@ fn a_mono_operand_widens_to_its_neighbours_components_without_crossing_them() {
         NodeRenderer::Mul(vec![
             NodeRenderer::Buffer {
                 id: sva_samples::BufId(0),
-                shift: 0,
+                at: Remap::shift(0),
             },
             NodeRenderer::Const(3.0),
         ]),
@@ -173,11 +173,11 @@ fn a_width_mismatch_leaves_compile_under_its_own_code() {
         &NodeRenderer::Add(vec![
             NodeRenderer::Buffer {
                 id: sva_samples::BufId(0),
-                shift: 0,
+                at: Remap::shift(0),
             },
             NodeRenderer::Buffer {
                 id: sva_samples::BufId(1),
-                shift: 0,
+                at: Remap::shift(0),
             },
         ]),
         &Layout {

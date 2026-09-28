@@ -3,8 +3,8 @@
 use sva_formula::NodeId;
 use sva_samples::machine::ops::Layout;
 use sva_samples::{
-    Binary, BufId, Buffer, Ctx, Extent, Label, NodeRenderer, SampleError, Site, SiteId, Unary,
-    Window, stft,
+    Binary, BufId, Buffer, Ctx, Extent, Label, NodeRenderer, Remap, SampleError, Site, SiteId,
+    Unary, Window, stft,
 };
 
 use crate::cast::Cast;
@@ -89,7 +89,9 @@ pub(super) fn on_the_grid(tys: &Typing, rate: u32) -> Result<(), EngineError> {
                     return Err(off_grid(tys, source, site, count, rate));
                 }
             }
-            Value::SelfAt(Delay::Varying) => return Err(varying(tys, id)),
+            Value::SelfAt(delay) => {
+                steps_of(delay, rate).map_err(|count| looped_off_grid(tys, id, count, rate))?;
+            }
             _ => {}
         }
     }
@@ -226,29 +228,29 @@ impl Build<'_> {
                 None => crate::lower::inline::renderer(&self.held.tys, id)
                     .ok_or_else(|| uncollapsed(self.held, id)),
             },
-            Value::Cast(Cast::Sample, source) => Ok(self.buffer(source, 0)),
+            Value::Cast(Cast::Sample, source) => Ok(self.buffer(source, Remap::shift(0))),
             Value::Cast(..) => Err(uncollapsed(self.held, id)),
             Value::Read { source, at, site } => {
                 let reader = self.held.tys.ty(id).held;
-                let steps = self.index_offset(source, at, site)?;
-                match crate::refs::resolve(&self.held.tys, source, steps, reader)? {
-                    crate::refs::Read::BufferHit { source, shift } => {
-                        Ok(self.buffer(source, shift))
-                    }
-                    crate::refs::Read::IndexOffset { source, steps } => {
-                        Ok(self.buffer(source, steps))
-                    }
+                let at = self.index_offset(source, at, site)?;
+                match crate::refs::resolve(&self.held.tys, source, at.shift, reader)? {
+                    crate::refs::Read::BufferHit { source, .. }
+                    | crate::refs::Read::IndexOffset { source, .. } => Ok(self.buffer(source, at)),
                     _ => Err(uncollapsed(self.held, id)),
                 }
             }
-            Value::Grid(count) => Ok(NodeRenderer::Const(
-                count / f64::from(self.held.config.rate),
+            Value::Grid(_) => Ok(NodeRenderer::Const(
+                crate::lower::number_at(&self.held.tys, id, self.held.config.rate)
+                    .expect("a grid count is a number at a rate"),
             )),
-            Value::SelfAt(delay) => match self.delay(delay) {
-                Some(steps) => Ok(NodeRenderer::SelfAt { steps }),
-                None => Err(varying(&self.held.tys, id)),
-            },
-            Value::Solver { .. } if id != self.owner => Ok(self.buffer(id, 0)),
+            Value::SelfAt(delay) => {
+                let rate = self.held.config.rate;
+                match steps_of(delay, rate) {
+                    Ok(steps) => Ok(NodeRenderer::SelfAt { steps }),
+                    Err(count) => Err(looped_off_grid(&self.held.tys, id, count, rate)),
+                }
+            }
+            Value::Solver { .. } if id != self.owner => Ok(self.buffer(id, Remap::shift(0))),
             Value::Solver { params, varying } => {
                 let mut args = Vec::new();
                 for (key, _) in params.varying() {
@@ -289,17 +291,17 @@ impl Build<'_> {
         source: NodeId,
         at: Offset,
         site: sva_formula::Origin,
-    ) -> Result<i64, EngineError> {
+    ) -> Result<Remap, EngineError> {
         let rate = self.held.config.rate;
         at.steps_at(rate)
             .map_err(|count| off_grid(&self.held.tys, source, site, count, rate))
     }
 
     /// A sampled operand is already a buffer, so a renderer reads it rather than recomputing it.
-    fn buffer(&mut self, source: NodeId, shift: i64) -> NodeRenderer {
+    fn buffer(&mut self, source: NodeId, at: Remap) -> NodeRenderer {
         let id = BufId(self.reads.len() as u32);
         self.reads.push(source);
-        NodeRenderer::Buffer { id, shift }
+        NodeRenderer::Buffer { id, at }
     }
 
     /// Where call site `id`'s state starts: its own support's start, never where the run
@@ -313,16 +315,6 @@ impl Build<'_> {
     fn site(&mut self, site: Site) -> SiteId {
         self.sites.push(site);
         SiteId((self.sites.len() - 1) as u32)
-    }
-
-    fn delay(&self, delay: Delay) -> Option<u32> {
-        match delay {
-            Delay::Steps(steps) => Some(steps),
-            Delay::Secs(secs) => {
-                Some(((secs * f64::from(self.held.config.rate)).round() as u32).max(1))
-            }
-            Delay::Varying => None,
-        }
     }
 
     fn operation(
@@ -449,13 +441,45 @@ fn off_grid(
     })
 }
 
-fn varying(tys: &Typing, id: NodeId) -> EngineError {
-    collapse_refused(
-        tys,
-        id,
-        "a delay written as a closed form in t has no whole-sample offset this machine can read",
-        "engine.varying_delay",
-    )
+/// The whole count of steps back a loop reads at `rate`, or the count it names where that is
+/// no whole step back; a delay that moves with `t` names none.
+fn steps_of(delay: Delay, rate: u32) -> Result<u32, Option<f64>> {
+    let (secs, steps) = match delay {
+        Delay::Steps(steps) => return Ok(steps),
+        Delay::Varying => return Err(None),
+        Delay::Secs(secs) => (secs, 0),
+        Delay::Mixed { secs, steps } => (secs, steps),
+    };
+    let back = crate::offset::Offset {
+        scale: 1,
+        secs: -secs,
+        steps: -steps,
+    };
+    match back.steps_at(rate) {
+        Ok(at) if at.shift < 0 && at.shift >= -i64::from(u32::MAX) => Ok((-at.shift) as u32),
+        Ok(at) => Err(Some(-at.shift as f64)),
+        Err(count) => Err(Some(-count)),
+    }
+}
+
+fn looped_off_grid(tys: &Typing, id: NodeId, count: Option<f64>, rate: u32) -> EngineError {
+    let Some(count) = count else {
+        return collapse_refused(
+            tys,
+            id,
+            "a delay written as a closed form in t has no whole-sample offset this machine can read",
+            "engine.varying_delay",
+        );
+    };
+    EngineError::refused(Diagnostic {
+        code: "ref.fractional_shift_on_samples".to_string(),
+        message: format!(
+            "this loop reads itself {count} samples back at {rate} Hz, which is not a whole \
+             step back."
+        ),
+        location: Located::at(tys.name(id), None),
+        help: "write the delay in sp, or in seconds that land on the grid at this rate".to_string(),
+    })
 }
 
 fn missing(held: &Render, id: NodeId) -> EngineError {

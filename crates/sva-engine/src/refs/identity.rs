@@ -154,16 +154,10 @@ fn built(
 }
 
 pub(super) fn offset(sink: &mut Sink, at: Offset) {
-    match at {
-        Offset::Steps(steps) => {
-            sink.text("sp");
-            sink.word(steps as u64);
-        }
-        Offset::Secs(secs) => {
-            sink.text("s");
-            sink.word(secs.to_bits());
-        }
-    }
+    sink.text("at");
+    sink.word(at.scale as u64);
+    sink.word(at.secs.to_bits());
+    sink.word(at.steps as u64);
 }
 
 const IDENTITY_ROTATE: u32 = 23;

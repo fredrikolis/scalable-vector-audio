@@ -80,3 +80,20 @@ fn scalar(f: &Body) -> Option<f64> {
         _ => return None,
     })
 }
+
+/// The one number a node holds at `rate`, `inf` included: a constant closed form, or a grid
+/// count, which is a number of seconds once a rate is named.
+pub(crate) fn number_at(
+    tys: &crate::typing::Typing,
+    id: sva_formula::NodeId,
+    rate: u32,
+) -> Option<f64> {
+    match tys.value(id) {
+        crate::typing::Value::ClosedForm(form) => match form.body {
+            Body::Const(c) if c.im == 0.0 => Some(c.re),
+            _ => constant_value(&form.body, form.var),
+        },
+        crate::typing::Value::Grid(count) => Some(count / f64::from(rate)),
+        _ => None,
+    }
+}

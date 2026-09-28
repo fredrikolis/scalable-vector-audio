@@ -1,7 +1,7 @@
 // Concern: runs one renderer span by span, each span without the reads that answer zero there | Non-concern: where a read is zero (the caller's windows) | IO: (NodeRenderer, Ctx, live windows) -> Buffer
 
 use super::ops::{Layout, lower};
-use super::renderer::{BufId, NodeRenderer};
+use super::renderer::{BufId, NodeRenderer, Remap};
 use super::tape::Tape;
 use super::{Ctx, Machine};
 use crate::buffer::Buffer;
@@ -42,10 +42,10 @@ impl NodeRenderer {
     ) -> Result<Vec<Span>, SampleError> {
         let mut leaves = Vec::new();
         buffers(self, &mut leaves);
-        let reach = |id: BufId, shift: i64| live[id.0 as usize].shifted(-shift);
+        let reach = |id: BufId, at: Remap| at.preimage(live[id.0 as usize]);
         let mut edges = vec![from, to];
-        for (id, shift) in &leaves {
-            let held = reach(*id, *shift);
+        for (id, at) in &leaves {
+            let held = reach(*id, *at);
             edges.extend(
                 [held.start, held.end]
                     .into_iter()
@@ -57,7 +57,7 @@ impl NodeRenderer {
         let mut out: Vec<Span> = Vec::new();
         for pair in edges.windows(2) {
             let span = Extent::new(pair[0], pair[1]);
-            let dead = |id: BufId, shift: i64| reach(id, shift).intersect(span).is_empty();
+            let dead = |id: BufId, at: Remap| reach(id, at).intersect(span).is_empty();
             let renderer = pruned(self, &dead, layout)?;
             match out.last_mut() {
                 Some(last) if last.renderer == renderer => last.to = span.end,
@@ -83,9 +83,9 @@ fn width(r: &NodeRenderer, layout: &Layout) -> Result<usize, SampleError> {
     lower(r, layout, &mut ops, &mut widths)
 }
 
-fn buffers(r: &NodeRenderer, out: &mut Vec<(BufId, i64)>) {
-    if let NodeRenderer::Buffer { id, shift } = r {
-        out.push((*id, *shift));
+fn buffers(r: &NodeRenderer, out: &mut Vec<(BufId, Remap)>) {
+    if let NodeRenderer::Buffer { id, at } = r {
+        out.push((*id, *at));
     }
     for part in operands(r) {
         buffers(part, out);
@@ -96,7 +96,7 @@ fn buffers(r: &NodeRenderer, out: &mut Vec<(BufId, i64)>) {
 /// where that keeps its width.
 fn pruned(
     r: &NodeRenderer,
-    dead: &dyn Fn(BufId, i64) -> bool,
+    dead: &dyn Fn(BufId, Remap) -> bool,
     layout: &Layout,
 ) -> Result<NodeRenderer, SampleError> {
     let whole = width(r, layout)?;
@@ -119,9 +119,9 @@ fn pruned(
 }
 
 /// Exactly +0.0 at every sample of the span.
-fn zero(r: &NodeRenderer, dead: &dyn Fn(BufId, i64) -> bool) -> bool {
+fn zero(r: &NodeRenderer, dead: &dyn Fn(BufId, Remap) -> bool) -> bool {
     match r {
-        NodeRenderer::Buffer { id, shift } => dead(*id, *shift),
+        NodeRenderer::Buffer { id, at } => dead(*id, *at),
         NodeRenderer::Const(v) => v.to_bits() == 0,
         NodeRenderer::Crop { x, .. } => zero(x, dead),
         NodeRenderer::Add(parts) => parts.iter().all(|p| zero(p, dead)),

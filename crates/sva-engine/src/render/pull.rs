@@ -132,8 +132,8 @@ fn reads_ahead(held: &Render, id: NodeId) -> bool {
     };
     let mut ahead = false;
     extent::leaves(&program.renderer, &mut |leaf| {
-        if let NodeRenderer::Buffer { shift, .. } = leaf {
-            ahead |= *shift > 0;
+        if let NodeRenderer::Buffer { at, .. } = leaf {
+            ahead |= at.ahead();
         }
     });
     ahead

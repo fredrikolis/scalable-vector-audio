@@ -57,7 +57,8 @@ impl<'a> Supports<'a> {
             Value::Grid(count) if *count == 0.0 => Extent::NOWHERE,
             Value::Grid(_) => Extent::EVERYWHERE,
             Value::Read { source, at, .. } => match at.steps_at(self.rate) {
-                Ok(steps) => self.of(*source).shifted(-steps),
+                Ok(at) => at.preimage(self.of(*source)),
+                Err(_) if at.scale != 1 => Extent::EVERYWHERE,
                 Err(count) => moved(self.of(*source), -count),
             },
             Value::Filter { x, .. } => stateful(self.of(*x)),
@@ -92,7 +93,10 @@ impl<'a> Supports<'a> {
     }
 
     fn operation(&self, name: &str, args: &[NodeId], of: &dyn Fn(NodeId) -> Extent) -> Extent {
-        let number = |at: usize| args.get(at).and_then(|a| constant(self.tys, *a));
+        let number = |at: usize| {
+            args.get(at)
+                .and_then(|a| crate::lower::number_at(self.tys, *a, self.rate))
+        };
         match name {
             "+" | "-" | "join" => args
                 .iter()
@@ -454,13 +458,6 @@ fn keeps_zero(op: Unary) -> bool {
     )
 }
 
-fn constant(tys: &Typing, id: NodeId) -> Option<f64> {
-    match tys.value(id) {
-        Value::ClosedForm(form) => crate::lower::constant_value(&form.body, form.var),
-        _ => None,
-    }
-}
-
 /// The samples a crop's `[l, r)` can be nonzero over: every one some evaluator reads as
 /// inside it, whether it takes the instant as `n / rate` or as `n * (1 / rate)`.
 pub(crate) fn window(rate: u32, l: f64, r: f64) -> Extent {
@@ -627,8 +624,8 @@ fn reads(
             let program = super::sampled::program(held, id)?;
             let mut out = Vec::new();
             leaves(&program.renderer, &mut |leaf| {
-                if let NodeRenderer::Buffer { id: slot, shift } = leaf {
-                    out.push((program.reads[slot.0 as usize], extent.shifted(*shift)));
+                if let NodeRenderer::Buffer { id: slot, at } = leaf {
+                    out.push((program.reads[slot.0 as usize], at.image(extent)));
                 }
             });
             Ok(out)

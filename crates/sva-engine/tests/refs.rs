@@ -523,3 +523,58 @@ fn a_modal_bank_times_an_envelope_lists_its_modes() {
         "the bare bank lists its own modes"
     );
 }
+
+/// The first `n` samples of `body` at 100 Hz, where `form` is the ramp `t` as a closed form
+/// and `held` the same ramp as samples.
+fn first(name: &str, body: &str, n: usize) -> Result<Vec<f64>, EngineError> {
+    let root = format!("{body}\n");
+    let g = graph_of(
+        name,
+        &[("form", "t\n"), ("held", "sample(t)\n"), ("root", &root)],
+    );
+    let held = render(
+        &g,
+        "root",
+        RenderConfig::seconds(100, n as f64 / 100.0),
+        None,
+    )?;
+    let root = held.id("root").expect("the root");
+    Ok(held.output(root).expect("samples").plane(0).to_vec())
+}
+
+fn near(got: &[f64], want: &[f64]) -> bool {
+    got.len() == want.len() && got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-12)
+}
+
+/// A reflected read keeps its sign on either representation: `0.11s - t` counts down.
+#[test]
+fn a_reflected_read_counts_down_on_a_form_and_on_samples() {
+    for (name, body) in [
+        ("form-rev", "@form(0.11s - t)"),
+        ("held-rev", "@held(0.11s - t)"),
+        ("held-neg", "@held(-1*(t - 0.11s))"),
+        ("held-sp", "@held(11sp - t)"),
+    ] {
+        let got = first(name, body, 3).expect("a reflected read renders");
+        assert!(near(&got, &[0.11, 0.10, 0.09]), "{body}: {got:?}");
+    }
+}
+
+/// Samples read at a whole multiple of `t` land on samples; any other multiple lands between
+/// them and refuses by its own code.
+#[test]
+fn a_scaled_read_of_samples_strides_by_a_whole_scale_and_refuses_another() {
+    let got = first("held-2t", "@held(2*t - 0.02s)", 3).expect("a whole scale renders");
+    assert!(near(&got, &[-0.02, 0.0, 0.02]), "{got:?}");
+    let refused = first("held-half", "@held(0.5*t)", 3).expect_err("half a sample");
+    assert_eq!(refused.code(), "ref.scaled_read_off_the_grid");
+}
+
+/// Seconds and grid steps add in one offset, and a crop may end on a grid step.
+#[test]
+fn an_offset_in_seconds_and_steps_reads_their_sum() {
+    let got = first("mixed", "@held(t - 0.02s - 1sp)", 3).expect("a mixed offset renders");
+    assert!(near(&got, &[-0.03, -0.02, -0.01]), "{got:?}");
+    let got = first("crop-sp", "crop(@held, 0s, 2sp)", 3).expect("a crop ending on a step");
+    assert!(near(&got, &[0.0, 0.01, 0.0]), "{got:?}");
+}

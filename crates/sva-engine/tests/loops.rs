@@ -226,9 +226,9 @@ fn a_fractional_grid_delay_refuses() {
     assert_eq!(refused.code(), "ref.fractional_shift_on_samples");
 }
 
-/// A delay of seconds and grid steps together only the grid can follow, and the grid has no
-/// such offset: the types say so, before anything decides where an endless render ends, or
-/// renders what reads the loop.
+/// A delay of seconds and grid steps together is a count of steps once a rate is named, and
+/// one that is no whole count at that rate refuses by its own code, before anything decides
+/// where an endless render ends, or renders what reads the loop.
 #[test]
 fn a_delay_off_the_grid_refuses_by_its_own_code_before_any_range() {
     let g = graph_of(
@@ -237,7 +237,7 @@ fn a_delay_off_the_grid_refuses_by_its_own_code_before_any_range() {
             (
                 "string",
                 "sample(crop(sin(2*pi*220*t), 0s, 0.01s)) + 0.5*(self(t - 0.01s) + \
-                 self(t - 0.01s - 1sp))\n",
+                 self(t - 0.0001s - 1sp))\n",
             ),
             ("pluck", "crop(0.5*@string, 0s, 1s)\n"),
         ],
@@ -246,7 +246,11 @@ fn a_delay_off_the_grid_refuses_by_its_own_code_before_any_range() {
         let Err(refused) = render(&g, root, RenderConfig::at(8_000), None) else {
             panic!("{root}: a delay no index names rendered");
         };
-        assert_eq!(refused.code(), "engine.varying_delay", "{root}: {refused}");
+        assert_eq!(
+            refused.code(),
+            "ref.fractional_shift_on_samples",
+            "{root}: {refused}"
+        );
     }
 }
 

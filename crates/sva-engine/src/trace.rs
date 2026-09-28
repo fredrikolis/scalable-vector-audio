@@ -136,10 +136,10 @@ fn sampled_leaf(
             under(vec![*source], open).or_else(|| Some(cast.name().to_string()))
         }
         crate::typing::Value::Read { source, at, .. } => under(vec![*source], open).or_else(|| {
-            Some(match at {
-                crate::offset::Offset::Steps(steps) => format!("a read {steps} samples back"),
-                crate::offset::Offset::Secs(secs) => format!("a read {secs} seconds back"),
-            })
+            Some(format!(
+                "a read at {}*t{:+}s{:+}sp",
+                at.scale, at.secs, at.steps
+            ))
         }),
         crate::typing::Value::Op { args, .. } => under(args.clone(), open),
         crate::typing::Value::Filter { x, .. } => under(vec![*x], open),

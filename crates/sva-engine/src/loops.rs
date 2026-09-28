@@ -13,6 +13,11 @@ use crate::instantiate::{Cx, Instances, Node};
 pub enum Delay {
     Steps(u32),
     Secs(f64),
+    /// Seconds and grid steps together, a count of samples at a rate.
+    Mixed {
+        secs: f64,
+        steps: i64,
+    },
     /// A delay written as a closed form of `t`, which only the grid can follow.
     Varying,
 }
@@ -35,10 +40,10 @@ pub(crate) fn classify(inst: &Instances, e: &Expr, cx: Cx, at: &str) -> SelfKind
         Reading::Free | Reading::Nonlinear => SelfKind::Sampled,
         Reading::Linear {
             gain,
-            delay: Delay::Steps(_),
+            delay: Delay::Steps(_) | Delay::Mixed { .. },
         } if gain.abs() > 1.0 => SelfKind::Refuse(Box::new(unbounded(gain, at))),
         Reading::Linear {
-            delay: Delay::Steps(_) | Delay::Varying,
+            delay: Delay::Steps(_) | Delay::Mixed { .. } | Delay::Varying,
             ..
         } => SelfKind::Sampled,
         Reading::Linear {
@@ -62,15 +67,19 @@ pub(crate) enum Tap {
 
 /// The one reading of a self-reference's time, so classification and lowering cannot drift.
 pub(crate) fn tap_of(inst: &Instances, arg: &Expr, cx: Cx) -> Tap {
-    match shift_of(inst, arg, cx) {
-        None => Tap::At(Delay::Varying),
-        Some(Shift::Now) => Tap::Zero,
-        Some(Shift::Secs(secs)) if secs > 0.0 => Tap::At(Delay::Secs(secs)),
-        Some(Shift::Steps(steps)) if steps > 0.0 && steps.fract() == 0.0 => {
-            Tap::At(Delay::Steps(steps as u32))
-        }
-        Some(Shift::Steps(steps)) if steps > 0.0 => Tap::Fractional,
-        Some(_) => Tap::Forward,
+    let Some(Shift { secs, steps }) = shift_of(inst, arg, cx) else {
+        return Tap::At(Delay::Varying);
+    };
+    match (secs, steps) {
+        (0.0, 0.0) => Tap::Zero,
+        (_, steps) if steps.fract() != 0.0 => Tap::Fractional,
+        (secs, 0.0) if secs > 0.0 => Tap::At(Delay::Secs(secs)),
+        (0.0, steps) if steps > 0.0 => Tap::At(Delay::Steps(steps as u32)),
+        (0.0, _) | (_, 0.0) => Tap::Forward,
+        (secs, steps) => Tap::At(Delay::Mixed {
+            secs,
+            steps: steps as i64,
+        }),
     }
 }
 
@@ -277,45 +286,106 @@ pub(crate) fn expandable(
     }
 }
 
-/// A read at the sample being written, at a constant delay in seconds, or at whole steps.
+/// A read at `t` minus a delay, in seconds and grid steps, either or both.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Shift {
-    Now,
-    Secs(f64),
-    Steps(f64),
+pub struct Shift {
+    pub secs: f64,
+    pub steps: f64,
 }
 
-/// `t` offset by a constant is the whole grammar of a read's time; the constant may be
-/// written in seconds or in grid steps, but never in both.
+/// A read's time as written: `scale*t` moved by a duration and a count of grid steps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Time {
+    pub scale: f64,
+    pub secs: f64,
+    pub steps: f64,
+}
+
+impl Time {
+    const T: Time = Time {
+        scale: 1.0,
+        secs: 0.0,
+        steps: 0.0,
+    };
+
+    fn plus(self, other: Time, sign: f64) -> Time {
+        Time {
+            scale: self.scale + sign * other.scale,
+            secs: self.secs + sign * other.secs,
+            steps: self.steps + sign * other.steps,
+        }
+    }
+
+    fn times(self, k: f64) -> Time {
+        Time {
+            scale: self.scale * k,
+            secs: self.secs * k,
+            steps: self.steps * k,
+        }
+    }
+
+    fn over(self, k: f64) -> Time {
+        Time {
+            scale: self.scale / k,
+            secs: self.secs / k,
+            steps: self.steps / k,
+        }
+    }
+
+    fn number(self) -> Option<f64> {
+        (self.scale == 0.0 && self.steps == 0.0).then_some(self.secs)
+    }
+}
+
+/// `t` scaled by a constant and moved by constants, the whole grammar of a read's time; `None`
+/// where the time is no such line.
+pub fn time_of(inst: &Instances, e: &Expr, cx: Cx) -> Option<Time> {
+    let held = walk(inst, e, cx)?;
+    [held.scale, held.secs, held.steps]
+        .iter()
+        .all(|v| v.is_finite())
+        .then_some(held)
+}
+
+/// A time at `t` itself, moved by a constant.
 pub fn shift_of(inst: &Instances, e: &Expr, cx: Cx) -> Option<Shift> {
-    let (time, secs, steps) = walk(inst, e, cx, 1.0)?;
-    if !time || !secs.is_finite() || !steps.is_finite() {
-        return None;
-    }
-    match (secs, steps) {
-        (0.0, 0.0) => Some(Shift::Now),
-        (secs, 0.0) => Some(Shift::Secs(-secs)),
-        (0.0, steps) => Some(Shift::Steps(-steps)),
-        _ => None,
-    }
+    let time = time_of(inst, e, cx)?;
+    (time.scale == 1.0).then_some(Shift {
+        secs: -time.secs,
+        steps: -time.steps,
+    })
 }
 
-/// `(reads t, seconds offset, grid-step offset)`, signed as written.
-fn walk(inst: &Instances, e: &Expr, cx: Cx, sign: f64) -> Option<(bool, f64, f64)> {
-    if let Some(r) = inst.follow(e, cx, |e2, cx2| walk(inst, e2, cx2, sign)) {
+/// Every sign and scale as written: a plain factor or divisor scales the time it holds.
+fn walk(inst: &Instances, e: &Expr, cx: Cx) -> Option<Time> {
+    if let Some(r) = inst.follow(e, cx, |e2, cx2| walk(inst, e2, cx2)) {
         return r;
     }
     match inst.node(e, cx) {
-        Node::Name("t") => Some((true, 0.0, 0.0)),
+        Node::Name("t") => Some(Time::T),
         Node::Bin(op @ (BinOp::Add | BinOp::Sub), l, r) => {
-            let (lt, ls, lg) = walk(inst, l, cx, sign)?;
-            let flip = if op == BinOp::Sub { -sign } else { sign };
-            let (rt, rs, rg) = walk(inst, r, cx, flip)?;
-            Some((lt || rt, ls + rs, lg + rg))
+            let sign = if op == BinOp::Sub { -1.0 } else { 1.0 };
+            Some(walk(inst, l, cx)?.plus(walk(inst, r, cx)?, sign))
+        }
+        Node::Bin(BinOp::Mul, l, r) => {
+            let (a, b) = (walk(inst, l, cx)?, walk(inst, r, cx)?);
+            match (a.number(), b.number()) {
+                (Some(k), _) => Some(b.times(k)),
+                (_, Some(k)) => Some(a.times(k)),
+                _ => None,
+            }
+        }
+        Node::Bin(BinOp::Div, l, r) => {
+            let by = walk(inst, r, cx)?.number()?;
+            (by != 0.0).then(|| walk(inst, l, cx).map(|a| a.over(by)))?
         }
         _ => {
             let (secs, steps) = amount(inst, e, cx)?;
-            Some((false, sign * secs, sign * steps))
+            Some(Time {
+                scale: 0.0,
+                secs,
+                steps,
+            })
         }
     }
 }

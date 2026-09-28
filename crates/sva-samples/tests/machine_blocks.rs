@@ -3,7 +3,9 @@
 use sva_samples::machine::ops::Layout;
 use sva_samples::physics::Params;
 use sva_samples::physics::chaigne_askenfelt::ChaigneAskenfeltParams;
-use sva_samples::{BufId, Buffer, Ctx, Machine, NodeRenderer, Shape, Site, SiteId, Tape, Window};
+use sva_samples::{
+    BufId, Buffer, Ctx, Machine, NodeRenderer, Remap, Shape, Site, SiteId, Tape, Window,
+};
 
 const RATE: u32 = 44_100;
 const LEN: usize = 3_000;
@@ -28,7 +30,7 @@ fn renderer(landing: f64) -> NodeRenderer {
             from: 0,
             x: Box::new(NodeRenderer::Buffer {
                 id: BufId(0),
-                shift: -2,
+                at: Remap::shift(-2),
             }),
             cutoff: Box::new(NodeRenderer::Const(900.0)),
             q: Box::new(NodeRenderer::Const(0.7)),

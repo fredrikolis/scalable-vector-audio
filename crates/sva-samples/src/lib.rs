@@ -25,7 +25,7 @@ pub use error::{CollapseError, SampleError};
 pub use filters::{Automation, AutomationFrame, FilterSite, FilterTrace};
 pub use frames::Frames;
 pub use label::{Cost, Detail, Dropped, Label, Rule, Source};
-pub use machine::renderer::{Binary, BufId, NodeRenderer, Site, SiteId, Unary};
+pub use machine::renderer::{Binary, BufId, NodeRenderer, Remap, Site, SiteId, Unary};
 pub use machine::tape::{Tape, Window};
 pub use machine::{Ctx, Machine, MachineState};
 pub use measure::Consumes;

@@ -56,9 +56,12 @@ impl<'a> Walk<'a> {
         }
         match self.typing.value(id) {
             Value::Read { source, at, .. } => {
-                if let Ok(shift) = at.steps_at(self.rate) {
+                // A reflected or strided read switches nowhere: its prefix is its whole identity.
+                if let Ok(at) = at.steps_at(self.rate)
+                    && at.scale == 1
+                {
                     let moved = self.change_points(*source);
-                    out.extend(moved.into_iter().map(|c| c.saturating_sub(shift)));
+                    out.extend(moved.into_iter().map(|c| c.saturating_sub(at.shift)));
                 }
             }
             Value::Filter {
@@ -149,7 +152,8 @@ impl<'a> Walk<'a> {
             } => {
                 let shift = offset
                     .steps_at(self.rate)
-                    .expect("a read with switches is on the grid");
+                    .expect("a read with switches is on the grid")
+                    .shift;
                 sink.text("read");
                 sink.hash(self.prefix_identity(*source, at.saturating_add(shift))?);
                 super::identity::offset(&mut sink, *offset);
@@ -222,13 +226,7 @@ impl<'a> Walk<'a> {
         }
         let number = |at: usize| match args.get(at) {
             None => Some(0.0),
-            Some(id) => match self.typing.value(*id) {
-                Value::ClosedForm(form) => match form.body {
-                    Body::Const(c) if c.im == 0.0 => Some(c.re),
-                    _ => crate::lower::constant_value(&form.body, form.var),
-                },
-                _ => None,
-            },
+            Some(id) => crate::lower::number_at(self.typing, *id, self.rate),
         };
         Some(Window {
             l: number(1)?,

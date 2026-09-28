@@ -122,7 +122,7 @@ impl Terms {
         let mut at = match tys.value(notes) {
             Value::Read {
                 source,
-                at: Offset::Steps(0),
+                at: Offset::NOW,
                 ..
             } => Some(*source),
             _ => Some(notes),

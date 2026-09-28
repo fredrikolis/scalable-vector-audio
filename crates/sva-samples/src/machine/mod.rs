@@ -347,16 +347,16 @@ fn fill(
     match op {
         Op::Const(v) => result[0] = *v,
         Op::Time => result[0] = t,
-        Op::Read { id, shift } => {
+        Op::Read { id, at } => {
             let window = here.reads[id.0 as usize];
-            let at = n + shift;
+            let at = at.at(n);
             for (c, slot) in result.iter_mut().enumerate() {
                 *slot = window.at(c, at);
             }
         }
-        Op::ReadScaled { id, shift, by } => {
+        Op::ReadScaled { id, at, by } => {
             let window = here.reads[id.0 as usize];
-            let at = n + shift;
+            let at = at.at(n);
             for (c, slot) in result.iter_mut().enumerate() {
                 *slot = window.at(c, at) * by;
             }

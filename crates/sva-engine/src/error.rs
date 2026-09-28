@@ -205,7 +205,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 73] = [
+pub static REGISTRY: [(&str, &str); 74] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -338,6 +338,10 @@ pub static REGISTRY: [(&str, &str); 73] = [
         "a sampled read offset that is not a whole sample",
     ),
     (
+        "ref.scaled_read_off_the_grid",
+        "samples read at k*t where k is not whole",
+    ),
+    (
         "engine.unknown_node",
         "a target no node of this composition answers for",
     ),
@@ -415,7 +419,7 @@ pub static REGISTRY: [(&str, &str); 73] = [
     ),
     (
         "engine.unreadable_shift",
-        "a ref read at a time this engine cannot settle",
+        "samples read at a time whose rate moves",
     ),
     (
         "engine.per_lane_read_on_samples",

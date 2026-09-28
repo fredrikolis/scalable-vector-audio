@@ -282,7 +282,7 @@ pub(in crate::render) fn runnable(shell: &Render, order: &[NodeId]) -> BTreeSet<
         };
         let mut ahead = false;
         crate::render::extent::leaves(&program.renderer, &mut |leaf| {
-            ahead |= matches!(leaf, NodeRenderer::Buffer { shift, .. } if *shift > 0);
+            ahead |= matches!(leaf, NodeRenderer::Buffer { at, .. } if at.ahead());
         });
         let reads = program.reads.iter().all(|r| out.contains(r));
         if !ahead && reads && (program.layout.sites.is_empty() || program.reads.is_empty()) {
@@ -512,8 +512,8 @@ fn machine(
         .collect::<Result<_, _>>()?;
     let (mut reads, mut own, mut ahead) = (Vec::new(), 0, false);
     crate::render::extent::leaves(&program.renderer, &mut |leaf| match leaf {
-        NodeRenderer::Buffer { shift, .. } if *shift > 0 => ahead = true,
-        NodeRenderer::Buffer { id, shift } => reads.push((slots[id.0 as usize], *shift)),
+        NodeRenderer::Buffer { at, .. } if at.ahead() => ahead = true,
+        NodeRenderer::Buffer { id, at } => reads.push((slots[id.0 as usize], at.shift)),
         NodeRenderer::SelfAt { steps } => own = own.max(*steps as usize),
         _ => {}
     });

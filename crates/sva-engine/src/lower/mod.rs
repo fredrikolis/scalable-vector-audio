@@ -20,7 +20,9 @@ use crate::offset::Offset;
 use crate::overload;
 use crate::typing::{Node as Typed, Typing, Value};
 
-pub(crate) use constant::{constant_call, constant_modulo, constant_value, holds_infinite};
+pub(crate) use constant::{
+    constant_call, constant_modulo, constant_value, holds_infinite, number_at,
+};
 pub(crate) use solvers::{field, value_of};
 
 /// One written subterm, either still inside a closed form or already a node of its own.
@@ -245,7 +247,7 @@ impl<'g> Lowering<'_, 'g> {
                             var: self.typing.var(id),
                             value: Value::Read {
                                 source: id,
-                                at: Offset::Steps(0),
+                                at: Offset::NOW,
                                 site,
                             },
                         };

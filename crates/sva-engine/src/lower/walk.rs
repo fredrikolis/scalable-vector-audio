@@ -5,7 +5,7 @@ use sva_formula::{Body, C64, Held, IndexId, NodeId, Ty, Var, note};
 
 use crate::error::EngineError;
 use crate::instantiate::{Cx, Node};
-use crate::loops::{self, Shift, shift_of};
+use crate::loops;
 use crate::lower::{Lowering, Piece, SelfMode, constant};
 use crate::offset::Offset;
 use crate::overload;
@@ -221,12 +221,14 @@ impl Lowering<'_, '_> {
         let mut signals = Vec::new();
         for (at, piece) in pieces.into_iter().enumerate() {
             let constant = matches!(&piece, Piece::ClosedForm(f) if constant::is_constant(f));
+            let counted = matches!(&piece, Piece::Value(id) if matches!(self.typing.value(*id), Value::Grid(_)));
             if matches!(&piece, Piece::ClosedForm(f) if constant::holds_infinite(f))
                 && !(name == "crop" && (1..=2).contains(&at))
             {
                 return Err(self.infinite(&format!("`{name}` reads inf as a signal")));
             }
             if !constant
+                && !counted
                 && params
                     .get(at)
                     .is_some_and(|p| p.kind == overload::ParamKind::Scalar)
@@ -269,49 +271,72 @@ impl Lowering<'_, '_> {
             .typing
             .id(path)
             .ok_or_else(|| EngineError::UnknownNode(path.to_string()))?;
-        let Some(shift) = shift_of(self.inst, arg, cx) else {
+        let Some(time) = loops::time_of(self.inst, arg, cx) else {
             return self.warped(path, id, arg, span, cx, var);
         };
         let ty = self.typing.ty(id);
-        let site = self.typing.mark(self.here(Some(span)));
-        let sampled = |slf: &mut Self, held, at| {
-            let value = Value::Read {
-                source: id,
-                at,
-                site,
+        if ty.is_closed_form() && time.steps == 0.0 {
+            return match (time.scale, time.secs) {
+                (1.0, 0.0) => Ok(Piece::ClosedForm(Body::Node(id))),
+                (1.0, secs) => {
+                    let of = self.part(Body::Node(id), Some(span));
+                    Ok(Piece::ClosedForm(Body::Shift { by: -secs, of }))
+                }
+                _ => self.warped(path, id, arg, span, cx, var),
             };
-            let read = Ty {
-                held,
-                dual: ty.dual && held.is_closed_form(),
-                ..ty
-            };
-            Ok(Piece::Value(slf.register(value, read, var)))
-        };
-        let whole_steps = |steps: f64| match steps.fract() == 0.0 {
-            true => Ok(Offset::Steps(-(steps as i64))),
-            false => Err(self.refused_at(
+        }
+        if time.steps.fract() != 0.0 {
+            return Err(self.refused_at(
                 "ref.fractional_shift_on_samples",
-                format!("`@{path}` is read {steps} samples back, which is not a whole one."),
+                format!(
+                    "`@{path}` is read {} samples along, which is not a whole one.",
+                    time.steps
+                ),
                 "write a whole number of sp, or the offset in seconds",
                 Some(span),
-            )),
+            ));
+        }
+        let held = match ty.is_closed_form() {
+            true => Held::Sampled,
+            false => ty.held,
         };
-        if !ty.is_closed_form() {
-            let at = match shift {
-                Shift::Now => Offset::Steps(0),
-                Shift::Steps(steps) => whole_steps(steps)?,
-                Shift::Secs(by) => Offset::Secs(-by),
-            };
-            return sampled(self, ty.held, at);
+        if time.scale != 1.0 && (time.scale.fract() != 0.0 || held != Held::Sampled) {
+            return Err(self.off_the_grid(path, time.scale, span));
         }
-        match shift {
-            Shift::Now => Ok(Piece::ClosedForm(Body::Node(id))),
-            Shift::Secs(by) => {
-                let of = self.part(Body::Node(id), Some(span));
-                Ok(Piece::ClosedForm(Body::Shift { by, of }))
-            }
-            Shift::Steps(steps) => sampled(self, Held::Sampled, whole_steps(steps)?),
-        }
+        let at = Offset {
+            scale: time.scale as i64,
+            secs: time.secs,
+            steps: time.steps as i64,
+        };
+        let site = self.typing.mark(self.here(Some(span)));
+        let value = Value::Read {
+            source: id,
+            at,
+            site,
+        };
+        let read = Ty {
+            held,
+            dual: ty.dual && held.is_closed_form(),
+            ..ty
+        };
+        Ok(Piece::Value(self.register(value, read, var)))
+    }
+
+    /// A buffer holds its samples and nothing between them, so a read of one at `k*t` meets
+    /// only its own samples where `k` is whole; frames are read one hop at a time.
+    fn off_the_grid(&self, path: &str, scale: f64, span: ByteSpan) -> EngineError {
+        self.refused_at(
+            "ref.scaled_read_off_the_grid",
+            format!(
+                "`@{path}` is samples read at {scale}*t, and a read of samples lands on them \
+                 only where the scale is whole."
+            ),
+            &format!(
+                "read a closed form, which any time reaches exactly, or write a whole scale; \
+                 a scale of {scale} would need a value between two of `@{path}`'s samples"
+            ),
+            Some(span),
+        )
     }
 
     /// A callee read at a time no offset names is the callee's closed form at that time, which is a
@@ -329,7 +354,15 @@ impl Lowering<'_, '_> {
             return Err(self.per_lane_on_samples(path, id, arg, span));
         }
         let Piece::ClosedForm(when) = self.walk(arg, cx, var)? else {
-            return Err(self.unreadable(path, span));
+            return Err(self.refused_at(
+                "engine.unreadable_shift",
+                format!(
+                    "`@{path}` is read at a time that moves at a changing rate and names a grid \
+                     step, which only a rate can settle"
+                ),
+                "write the time in seconds, or at `k*t + c` with `k` whole",
+                Some(span),
+            ));
         };
         let at = self.part(when, Some(span));
         let of = self.part(Body::Node(id), Some(span));
@@ -387,8 +420,12 @@ impl Lowering<'_, '_> {
     fn unreadable(&self, path: &str, span: ByteSpan) -> EngineError {
         self.refused_at(
             "engine.unreadable_shift",
-            format!("`@{path}` is read at a time this engine cannot settle"),
-            "write the read at `t`, or at `t` minus a constant",
+            format!(
+                "`@{path}` is samples, and this read's time moves at a rate that changes, so \
+                 most of its instants fall between two samples"
+            ),
+            "write the read at `k*t + c` with `k` whole, or read a closed form, which a moving \
+             time reaches exactly",
             Some(span),
         )
     }
