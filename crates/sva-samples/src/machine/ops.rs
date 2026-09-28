@@ -11,6 +11,12 @@ pub(crate) enum Op {
         id: BufId,
         shift: i64,
     },
+    /// A read times a constant, the bits of `Mul` over the two.
+    ReadScaled {
+        id: BufId,
+        shift: i64,
+        by: f64,
+    },
     SelfAt {
         steps: u32,
     },
@@ -88,6 +94,10 @@ pub(crate) fn lower(
         }
         NodeRenderer::SelfAt { steps } => {
             push(Op::SelfAt { steps: *steps }, layout.width, ops, widths)
+        }
+        NodeRenderer::Mul(parts) if let Some((id, shift, by)) = scaled_read(parts) => {
+            let width = layout.read_widths[id.0 as usize];
+            push(Op::ReadScaled { id, shift, by }, width, ops, widths)
         }
         NodeRenderer::Add(parts) | NodeRenderer::Mul(parts) => {
             let mut width = 1;
@@ -176,4 +186,12 @@ pub(crate) fn lower(
         }
     };
     Ok(w)
+}
+
+fn scaled_read(parts: &[NodeRenderer]) -> Option<(BufId, i64, f64)> {
+    match parts {
+        [NodeRenderer::Buffer { id, shift }, NodeRenderer::Const(by)]
+        | [NodeRenderer::Const(by), NodeRenderer::Buffer { id, shift }] => Some((*id, *shift, *by)),
+        _ => None,
+    }
 }

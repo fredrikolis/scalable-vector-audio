@@ -113,7 +113,7 @@ impl Stack {
 
 /// Component `c` of an operand that may be mono where its neighbour is wide.
 fn part(v: &[f64], c: usize) -> f64 {
-    v[c % v.len()]
+    v[c.min(v.len() - 1)]
 }
 
 /// One compiled node and every call site's state, run over any span of the grid in order.
@@ -344,7 +344,12 @@ fn step(
 
 fn arity_of(op: &Op) -> usize {
     match op {
-        Op::Const(_) | Op::Time | Op::Read { .. } | Op::SelfAt { .. } | Op::Physics { .. } => 0,
+        Op::Const(_)
+        | Op::Time
+        | Op::Read { .. }
+        | Op::ReadScaled { .. }
+        | Op::SelfAt { .. }
+        | Op::Physics { .. } => 0,
         Op::Map(_) | Op::Crop { .. } | Op::Channel(_) => 1,
         Op::Sub | Op::Div | Op::Pow | Op::Zip(_) => 2,
         Op::Add(n) | Op::Mul(n) | Op::Join(n) => *n,
@@ -370,6 +375,13 @@ fn fill(
             let at = n + shift;
             for (c, slot) in result.iter_mut().enumerate() {
                 *slot = window.at(c, at);
+            }
+        }
+        Op::ReadScaled { id, shift, by } => {
+            let window = here.reads[id.0 as usize];
+            let at = n + shift;
+            for (c, slot) in result.iter_mut().enumerate() {
+                *slot = window.at(c, at) * by;
             }
         }
         Op::SelfAt { steps } => {
