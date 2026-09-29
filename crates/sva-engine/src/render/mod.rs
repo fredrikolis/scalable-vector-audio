@@ -33,6 +33,7 @@ use crate::instantiate;
 use crate::query::Ask;
 use crate::refs;
 use crate::schedule::{self, Schedule};
+use crate::time::Lattice;
 use crate::typing::{self, Typing, Value};
 
 /// Where a target is read, grid samples from sample 0 at t = 0. An unstated start is where
@@ -154,7 +155,7 @@ impl Render {
 
     /// The instants `id` steps through: the render's own, or the ones a reader asked for.
     pub(crate) fn grid(&self, id: NodeId) -> sva_samples::Grid {
-        self.tys.grid(id).samples()
+        self.tys.grid(id)
     }
 
     pub(crate) fn identity(&self, id: NodeId) -> Result<sva_formula::Hash, EngineError> {
@@ -662,15 +663,15 @@ pub(crate) fn moved_rows(tys: &Typing, id: NodeId) -> Option<(u32, SpectralSum)>
         return None;
     };
     let base = crate::time::Q::int(i64::from(grid.rate));
-    let rate = base.div(grid.step)?;
+    let rate = base.div(grid.step())?;
     let rate = u32::try_from(rate.num())
         .ok()
         .filter(|_| rate.is_integer())?;
-    if grid.phase.is_zero() {
+    if grid.phase().is_zero() {
         return Some((rate, refs::spectral_sum_of(tys, id, form.var).ok()?));
     }
     let moved = sva_formula::Body::Shift {
-        by: grid.phase.div(base)?.neg().to_f64(),
+        by: grid.phase().div(base)?.neg().to_f64(),
         of: sva_formula::Part::bare(form.body.clone()),
     };
     Some((

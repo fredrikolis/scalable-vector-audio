@@ -9,7 +9,7 @@ use crate::instantiate::{Cx, Node};
 use crate::loops::{self, Tap};
 use crate::lower::{Lowering, Piece, SelfMode, constant, on};
 use crate::overload;
-use crate::time::{Affine, Q};
+use crate::time::{Affine, Lattice, Q};
 use crate::typing::{Nearest, Value, When};
 
 impl Lowering<'_, '_> {

@@ -216,7 +216,7 @@ impl<'a> Walk<'a> {
     }
 
     fn grid(&self, id: NodeId) -> sva_samples::Grid {
-        self.typing.grid(id).samples()
+        self.typing.grid(id)
     }
 
     /// How far past its own sample a read at scale one reaches its source, where every sample

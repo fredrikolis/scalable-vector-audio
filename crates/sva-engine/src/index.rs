@@ -5,7 +5,7 @@ pub use sva_samples::Round;
 use sva_samples::{Between, Map};
 
 use crate::instantiate::{Cx, Instances, Node};
-use crate::time::{Affine, Grid};
+use crate::time::{Affine, Grid, Lattice};
 
 /// Sample index `round(time) + plus` on the reader's grid; a count has no time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -55,7 +55,7 @@ impl Index {
         let Some(time) = self.time else {
             return Map::new(0, i128::from(self.plus), 1);
         };
-        let (a, b, d) = grid.position(time, grid)?;
+        let (a, b, d) = grid.landing(time, grid)?;
         let (b, between) = match self.round {
             Round::Even => (b, Between::Even),
             Round::Floor => (b, Between::Floor),

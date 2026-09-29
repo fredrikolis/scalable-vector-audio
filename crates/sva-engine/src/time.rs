@@ -195,65 +195,79 @@ impl Affine {
     };
 }
 
-/// Sample `m` of a node stands at `step*m + phase` samples of `rate`, `step > 0` and
-/// `0 <= phase < step`: the render's own grid, or the one a reader's time asks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Grid {
-    pub rate: u32,
-    pub step: Q,
-    pub phase: Q,
+pub use sva_samples::Grid;
+
+/// A grid's `(a*m + b)/d` as `step*m + phase` samples of its rate, exact: `step = a/d` and
+/// `0 <= phase = b/d < step`, the render's own grid or the one a reader's time asks for.
+pub trait Lattice: Sized {
+    fn step(self) -> Q;
+    fn phase(self) -> Q;
+    fn stepping(rate: u32, step: Q, phase: Q) -> Grid;
+    /// The same step, from the render's own first sample.
+    fn at_step(self) -> Grid;
+    fn steps(self, n: Q) -> Option<Q>;
+    fn steps_f64(self, n: f64) -> f64;
+    /// The grid a read at `time` steps its source on: the step scaled by `time`'s, and the
+    /// phase its instants land at.
+    fn read(self, time: Affine) -> Option<Grid>;
+    /// Sample `n` of this grid reads `time` at sample `(a*n + b)/d` of `on`, exactly.
+    fn landing(self, time: Affine, on: Grid) -> Option<(i128, i128, i128)>;
+    fn map(self, time: Affine, on: Grid) -> Option<sva_samples::Map>;
 }
 
-impl Grid {
-    pub fn of(rate: u32) -> Grid {
+fn rate_q(g: Grid) -> Q {
+    Q::int(i64::from(g.rate))
+}
+
+impl Lattice for Grid {
+    fn step(self) -> Q {
+        Q::new(self.a, self.d).expect("a grid's step is a rational")
+    }
+
+    fn phase(self) -> Q {
+        Q::new(self.b, self.d).expect("a grid's phase is a rational")
+    }
+
+    fn stepping(rate: u32, step: Q, phase: Q) -> Grid {
+        let d = step.den / gcd(step.den, phase.den) * phase.den;
         Grid {
             rate,
-            step: Q::ONE,
-            phase: Q::ZERO,
+            a: step.num * (d / step.den),
+            b: phase.num * (d / phase.den),
+            d,
         }
     }
 
-    pub fn is_rate(self) -> bool {
-        self == Grid::of(self.rate)
+    fn at_step(self) -> Grid {
+        Grid::stepping(self.rate, self.step(), Q::ZERO)
     }
 
-    fn rate_q(self) -> Q {
-        Q::int(i64::from(self.rate))
+    fn steps(self, n: Q) -> Option<Q> {
+        n.mul(self.step())?.div(rate_q(self))
     }
 
-    pub fn steps(self, n: Q) -> Option<Q> {
-        n.mul(self.step)?.div(self.rate_q())
+    fn steps_f64(self, n: f64) -> f64 {
+        n * self.step().to_f64() / f64::from(self.rate)
     }
 
-    pub fn steps_f64(self, n: f64) -> f64 {
-        n * self.step.to_f64() / f64::from(self.rate)
-    }
-
-    /// The grid a read at `time` steps its source on: the step scaled by `time`'s, and the
-    /// phase its instants land at.
-    pub fn read(self, time: Affine) -> Option<Grid> {
+    fn read(self, time: Affine) -> Option<Grid> {
         let k = time.scale;
         let step = match k.is_zero() {
-            true => self.step,
-            false => Q::new(k.num.abs(), k.den)?.mul(self.step)?,
+            true => self.step(),
+            false => Q::new(k.num.abs(), k.den)?.mul(self.step())?,
         };
-        let at = k.mul(self.phase)?.add(time.shift.mul(self.rate_q())?)?;
-        Some(Grid {
-            step,
-            phase: at.rem(step)?,
-            ..self
-        })
+        let at = k.mul(self.phase())?.add(time.shift.mul(rate_q(self))?)?;
+        Some(Grid::stepping(self.rate, step, at.rem(step)?))
     }
 
-    /// Sample `n` of this grid reads `time` at sample `(a*n + b)/d` of `on`, exactly.
-    pub fn position(self, time: Affine, on: Grid) -> Option<(i128, i128, i128)> {
-        let a = time.scale.mul(self.step)?.div(on.step)?;
+    fn landing(self, time: Affine, on: Grid) -> Option<(i128, i128, i128)> {
+        let a = time.scale.mul(self.step())?.div(on.step())?;
         let b = time
             .scale
-            .mul(self.phase)?
-            .add(time.shift.mul(self.rate_q())?)?
-            .sub(on.phase)?
-            .div(on.step)?;
+            .mul(self.phase())?
+            .add(time.shift.mul(rate_q(self))?)?
+            .sub(on.phase())?
+            .div(on.step())?;
         let d = a.den.checked_mul(b.den)? / gcd(a.den, b.den);
         Some((
             a.num.checked_mul(d / a.den)?,
@@ -262,19 +276,8 @@ impl Grid {
         ))
     }
 
-    pub fn map(self, time: Affine, on: Grid) -> Option<sva_samples::Map> {
-        let (a, b, d) = self.position(time, on)?;
+    fn map(self, time: Affine, on: Grid) -> Option<sva_samples::Map> {
+        let (a, b, d) = self.landing(time, on)?;
         sva_samples::Map::new(a, b, d)
-    }
-
-    pub fn samples(self) -> sva_samples::Grid {
-        let (step, phase) = (self.step, self.phase);
-        let d = step.den / gcd(step.den, phase.den) * phase.den;
-        sva_samples::Grid {
-            rate: self.rate,
-            a: step.num * (d / step.den),
-            b: phase.num * (d / phase.den),
-            d,
-        }
     }
 }

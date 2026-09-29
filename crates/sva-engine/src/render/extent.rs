@@ -33,7 +33,7 @@ impl<'a> Supports<'a> {
     }
 
     fn grid(&self, id: NodeId) -> Grid {
-        self.tys.grid(id).samples()
+        self.tys.grid(id)
     }
 
     pub(crate) fn of(&self, id: NodeId) -> Extent {

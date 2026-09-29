@@ -13,7 +13,7 @@ use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::Instances;
 use crate::lower;
 use crate::schedule::Order;
-use crate::time::{Affine, Grid};
+use crate::time::{Affine, Grid, Lattice};
 
 /// A closed form is cast-free on one axis; every crossing is its own node.
 #[derive(Clone, Debug, PartialEq)]

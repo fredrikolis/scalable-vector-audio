@@ -8,6 +8,7 @@ use sva_formula::{
 
 use crate::error::{Diagnostic, EngineError};
 use crate::index::Round;
+use crate::time::Lattice;
 use crate::typing::{SumSlot, Typing, Value, When};
 
 use super::{cyclic, nodes_in, spectral_sum_of, substituted_closed_form};
@@ -69,7 +70,7 @@ pub(super) fn gridded(typing: &Typing, node: NodeId, held: Hash) -> Hash {
     let mut sink = Sink::new();
     sink.hash(held);
     sink.text("grid");
-    for q in [grid.step, grid.phase] {
+    for q in [grid.step(), grid.phase()] {
         rational(&mut sink, q);
     }
     sink.finish()

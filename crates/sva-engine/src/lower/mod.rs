@@ -19,7 +19,7 @@ use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Cx, Instances, Node};
 use crate::loops::{self, SelfKind};
 use crate::overload;
-use crate::time::{Affine, Grid};
+use crate::time::{Affine, Grid, Lattice};
 use crate::typing::{Node as Typed, Typing, Value, When};
 
 pub(crate) use calls::{noise_at, rand_arguments};
@@ -61,10 +61,8 @@ pub fn node(path: &str, inst: &Instances, typing: &mut Typing) -> Result<NodeId,
     }
 }
 
-/// `path` on `grid`: on the render's own, the node typing already holds; on any other, its
-/// copy there, every input it reads on that grid too, lowered once per grid. A node that
-/// holds no state has a value at any instant, so only its step, which `sp` counts in, can
-/// change what it lowers to: at the render's own step every reader shares the node itself.
+/// `path` on `grid`, lowered once per grid with its inputs there. A node with no state has a
+/// value at any instant, so only its step, which `sp` counts in, changes what it lowers to.
 pub(crate) fn on(
     path: &str,
     grid: Grid,
@@ -76,10 +74,7 @@ pub(crate) fn on(
         .ok_or_else(|| EngineError::UnknownNode(path.to_string()))?;
     let grid = match typing.pending(base) || holds_state(typing, base) {
         true => grid,
-        false => Grid {
-            phase: crate::time::Q::ZERO,
-            ..grid
-        },
+        false => grid.at_step(),
     };
     if grid.is_rate() {
         return Ok(base);

@@ -212,7 +212,7 @@ fn extent(lo: Option<i128>, hi: Option<i128>) -> Extent {
 }
 
 /// Sample `n` stands at `(a*n + b)/d` samples of `rate`, in lowest terms, `a, d > 0`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Grid {
     pub rate: u32,
     pub a: i128,

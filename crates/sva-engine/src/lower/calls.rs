@@ -12,7 +12,7 @@ use crate::cast::Cast;
 use crate::error::EngineError;
 use crate::instantiate::Cx;
 use crate::lower::{Lowering, Piece};
-use crate::time::Affine;
+use crate::time::{Affine, Lattice};
 use crate::typing::{Value, When};
 use crate::vocabulary::SERIES;
 

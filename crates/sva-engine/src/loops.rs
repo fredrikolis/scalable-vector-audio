@@ -7,7 +7,7 @@ use sva_formula::{Body, C64, IndexId, Part, Series, Var};
 use crate::arguments::Chosen;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Cx, Instances, Node};
-use crate::time::{Affine, Q};
+use crate::time::{Affine, Lattice, Q};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum SelfKind {
