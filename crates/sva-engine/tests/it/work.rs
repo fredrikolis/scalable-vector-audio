@@ -89,3 +89,32 @@ fn a_stream_prices_each_sample_as_a_whole_render_prices_it() {
         work.priced_flops
     );
 }
+
+/// Beyond its output, a line of sixteen notes holds what two do, give or take one note.
+#[test]
+fn a_render_holds_what_its_readers_still_reach_and_its_output() {
+    let beyond = |n: usize| {
+        let line: Vec<String> = (0..n)
+            .map(|k| format!("@note(t - {k}s, f0={})", 220 + k))
+            .collect();
+        let g = graph_of(
+            "held-line",
+            &[
+                (
+                    "note",
+                    "f0 = 220\ncrop(lowpass(sample(sin(2*pi*f0*t)), cutoff=1000, q=0.7), 0s, 1s)\n",
+                ),
+                ("line", &format!("{}\n", line.join(" + "))),
+            ],
+        );
+        let held = render(&g, "line", RenderConfig::at(RATE), None).expect("a render");
+        let output = held.output(held.root).expect("the root").plane(0).len();
+        held.held_bytes - output * size_of::<f64>()
+    };
+    let note = RATE as usize * size_of::<f64>();
+    let (two, sixteen) = (beyond(2), beyond(16));
+    assert!(
+        sixteen <= two + note,
+        "{sixteen} bytes beyond sixteen notes, {two} beyond two"
+    );
+}

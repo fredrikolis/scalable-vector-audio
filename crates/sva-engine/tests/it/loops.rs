@@ -4,8 +4,8 @@ use std::f64::consts::TAU;
 
 use crate::fixtures::graph_of;
 use sva_engine::{
-    Detail, EngineError, Held, Output, RenderConfig, Representation, Source, Value, When, answer,
-    render, types,
+    Ask, Detail, EngineError, Held, Output, RenderConfig, Representation, Source, Value, When,
+    answer, render, types,
 };
 use sva_formula::Body;
 
@@ -194,7 +194,8 @@ fn a_karplus_strong_loop_with_an_allpass_fraction_is_its_recurrence() {
     let fraction = f64::from(RATE) / 440.0 - 0.5 - N as f64;
     let c = (1.0 - fraction) / (1.0 + fraction);
     let lp = 0.498;
-    let held = at_rate(
+    let g = graph_of(
+        "rated",
         &[
             ("burst", "crop(sample(rand(t, seed=7)), 0s, 0.002s)\n"),
             (
@@ -206,10 +207,16 @@ fn a_karplus_strong_loop_with_an_allpass_fraction_is_its_recurrence() {
                 ),
             ),
         ],
-        "string",
-        RATE,
-        0.05,
     );
+    // A render holds past its pass only the buffers a reading asks for.
+    let config = RenderConfig {
+        asks: vec![Ask {
+            node: "burst".to_string(),
+            representation: Representation::Samples,
+        }],
+        ..RenderConfig::seconds(RATE, 0.05)
+    };
+    let held = render(&g, "string", config, None).unwrap_or_else(|e| panic!("{e}"));
     let plane = |node: &str| {
         held.output(held.id(node).expect("held"))
             .expect("a buffer")

@@ -3,6 +3,9 @@
 pub(super) mod edit;
 pub(super) mod node;
 
+use std::collections::BTreeSet;
+
+use sva_formula::NodeId;
 use sva_samples::{Extent, Tape};
 
 use super::until::{Known, Until};
@@ -25,8 +28,9 @@ pub(super) struct Driver {
     frame: usize,
     stop: Option<i64>,
     end: Option<i64>,
-    /// Each node past its extent and its readers' reach is dropped.
-    prunes: bool,
+    /// Each node past its extent and its readers' reach is dropped, but the root and these.
+    kept: BTreeSet<NodeId>,
+    most_bytes: usize,
     pub(super) work: Work,
 }
 
@@ -91,7 +95,7 @@ impl Driver {
         block: usize,
         until: Option<Until>,
         shell: &Render,
-        prunes: bool,
+        kept: BTreeSet<NodeId>,
     ) -> Driver {
         Driver {
             nodes,
@@ -104,7 +108,8 @@ impl Driver {
             frame: frame(&shell.config, shell.rate()),
             stop: None,
             end: None,
-            prunes,
+            kept,
+            most_bytes: 0,
             work: Work {
                 waves: Some(0),
                 ..Work::default()
@@ -136,16 +141,20 @@ impl Driver {
         Ok(Some(Block::of(&root.tape, root.support, from, end)))
     }
 
+    /// Where the next pull ends.
+    pub(super) fn next_to(&self) -> i64 {
+        self.last
+            .min(self.at.saturating_add(self.block as i64))
+            .max(self.at)
+    }
+
     /// `false` once the target has ended.
     pub(super) fn pull(&mut self, shell: &Render, lenses: &Lenses) -> Result<bool, EngineError> {
         let from = self.at;
         if self.end.is_some_and(|end| from >= end) {
             return Ok(false);
         }
-        let to = self
-            .last
-            .min(from.saturating_add(self.block as i64))
-            .max(from);
+        let to = self.next_to();
         for n in 0..self.nodes.len() {
             let (done, rest) = self.nodes.split_at_mut(n);
             let lag = rest[0].lag;
@@ -157,11 +166,11 @@ impl Driver {
         self.at = to;
         self.work.samples += (to - from) as u64;
         self.settle(shell, from, to);
-        if self.prunes {
-            for (at, node) in self.nodes.iter_mut().enumerate() {
-                if Some(at) != self.root && node.spent(to - node.lag) {
-                    node.end(shell, lenses);
-                }
+        self.most_bytes = self.most_bytes.max(self.bytes());
+        for (at, node) in self.nodes.iter_mut().enumerate() {
+            let dropped = Some(at) != self.root && !self.kept.contains(&node.id);
+            if dropped && node.spent(to - node.lag) {
+                node.end(shell, lenses);
             }
         }
         Ok(true)
@@ -169,6 +178,11 @@ impl Driver {
 
     pub(super) fn bytes(&self) -> usize {
         self.nodes.iter().map(Driven::bytes).sum()
+    }
+
+    /// The most its nodes held at the end of any block, before what ended there dropped.
+    pub(super) fn most_bytes(&self) -> usize {
+        self.most_bytes
     }
 
     /// The one place `until` is checked. A level is known once its frame is whole, so only the

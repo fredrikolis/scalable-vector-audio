@@ -1,6 +1,6 @@
 // Concern: opens a target as a stream and edits it and its terms as it plays | Non-concern: pulling its blocks, what an edit carries on (edit.rs) | IO: (&Graph, target) -> Stream; (expr) -> Handle, bool
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use sva_ast::{Expr, Graph};
 
@@ -66,7 +66,7 @@ impl Stream {
                 config.block,
                 config.render.until.clone(),
                 &shell,
-                true,
+                BTreeSet::new(),
             ),
             recording: cache.map(|cache| Recording::over(cache, config.render.cache_policy)),
             config,

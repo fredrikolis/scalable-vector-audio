@@ -2,7 +2,7 @@
 use std::f64::consts::TAU;
 
 use crate::fixtures::graph_of;
-use sva_engine::{Cache, CachePolicy, RenderConfig, render};
+use sva_engine::{Ask, Cache, CachePolicy, RenderConfig, Representation, render};
 
 const RATES: [u32; 4] = [8_000, 44_100, 48_000, 96_000];
 
@@ -82,6 +82,14 @@ fn a_formula_read_at_any_instant_is_exact() {
             let at = 0.37 * n as f64 / f64::from(rate) - 0.012_345_6;
             assert!((v - (TAU * 220.0 * at).sin()).abs() < 1e-9, "{rate}: {n}");
         }
+        // A render holds past its pass only the buffers a reading asks for.
+        let config = RenderConfig {
+            asks: vec![Ask {
+                node: "lfo".to_string(),
+                representation: Representation::Samples,
+            }],
+            ..config
+        };
         let held = render(&g, "vibrato", config, None).expect("a moving read");
         let lfo = held
             .buffers

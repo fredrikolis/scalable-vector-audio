@@ -1,9 +1,9 @@
-// Concern: a whole render as a stream pulled to its end, what it holds whole first and where `until` ended it | Non-concern: one node's samples (mod.rs, drive/) | IO: (&mut Render) -> every buffer
+// Concern: a whole render as a stream pulled to its end, what it holds whole first, where `until` ended it | Non-concern: one node's samples (mod.rs, drive/) | IO: (&mut Render) -> buffers readings take
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use sva_formula::{Hash, Held, NodeId};
-use sva_samples::{Buffer, Extent, Label, NodeRenderer, Slot};
+use sva_samples::{Buffer, Extent, Label, NodeRenderer, Slot, Tape};
 
 use super::drive::node::{self, Hold, Kind};
 use super::drive::{self, Driver};
@@ -19,9 +19,10 @@ use crate::typing::Value;
 /// Any size writes the same bits.
 const BLOCK: usize = 1 << 12;
 
-/// What a render needs before any reader runs is held whole first, and the stream's own
-/// driver pulls every other node. A render `until` stopped before is pulled to that stop, and
-/// what it pulled then answers from the store.
+/// What a render needs before any reader runs is held whole first, a leaf only once its readers
+/// reach it, and the stream's own driver pulls every other node, dropping each once spent. A
+/// render `until` stopped before is pulled to that stop, and what it pulled then answers from
+/// the store.
 pub(super) fn computed(
     held: &mut Render,
     lenses: &Lenses,
@@ -35,9 +36,19 @@ pub(super) fn computed(
     unlooped(held, &needed, looped)?;
     let keys = keys(held, lenses, &needed, costed, recalled)?;
     let (whole, stored) = whole(held, lenses, &needed, &keys);
+    // What a reading or the store takes after the pass is kept whole; the rest ends once spent.
+    let kept: BTreeSet<NodeId> = held
+        .schedule
+        .wanted
+        .iter()
+        .chain(keys.keys())
+        .chain([&held.root])
+        .copied()
+        .collect();
+    let deferred = deferred(held, lenses, &whole, &stored, &kept);
     for id in held.schedule.materialize.clone() {
         let run = stored.contains(&id) && lenses.runs.contains(&id);
-        if !needed.contains(&id) || !whole.contains(&id) || run {
+        if !needed.contains(&id) || !whole.contains(&id) || run || deferred.contains(&id) {
             continue;
         }
         match (stored.contains(&id), keys.get(&id)) {
@@ -51,7 +62,45 @@ pub(super) fn computed(
             _ => materialize(held, id, lenses)?,
         }
     }
-    pulled(held, lenses, &needed, costed, &keys, (stop_key, recalled))
+    let pending = Pending {
+        deferred,
+        keys,
+        kept,
+    };
+    pulled(
+        held,
+        lenses,
+        &needed,
+        costed,
+        &pending,
+        (stop_key, recalled),
+    )
+}
+
+/// What the pass holds whole and computes only as its readers reach it: a node no other whole
+/// node reads, reading none itself, that is not kept and that the store never sees.
+fn deferred(
+    held: &Render,
+    lenses: &Lenses,
+    whole: &BTreeSet<NodeId>,
+    stored: &BTreeSet<NodeId>,
+    kept: &BTreeSet<NodeId>,
+) -> BTreeSet<NodeId> {
+    let read: BTreeSet<NodeId> = whole.iter().flat_map(|id| reads(held, *id)).collect();
+    let unseen = |id: &NodeId| !stored.contains(id) && lenses.at(*id).is_none();
+    whole
+        .iter()
+        .copied()
+        .filter(|id| unseen(id) && !read.contains(id) && !kept.contains(id))
+        .filter(|id| !matches!(held.tys.ty(*id).held, Held::Frames))
+        .filter(|id| reads(held, *id).is_empty())
+        .collect()
+}
+
+struct Pending {
+    deferred: BTreeSet<NodeId>,
+    keys: BTreeMap<NodeId, (Hash, usize)>,
+    kept: BTreeSet<NodeId>,
 }
 
 /// Each sampled node's key over what it is pulled to: its extent, or where a recalled stop
@@ -156,9 +205,10 @@ fn pulled(
     lenses: &Lenses,
     needed: &BTreeSet<NodeId>,
     costed: &[NodeId],
-    keys: &BTreeMap<NodeId, (Hash, usize)>,
+    pending: &Pending,
     (stop_key, recalled): (Option<Hash>, Option<i64>),
 ) -> Result<(), EngineError> {
+    let (keys, kept) = (&pending.keys, &pending.kept);
     let Some(range) = held.range else {
         return Ok(());
     };
@@ -179,10 +229,16 @@ fn pulled(
             warm(held, id, key, samples, lenses.at(id).as_ref());
         }
     }
-    let whole: BTreeMap<NodeId, Buffer> = order
+    let mut whole: BTreeMap<NodeId, Buffer> = order
         .iter()
         .filter_map(|id| Some((*id, held.buffers.remove(id)?)))
         .collect();
+    for &id in pending.deferred.iter().filter(|id| order.contains(id)) {
+        let width = (held.tys.ty(id).width as usize).max(1);
+        let mut unfilled = Buffer::silence(held.rate(), width, 0);
+        unfilled.start = held.extents.of(id).start;
+        whole.insert(id, unfilled);
+    }
     let mut nodes = node::built(held, &order, Hold::Every(whole), lenses, &|_| false)?;
     if aside {
         let root = answer::on_the_grid(held, held.root)?;
@@ -190,8 +246,37 @@ fn pulled(
         nodes.push(node::whole(held.root, root, range, support));
     }
     let root = nodes.iter().position(|n| n.id == held.root);
-    let mut driver = Driver::new(nodes, root, pulled, BLOCK, until, held, false);
-    while driver.pull(held, lenses)? {}
+    for node in nodes.iter_mut() {
+        let computed = !matches!(node.kind, Kind::Whole);
+        match kept.contains(&node.id) {
+            false if computed => node.trail(),
+            true if computed && node.extent.is_bounded() => node.reserve(),
+            _ => {}
+        }
+    }
+    let mut unfilled: Vec<usize> = (0..nodes.len())
+        .filter(|at| pending.deferred.contains(&nodes[*at].id))
+        .collect();
+    let mut driver = Driver::new(nodes, root, pulled, BLOCK, until, held, kept.clone());
+    loop {
+        let to = driver.next_to();
+        let mut still = Vec::new();
+        for at in unfilled {
+            let node = &driver.nodes[at];
+            if to - node.lag <= node.extent.start && !node.extent.is_empty() {
+                still.push(at);
+                continue;
+            }
+            materialize(held, node.id, lenses)?;
+            let buffer = held.buffers.remove(&node.id).expect("a materialized node");
+            driver.nodes[at].tape = Tape::from(buffer);
+        }
+        unfilled = still;
+        if !driver.pull(held, lenses)? {
+            break;
+        }
+    }
+    held.held_bytes = driver.most_bytes();
     let stop = recalled.or(driver.stop().filter(|stop| *stop < range.end));
     let mut driven = Vec::new();
     for mut node in driver.nodes {
@@ -199,6 +284,9 @@ fn pulled(
             continue;
         }
         node.store(held, lenses);
+        if !kept.contains(&node.id) {
+            continue;
+        }
         let computed = !matches!(node.kind, Kind::Whole);
         if computed || node.run.is_some() {
             let label = Label::measured(held.config.profile.name, held.rate());

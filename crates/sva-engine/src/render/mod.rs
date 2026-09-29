@@ -112,6 +112,8 @@ pub struct Render {
     pub schedule: Schedule,
     pub bindings: BTreeMap<NodeId, Vec<Binding>>,
     pub cache_stats: Option<CacheStats>,
+    /// The most bytes the pass's nodes held at once, samples and state.
+    pub held_bytes: usize,
     /// The samples the root was read over, at the render's rate; `None` where no reading
     /// needed any.
     pub range: Option<Extent>,
@@ -140,6 +142,7 @@ impl Render {
             schedule,
             bindings: BTreeMap::new(),
             cache_stats: None,
+            held_bytes: 0,
             range: None,
             unranged: None,
             extents: extent::Extents::default(),

@@ -253,7 +253,8 @@ pub(in crate::render) fn built(
 /// A keep past any extent: a reader whose index scales may come back to any sample.
 const WHOLE: usize = usize::MAX;
 
-/// Each node's lag, the least its readers need, and its keep, the most they reach back.
+/// Each node's lag, the least its readers need, and its keep, the most they reach back; a
+/// node that computes nothing reads nothing.
 fn clocked(nodes: &mut [Driven], root: Option<usize>, trailing: bool) {
     let mut lags: Vec<Option<i64>> = vec![None; nodes.len()];
     if let Some(root) = root {
@@ -267,12 +268,18 @@ fn clocked(nodes: &mut [Driven], root: Option<usize>, trailing: bool) {
         let lag = lags[at].unwrap_or(0);
         nodes[at].lag = lag;
         nodes[at].keep = nodes[at].own;
+        if nodes[at].extent.is_empty() {
+            continue;
+        }
         for &(read, shift) in &nodes[at].reads {
             let wants = lag - shift;
             lags[read] = Some(lags[read].map_or(wants, |held| held.min(wants)));
         }
     }
     for at in 0..nodes.len() {
+        if nodes[at].extent.is_empty() {
+            continue;
+        }
         for (read, shift) in nodes[at].reads.clone() {
             let back = (nodes[at].lag - shift - nodes[read].lag).max(0) as usize;
             nodes[read].keep = nodes[read].keep.max(back);
@@ -755,6 +762,18 @@ impl Driven {
             }
         }
         Ok((start, self.tape.end()))
+    }
+
+    /// Holds its whole extent in one allocation, before any of it is computed.
+    pub(in crate::render) fn reserve(&mut self) {
+        if self.tape.end() == self.extent.start {
+            self.tape = Tape::new(self.width, self.extent.len(), self.extent.start);
+        }
+    }
+
+    /// Holds only what its readers reach back to, as a stream's node does.
+    pub(in crate::render) fn trail(&mut self) {
+        self.trailing = true;
     }
 
     pub(super) fn forgets(&self) -> bool {
