@@ -105,10 +105,10 @@ impl Until {
     }
 }
 
-/// The root's first channel from `base` on, framed from `start` as the `envelope`
+/// The root's channels from `base` on, framed from `start` as the `envelope`
 /// representation frames it; `ended` says no sample follows the last one held.
 pub(crate) struct Known<'a> {
-    plane: &'a [f64],
+    planes: Vec<&'a [f64]>,
     base: i64,
     start: i64,
     frame: usize,
@@ -118,7 +118,7 @@ pub(crate) struct Known<'a> {
 
 impl<'a> Known<'a> {
     pub(crate) fn new(
-        plane: &'a [f64],
+        planes: Vec<&'a [f64]>,
         base: i64,
         start: i64,
         frame: usize,
@@ -126,7 +126,7 @@ impl<'a> Known<'a> {
         ended: bool,
     ) -> Self {
         Known {
-            plane,
+            planes,
             base,
             start,
             frame: frame.max(1),
@@ -139,7 +139,7 @@ impl<'a> Known<'a> {
     fn frame_level(&self, n: i64) -> Option<f64> {
         let frame = self.frame as i64;
         let from = self.start + (n - self.start).div_euclid(frame) * frame;
-        let end = self.base + self.plane.len() as i64;
+        let end = self.base + self.planes.iter().map(|p| p.len()).min().unwrap_or(0) as i64;
         if from < self.base {
             return None;
         }
@@ -148,8 +148,12 @@ impl<'a> Known<'a> {
             false if self.ended => end,
             false => return None,
         };
-        let held = &self.plane[(from - self.base) as usize..(to - self.base) as usize];
-        Some(sva_samples::measure::envelope::rms(held))
+        let held: Vec<&[f64]> = self
+            .planes
+            .iter()
+            .map(|p| &p[(from - self.base) as usize..(to - self.base) as usize])
+            .collect();
+        Some(sva_samples::measure::envelope::level(&held))
     }
 
     fn value(&self, term: Term, n: i64) -> Option<f64> {

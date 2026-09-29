@@ -14,7 +14,7 @@ fn tone(hz: f64, secs: f64, amp: f64) -> Vec<f64> {
 /// A steady tone has one level, and every frame says so at the second it covers.
 #[test]
 fn a_steady_tone_traces_one_level_at_its_own_seconds() {
-    let frames = trace(&tone(440.0, 0.5, 0.5), RATE, 0.0, 0.05);
+    let frames = trace(&[&tone(440.0, 0.5, 0.5)], RATE, 0.0, 0.05);
     assert_eq!(frames.len(), 10, "half a second in 50 ms steps");
     for (n, frame) in frames.iter().enumerate() {
         assert!(
@@ -34,8 +34,8 @@ fn a_steady_tone_traces_one_level_at_its_own_seconds() {
 #[test]
 fn a_trace_counts_from_the_window_it_was_taken_over() {
     let held = tone(440.0, 0.2, 0.5);
-    let from_zero = trace(&held, RATE, 0.0, 0.05);
-    let from_two = trace(&held, RATE, 2.0, 0.05);
+    let from_zero = trace(&[&held], RATE, 0.0, 0.05);
+    let from_two = trace(&[&held], RATE, 2.0, 0.05);
     assert_eq!(from_zero.len(), from_two.len());
     for (early, late) in from_zero.iter().zip(&from_two) {
         assert!((late.t_secs - early.t_secs - 2.0).abs() < 1e-9, "{late:?}");
@@ -53,7 +53,7 @@ fn a_decaying_tone_falls_frame_by_frame() {
             (-t / 0.1).exp() * (std::f64::consts::TAU * 440.0 * t).sin()
         })
         .collect();
-    let frames = trace(&decaying, RATE, 0.0, 0.05);
+    let frames = trace(&[&decaying], RATE, 0.0, 0.05);
     for pair in frames.windows(2) {
         assert!(
             pair[1].rms < pair[0].rms,
@@ -67,6 +67,6 @@ fn a_decaying_tone_falls_frame_by_frame() {
 fn silence_measures_zero_and_an_empty_window_measures_nothing() {
     assert_eq!(rms(&[0.0; 128]), 0.0);
     assert_eq!(rms(&[]), 0.0, "no samples is no level, not a division");
-    let quiet = trace(&vec![0.0; 4410], RATE, 0.0, 0.05);
+    let quiet = trace(&[&[0.0; 4410]], RATE, 0.0, 0.05);
     assert!(quiet.iter().all(|f| f.rms == 0.0 && f.peak == 0.0));
 }

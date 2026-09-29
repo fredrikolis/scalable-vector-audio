@@ -55,6 +55,10 @@ impl Buffer {
         &mut self.planes[c]
     }
 
+    pub fn slices(&self) -> Vec<&[f64]> {
+        self.planes.iter().map(Vec::as_slice).collect()
+    }
+
     pub fn len(&self) -> usize {
         self.planes.iter().map(Vec::len).min().unwrap_or(0)
     }

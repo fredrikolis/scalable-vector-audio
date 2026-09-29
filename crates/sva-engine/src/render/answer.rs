@@ -188,7 +188,7 @@ fn off_the_grid(
     let buffer = on_the_grid(render, node)?;
     Ok(Answer::whole(
         Output::Envelope(envelope::trace(
-            buffer.plane(0),
+            &buffer.slices(),
             f64::from(rate),
             buffer.origin_secs(),
             frame_secs.unwrap_or(DEFAULT_FRAME_SECS),
@@ -483,7 +483,7 @@ pub fn off_buffer(buffer: &Buffer, representation: Representation) -> Result<Out
             plane, sr, max_peaks, frame_secs,
         ))),
         Representation::Envelope { frame_secs } => Output::Envelope(envelope::trace(
-            plane,
+            &buffer.slices(),
             sr,
             start,
             frame_secs.unwrap_or(DEFAULT_FRAME_SECS),

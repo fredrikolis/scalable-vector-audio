@@ -72,6 +72,10 @@ impl Block {
     pub fn plane(&self, c: usize) -> &[f64] {
         &self.planes[c]
     }
+
+    fn slices(&self) -> Vec<&[f64]> {
+        self.planes.iter().map(Vec::as_slice).collect()
+    }
 }
 
 /// The `envelope` reading's own frame on the render's lattice, where one is asked.
@@ -243,7 +247,7 @@ impl Driver {
         let heard = Block::of(&root.tape, root.support, base, to);
         let rate = shell.lattice();
         let known = Known::new(
-            heard.plane(0),
+            heard.slices(),
             base,
             self.start,
             self.frame,

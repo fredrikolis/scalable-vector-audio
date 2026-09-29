@@ -55,9 +55,9 @@ RENDER:
   at the first sample the condition holds at, or at the interval's end,
   whichever is first. It is checked as each block is pulled, so no node driven
   block by block runs past the block it holds in. A condition compares (`<`,
-  `<=`, `>`, `>=`) `t`, `envelope(t)` (the RMS of the `envelope`
-  representation's frame holding `t`, framed by its own `frame` where one is
-  asked) and literals, joined by `and`/`or`.
+  `<=`, `>`, `>=`) `t`, `envelope(t)` (the RMS over every channel of the
+  `envelope` representation's frame holding `t`, framed by its own `frame`
+  where one is asked) and literals, joined by `and`/`or`.
 
   `--representation <list>` takes a comma list of readings and may repeat. Each
   is a call in the language's own syntax, its options its named arguments:
@@ -75,6 +75,9 @@ RENDER:
   measures either frame by frame. A measured `spectrum` is one spectrum: every
   `frame`-long window across the range, averaged. `pitch` is framed, one entry
   per `frame`; for the spectrum at one instant, read a range one frame long.
+  A measured `envelope` is framed too, and reads every channel: a frame's
+  `rms` is the root mean square of all its channels' samples together, its
+  `peak` the largest magnitude in any channel.
 
   `--bits <n>` is the precision every sample is written to, from 2 to 52: the
   point where a series is truncated, and the encoding of a `.wav`, integer PCM

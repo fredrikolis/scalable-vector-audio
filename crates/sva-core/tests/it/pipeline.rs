@@ -1,6 +1,8 @@
 // Concern: states what the shared pipeline answers a front end handing it a target and a condition | Non-concern: what a render sounds like | IO: (text) -> a target, a condition, roots
 
-use sva_core::{CliError, Edge, Job, execute, prepared, roots_of, target, until};
+use sva_core::{
+    CliError, Edge, Job, Output, PROBE, Representation, execute, prepared, roots_of, target, until,
+};
 use sva_engine::{Cmp, Term, Until};
 
 fn composition(files: &[(&str, &str)]) -> sva_ast::Composition {
@@ -206,4 +208,27 @@ fn a_target_answers_off_the_expression_it_is() {
         refused.message()
     );
     assert!(execute(asking(&held, "@master")).is_ok());
+}
+
+/// A level is every channel's: a tone in the second channel beside silence in the first is
+/// half its power, and a quiet `until` does not hold over it.
+#[test]
+fn a_level_reads_every_channel() {
+    let held = composition(&[]);
+    let job = Job {
+        until: Some("envelope(t) < -60db"),
+        ..asking(&held, "join(0, crop(sample(sin(2*pi*441*t)), 0s, 0.5s))")
+    };
+    let rendered = execute(job).expect("a stereo tone");
+    let envelope = Representation::Envelope {
+        frame_secs: Some(0.1),
+    };
+    let Output::Envelope(frames) = rendered.answer(PROBE, envelope).expect("frames").value else {
+        panic!("a measured envelope answers in frames");
+    };
+    assert_eq!(frames.len(), 5, "the render ran its whole half second");
+    for frame in frames {
+        assert!((frame.rms - 0.5).abs() < 0.01, "sqrt(1/2 / 2): {frame:?}");
+        assert!(frame.peak > 0.99, "{frame:?}");
+    }
 }
