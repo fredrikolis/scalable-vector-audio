@@ -11,5 +11,6 @@ mod outline;
 mod panics;
 mod render_integration;
 mod scaffold;
+mod store;
 mod templates;
 mod trace;

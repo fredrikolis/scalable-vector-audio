@@ -65,6 +65,18 @@ impl Place {
     }
 }
 
+impl super::Table {
+    /// The keys a value's segments may be persisted under.
+    pub(crate) fn segment_keys(&self) -> Vec<Hash> {
+        self.values
+            .iter()
+            .zip(&self.places)
+            .filter(|(value, _)| value.pure && Place::kind(value) == PayloadKind::Segments)
+            .map(|(value, place)| place.keyed(value))
+            .collect()
+    }
+}
+
 /// What the store holds of `value`, laid in beside what it holds itself; `false` where the
 /// store answered nothing.
 pub(crate) fn load(value: &mut Value, place: &mut Place, recording: &Recording) -> bool {

@@ -18,3 +18,4 @@ sva-core = { workspace = true }
 sva-engine = { workspace = true }
 sva-formula = { workspace = true }
 hound = "3.5.1"
+signal-hook = "0.3"

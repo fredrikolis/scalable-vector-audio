@@ -42,6 +42,20 @@ fn help_states_the_depth_peaks_oversample_and_frame_defaults() {
     }
 }
 
+#[test]
+fn help_states_where_the_store_lives_and_its_budget() {
+    let page = help_text();
+    let budget = format!("{} GB", sva_core::DEFAULT_STORE_BYTES >> 30);
+    for held in [
+        "--cache <path|none>",
+        "$XDG_CACHE_HOME/sva",
+        "~/.cache/sva",
+        &budget,
+    ] {
+        assert!(page.contains(held), "{held}: {page}");
+    }
+}
+
 /// The two subcommands the standard's verb list has no word for.
 #[test]
 fn help_says_where_the_two_verbs_with_no_standard_name_sit() {

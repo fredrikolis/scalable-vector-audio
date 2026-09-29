@@ -10,7 +10,8 @@ pub(crate) use reading::check_frame;
 use reading::{analyze_args, render_args};
 
 pub const USAGE: &str = "usage: sva-cli render '<expression>' --representation <r>[=<path>][,...] \
-     [--until '<condition>'] [--bits <n>] [--rate <hz>] [--flop-budget <n>] [--confirm]\n       \
+     [--until '<condition>'] [--bits <n>] [--rate <hz>] [--flop-budget <n>] [--cache <path|none>] \
+     [--confirm]\n       \
      sva-cli analyze <file.wav> --representation <r>[=<path>][,...] [--confirm]\n       \
      sva-cli lint ['<expression>'] [--format <json|text>]\n       \
      sva-cli trace <node|expression>\n       \
@@ -56,6 +57,16 @@ pub struct RenderArgs {
     pub asked: Vec<Asked>,
     /// The caller said a destination that already holds a file may be replaced.
     pub confirm: bool,
+    pub cache: CacheAt,
+}
+
+/// Where a render's persistent store lives.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CacheAt {
+    #[default]
+    Platform,
+    Path(PathBuf),
+    Off,
 }
 
 /// One reading `sva-analysis` answers, which no `Representation` names.

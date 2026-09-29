@@ -5,7 +5,9 @@ use std::path::{Component, Path, PathBuf};
 use sva_core::{Asked, Call, CliError, asked, calls, is_wav, wav_path};
 use sva_engine::{DEFAULT_SAMPLE_RATE, MAX_PINNED_FRAME, Representation, pinned_frame};
 
-use super::{ANALYZE_REPRESENTATIONS, Analysis, AnalyzeArgs, Command, RenderArgs, USAGE, value};
+use super::{
+    ANALYZE_REPRESENTATIONS, Analysis, AnalyzeArgs, CacheAt, Command, RenderArgs, USAGE, value,
+};
 
 /// What `render` and `analyze` both read: the calls asked for, and `--confirm`.
 #[derive(Default)]
@@ -116,6 +118,7 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
     })?;
     let mut flags = Flags::default();
     let (mut until, mut rate, mut bits, mut flop_budget) = (None, None, None, None);
+    let mut cache = CacheAt::Platform;
     while let Some(flag) = it.next() {
         if flags.read(flag, &mut it)? {
             continue;
@@ -126,6 +129,12 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
             "--bits" => bits = Some(whole(&value(&mut it, "--bits")?, "--bits")?),
             "--flop-budget" => {
                 flop_budget = Some(operations(&value(&mut it, "--flop-budget")?)?);
+            }
+            "--cache" => {
+                cache = match value(&mut it, "--cache")?.as_str() {
+                    "none" => CacheAt::Off,
+                    path => CacheAt::Path(PathBuf::from(path)),
+                };
             }
             other => {
                 return Err(CliError::Usage(format!(
@@ -151,6 +160,7 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
         flop_budget,
         asked,
         confirm: flags.confirm,
+        cache,
     })))
 }
 

@@ -19,6 +19,7 @@ mod loops;
 mod naming;
 mod observations;
 mod operators;
+mod persist;
 mod placement;
 mod pointwise;
 mod policies;

@@ -35,12 +35,15 @@ use std::path::Path;
 use sva_ast::{Dir, Graph, Refusal, Source};
 use sva_engine::{
     Ask, DEFAULT_SAMPLE_RATE, EngineError, Range, RenderConfig, StreamConfig, render,
+    render_through,
 };
 
 pub use sva_engine::{Handle, QuietTail, Stream, Until};
 
 pub use sva_engine::{Answer, Extent, Label, Output, Representation};
-pub use sva_engine::{Cache, CachePolicy, PrunePolicy};
+pub use sva_engine::{
+    Backend, Cache, CachePolicy, DEFAULT_STORE_BYTES, Persisted, PrunePolicy, Store,
+};
 
 pub const ROOT: &str = "master";
 pub const PROBE: &str = "probe";
@@ -213,8 +216,26 @@ fn instance_read(graph: &Graph, text: &str) -> Option<sva_ast::Expr> {
 
 pub fn execute(job: Job) -> Result<Rendered, CliError> {
     let (graph, config) = settle(&job)?;
-    let render = render(&graph, PROBE, config, job.cache)
-        .map_err(|e| CliError::Engine(as_written(e, job.target)))?;
+    let render = render(&graph, PROBE, config, job.cache);
+    rendered(&job, graph, render)
+}
+
+/// `execute` reading through `store` in place of `job`'s own cache; it writes nothing there.
+pub async fn execute_through<B: Backend>(
+    job: Job<'_>,
+    store: &Store<B>,
+) -> Result<Rendered, CliError> {
+    let (graph, config) = settle(&job)?;
+    let render = render_through(&graph, PROBE, config, store).await;
+    rendered(&job, graph, render)
+}
+
+fn rendered(
+    job: &Job,
+    graph: Graph,
+    render: Result<sva_engine::Render, EngineError>,
+) -> Result<Rendered, CliError> {
+    let render = render.map_err(|e| CliError::Engine(as_written(e, job.target)))?;
     Ok(Rendered {
         config: render.config.clone(),
         expression: job.target.to_string(),

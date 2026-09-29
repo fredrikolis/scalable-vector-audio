@@ -1,14 +1,18 @@
-// Concern: the JS surface — a composition a page fills node by node, and what it renders or streams to | Non-concern: the pipeline (sva-core), the store | IO: (path, text) -> samples, blocks, a reading
+// Concern: the JS surface — a composition a page fills node by node, renders, streams, persists | Non-concern: the pipeline (sva-core), the store's medium | IO: (path, text) -> samples, blocks, stores
 
 //! A page holds no directory: nodes arrive one at a time, so a composition is BUILT rather
 //! than read. A refusal crosses as a thrown `Error`: `name` is the CLI's error code,
 //! `refusal` the envelope it would print.
 
+mod opfs;
+
+pub use opfs::DirectoryHandle;
+
 use sva_core::{
     Asked, CliError, Diagnostic, Job, Printed, Rendered, Report, SAMPLE_LIMIT, error_envelope,
-    execute, query_data, stats_json, stream_stats_json, work_json,
+    execute, execute_through, query_data, stats_json, stream_stats_json, work_json,
 };
-use sva_engine::{Cache, CachePolicy, CacheStats, Handle, PrunePolicy};
+use sva_engine::{Cache, CachePolicy, CacheStats, DEFAULT_STORE_BYTES, Handle, PrunePolicy, Store};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -174,6 +178,14 @@ pub fn outline(text: &str) -> Result<JsValue, JsValue> {
 pub struct Composition {
     inner: sva_ast::Composition,
     store: Cache,
+    persistent: Option<Store<opfs::Opfs>>,
+}
+
+fn unstored(why: String) -> JsValue {
+    let message = format!("the store could not be read or written: {why}");
+    let diagnostic = Diagnostic::new("wasm.store", message.clone())
+        .helped("check the directory handle is writable, or open with none for memory only");
+    crossed("internal_error", &message, &[diagnostic])
 }
 
 #[wasm_bindgen]
@@ -187,7 +199,35 @@ impl Composition {
                 None => inner,
             },
             store: Cache::holding(DEFAULT_CACHE_BYTES),
+            persistent: None,
         }
+    }
+
+    /// Over the store in `dir`, an origin-private file system directory, or memory alone
+    /// where there is none.
+    pub async fn open(
+        name: Option<String>,
+        dir: Option<DirectoryHandle>,
+    ) -> Result<Composition, JsValue> {
+        let mut held = Composition::new(name);
+        if let Some(dir) = dir {
+            let backend = opfs::Opfs { dir };
+            let store = Store::open(backend, held.store.clone(), DEFAULT_STORE_BYTES).await;
+            held.persistent = Some(store.map_err(unstored)?);
+        }
+        Ok(held)
+    }
+
+    /// The only write to the directory `open` was handed: every value computed since the last.
+    pub async fn persist(&self) -> Result<usize, JsValue> {
+        let Some(store) = &self.persistent else {
+            return Ok(0);
+        };
+        store
+            .persist()
+            .await
+            .map(|done| done.written)
+            .map_err(unstored)
     }
 
     pub fn insert(&mut self, path: &str, text: &str) {
@@ -198,7 +238,7 @@ impl Composition {
     /// what `representations()` answers, `samples` where unset, each a call as
     /// `--representation` writes it. `options` sets `rate`, `bits`, `flop_budget`, `until`,
     /// `volatile` and `cache`.
-    pub fn render(
+    pub async fn render(
         &self,
         target: &str,
         representations: Option<Vec<String>>,
@@ -210,7 +250,7 @@ impl Composition {
         )?;
         let names = representations.unwrap_or_else(|| vec!["samples".to_string()]);
         let asked = representations_of(&names)?;
-        let rendered = execute(Job {
+        let job = Job {
             until: options.until.as_deref(),
             rate: options.rate,
             bits: options.bits,
@@ -220,7 +260,11 @@ impl Composition {
             flop_budget: options.flop_budget,
             volatile: &options.volatile,
             ..Job::over(&self.inner, target)
-        });
+        };
+        let rendered = match &self.persistent {
+            Some(store) => execute_through(job, store).await,
+            None => execute(job),
+        };
         rendered
             .map(|inner| Rendering { inner, asked })
             .map_err(|e| thrown(&e))

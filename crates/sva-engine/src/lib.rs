@@ -25,8 +25,9 @@ pub use arguments::{Argument, Arguments, Called, Chosen};
 pub use bindings::Binding;
 pub use cache::log::cache_log;
 pub use cache::{
-    Cache, CachePolicy, CacheStats, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY, Hash, Lookup, Outcome,
-    PayloadKind, PrunePolicy,
+    Backend, Cache, CachePolicy, CacheStats, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY,
+    DEFAULT_STORE_BYTES, Hash, Lookup, Outcome, PayloadKind, Persisted, PrunePolicy, STORE_VERSION,
+    Store, VERSION_NAME,
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
@@ -38,7 +39,7 @@ pub use render::until::{Cmp, Term};
 pub use render::{
     Block, Handle, NOTES, QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, Range, Render, RenderConfig,
     STREAMED, Stream, StreamConfig, Until, answer, answer_buffer, plan, quiet_tails, render,
-    sketch_atom,
+    render_through, sketch_atom,
 };
 pub use schedule::{Order, Schedule, schedule_from};
 pub use sva_formula::{C64, Codomain, Held, Line, NodeId, SpectralSum, Ty, Var};

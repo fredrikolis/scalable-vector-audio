@@ -4,6 +4,7 @@ mod args;
 mod arity;
 mod composition;
 mod destination;
+mod directory;
 mod help;
 mod lint;
 mod new;
@@ -11,13 +12,15 @@ mod output;
 mod panic;
 mod rates;
 mod render;
+mod store;
 mod terminal;
 mod trace;
 mod variables;
 mod wav;
 
 pub use args::{
-    ANALYZE_REPRESENTATIONS, Analysis, AnalyzeArgs, Command, Format, RenderArgs, USAGE, parse_args,
+    ANALYZE_REPRESENTATIONS, Analysis, AnalyzeArgs, CacheAt, Command, Format, RenderArgs, USAGE,
+    parse_args,
 };
 pub use composition::{composition, located};
 pub use destination::{Framing, refuse_inside, write as write_destination, write_analysis};

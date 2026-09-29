@@ -5,7 +5,9 @@
 //! reaching for either compiles clean and traps only at RUNTIME. Hence one session for the
 //! whole surface. Run it with `wasm-pack test --node crates/sva-wasm`.
 
+use std::task::{Context, Poll, Waker};
 use sva_wasm::{Composition, Rendering, Stream, builtins, outline};
+
 use wasm_bindgen::JsValue;
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -37,6 +39,32 @@ fn options(more: &[(&str, JsValue)]) -> JsValue {
     held.into()
 }
 
+/// A render with no persistent store never waits, so one poll finishes it.
+trait Now {
+    fn rendered(
+        &self,
+        target: &str,
+        representations: Option<Vec<String>>,
+        options: JsValue,
+    ) -> Result<Rendering, JsValue>;
+}
+
+impl Now for Composition {
+    fn rendered(
+        &self,
+        target: &str,
+        representations: Option<Vec<String>>,
+        options: JsValue,
+    ) -> Result<Rendering, JsValue> {
+        let mut render = std::pin::pin!(self.render(target, representations, options));
+        let mut context = Context::from_waker(Waker::noop());
+        match render.as_mut().poll(&mut context) {
+            Poll::Ready(done) => done,
+            Poll::Pending => unreachable!("a render in memory alone never waits"),
+        }
+    }
+}
+
 fn page() -> Composition {
     let mut held = Composition::new(Some("a-registry".to_string()));
     held.insert("master", "@partials/one*0.5\n");
@@ -49,7 +77,7 @@ fn page() -> Composition {
 /// `@<node>` over its first second, read for `representations`.
 fn asking(of: &Composition, node: &str, representations: &[&str]) -> Rendering {
     let asked = representations.iter().map(|r| (*r).to_string()).collect();
-    of.render(&format!("@{node}([0, 1s])"), Some(asked), options(&[]))
+    of.rendered(&format!("@{node}([0, 1s])"), Some(asked), options(&[]))
         .unwrap_or_else(|_| unreachable!("`{node}` renders"))
 }
 
@@ -88,7 +116,7 @@ fn every_export_survives_the_boundary() {
     assert!((drawn[2] - want).abs() < 1e-4, "{} vs {want}", drawn[2]);
 
     let part = held
-        .render("@partials/one([0.25s, 0.5s])", None, options(&[]))
+        .rendered("@partials/one([0.25s, 0.5s])", None, options(&[]))
         .unwrap_or_else(|_| unreachable!("an interval renders"));
     assert_eq!(part.start_secs(), 0.25);
     assert_eq!(plane(&part).len(), 2000, "an interval narrows the array");
@@ -183,7 +211,7 @@ fn every_representation_name_the_cli_answers_crosses_and_the_removed_ones_refuse
         "alias",
         "bindings",
     ] {
-        let asked = held.render(
+        let asked = held.rendered(
             "@partials/one([0, 1s])",
             Some(vec![name.to_string()]),
             options(&[]),
@@ -203,7 +231,7 @@ fn every_representation_name_the_cli_answers_crosses_and_the_removed_ones_refuse
         "nonsense",
     ] {
         assert!(
-            held.render(
+            held.rendered(
                 "@partials/one([0, 1s])",
                 Some(vec![gone.to_string()]),
                 options(&[]),
@@ -296,7 +324,7 @@ fn a_release_after_a_held_render_reads_it_as_a_prefix() {
     );
     held.insert("released", "@string(t, release=2.5)\n");
     let over = |node: &str| {
-        held.render(&format!("@{node}([0, 3s])"), None, options(&[]))
+        held.rendered(&format!("@{node}([0, 3s])"), None, options(&[]))
             .unwrap_or_else(|_| unreachable!("`{node}` renders"))
     };
     over("string");
@@ -331,7 +359,7 @@ fn config(volatile: &[&str]) -> JsValue {
 }
 
 fn played(held: &Composition, cutoff: u32, volatile: &[&str]) -> Rendering {
-    held.render(&knob(cutoff), None, config(volatile))
+    held.rendered(&knob(cutoff), None, config(volatile))
         .unwrap_or_else(|_| unreachable!("the knob at {cutoff} renders"))
 }
 
@@ -376,7 +404,7 @@ fn a_volatile_knob_crosses_in_the_config_and_keeps_one_value_per_node() {
     );
 
     let refused = held
-        .render(&knob(500), None, config(&["cutof"]))
+        .rendered(&knob(500), None, config(&["cutof"]))
         .err()
         .unwrap_or_else(|| unreachable!("a name nothing binds refuses"));
     assert!(
@@ -411,7 +439,7 @@ fn a_cache_policy_crosses_by_name_and_per_render() {
     assert!(held.set_cache_policy("some").is_err());
 
     let at = |policy: &str| {
-        held.render(
+        held.rendered(
             "@master([0, 1s])",
             None,
             options(&[("cache", JsValue::from_str(policy))]),
@@ -459,7 +487,7 @@ fn a_refusal_crosses_as_data_and_the_module_keeps_working() {
     held.insert("master", "@nowhere*2\n");
 
     let refused = held
-        .render("@master([0, 1s])", None, options(&[]))
+        .rendered("@master([0, 1s])", None, options(&[]))
         .err()
         .unwrap_or_else(|| unreachable!("a dangling ref refuses"));
 
@@ -509,7 +537,7 @@ fn a_refusal_crosses_as_data_and_the_module_keeps_working() {
 /// envelope. A page branching on one has to find the other beside it.
 #[wasm_bindgen_test]
 fn a_refusal_the_page_raised_crosses_exactly_as_a_pipeline_one_does() {
-    let Err(raised) = page().render(
+    let Err(raised) = page().rendered(
         "@partials/one([0, 1s])",
         Some(vec!["nonsense".to_string()]),
         options(&[]),
@@ -538,7 +566,7 @@ fn a_refusal_the_page_raised_crosses_exactly_as_a_pipeline_one_does() {
 #[wasm_bindgen_test]
 fn a_ledger_is_summed_over_the_interval_asked_for() {
     let held = page()
-        .render(
+        .rendered(
             "@master([0.25s, 0.5s])",
             Some(vec!["ledger".to_string()]),
             options(&[]),
@@ -613,11 +641,11 @@ fn an_open_render_ends_where_its_support_does() {
     let mut held = Composition::new(None);
     held.insert("master", "crop(sin(2*pi*440*t), 0s, 0.3s)\n");
     let ended = held
-        .render("@master", None, options(&[]))
+        .rendered("@master", None, options(&[]))
         .unwrap_or_else(|_| unreachable!("the crop ends it"));
     assert_eq!(ended.duration_secs(), 0.3);
 
-    let never = held.render("sin(2*pi*100*t)", None, options(&[]));
+    let never = held.rendered("sin(2*pi*100*t)", None, options(&[]));
     let refused = never
         .err()
         .unwrap_or_else(|| unreachable!("a held sine never ends"));
@@ -744,7 +772,7 @@ fn an_open_stream_ends_where_the_render_does() {
     assert_eq!(heard.len() as f64, end);
     assert_eq!(stream.next(&mut out).ok(), Some(0), "nothing after the end");
     let whole = held
-        .render("@master", None, options(&[]))
+        .rendered("@master", None, options(&[]))
         .unwrap_or_else(|_| unreachable!("the same decay ends"));
     assert_eq!(heard[..], plane(&whole)[..]);
 }
@@ -791,4 +819,94 @@ fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
     assert_eq!(count(&whole, "samples"), Some(8000.0));
     assert!(count(&whole, "priced_flops").is_some_and(|f| f > 0.0));
     assert!(field(&whole, "waves").is_null());
+}
+
+/// What a page hands `open`: a directory handle held in memory, as the origin-private file
+/// system answers one. A missing name rejects as `NotFoundError`, and a write lands on close.
+fn fake_directory() -> JsValue {
+    js_sys::Function::new_no_args(
+        r#"
+        const files = new Map();
+        const missing = () => Object.assign(new Error("missing"), { name: "NotFoundError" });
+        return {
+            files,
+            async getFileHandle(name, options) {
+                if (!files.has(name)) {
+                    if (!(options && options.create)) throw missing();
+                    files.set(name, new Uint8Array(0));
+                }
+                return {
+                    async getFile() {
+                        const bytes = files.get(name);
+                        if (!bytes) throw missing();
+                        return { size: bytes.length, async arrayBuffer() { return bytes.slice().buffer; } };
+                    },
+                    async createWritable() {
+                        let pending = new Uint8Array(0);
+                        return {
+                            async write(data) { pending = new Uint8Array(data); },
+                            async close() { files.set(name, pending); },
+                        };
+                    },
+                };
+            },
+            async removeEntry(name) { if (!files.delete(name)) throw missing(); },
+            keys() {
+                const names = [...files.keys()];
+                let at = 0;
+                return { async next() { return at < names.length ? { done: false, value: names[at++] } : { done: true }; } };
+            },
+        };
+        "#,
+    )
+    .call0(&JsValue::NULL)
+    .unwrap_or_else(|_| unreachable!("the fake builds"))
+}
+
+/// Every value's file, beside the store's own version and recency files.
+fn values_in(dir: &JsValue) -> usize {
+    js_sys::Array::from(&field(dir, "files"))
+        .iter()
+        .filter_map(|pair| js_sys::Array::from(&pair).get(0).as_string())
+        .filter(|name| name != "version" && name != "recency")
+        .count()
+}
+
+async fn over_store(dir: &JsValue) -> Composition {
+    let mut held = Composition::open(None, Some(dir.clone().into()))
+        .await
+        .unwrap_or_else(|e| unreachable!("the store opens: {}", as_text(&e)));
+    held.insert("master", "sample(sin(2*pi*100*t))*0.5\n");
+    held
+}
+
+async fn stored_render(held: &Composition) -> JsValue {
+    held.render("@master([0, 0.1s])", None, options(&[]))
+        .await
+        .unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)))
+        .stats()
+        .unwrap_or_else(|_| unreachable!("stats answer"))
+}
+
+#[wasm_bindgen_test]
+async fn a_render_writes_the_directory_nothing_until_the_page_persists() {
+    let dir = fake_directory();
+    let held = over_store(&dir).await;
+    stored_render(&held).await;
+    assert_eq!(values_in(&dir), 0, "a render writes nothing");
+    let written = held
+        .persist()
+        .await
+        .unwrap_or_else(|_| unreachable!("persisted"));
+    assert!(written > 0);
+    assert_eq!(values_in(&dir), written);
+
+    let warm = stored_render(&over_store(&dir).await).await;
+    assert_eq!(
+        field(&warm, "computed").as_f64(),
+        Some(0.0),
+        "{}",
+        as_text(&warm)
+    );
+    assert_eq!(Composition::new(None).persist().await.ok(), Some(0));
 }

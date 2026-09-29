@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use sva_core::{
-    Answer, Asked, CliError, Job, Output, Printed, Report, SAMPLE_LIMIT, cwd, execute, query_data,
+    Answer, Asked, CliError, Job, Output, Printed, Report, SAMPLE_LIMIT, Store, cwd, execute,
+    execute_through, query_data,
 };
 use sva_engine::{
     Buffer, DEFAULT_FRAME_SECS, PSYCHOACOUSTIC_V1, Representation, answer_buffer, cache_log,
@@ -11,6 +12,8 @@ use sva_engine::{
 
 use crate::args::{AnalyzeArgs, RenderArgs};
 use crate::destination::{Framing, refuse_inside, refuse_replacing, write, write_analysis};
+use crate::directory::Directory;
+use crate::store::wait;
 use crate::wav::{SampleEncoding, read_channels};
 use sva_core::success_envelope;
 
@@ -25,16 +28,34 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
             refuse_replacing(dest, args.confirm)?;
         }
     }
-    let source = sva_ast::Dir::at(&dir);
+    let Some(store) = crate::store::opened(&args.cache)? else {
+        return answered(args, &dir, &target, None);
+    };
+    let answered = answered(args, &dir, &target, Some(store));
+    let stored = crate::store::persisted(store);
+    answered.and_then(|json| stored.map(|()| json))
+}
+
+fn answered(
+    args: &RenderArgs,
+    dir: &Path,
+    target: &str,
+    store: Option<&Store<Directory>>,
+) -> Result<String, CliError> {
+    let source = sva_ast::Dir::at(dir);
     let logs = std::env::var("SVA_LOG").is_ok_and(|level| level == "debug");
-    let rendered = execute(Job {
+    let job = Job {
         until: args.until.as_deref(),
         rate: args.rate,
         bits: args.bits,
         asked: &args.asked,
         flop_budget: args.flop_budget,
-        ..Job::over(&source, &target)
-    })?;
+        ..Job::over(&source, target)
+    };
+    let rendered = match store {
+        Some(store) => wait(execute_through(job, store))?,
+        None => execute(job)?,
+    };
 
     let rate = rendered.config.rate;
     if let (true, Some(stats)) = (logs, &rendered.render.cache_stats) {

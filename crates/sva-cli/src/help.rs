@@ -1,6 +1,6 @@
 // Concern: the `--help` page, each flag's default printed from its own constant | Non-concern: parsing those flags (args/), the JSON a subcommand answers (output.rs) | IO: () -> the page
 
-use sva_core::{DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE};
+use sva_core::{DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, DEFAULT_STORE_BYTES};
 use sva_engine::{
     DEFAULT_FRAME_SECS, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1, QUIET_AFTER_SECS, QUIET_LEVEL,
 };
@@ -11,6 +11,7 @@ pub fn help_text() -> String {
     let budget = PSYCHOACOUSTIC_V1.flop_budget;
     let bits = PSYCHOACOUSTIC_V1.precision_bits;
     let quiet = 20.0 * QUIET_LEVEL.log10();
+    let store_gb = DEFAULT_STORE_BYTES >> 30;
     format!(
         r#"USAGE:
   sva-cli (render | analyze | lint | trace | builtins | outline | new) [arguments]
@@ -23,7 +24,8 @@ DESCRIPTION:
 
 RENDER:
   sva-cli render '<expression>' --representation <list> [--until '<condition>']
-                 [--bits <n>] [--rate <hz>] [--flop-budget <n>] [--confirm]
+                 [--bits <n>] [--rate <hz>] [--flop-budget <n>] [--cache <path|none>]
+                 [--confirm]
 
   Renders one expression, in the grammar a node file's body uses, and prints one
   reading per representation under `data.representations`. `@path` reads a node
@@ -104,6 +106,15 @@ RENDER:
   `idx(t - 5ms - 2ms*sin(2*pi*t))`, is read sample by sample. An edit to a
   stream plays from the next sample on.
   `--flop-budget <n>` is the operation count paid before a render refuses.
+
+  Every value a render computes is kept in a store on disk, so the next render
+  of anything that reads the same value reads it back instead of computing it,
+  bit for bit. The store is on by default, at `$XDG_CACHE_HOME/sva`, else
+  `~/.cache/sva`; `--cache <path>` moves it (a `/dev/shm` path keeps it in
+  memory) and `--cache none` turns it off. It holds at most {store_gb} GB, the
+  least recently used values going first, and a store another build of
+  sva-cli wrote is emptied when opened. It is written once, when the render
+  ends, fails, or is stopped by SIGINT or SIGTERM, and never while it runs.
 
   `ledger` prints one row per node under the target. A row's `share` is the
   part of its reader's own energy that row accounts for, so one reader's refs
@@ -260,24 +271,28 @@ DEFAULTS:
   --format <json|text> how `lint` prints its findings: the envelope, or one
                        terminal line each, colored where stdout is a terminal.
                        The same objects either way. Default json.
+  --cache <path|none>  where the store lives. Default `$XDG_CACHE_HOME/sva`, else
+                       `~/.cache/sva`, holding at most {store_gb} GB; `none` keeps
+                       no store.
   --confirm            replaces a destination that already holds a file. Without
                        it a path already taken refuses as `conflict` and nothing
                        is written.
 
 ENVIRONMENT:
   SVA_LOG=debug        `render` logs, once it ends, what it asked of each value
-                       to stderr, and creates no store; stdout and the samples
-                       are unchanged. Any other value, or none, logs nothing.
-                       One line per second of output, then one per node and a
-                       total:
-                         sva-cache pass hit=0 miss=190 prefix=0 new=180 cum-hit=0.0%
-                         sva-cache t=1.022s hit=1 miss=2 prefix=0 new=2 cum-hit=0.5%
-                         sva-cache node hit=0 miss=2 prefix=0 new=1 <node>
-                         sva-cache total hit=1 miss=198 prefix=0 new=... hit-rate=0.5% ...
+                       to stderr; stdout and the samples are unchanged. Any
+                       other value, or none, logs nothing. One line per second
+                       of output, then one per node and a total:
+                         sva-cache pass hit=0 miss=190 ... store-miss=190 cum-hit=0.0%
+                         sva-cache t=1.022s hit=1 miss=2 ... cum-hit=0.5%
+                         sva-cache node hit=0 miss=2 ... store-hit=1 <node>
+                         sva-cache total hit=1 miss=198 ... hit-rate=0.5% ...
                        `pass` is what was looked up before the first block;
                        each read of a value past its first is a `hit`, reusing
                        it; `prefix` found a stored run up to a switch, `miss`
-                       computed it, `new` wrote a store entry.
+                       computed it, `new` kept it for the store. `store-hit`
+                       and `store-miss` count what the store on disk answered
+                       each value's first lookup.
 
 EXIT CODES:
   0  success (error.code absent)

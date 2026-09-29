@@ -221,7 +221,27 @@ pub fn render(
     cache: Option<&Cache>,
 ) -> Result<Render, EngineError> {
     let recording = Recording::over(cache, config.cache_policy);
-    let mut held = planned(prepared(graph, target, config.rate)?, config)?;
+    let held = planned(prepared(graph, target, config.rate)?, config)?;
+    finished(held, recording)
+}
+
+/// `render` through `store`: each value's segments the in-memory store lacks are read from
+/// the persistent one before the first is computed. Nothing is written to it.
+pub async fn render_through<B: crate::cache::Backend>(
+    graph: &Graph,
+    target: &str,
+    config: RenderConfig,
+    store: &crate::cache::Store<B>,
+) -> Result<Render, EngineError> {
+    let mut recording = Recording::over(Some(store.cache()), config.cache_policy);
+    let held = planned(prepared(graph, target, config.rate)?, config)?;
+    if let Some(table) = &held.table {
+        recording.warmed(store.warm(&table.segment_keys()).await);
+    }
+    finished(held, recording)
+}
+
+fn finished(mut held: Render, recording: Recording) -> Result<Render, EngineError> {
     pulled(&mut held, recording)?;
     scored(&mut held)?;
     compose_read(&mut held);

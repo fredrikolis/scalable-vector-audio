@@ -11,19 +11,27 @@ struct Tally {
     miss: usize,
     prefix: usize,
     new: usize,
+    store_hit: usize,
+    store_miss: usize,
 }
 
 impl Tally {
     fn of<'l>(lookups: impl IntoIterator<Item = &'l Lookup>) -> Tally {
         let mut tally = Tally::default();
         for lookup in lookups {
-            tally.add(lookup.outcome);
+            tally.add(lookup);
         }
         tally
     }
 
     /// An extended run was found short and written again, so it is both a miss and new.
-    fn add(&mut self, outcome: Outcome) {
+    fn add(&mut self, lookup: &Lookup) {
+        let outcome = lookup.outcome;
+        match lookup.store {
+            Some(true) => self.store_hit += 1,
+            Some(false) => self.store_miss += 1,
+            None => {}
+        }
         match outcome {
             Outcome::Hit => self.hit += 1,
             Outcome::Prefix => self.prefix += 1,
@@ -46,8 +54,8 @@ impl std::fmt::Display for Tally {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "hit={} miss={} prefix={} new={}",
-            self.hit, self.miss, self.prefix, self.new
+            "hit={} miss={} prefix={} new={} store-hit={} store-miss={}",
+            self.hit, self.miss, self.prefix, self.new, self.store_hit, self.store_miss
         )
     }
 }
@@ -90,7 +98,7 @@ pub fn cache_log(stats: &CacheStats, rate: u32) -> String {
     }
     let mut nodes: BTreeMap<&str, Tally> = BTreeMap::new();
     for lookup in lookups {
-        nodes.entry(&lookup.node).or_default().add(lookup.outcome);
+        nodes.entry(&lookup.node).or_default().add(lookup);
     }
     for (node, tally) in &nodes {
         let _ = writeln!(out, "sva-cache node {tally} {node}");

@@ -653,7 +653,14 @@ fn a_debug_log_writes_to_stderr_and_leaves_stdout_the_envelope() {
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_sva-cli"));
         command
             .current_dir(&dir)
-            .args(["render", "@x", "--representation", "loudness"])
+            .args([
+                "render",
+                "@x",
+                "--representation",
+                "loudness",
+                "--cache",
+                "none",
+            ])
             .env_remove("SVA_LOG");
         if let Some(level) = log {
             command.env("SVA_LOG", level);
