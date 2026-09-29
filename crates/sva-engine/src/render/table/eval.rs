@@ -96,7 +96,7 @@ fn program(value: &mut Value, segment: Extent, done: &[Value]) -> Result<u128, E
     };
     let held = views(value, program, segment, done);
     let windows: Vec<Window> = held.iter().map(View::window).collect();
-    let mut machine = Machine::over(&program.spanned, value.grid, segment.start)
+    let mut machine = Machine::over(&program.spanned, segment.start)
         .map_err(|e| sample_refused(&value.name, &e))?;
     let mut tape = Tape::new(value.width, segment.len(), segment.start);
     machine
@@ -144,7 +144,7 @@ fn stepped(
     restart: bool,
     (done, marks): (&[Value], &Marks),
 ) -> Result<u128, EngineError> {
-    let (name, grid, width) = (value.name.clone(), value.grid, value.width);
+    let (name, width) = (value.name.clone(), value.width);
     let Kind::Program(program) = &mut value.kind else {
         unreachable!("a program");
     };
@@ -155,7 +155,7 @@ fn stepped(
         *tape = Tape::new(width, 0, segment.start);
         program.marks.clear();
         program.machine = Some(
-            Machine::over(&program.spanned, grid, segment.start)
+            Machine::over(&program.spanned, segment.start)
                 .map_err(|e| sample_refused(&name, &e))?,
         );
     }
@@ -271,8 +271,8 @@ pub(crate) fn rerun(
     let span = Extent::new(from, over.end);
     let held = views(value, &rerun, span, values);
     let windows: Vec<Window> = held.iter().map(View::window).collect();
-    let mut machine = Machine::over(&rerun.spanned, value.grid, from)
-        .map_err(|e| sample_refused(&value.name, &e))?;
+    let mut machine =
+        Machine::over(&rerun.spanned, from).map_err(|e| sample_refused(&value.name, &e))?;
     let mut tape = Tape::new(value.width, span.len(), from);
     machine
         .run_to(over.end, &windows, &mut tape)

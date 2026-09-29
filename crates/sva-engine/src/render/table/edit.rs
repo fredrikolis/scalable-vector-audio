@@ -140,7 +140,7 @@ fn continues(value: &Value, old: &Value, now: i64) -> bool {
     let (Some(machine), Some(end)) = (&was.machine, old.end()) else {
         return false;
     };
-    let fresh = Machine::over(&program.spanned, value.grid, end);
+    let fresh = Machine::over(&program.spanned, end);
     old.width == value.width
         && end <= now
         && fresh.is_ok_and(|opened| opened.accepts(&machine.state()))
@@ -155,7 +155,7 @@ fn take(value: &mut Value, old: Value) {
     }
 }
 
-/// The old value's samples and its state where it stands, stepped on under the new program.
+/// The old value's samples and state, stepped on under the new program.
 fn carry(value: &mut Value, old: Value) {
     let end = old.end().expect("a stateful value stands somewhere");
     let Kind::Program(was) = old.kind else {
@@ -165,8 +165,7 @@ fn carry(value: &mut Value, old: Value) {
     let Kind::Program(program) = &mut value.kind else {
         unreachable!("a stateful value is a program");
     };
-    let mut machine =
-        Machine::over(&program.spanned, value.grid, end).expect("its spans opened once already");
+    let mut machine = Machine::over(&program.spanned, end).expect("its spans opened once already");
     machine.carry(&state);
     program.machine = Some(machine);
     value.held = old.held;
@@ -183,7 +182,7 @@ fn start_silent(value: &mut Value, now: i64) -> bool {
     if now <= start || end.is_some_and(|end| end > start) {
         return false;
     }
-    let Ok(machine) = Machine::over(&program.spanned, value.grid, now) else {
+    let Ok(machine) = Machine::over(&program.spanned, now) else {
         return false;
     };
     program.machine = Some(machine);

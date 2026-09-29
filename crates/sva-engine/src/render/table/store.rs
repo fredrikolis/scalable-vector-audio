@@ -138,7 +138,7 @@ fn resumed(value: &mut Value, place: &mut Place, recording: &Recording) -> bool 
     let (Some(base), Some((&at, state))) = (base, marks.range(..=pos).next_back()) else {
         return false;
     };
-    let Ok(mut machine) = Machine::over(&program.spanned, value.grid, at) else {
+    let Ok(mut machine) = Machine::over(&program.spanned, at) else {
         return false;
     };
     if at <= base || !machine.carry(state) {

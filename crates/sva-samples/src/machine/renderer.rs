@@ -88,7 +88,16 @@ impl Map {
 
     pub fn at(self, n: i64) -> i64 {
         let clamp = |k: i128| k.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
-        clamp(self.index_at(i128::from(n)))
+        self.whole_at(n)
+            .unwrap_or_else(|| clamp(self.index_at(i128::from(n))))
+    }
+
+    fn whole_at(self, n: i64) -> Option<i64> {
+        if self.d != 1 {
+            return None;
+        }
+        let (a, b) = (i64::try_from(self.a).ok()?, i64::try_from(self.b).ok()?);
+        a.checked_mul(n)?.checked_add(b)
     }
 
     pub fn ahead(self) -> bool {
@@ -242,6 +251,9 @@ impl Grid {
     /// One quotient: correctly rounded while both integers are under 2^53; past that each
     /// integer rounds once converting and the quotient once more.
     pub fn instant(&self, n: i64) -> f64 {
+        if self.is_rate() {
+            return n as f64 / f64::from(self.rate);
+        }
         let num = self.a.saturating_mul(i128::from(n));
         num as f64 / self.d.saturating_mul(i128::from(self.rate)) as f64
     }
@@ -315,34 +327,69 @@ pub struct Wrap {
 }
 
 impl Wrap {
-    /// `None` where the integers it is computed in would overflow.
-    pub fn at(self, n: i64, grid: Grid) -> Option<f64> {
-        let (n, rate) = grid.exact(n)?;
+    /// `None` where its constants overflow.
+    pub fn on(self, grid: Grid) -> Option<Stepped> {
+        let (_, rate) = grid.exact(0)?;
         let [(s, sd), (o, od)] = self.inner;
         let over = sd.checked_mul(rate)?;
         let den = lcm(lcm(over, od)?, self.period.1)?;
-        let x = s
-            .checked_mul(n)?
-            .checked_mul(den / over)?
-            .checked_add(o.checked_mul(den / od)?)?;
-        let rem = x.rem_euclid(self.period.0.checked_mul(den / self.period.1)?);
         let line = self.scale.1.checked_mul(rate)?;
         let wrapped = self.gain.1.checked_mul(den)?;
         let whole = lcm(lcm(line, self.shift.1)?, wrapped)?;
-        let sum = self
-            .scale
-            .0
-            .checked_mul(n)?
-            .checked_mul(whole / line)?
-            .checked_add(self.shift.0.checked_mul(whole / self.shift.1)?)?
-            .checked_add(self.gain.0.checked_mul(rem)?.checked_mul(whole / wrapped)?)?;
-        Some(sum as f64 / whole as f64)
+        Some(Stepped {
+            step: grid.a,
+            inner: s,
+            over: den / over,
+            offset: o.checked_mul(den / od)?,
+            period: self.period.0.checked_mul(den / self.period.1)?,
+            scale: self.scale.0,
+            line: whole / line,
+            shift: self.shift.0.checked_mul(whole / self.shift.1)?,
+            gain: self.gain.0,
+            wrapped: whole / wrapped,
+            whole,
+        })
     }
 
     /// The largest magnitude it takes over instants no later than `t`.
     pub fn most(self, t: f64) -> f64 {
         let q = |(num, den): (i128, i128)| num as f64 / den as f64;
         q(self.scale).abs() * t.abs() + q(self.shift).abs() + q(self.gain).abs() * q(self.period)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stepped {
+    step: i128,
+    inner: i128,
+    over: i128,
+    offset: i128,
+    period: i128,
+    scale: i128,
+    line: i128,
+    shift: i128,
+    gain: i128,
+    wrapped: i128,
+    whole: i128,
+}
+
+impl Stepped {
+    /// `None` where the integers it is computed in would overflow.
+    pub fn at(self, n: i64) -> Option<f64> {
+        let n = self.step.checked_mul(i128::from(n))?;
+        let x = self
+            .inner
+            .checked_mul(n)?
+            .checked_mul(self.over)?
+            .checked_add(self.offset)?;
+        let rem = x.rem_euclid(self.period);
+        let sum = self
+            .scale
+            .checked_mul(n)?
+            .checked_mul(self.line)?
+            .checked_add(self.shift)?
+            .checked_add(self.gain.checked_mul(rem)?.checked_mul(self.wrapped)?)?;
+        Some(sum as f64 / self.whole as f64)
     }
 }
 
@@ -398,7 +445,9 @@ impl<T> Index<T> {
 
     pub fn at(&self, n: i64, grid: Grid, time: &impl Fn(&T) -> f64) -> Option<i64> {
         match self {
-            Index::At(map) => i64::try_from(map.index_at(i128::from(n))).ok(),
+            Index::At(map) => map
+                .whole_at(n)
+                .or_else(|| i64::try_from(map.index_at(i128::from(n))).ok()),
             Index::Step(t, round) => grid.step_at(time(t), *round),
             Index::Add(parts) => parts
                 .iter()

@@ -2,14 +2,15 @@
 
 use crate::error::SampleError;
 use crate::machine::renderer::{
-    Binary, Formula, Index, Map, NodeRenderer, Site, SiteId, Slot, Unary, Wrap,
+    Binary, Formula, Grid, Index, Map, NodeRenderer, Site, SiteId, Slot, Stepped, Unary,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Op {
     Const(f64),
     Time,
-    Wrap(Wrap),
+    /// `None` where its constants overflow on the program's grid.
+    Wrap(Option<Stepped>),
     Noise(u64),
     Read {
         slot: Slot,
@@ -63,10 +64,11 @@ pub(crate) enum Op {
     },
 }
 
-/// What the engine already knows from typing: how wide the node is, how wide each collapsed
-/// read is, and which call sites the renderer opens.
+/// What the engine already knows from typing: the grid the node steps on, how wide it is,
+/// how wide each collapsed read is, and which call sites the renderer opens.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layout {
+    pub grid: Grid,
     pub width: usize,
     pub read_widths: Vec<usize>,
     pub sites: Vec<Site>,
@@ -158,18 +160,18 @@ fn lower(r: &NodeRenderer, layout: &Layout, out: &mut Lowered) -> Result<usize, 
                 .into_iter()
                 .map(|p| lower(p, layout, out))
                 .collect::<Result<Vec<_>, _>>()?;
-            (op_of(other), operands)
+            (op_of(other, layout), operands)
         }
     };
     let w = width(r, &operands, layout)?;
     Ok(out.push(op, w))
 }
 
-fn op_of(r: &NodeRenderer) -> Op {
+fn op_of(r: &NodeRenderer, layout: &Layout) -> Op {
     match r {
         NodeRenderer::Const(v) => Op::Const(*v),
         NodeRenderer::Time => Op::Time,
-        NodeRenderer::Wrap(wrap) => Op::Wrap(*wrap),
+        NodeRenderer::Wrap(wrap) => Op::Wrap(wrap.on(layout.grid)),
         NodeRenderer::Noise(seed) => Op::Noise(*seed),
         NodeRenderer::Read { slot, map } => Op::Read {
             slot: *slot,

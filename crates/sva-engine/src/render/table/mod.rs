@@ -620,6 +620,7 @@ impl Building<'_> {
         let widths = reads.iter().map(|at| self.values[*at].width).collect();
         let live: Vec<Extent> = reads.iter().map(|at| self.values[*at].support).collect();
         let layout = sva_samples::machine::ops::Layout {
+            grid: value.grid,
             width: value.width,
             read_widths: widths,
             sites,

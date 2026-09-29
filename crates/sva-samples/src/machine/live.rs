@@ -47,6 +47,10 @@ impl Spanned {
         self.spans.iter().map(|(span, _)| span)
     }
 
+    pub(super) fn grid(&self) -> super::renderer::Grid {
+        self.layout.grid
+    }
+
     pub(super) fn compiled(&self) -> &[(Span, Program)] {
         &self.spans
     }
