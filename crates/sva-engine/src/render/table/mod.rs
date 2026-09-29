@@ -273,6 +273,9 @@ impl Table {
             pulled.waves += waves;
             let computed: Vec<Extent> = need.compute.iter().collect();
             store::stored(value, place, &computed, recording);
+            for (read, count) in store::reached(value, place, &need.compute) {
+                store::reread(&done[read], &mut self.places[read], count, recording);
+            }
         }
         pulled.most_bytes = self.bytes();
         Ok(pulled)
@@ -743,11 +746,8 @@ fn aliased(values: &[Value], mut at: usize) -> usize {
 
 /// Each value's key in the store; a value two others read is a fork, the root the target.
 fn places(values: &[Value], root: usize, profile: &Profile) -> Vec<store::Place> {
-    let (mut readers, mut reads) = (vec![0usize; values.len()], vec![0usize; values.len()]);
+    let mut readers = vec![0usize; values.len()];
     for value in values {
-        for at in read_leaves(value) {
-            reads[at] += 1;
-        }
         let mut read = value.reads.clone();
         read.sort_unstable();
         read.dedup();
@@ -774,7 +774,8 @@ fn places(values: &[Value], root: usize, profile: &Profile) -> Vec<store::Place>
                 fork: readers[at] >= 2,
                 target: at == root,
                 slot: None,
-                reads: reads[at],
+                unread: leaf_reads(value),
+                reached: 0,
                 looked: false,
                 prefixed: false,
                 noted: None,
@@ -803,22 +804,41 @@ fn segments(switches: &[(i64, Hash)], whole: Hash, key: impl Fn(Hash) -> Hash) -
     starts.into_iter().zip(keys).collect()
 }
 
-/// Each read a value's program makes, one per leaf however many share a slot.
-fn read_leaves(value: &Value) -> Vec<usize> {
+/// Each distinct read a value's program makes, however many leaves share a slot; a value of no
+/// program reads each of its reads once, whole.
+fn leaf_reads(value: &Value) -> Vec<store::Unread> {
     let Kind::Program(program) = &value.kind else {
-        return value.reads.clone();
+        return value
+            .reads
+            .iter()
+            .map(|at| store::Unread {
+                leaf: None,
+                read: *at,
+                count: 1,
+            })
+            .collect();
     };
-    let mut out = Vec::new();
-    program::leaves(&program.renderer, &mut |leaf| match leaf {
-        NodeRenderer::Read {
+    let mut out: Vec<store::Unread> = Vec::new();
+    program::leaves(&program.renderer, &mut |leaf| {
+        let (NodeRenderer::Read {
             slot: Slot::Read(at),
             ..
         }
         | NodeRenderer::Indexed {
             slot: Slot::Read(at),
             ..
-        } => out.push(value.reads[at.0 as usize]),
-        _ => {}
+        }) = leaf
+        else {
+            return;
+        };
+        match out.iter_mut().find(|u| u.leaf.as_ref() == Some(leaf)) {
+            Some(held) => held.count += 1,
+            None => out.push(store::Unread {
+                leaf: Some(leaf.clone()),
+                read: value.reads[at.0 as usize],
+                count: 1,
+            }),
+        }
     });
     out
 }

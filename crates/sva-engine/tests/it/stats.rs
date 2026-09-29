@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{Cache, CacheStats, Hash, RenderConfig, render};
+use sva_engine::{Cache, CacheStats, Hash, Outcome, RenderConfig, render};
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
@@ -71,4 +71,41 @@ fn an_identical_second_render_is_all_hits() {
     );
     assert_eq!(warm.hits(), warm.lookups.len());
     assert_eq!(warm.computed(), 0);
+}
+
+/// A read is looked up when its reader first writes the samples it feeds: a note placed at
+/// 2 s and at 4 s is reused there, not where the render begins.
+#[test]
+fn a_reuse_is_noted_where_its_read_first_sounds() {
+    let graph = graph_of(
+        "reuse-placed",
+        &[
+            ("note", "crop(sin(2*pi*440*t)*exp(-t/0.2), 0s, 0.5s)\n"),
+            ("song", "@note(t) + @note(t - 2s) + @note(t - 4s)\n"),
+        ],
+    );
+    let held = render(&graph, "song", RenderConfig::seconds(RATE, 6.0), None).expect("a render");
+    let stats = held
+        .cache_stats
+        .expect("every render reports what it asked");
+    let made_by = |secs: f64| {
+        let at = (secs * f64::from(RATE)) as i64;
+        stats
+            .reached
+            .iter()
+            .take_while(|(reached, _)| *reached <= at)
+            .last()
+            .map_or(0, |(_, made)| *made)
+    };
+    let reuses: Vec<usize> = (0..stats.lookups.len())
+        .filter(|&i| stats.lookups[i].node == "note" && stats.lookups[i].outcome == Outcome::Hit)
+        .collect();
+    assert_eq!(reuses.len(), 2, "{stats:?}");
+    for (at, secs) in reuses.into_iter().zip([2.0, 4.0]) {
+        assert!(
+            made_by(secs - 0.5) <= at && at < made_by(secs + 0.5),
+            "the read at {secs} s was noted as lookup {at}: {:?}",
+            stats.reached
+        );
+    }
 }

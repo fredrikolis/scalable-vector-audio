@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 
 use sva_formula::Hash;
-use sva_samples::{Buffer, Extent, Machine, MachineState, Tape};
+use sva_samples::{Buffer, Extent, Machine, MachineState, NodeRenderer, Tape};
 
+use super::segments::Segments;
 use super::value::{Held, Kind, Value};
 use crate::cache::{Expected, Outcome, Payload, PayloadKind, Recording, Run, frames_key};
 
@@ -18,13 +19,23 @@ pub(crate) struct Place {
     pub(crate) fork: bool,
     pub(crate) target: bool,
     pub(crate) slot: Option<Hash>,
-    /// How many reads ask for it: the first computes it, each other reuses it.
-    pub(crate) reads: usize,
+    /// Its own reads its samples have not yet run.
+    pub(crate) unread: Vec<Unread>,
+    /// Reads of it run so far.
+    pub(crate) reached: usize,
     pub(crate) looked: bool,
     /// Answered only up to a switch.
     pub(crate) prefixed: bool,
     /// The lookup its first ask made, once made.
     pub(crate) noted: Option<usize>,
+}
+
+/// `count` leaves reading value `read`; no leaf is a read run with the reader's first samples.
+#[derive(Clone, Debug)]
+pub(crate) struct Unread {
+    pub(crate) leaf: Option<NodeRenderer>,
+    pub(crate) read: usize,
+    pub(crate) count: usize,
 }
 
 impl Place {
@@ -159,8 +170,7 @@ fn resumed(value: &mut Value, place: &mut Place, recording: &Recording) -> bool 
     true
 }
 
-/// The first time a value is asked: one lookup per read of it, the first answered by what it
-/// computes now, every other a reuse.
+/// The first time a value is asked: one lookup, answered by what it computes now.
 pub(crate) fn noted(value: &Value, place: &mut Place, computes: bool, recording: &mut Recording) {
     if place.noted.is_some() {
         return;
@@ -172,9 +182,57 @@ pub(crate) fn noted(value: &Value, place: &mut Place, computes: bool, recording:
         (false, false) => Outcome::Hit,
     };
     place.noted = Some(recording.note(&value.name, key, kind, first));
-    for _ in 1..place.reads.max(1) {
-        recording.note(&value.name, key, kind, Outcome::Hit);
+}
+
+/// `count` more reads of a value run, each past the first a reuse.
+pub(crate) fn reread(value: &Value, place: &mut Place, count: usize, recording: &mut Recording) {
+    if place.noted.is_none() {
+        return;
     }
+    let (kind, key) = (Place::kind(value), place.keyed(value));
+    for _ in 0..count {
+        if place.reached > 0 {
+            recording.note(&value.name, key, kind, Outcome::Hit);
+        }
+        place.reached += 1;
+    }
+}
+
+/// The reads `computed` first runs, off `reader`'s unread list.
+pub(crate) fn reached(
+    reader: &Value,
+    place: &mut Place,
+    computed: &Segments,
+) -> Vec<(usize, usize)> {
+    if place.unread.is_empty() || computed.is_empty() {
+        return Vec::new();
+    }
+    let mut runs: Vec<bool> = place.unread.iter().map(|u| u.leaf.is_none()).collect();
+    if let Kind::Program(program) = &reader.kind {
+        for span in program.spanned.spans() {
+            let met = computed
+                .iter()
+                .any(|e| !e.intersect(Extent::new(span.from, span.to)).is_empty());
+            if met {
+                super::program::leaves(&span.renderer, &mut |leaf| {
+                    for (k, unread) in place.unread.iter().enumerate() {
+                        runs[k] |= unread.leaf.as_ref() == Some(leaf);
+                    }
+                });
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut k = 0;
+    place.unread.retain(|unread| {
+        let reached = runs[k];
+        k += 1;
+        if reached {
+            out.push((unread.read, unread.count));
+        }
+        !reached
+    });
+    out
 }
 
 /// What a value computed, stored where the policy keeps it: a run segment by segment, each
