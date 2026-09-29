@@ -100,6 +100,52 @@ fn a_sampled_sum_reads_each_operand_only_where_it_is_nonzero() {
     assert_eq!(flops::tree(&held).rows[0].own, (3 + 3 + 2) * note + silent);
 }
 
+/// A term scaled by constants is as zero as its read where that read is, so a sum of scaled
+/// notes, as a grid's rows are, also pays only for the notes sounding and writes the same bits.
+#[test]
+fn a_scaled_sampled_term_is_read_only_where_it_is_nonzero() {
+    let g = sampled_notes();
+    let scaled = graph_of(
+        "pruning-scaled",
+        &[
+            (
+                "note",
+                "crop(lowpass(sample(0.5*sin(2*pi*440*t)), cutoff=2000, q=0.7), 0s, 0.5s)\n",
+            ),
+            (
+                "song",
+                "@note(t)*0.5 + @note(t - 2s)*-0.75 + @note(t - 4s)*0.25\n",
+            ),
+        ],
+    );
+    let held = over(&scaled, "song", 4.5, None);
+    let song = held.output(held.root).expect("the song").plane(0).to_vec();
+    let alone = over(&g, "note", 4.5, None);
+    let note = alone
+        .output(alone.root)
+        .expect("the note")
+        .plane(0)
+        .to_vec();
+    let at = |n: i64| {
+        usize::try_from(n)
+            .ok()
+            .and_then(|n| note.get(n))
+            .copied()
+            .unwrap_or(0.0)
+    };
+    let gap = i64::from(RATE) * 2;
+    for (n, sample) in song.iter().enumerate() {
+        let n = n as i64;
+        let added = 0.0 + at(n) * 0.5 + at(n - gap) * -0.75 + at(n - 2 * gap) * 0.25;
+        assert_eq!(sample.to_bits(), added.to_bits(), "sample {n}");
+    }
+    assert_eq!(
+        flops::tree(&held).rows[0].own,
+        flops::tree(&over(&g, "song", 4.5, None)).rows[0].own,
+        "a note scaled by constants is priced only while it sounds, as an unscaled one is"
+    );
+}
+
 #[test]
 fn a_count_prices_the_render_it_names() {
     let g = sampled_notes();

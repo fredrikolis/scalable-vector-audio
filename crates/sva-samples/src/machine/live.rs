@@ -128,7 +128,7 @@ fn pruned(
     let zero = |p: &NodeRenderer| zero(p, dead);
     Ok(match held {
         NodeRenderer::Add(parts) => {
-            let live: Vec<NodeRenderer> = parts.iter().filter(|p| !zero(p)).cloned().collect();
+            let live: Vec<NodeRenderer> = parts.iter().filter(|p| !nil(p, dead)).cloned().collect();
             match live.is_empty() {
                 true if whole == 1 => NodeRenderer::Const(0.0),
                 false if width(&NodeRenderer::Add(live.clone()), layout)? == whole => {
@@ -151,10 +151,62 @@ fn zero(r: &NodeRenderer, dead: &dyn Fn(Leaf) -> bool) -> bool {
         } => dead((*id, *map)),
         NodeRenderer::Const(v) => v.to_bits() == 0,
         NodeRenderer::Crop { x, .. } => zero(x, dead),
-        NodeRenderer::Add(parts) => parts.iter().all(|p| zero(p, dead)),
+        NodeRenderer::Add(parts) => parts.iter().all(|p| nil(p, dead)),
         NodeRenderer::Sub(a, b) => zero(a, dead) && zero(b, dead),
         _ => false,
     }
+}
+
+/// Exactly +0.0 or -0.0 at every sample of the span, which a sum starting from +0 drops alike.
+/// A product runs from 1 in order, so a zero factor zeroes it where the constants before it
+/// kept it finite and those after it are finite.
+fn nil(r: &NodeRenderer, dead: &dyn Fn(Leaf) -> bool) -> bool {
+    match r {
+        NodeRenderer::Mul(parts) => match parts.iter().position(|p| nil(p, dead)) {
+            None => false,
+            Some(at) => {
+                finite(fold(&parts[..at], 1.0, |a, b| a * b))
+                    && parts[at + 1..]
+                        .iter()
+                        .all(|p| nil(p, dead) || finite(constant(p)))
+            }
+        },
+        NodeRenderer::Crop { x, .. } => nil(x, dead),
+        other => zero(other, dead),
+    }
+}
+
+fn finite(value: Option<Vec<f64>>) -> bool {
+    value.is_some_and(|v| v.iter().all(|x| x.is_finite()))
+}
+
+/// Each component of an operand every sample of which is the same number.
+fn constant(r: &NodeRenderer) -> Option<Vec<f64>> {
+    match r {
+        NodeRenderer::Const(v) => Some(vec![*v]),
+        NodeRenderer::Join(set) => set.iter().try_fold(Vec::new(), |mut held, p| {
+            held.extend(constant(p)?);
+            Some(held)
+        }),
+        NodeRenderer::Add(set) => fold(set, 0.0, |a, b| a + b),
+        NodeRenderer::Mul(set) => fold(set, 1.0, |a, b| a * b),
+        _ => None,
+    }
+}
+
+/// As the machine folds operands, each component from `start`, a mono operand read at every one.
+fn fold(set: &[NodeRenderer], start: f64, op: fn(f64, f64) -> f64) -> Option<Vec<f64>> {
+    let values = set.iter().map(constant).collect::<Option<Vec<_>>>()?;
+    let width = values.iter().map(Vec::len).max().unwrap_or(1);
+    Some(
+        (0..width)
+            .map(|c| {
+                values
+                    .iter()
+                    .fold(start, |acc, v| op(acc, super::part(v, c)))
+            })
+            .collect(),
+    )
 }
 
 fn operands(r: &NodeRenderer) -> Vec<&NodeRenderer> {
