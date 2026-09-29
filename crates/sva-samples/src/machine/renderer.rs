@@ -498,15 +498,19 @@ pub enum Formula {
 
 impl Formula {
     pub fn at(&self, component: usize, t: f64) -> Result<f64, CollapseError> {
-        let value: C64 = match self {
-            Formula::Drawn { seed, rate } => {
-                return Ok(sva_formula::draw(*seed, t * f64::from(*rate)));
-            }
-            Formula::Sum(sum) => crate::collapse::eval_spectral_sum_at(sum, component, t)?,
-            Formula::Written(body) => {
-                crate::collapse::eval_written_at(body, component, t, &crate::collapse::NoRefs)?
-            }
-        };
+        let value: C64 =
+            match self {
+                Formula::Drawn { seed, rate } => {
+                    let step = Grid::of(*rate).step_at(t, Round::Even).ok_or(
+                        CollapseError::NotEvaluable("a draw at an instant past any step"),
+                    )?;
+                    return Ok(sva_formula::draw(*seed, step));
+                }
+                Formula::Sum(sum) => crate::collapse::eval_spectral_sum_at(sum, component, t)?,
+                Formula::Written(body) => {
+                    crate::collapse::eval_written_at(body, component, t, &crate::collapse::NoRefs)?
+                }
+            };
         Ok(value.re)
     }
 

@@ -128,7 +128,10 @@ pub fn eval_body(
             });
         }
         Body::Pv(_) => return Err(CollapseError::SingularInCt { at: t, order: -1 }),
-        Body::Keyed { seed, of: key } => C64::real(sva_formula::draw(*seed, of(key)?.re)),
+        Body::Keyed { seed, of: key } => C64::real(
+            sva_formula::draw_nearest(*seed, of(key)?.re)
+                .ok_or(CollapseError::NotEvaluable("a key past any step"))?,
+        ),
         Body::Join(parts) => {
             let widths: Vec<usize> = parts.iter().map(|p| width_of(&p.body, refs)).collect();
             let (at, inner) = lane_of(&widths, component)

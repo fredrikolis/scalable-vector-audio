@@ -286,6 +286,47 @@ fn a_render_at_any_rate_steps_its_nodes_at_that_rate() {
     assert_eq!(read("late").len(), tone.len());
 }
 
+/// `rand(t, seed=k)` at sample `n` is the draw of `k` at step `n`, at any rate and on
+/// every render.
+#[test]
+fn rand_draws_its_seed_at_each_sample_index() {
+    let g = graph_of("keyed", &[("noise", "crop(rand(t, seed=5), 0s, 10ms)\n")]);
+    for rate in [RATE, 11_025] {
+        let read = || {
+            let held = render(&g, "noise", RenderConfig::seconds(rate, 0.01), None)
+                .unwrap_or_else(|e| panic!("{e}"));
+            held.output(held.root).expect("a buffer").plane(0).to_vec()
+        };
+        let drawn = read();
+        assert!(!drawn.is_empty());
+        for (n, v) in drawn.iter().enumerate() {
+            let want = sva_formula::draw(5, n as i64);
+            assert_eq!(
+                v.to_bits(),
+                want.to_bits(),
+                "{rate}: sample {n}: {v} against {want}"
+            );
+        }
+        assert_eq!(read(), drawn, "{rate}: a second render draws the same");
+    }
+}
+
+/// A key between two steps draws at the step nearest it, ties to even.
+#[test]
+fn rand_between_steps_draws_the_nearest_step() {
+    for (key, step) in [("2.5sp", 2), ("3.5sp", 4), ("3.4sp", 3)] {
+        let g = graph_of("between", &[("still", &format!("rand({key}, seed=5)\n"))]);
+        let held = render(&g, "still", RenderConfig::seconds(RATE, 0.001), None)
+            .unwrap_or_else(|e| panic!("{key}: {e}"));
+        let drawn = held.output(held.root).expect("a buffer").plane(0).to_vec();
+        let want = sva_formula::draw(5, step);
+        assert!(
+            !drawn.is_empty() && drawn.iter().all(|v| v.to_bits() == want.to_bits()),
+            "{key}: {drawn:?} against step {step}'s {want}"
+        );
+    }
+}
+
 /// A read whose time wraps by an exact period lands on a sample at every jump.
 #[test]
 fn a_time_wrapped_by_an_exact_period_reads_whole_samples() {

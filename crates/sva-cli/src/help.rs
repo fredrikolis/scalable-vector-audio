@@ -88,6 +88,8 @@ RENDER:
   `x + 0.5*self(t - 17ms)`, which is its series. A filter, a discrete loop, a
   solver and `rand` step at the rate asked for, where `1sp` is one step, so an
   `sp` count or `self[idx(t) - 1]` means one sample at whatever rate is asked.
+  `rand` draws once per step, keyed by that step's index; a key between steps
+  reads the step nearest it, ties to even.
   A discrete loop reads its own past only by index; `self(t - d)` in one
   refuses as `type.discrete_self_at_time`, naming what made it discrete. A
   read `@x(k*t - d)` steps `x` at `k` times the step, every input it reads,

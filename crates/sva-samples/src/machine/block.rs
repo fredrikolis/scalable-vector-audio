@@ -132,8 +132,9 @@ fn fill(
                 .ok_or(SampleError::UnreadablePosition)?;
             Ok(())
         }),
-        Op::Noise(seed) => each(out, (from, w), &mut |_, n, s| {
-            s[0] = sva_formula::draw(*seed, here.grid.position(n));
+        Op::Noise { seed, at } => each(out, (from, w), &mut |_, n, s| {
+            let step = at.ok_or(SampleError::UnreadablePosition)?.at(n);
+            s[0] = sva_formula::draw(*seed, step);
             Ok(())
         }),
         Op::Indexed {

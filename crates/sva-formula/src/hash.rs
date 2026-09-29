@@ -1,4 +1,4 @@
-// Concern: content-addresses a SpectralSum under the table version, and keys the random constant | Non-concern: what a hash keys (sva-engine) | IO: (&SpectralSum) -> Hash
+// Concern: content-addresses a SpectralSum under the table version, and draws a seed at a step | Non-concern: what a hash keys (sva-engine) | IO: (&SpectralSum) -> Hash
 
 use std::fmt;
 
@@ -62,17 +62,18 @@ pub fn hash_closed_form_with(t: &ClosedForm, node: &mut dyn FnMut(NodeId) -> Has
     s.finish()
 }
 
-/// The unit-interval value one key and one seed name, wherever the pair is written.
-pub fn draw(seed: u64, key: f64) -> f64 {
-    keyed(&format!("{key}"), seed) as f64 / u64::MAX as f64
+/// The unit-interval value one seed draws at one whole step, wherever the pair is written.
+pub fn draw(seed: u64, step: i64) -> f64 {
+    mix(mix(seed ^ DRAWN) ^ step as u64) as f64 / u64::MAX as f64
 }
 
-/// The keyed constant `rand(key, seed=)` reads, rate-free and render-free.
-pub fn keyed(key: &str, seed: u64) -> u64 {
-    let mut s = Sink::new(0x03, TABLE_VERSION);
-    s.bytes(key.as_bytes());
-    s.u64(seed);
-    s.finish().0
+const DRAWN: u64 = 0x9e37_79b9_7f4a_7c15;
+
+/// The draw at the whole step nearest `key`, ties to even; `None` past any `i64` step.
+pub fn draw_nearest(seed: u64, key: f64) -> Option<f64> {
+    let step = key.round_ties_even();
+    let held = step >= i64::MIN as f64 && step < i64::MAX as f64;
+    held.then(|| draw(seed, step as i64))
 }
 
 struct Sink<'a> {
@@ -93,14 +94,6 @@ impl<'a> Sink<'a> {
 
     fn byte(&mut self, b: u8) {
         self.lanes.word(u64::from(b));
-    }
-
-    /// Length-prefixed, so `("ab", "c")` and `("a", "bc")` cannot encode alike.
-    fn bytes(&mut self, b: &[u8]) {
-        self.u64(b.len() as u64);
-        for &x in b {
-            self.byte(x);
-        }
     }
 
     fn u64(&mut self, v: u64) {

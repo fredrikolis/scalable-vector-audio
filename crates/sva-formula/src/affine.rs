@@ -125,12 +125,14 @@ pub fn polynomial_in(f: &Body, reading: Reading) -> Option<Vec<Coeff>> {
             Reading::Free => Some(vec![Coeff::ZERO, Coeff::ONE]),
             Reading::Index(_) => None,
         },
-        Body::Keyed { seed, of } => match constant_in(&of.body, reading) {
-            Some(at) => Some(vec![Coeff::Exact(C64::real(crate::hash::draw(
-                *seed, at.re,
-            )))]),
-            None => Some(vec![Coeff::Unknown(Axis::Real)]),
-        },
+        Body::Keyed { seed, of } => {
+            match constant_in(&of.body, reading)
+                .and_then(|at| crate::hash::draw_nearest(*seed, at.re))
+            {
+                Some(drawn) => Some(vec![Coeff::Exact(C64::real(drawn))]),
+                None => Some(vec![Coeff::Unknown(Axis::Real)]),
+            }
+        }
         Body::Apply(op, arg) => match polynomial_in(&arg.body, reading)?[..] {
             [c] => Some(vec![match c.exact() {
                 Some(x) => Coeff::Exact(apply_scalar(*op, x)),

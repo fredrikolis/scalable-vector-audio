@@ -308,7 +308,7 @@ fn arity_of(op: &Op) -> usize {
         Op::Const(_)
         | Op::Time
         | Op::Wrap(_)
-        | Op::Noise(_)
+        | Op::Noise { .. }
         | Op::Read { .. }
         | Op::ReadScaled { .. } => 0,
         Op::Physics { arity, .. } => *arity,

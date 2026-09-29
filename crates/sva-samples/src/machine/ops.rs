@@ -2,7 +2,7 @@
 
 use crate::error::SampleError;
 use crate::machine::renderer::{
-    Binary, Formula, Grid, Index, Map, NodeRenderer, Site, SiteId, Slot, Stepped, Unary,
+    Between, Binary, Formula, Grid, Index, Map, NodeRenderer, Site, SiteId, Slot, Stepped, Unary,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -11,7 +11,12 @@ pub(crate) enum Op {
     Time,
     /// `None` where its constants overflow on the program's grid.
     Wrap(Option<Stepped>),
-    Noise(u64),
+    /// The draw of `seed` at the step of the rate nearest each sample; `None` where that map
+    /// overflows.
+    Noise {
+        seed: u64,
+        at: Option<Map>,
+    },
     Read {
         slot: Slot,
         at: Map,
@@ -172,7 +177,10 @@ fn op_of(r: &NodeRenderer, layout: &Layout) -> Op {
         NodeRenderer::Const(v) => Op::Const(*v),
         NodeRenderer::Time => Op::Time,
         NodeRenderer::Wrap(wrap) => Op::Wrap(wrap.on(layout.grid)),
-        NodeRenderer::Noise(seed) => Op::Noise(*seed),
+        NodeRenderer::Noise(seed) => Op::Noise {
+            seed: *seed,
+            at: Map::rounded(layout.grid.a, 0, layout.grid.d, Between::Even),
+        },
         NodeRenderer::Read { slot, map } => Op::Read {
             slot: *slot,
             at: *map,

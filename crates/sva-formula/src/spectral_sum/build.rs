@@ -44,11 +44,9 @@ fn lower(f: &Body, origin: Origin, var: Var) -> Result<SpectralSum, Left> {
             if crate::affine::key_moves(&of.body) {
                 return Err(left(origin, Factor::Value, LeftReason::KeyedOnASignal));
             }
-            match sole_constant(&lower_part(of, var)?) {
-                Some(c) => Ok(one(
-                    var,
-                    SpectralAtom::constant(C64::real(crate::hash::draw(*seed, c.re)), origin),
-                )),
+            let key = sole_constant(&lower_part(of, var)?);
+            match key.and_then(|c| crate::hash::draw_nearest(*seed, c.re)) {
+                Some(drawn) => Ok(one(var, SpectralAtom::constant(C64::real(drawn), origin))),
                 None => Err(left(origin, Factor::Value, LeftReason::Unsubstituted)),
             }
         }

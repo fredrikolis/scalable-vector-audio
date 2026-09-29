@@ -557,9 +557,9 @@ impl<'g> Lowering<'_, 'g> {
         }
     }
 
-    /// `rand(key, seed=)` is white noise, a draw at each instant keyed by its count of steps
-    /// of the rate in use: a constant key is one number, `t` the noise itself, and any other
-    /// time a read of it.
+    /// `rand(key, seed=)` is white noise, one draw per step of the rate in use keyed by that
+    /// step's index, read at the step nearest the key: a constant key is one number, `t` the
+    /// noise itself, and any other time a read of it.
     fn drawn(
         &mut self,
         args: &[Arg],
@@ -621,10 +621,13 @@ pub(crate) fn rand_arguments<'a>(
     Some((key, seed as u64))
 }
 
-/// The noise's draw at an instant, keyed by its count of steps of `rate`.
+/// The noise's draw at the step of `rate` nearest an instant, ties to even.
 pub(crate) fn noise_at(seed: u64, at: crate::time::Q, rate: u32) -> f64 {
-    match at.mul(crate::time::Q::int(i64::from(rate))) {
-        Some(steps) => hash::draw(seed, steps.to_f64()),
+    match at
+        .mul(crate::time::Q::int(i64::from(rate)))
+        .and_then(crate::time::nearest)
+    {
+        Some(step) => hash::draw(seed, step),
         None => f64::NAN,
     }
 }
