@@ -212,3 +212,26 @@ fn three_verbs_agree_on_an_instance_name() {
         sva_cli::lint(&dir, Some("@motif([0, 1s])")).expect("`lint @motif` names the same file");
     assert_eq!(report.nodes, 1, "one node checked");
 }
+
+/// A node nothing reads that names a free parameter is a library node: no invocation binds it,
+/// so a whole-composition `lint` or `trace` roots nothing there.
+#[test]
+fn an_unread_node_with_a_free_parameter_is_no_entry_point() {
+    let dir = scratch("unread-library");
+    let head = "; Models: a probe | Neglects: everything | IO: (hz) -> amplitude | Tags: probe\n";
+    put(&dir, "lib1", &format!("{head}sin(2*pi*hz*t)\n"));
+    put(&dir, "lib2", &format!("{head}sin(3*pi*hz*t)\n"));
+    put(
+        &dir,
+        "song",
+        &format!("{head}crop(@lib1(t, hz=440), 0s, 1s)\n"),
+    );
+
+    sva_cli::lint(&dir, None).unwrap_or_else(|e| panic!("plain lint: {}", e.message()));
+    let t = trace(&dir, "song").unwrap_or_else(|e| panic!("tracing `song`: {}", e.message()));
+    assert_eq!(
+        t.traced.entry,
+        ["song"],
+        "`lib2` binds no `hz`, so it roots nothing"
+    );
+}

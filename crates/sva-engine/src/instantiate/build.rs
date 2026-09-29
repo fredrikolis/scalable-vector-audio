@@ -101,6 +101,15 @@ pub fn from_roots<'g>(
     Ok((b.out, named))
 }
 
+/// Whether `file` names a parameter its own defaults leave unbound: a library node, which only
+/// a reader's invocation instantiates.
+pub fn has_free_parameter(graph: &Graph, file: &str) -> bool {
+    matches!(
+        from_roots(graph, &[file.to_string()], crate::DEFAULT_SAMPLE_RATE),
+        Err(EngineError::Binding { fault: BindingFault::Unbound(ref owner, _), .. }) if owner == file
+    )
+}
+
 /// Whether an expression names any of the parameters bound so far.
 fn names_any(e: &Expr, binds: &[(String, Thunk<'_>)]) -> bool {
     binds.iter().any(|(name, _)| sva_ast::occurs_free(e, name))

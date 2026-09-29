@@ -13,7 +13,7 @@ use crate::error::EngineError;
 use crate::time::Grid;
 use crate::vocabulary::is_builtin;
 
-pub use build::{from_roots, instantiate};
+pub use build::{from_roots, has_free_parameter, instantiate};
 
 pub(crate) type ScopeId = u32;
 

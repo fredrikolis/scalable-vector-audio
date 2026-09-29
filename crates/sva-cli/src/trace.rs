@@ -79,13 +79,14 @@ fn referenced(graph: &Graph) -> BTreeSet<String> {
     reached
 }
 
-/// Every node nothing references, the roots a whole composition has.
+/// Every node nothing references, bar a library node (one with a free parameter).
 pub(crate) fn entry_points(graph: &Graph) -> Vec<String> {
     let reached = referenced(graph);
     graph
         .paths()
         .filter(|p| !reached.contains(*p))
         .filter(|p| !sva_core::RESERVED_VARIABLES.contains(&p.rsplit('/').next().unwrap_or(p)))
+        .filter(|p| !sva_engine::instantiate::has_free_parameter(graph, p))
         .map(str::to_string)
         .collect()
 }
