@@ -3,22 +3,23 @@
 use std::collections::BTreeMap;
 
 use sva_formula::{
-    ClosedForm, Hash, NodeId, SpectralSum, Var, hash_closed_form, hash_spectral_sum,
+    ClosedForm, Hash, NodeId, Var, hash_closed_form, hash_closed_form_with, hash_spectral_sum,
+    normalize_closed_form,
 };
 
-use crate::error::{Diagnostic, EngineError};
+use crate::error::EngineError;
 use crate::index::Round;
-use crate::time::Lattice;
 use crate::typing::{Step, SumSlot, Typing, Value, When};
 
-use super::{cyclic, nodes_in, spectral_sum_of, substituted_closed_form};
+use super::{cyclic, nodes_in, spectral_sum_of};
 
-/// What keys a closed form's spectral sum and every buffer collapsed from it.
+/// What keys a closed form's spectral sum wherever a reading composes one.
 pub fn symbolic_hash(typing: &Typing, node: NodeId, want: Var) -> Result<Hash, EngineError> {
     spectral_sum_of(typing, node, want).map(|n| hash_spectral_sum(&n))
 }
 
-/// What one node is, whatever it holds: its closed form's own form, else the tree it was built from.
+/// What one node is, whatever it holds: its definition and the identities of what it reads,
+/// never where a reader places it.
 pub fn identity(typing: &Typing, node: NodeId) -> Result<Hash, EngineError> {
     identity_in(typing, node, &mut BTreeMap::new())
 }
@@ -47,63 +48,26 @@ fn identity_of(
             sink.text("terms");
             for slot in slots {
                 sink.hash(match slot {
-                    SumSlot::Node(id) if *id == node => own(typing, node, open, named)?,
+                    SumSlot::Node(id) if *id == node => built(typing, node, open, named)?,
                     SumSlot::Node(id) => identity_of(typing, *id, open, named)?,
                     SumSlot::Retired(held) => *held,
                 });
             }
             sink.finish()
         }
-        None => own(typing, node, open, named)?,
+        None => built(typing, node, open, named)?,
     };
-    let found = gridded(typing, node, found);
     named.insert(node, found);
     Ok(found)
 }
 
-/// A node stepped on a grid a reader asked for is another node than the one on the render's.
-pub(super) fn gridded(typing: &Typing, node: NodeId, held: Hash) -> Hash {
-    let grid = typing.grid(node);
-    if grid.is_rate() {
-        return held;
+/// A closed form that reads no other node: its own spectral sum, where it has one, so two
+/// spellings of one form are one value; else its written form.
+pub(crate) fn formula_identity(form: &ClosedForm) -> Hash {
+    match normalize_closed_form(form) {
+        Ok(sum) => hash_spectral_sum(&sum),
+        Err(_) => hash_closed_form(form),
     }
-    let mut sink = Sink::new();
-    sink.hash(held);
-    sink.text("grid");
-    for q in [grid.step(), grid.phase()] {
-        rational(&mut sink, q);
-    }
-    sink.finish()
-}
-
-/// What the node itself holds, a named sum's slots aside.
-fn own(
-    typing: &Typing,
-    node: NodeId,
-    open: &mut Vec<NodeId>,
-    named: &mut BTreeMap<NodeId, Hash>,
-) -> Result<Hash, EngineError> {
-    match typing.ty(node).is_closed_form() {
-        true => match closed_form_identity(
-            &spectral_sum_of(typing, node, typing.var(node)),
-            substituted_closed_form(typing, node).as_ref(),
-        ) {
-            Ok(hash) => Ok(hash),
-            Err(form) => built(typing, node, open, named).map_err(|tree| neither(form, tree)),
-        },
-        false => built(typing, node, open, named),
-    }
-}
-
-/// Neither form names the node. Each refusal alone reads as the whole reason, so the one
-/// that answers carries both.
-fn neither(form: EngineError, tree: EngineError) -> EngineError {
-    EngineError::refused(Diagnostic {
-        code: tree.code().to_string(),
-        message: format!("{form} and the tree it was built from: {tree}"),
-        location: tree.at().or_else(|| form.at()).cloned().unwrap_or_default(),
-        help: "write the construct inside the node it reads, or sample it".to_string(),
-    })
 }
 
 fn built(
@@ -118,11 +82,23 @@ fn built(
     open.push(node);
     let mut sink = Sink::new();
     match typing.value(node) {
+        Value::ClosedForm(form) if nodes_in(&form.body).is_empty() => {
+            open.pop();
+            return Ok(formula_identity(form));
+        }
         Value::ClosedForm(form) => {
+            let mut refused = None;
+            let mut read = |id: NodeId| match identity_of(typing, id, open, named) {
+                Ok(held) => held,
+                Err(e) => {
+                    refused.get_or_insert(e);
+                    Hash(0, 0)
+                }
+            };
             sink.text("closed form");
-            sink.hash(hash_closed_form(form));
-            for id in nodes_in(&form.body) {
-                sink.hash(identity_of(typing, id, open, named)?);
+            sink.hash(hash_closed_form_with(form, &mut read));
+            if let Some(e) = refused {
+                return Err(e);
             }
         }
         Value::Cast(cast, source) => {
@@ -180,7 +156,15 @@ fn built(
 pub(super) fn when(sink: &mut Sink, typing: &Typing, at: &When) {
     sink.text("at");
     match at {
-        When::Time(time) => affine(sink, *time),
+        When::At(time) => {
+            sink.text("time");
+            for q in [time.scale, time.shift] {
+                sink.word(q.num() as u64);
+                sink.word((q.num() >> 64) as u64);
+                sink.word(q.den() as u64);
+                sink.word((q.den() >> 64) as u64);
+            }
+        }
         When::Moving(id) => moving(sink, typing, *id),
         When::Index(index) => exact(sink, *index),
         When::Step(step) => {
@@ -275,17 +259,5 @@ impl Sink {
 
     pub(super) fn finish(&self) -> Hash {
         self.0.finish()
-    }
-}
-
-/// The same identity from forms a caller already holds, so a render never walks a closed form twice.
-pub fn closed_form_identity<E: Clone>(
-    sum: &Result<SpectralSum, E>,
-    written: Option<&ClosedForm>,
-) -> Result<Hash, E> {
-    match (sum, written) {
-        (Ok(sum), _) => Ok(hash_spectral_sum(sum)),
-        (Err(_), Some(form)) => Ok(hash_closed_form(form)),
-        (Err(e), None) => Err(e.clone()),
     }
 }

@@ -49,14 +49,7 @@ pub(super) fn mark(inst: &Instances, held: &Render, target: &str) -> Result<Vola
         }
         let mut sink = Sink::default();
         sink.text(&reach.stripped(name));
-        let extent = held.extent_of(id).unwrap_or(sva_samples::Extent::NOWHERE);
-        for word in [
-            *nth,
-            u64::from(config.rate),
-            extent.start as u64,
-            extent.len() as u64,
-            u64::from(tys.ty(id).width),
-        ] {
+        for word in [*nth, u64::from(config.rate), u64::from(tys.ty(id).width)] {
             sink.0.word(word);
         }
         slots.insert(id, sink.0.finish());

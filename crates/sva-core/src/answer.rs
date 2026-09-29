@@ -459,6 +459,7 @@ pub fn label_json(label: &Label) -> String {
         Some(Cost { flops, budget }) => format!(", \"flops\": {flops}, \"flop_budget\": {budget}"),
         None => format!(", \"flops\": {NONE}, \"flop_budget\": {NONE}"),
     };
+    let cost = format!("{cost}, \"moved_s\": {}", maybe(label.moved));
     format!(
         "{{ \"source\": \"{}\", \"profile\": \"{}\", \"rate\": {}, \"rule\": \"{}\"{detail}{cost} }}",
         match label.source {
@@ -507,9 +508,8 @@ fn stats_with(stats: &CacheStats, extra: &str) -> String {
             escape(&l.node),
             l.key,
             match l.kind {
-                PayloadKind::Samples => "samples",
+                PayloadKind::Segments => "segments",
                 PayloadKind::Frames => "frames",
-                PayloadKind::Symbolic => "symbolic",
                 PayloadKind::Run => "run",
             }
         )

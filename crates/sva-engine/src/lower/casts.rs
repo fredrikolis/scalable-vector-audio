@@ -119,10 +119,10 @@ impl Lowering<'_, '_> {
             let Some(cutoff) = arguments[0] else {
                 return Err(EngineError::BadArity(shape.name().to_string()));
             };
-            let mut held = [self.automation((shape.name(), "cutoff"), cutoff, span, cx, var)?; 3];
+            let mut held = [self.automation((shape.name(), "cutoff"), cutoff, cx, var)?; 3];
             for (slot, key, fallback) in [(1, "q", shape.default_q()), (2, "gain", 0.0)] {
                 held[slot] = match arguments[slot] {
-                    Some(x) => self.automation((shape.name(), key), x, span, cx, var)?,
+                    Some(x) => self.automation((shape.name(), key), x, cx, var)?,
                     None => self.constant_node(fallback, var),
                 };
             }
@@ -190,32 +190,19 @@ impl Lowering<'_, '_> {
         }
     }
 
-    /// A parameter the recurrence reads once a sample: inf is refused, a number stays a number,
-    /// a closed form the machine evaluates stays one, and any other is collapsed on the grid.
+    /// A parameter the recurrence reads once a sample: inf is refused, and anything else is the
+    /// value the recurrence reads.
     pub(super) fn automation(
         &mut self,
         (name, key): (&str, &str),
         written: &Expr,
-        span: ByteSpan,
         cx: Cx,
         var: Var,
     ) -> Result<NodeId, EngineError> {
         let folded = crate::loops::amount(self.inst, written, cx);
         self.finite_argument(name, key, written, folded)?;
         let piece = self.walk(written, cx, var)?;
-        let id = self.seal(piece, var, None)?;
-        let held = self.typing.ty(id);
-        let settled = held.held == Held::Sampled
-            || matches!(self.typing.value(id), Value::ClosedForm(form)
-                if super::constant_value(&form.body, form.var).is_some())
-            || super::inline::renderer(self.typing, id).is_some();
-        if settled {
-            return Ok(id);
-        }
-        let ty = Cast::Sample
-            .resolve(&[held])
-            .map_err(|m| self.refuse(Cast::Sample.name(), &m, Some(span)))?;
-        Ok(self.register(Value::Cast(Cast::Sample, id), ty, var))
+        self.seal(piece, var, None)
     }
 
     /// A filter argument is a node like any other operand, so the renderer reads it the same way.

@@ -46,7 +46,7 @@ fn reach(before: &CacheStats, after: &CacheStats) -> (Vec<Outcome>, Vec<Outcome>
     let (moved, kept): (Vec<_>, Vec<_>) = after
         .lookups
         .iter()
-        .filter(|l| l.kind == PayloadKind::Samples)
+        .filter(|l| matches!(l.kind, PayloadKind::Segments | PayloadKind::Run))
         .partition(|l| !before.lookups.iter().any(|b| b.key == l.key));
     let outcomes = |set: Vec<&sva_engine::Lookup>| set.iter().map(|l| l.outcome).collect();
     (outcomes(moved), outcomes(kept))
@@ -70,12 +70,15 @@ fn a_moving_knob_hits_the_note_and_replaces_the_fx_in_place() {
     let again = played(800.0, &["cutoff"], &store);
     let (fx, shared) = reach(&warm, &again);
     assert!(all(&fx, Outcome::Hit), "{again:?}");
-    assert!(all(&shared, Outcome::Hit));
+    assert!(
+        shared.iter().all(|o| *o == Outcome::Hit),
+        "the target answers for what it holds: {again:?}"
+    );
 
     let next = played(1200.0, &["cutoff"], &store);
     let (fx, shared) = reach(&warm, &next);
     assert!(all(&fx, Outcome::ComputedReplaced), "{next:?}");
-    assert!(all(&shared, Outcome::Hit));
+    assert!(all(&shared, Outcome::Hit), "{next:?}");
     assert_eq!(next.replaced(), fx.len());
     assert_eq!(
         store.entries(),

@@ -180,6 +180,15 @@ impl Direct {
         })
     }
 
+    /// Every moving line's frequency.
+    pub fn hz(&self) -> Vec<f64> {
+        self.runs
+            .iter()
+            .flat_map(Run::lines)
+            .map(|l| l.hz)
+            .collect()
+    }
+
     pub fn at(&self, t: f64) -> f64 {
         let moving: f64 = self.runs.iter().map(|r| super::run::at(r, t).re).sum();
         self.level + moving

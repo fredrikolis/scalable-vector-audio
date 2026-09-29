@@ -1,7 +1,7 @@
 // Concern: takes one reading off the representation a node declares, a ledger edge by edge | Non-concern: naming the observations (query.rs), the arithmetic of one | IO: (&Render, node) -> Answer
 
 use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
-use sva_formula::{AUDIBLE_CEILING_HZ, Held, Line, SpectralSum, Var, d_dt, envelope, line_atoms};
+use sva_formula::{AUDIBLE_CEILING_HZ, Line, SpectralSum, Var, d_dt, envelope, line_atoms};
 use sva_samples::{
     AliasScore, Buffer, Consumes, Extent, Peak, PitchFrame, Source, measure::bands, measure::crest,
     measure::envelope, measure::formants, measure::loudness, measure::pitch, measure::spectrum,
@@ -123,51 +123,15 @@ pub(super) fn on_the_grid(
             )
         })
     })?;
-    collapsed_over(render, node, extent, render.config.rate)
+    collapsed_over(render, node, extent)
 }
 
 fn collapsed_over(
     render: &Render,
     node: sva_formula::NodeId,
     extent: sva_samples::Extent,
-    rate: u32,
 ) -> Result<Buffer, EngineError> {
-    let profile = &render.config.profile;
-    let written = refs::substituted_closed_form(&render.tys, node);
-    let composed;
-    let sum = match render.symbolic.get(&node) {
-        Some(held) => Some(held),
-        None => match refs::spectral_sum_of(&render.tys, node, render.tys.var(node)) {
-            Ok(held) => {
-                composed = held;
-                Some(&composed)
-            }
-            Err(left) if written.is_none() => return Err(left),
-            Err(_) => None,
-        },
-    };
-    let taken = match sum {
-        Some(sum) => sva_samples::of_spectral_sum_or_point(
-            sum,
-            written.as_ref(),
-            rate,
-            extent,
-            profile,
-            AliasScore::NotAsked,
-        ),
-        None => sva_samples::render(
-            written
-                .as_ref()
-                .expect("a node with no sum answers off the closed form written above"),
-            rate,
-            extent,
-            profile,
-            AliasScore::NotAsked,
-        ),
-    };
-    taken
-        .map(|(buffer, _)| buffer)
-        .map_err(|e| refused(render, node, e.code(), e.to_string()))
+    super::sampled(render, node, extent)
 }
 
 fn off_the_grid(
@@ -548,9 +512,7 @@ fn attributed(
     }
     let mut contributed_by = std::collections::BTreeMap::new();
     for (parent, child) in &edges {
-        if !render.tys.ty(*parent).is_closed_form()
-            && !crate::render::slots::reads_held(render, *parent)?
-        {
+        if !crate::render::slots::reads_held(render, *parent)? {
             return Err(unmaterialized(
                 render,
                 node,
@@ -582,72 +544,12 @@ fn attributed(
     ))
 }
 
-/// The rows each ledger reads the own samples of over the range, as `attributed` will: its
-/// target, a row that reads rows, one no addend isolates, and any closed form a program
-/// reads, whose collapse its extent chooses. `None` where that cannot be told before a
-/// sample, and every row is read.
-pub(super) fn ledger_reads(
-    render: &Render,
-) -> Option<std::collections::BTreeSet<sva_formula::NodeId>> {
-    let materialize = &render.schedule.materialize;
-    let holds = |id: sva_formula::NodeId| {
-        materialize.contains(&id) && !matches!(render.tys.ty(id).held, Held::Frames)
-    };
-    let mut out = std::collections::BTreeSet::new();
-    for ask in &render.config.asks {
-        let Representation::Ledger { depth } = ask.representation else {
-            continue;
-        };
-        let node = render.node(&ask.node).ok()?;
-        out.insert(node);
-        for (parent, child) in edges_under(render, node, depth, &holds).ok()? {
-            out.insert(parent);
-            if !isolates(render, parent, child, &holds).ok()? {
-                out.insert(child);
-            }
-        }
-    }
-    for id in materialize {
-        if matches!(render.tys.ty(*id).held, Held::Sampled) {
-            let program = crate::render::sampled::program(render, *id).ok()?;
-            let read = program.reads.into_iter();
-            out.extend(read.filter(|r| render.tys.ty(*r).is_closed_form()));
-        }
-    }
-    Some(out)
-}
-
-fn isolates(
-    render: &Render,
-    parent: sva_formula::NodeId,
-    child: sva_formula::NodeId,
-    holds: &dyn Fn(sva_formula::NodeId) -> bool,
-) -> Result<bool, EngineError> {
-    if render.tys.ty(parent).is_closed_form() {
-        return Ok(match render.tys.value(parent) {
-            Value::ClosedForm(form) => separable(&form.body, child),
-            _ => false,
-        });
-    }
-    Ok(crate::render::slots::isolated(render, parent, child, holds)?.is_some())
-}
-
-/// A row's own samples over the range: its buffer where its extent holds them, else its
-/// collapse over the range where it is a closed form.
+/// A row's own samples over the range, held or pulled.
 fn own_samples(render: &Render, id: sva_formula::NodeId) -> Result<Buffer, EngineError> {
     let range = render.range.expect("a ledger reads a decided range");
-    let needed = range.intersect(render.extents.support(id));
-    let held = render.extents.of(id);
-    if needed.is_empty() || held.intersect(needed) == needed {
-        return Ok(render.aligned(id, range));
-    }
-    match render.tys.ty(id).is_closed_form() {
-        true => collapsed_over(render, id, range, render.rate()),
-        false => Err(unmaterialized(
-            render,
-            id,
-            Representation::Ledger { depth: 0 },
-        )),
+    match render.buffer(id) {
+        Some(_) => render.output(id),
+        None => collapsed_over(render, id, range),
     }
 }
 
@@ -710,82 +612,26 @@ fn edges_under(
     Ok(out)
 }
 
-/// Every ref one node reads: a closed form's own, and a sampled node's buffer slots.
+/// Every ref one node's program reads, one row per name.
 fn refs_read(
     render: &Render,
     node: sva_formula::NodeId,
     holds: &dyn Fn(sva_formula::NodeId) -> bool,
 ) -> Result<Vec<sva_formula::NodeId>, EngineError> {
-    match render.tys.ty(node).is_closed_form() {
-        true => Ok(crate::schedule::read_operands(&render.tys, node)),
-        false => crate::render::slots::refs_read(render, node, holds),
-    }
+    crate::render::slots::refs_read(render, node, holds)
 }
 
-/// What one ref contributed to the node reading it, at that node's own offset and window:
-/// its own addend, where the closed form adds its refs. Two under one product have no addend apiece
-/// and no share either, so that edge is left unattributed.
+/// What one ref contributed to the node reading it, at that node's own offset and window: its
+/// program with every other slot silenced. Two under one product have no addend apiece and no
+/// share either, so that edge is left unattributed.
 fn contributed(
     render: &Render,
     parent: sva_formula::NodeId,
     child: sva_formula::NodeId,
 ) -> Result<Option<Buffer>, EngineError> {
-    if !render.tys.ty(parent).is_closed_form() {
-        let range = render.range.expect("a ledger reads a decided range");
-        return Ok(crate::render::slots::contributed(render, parent, child)?
-            .map(|held| held.over(range, held.extent())));
-    }
-    let Value::ClosedForm(form) = render.tys.value(parent) else {
-        return Ok(None);
-    };
-    Ok(separable(&form.body, child)
-        .then(|| collapsed(render, parent, &alone(&form.body, child), form.var))
-        .flatten())
-}
-
-fn collapsed(
-    render: &Render,
-    parent: sva_formula::NodeId,
-    body: &sva_formula::Body,
-    var: Var,
-) -> Option<Buffer> {
-    let sum = refs::spectral_sum_of_body(&render.tys, parent, body, var).ok()?;
-    sva_samples::collapse::of_spectral_sum(
-        &sum,
-        render.config.rate,
-        render.range?,
-        &render.config.profile,
-        AliasScore::NotAsked,
-    )
-    .ok()
-    .map(|(buffer, _)| buffer)
-}
-
-fn alone(f: &sva_formula::Body, child: sva_formula::NodeId) -> sva_formula::Body {
-    match f {
-        sva_formula::Body::Node(id) if *id != child => {
-            sva_formula::Body::Const(sva_formula::C64::ZERO)
-        }
-        other => sva_formula::closed_form::map_children(other, |p| {
-            sva_formula::Part::new(p.origin, alone(&p.body, child))
-        }),
-    }
-}
-
-/// Whether silencing every other ref leaves this one's contribution standing.
-fn separable(f: &sva_formula::Body, child: sva_formula::NodeId) -> bool {
-    let parts = sva_formula::closed_form::children(f);
-    match f {
-        sva_formula::Body::Add(_) => parts.iter().all(|p| separable(&p.body, child)),
-        _ => {
-            let mut holding = parts.iter().filter(|p| !refs::nodes_in(&p.body).is_empty());
-            match (holding.next(), holding.next()) {
-                (None, _) => true,
-                (Some(only), None) => separable(&only.body, child),
-                _ => !refs::nodes_in(f).contains(&child),
-            }
-        }
-    }
+    let range = render.range.expect("a ledger reads a decided range");
+    Ok(crate::render::slots::contributed(render, parent, child)?
+        .map(|held| held.over(range, held.extent())))
 }
 
 /// The closed form an alias score oversamples: the node itself where it is one, and the operand of
@@ -805,6 +651,18 @@ fn behind(render: &Render, node: sva_formula::NodeId) -> Result<sva_formula::Nod
                 .to_string(),
         )),
     }
+}
+
+/// The score a point sampling's label carries where a reading asks for one: the node against
+/// its own closed form oversampled.
+pub(super) fn alias_db(
+    render: &Render,
+    node: sva_formula::NodeId,
+    buffer: &Buffer,
+) -> Result<f64, EngineError> {
+    let oversample = sva_samples::ALIAS_OVERSAMPLE as u32;
+    let reference = oversampled(render, behind(render, node)?, oversample)?;
+    Ok(worst_alias(buffer, &reference, oversample).asr_db)
 }
 
 /// Each component scored against its own reference, and `worst` says which one answers.
@@ -845,16 +703,7 @@ fn oversampled(
             &render.config.profile,
             AliasScore::NotAsked,
         ),
-        Err(e) => match refs::substituted_closed_form(&render.tys, node) {
-            Some(form) => sva_samples::render(
-                &form,
-                rate,
-                extent,
-                &render.config.profile,
-                AliasScore::NotAsked,
-            ),
-            None => return Err(e),
-        },
+        Err(_) => return super::finer(render, node, oversample, extent),
     };
     taken.map(|(buffer, _)| buffer).map_err(|e| {
         EngineError::refused(Diagnostic {

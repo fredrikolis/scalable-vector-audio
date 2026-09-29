@@ -3,10 +3,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use std::collections::BTreeMap;
-
 use sva_formula::Hash;
-use sva_samples::{Label, MachineState};
+use sva_samples::Label;
 
 use super::{Entry, Expected, Payload};
 
@@ -291,13 +289,6 @@ impl Cache {
         self.locked().entries.contains_key(&key)
     }
 
-    pub(crate) fn run_span(&self, key: Hash) -> Option<(sva_samples::Extent, Option<Hash>)> {
-        match &self.locked().entries.get(&key)?.payload {
-            Payload::Run(run) => Some((run.samples.extent(), run.parent)),
-            _ => None,
-        }
-    }
-
     /// How many samples apart a run keeps the states it passes.
     pub fn mark_every(&self) -> usize {
         self.locked().mark_every
@@ -305,39 +296,6 @@ impl Cache {
 
     pub fn set_mark_every(&self, samples: usize) {
         self.locked().mark_every = samples.max(1);
-    }
-
-    pub(crate) fn mark(&self, key: Hash, marks: BTreeMap<i64, MachineState>) {
-        let mut state = self.locked();
-        let Some(held) = state.entries.get_mut(&key) else {
-            return;
-        };
-        let Payload::Run(run) = &mut held.payload else {
-            return;
-        };
-        let before = run.bytes() as u64;
-        let span = run.samples.extent();
-        run.marks.extend(
-            marks
-                .into_iter()
-                .filter(|(at, _)| span.start <= *at && *at <= span.end),
-        );
-        let after = run.bytes() as u64;
-        state.bytes += after - before;
-        state.bounded();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn forget(&self, key: Hash) {
-        self.locked().remove(key);
-    }
-
-    pub(crate) fn touch(&self, key: Hash) {
-        let mut state = self.locked();
-        let tick = state.tick();
-        if let Some(held) = state.entries.get_mut(&key) {
-            held.read = tick;
-        }
     }
 
     pub(crate) fn begin_tree(&self) -> u64 {
@@ -361,6 +319,62 @@ impl Cache {
             payload: held.payload.clone(),
             label: held.label.clone(),
         })
+    }
+
+    /// A value's segments join those held under `key`, and a run continuing the one held
+    /// there extends it, each in place; anything else replaces what `key` held.
+    pub(crate) fn merge(
+        &self,
+        key: Hash,
+        payload: Payload,
+        label: Option<&Label>,
+        stamp: Stamp,
+    ) -> Kept {
+        let mut state = self.locked();
+        let tick = state.tick();
+        let joined = match (state.entries.get_mut(&key), payload) {
+            (Some(held), payload) if held.slot == stamp.slot => {
+                let before = held.bytes();
+                let payload = match (&mut held.payload, payload) {
+                    (Payload::Segments(parts), Payload::Segments(more)) => {
+                        joined(parts, more);
+                        None
+                    }
+                    (Payload::Run(run), Payload::Run(more)) if overlaps(run, &more) => {
+                        let from = (run.end() - more.samples.start).max(0) as usize;
+                        for (held, more) in run.samples.planes.iter_mut().zip(&more.samples.planes)
+                        {
+                            held.extend_from_slice(&more[from.min(more.len())..]);
+                        }
+                        run.marks.extend(more.marks);
+                        None
+                    }
+                    (_, payload) => Some(payload),
+                };
+                match payload {
+                    None => {
+                        held.read = tick;
+                        held.tree = stamp.tree;
+                        held.fork = stamp.fork;
+                        let after = held.bytes();
+                        Ok((before, after))
+                    }
+                    Some(payload) => Err(payload),
+                }
+            }
+            (_, payload) => Err(payload),
+        };
+        match joined {
+            Ok((before, after)) => {
+                state.bytes = state.bytes - before + after;
+                state.bounded();
+                Kept::Held
+            }
+            Err(payload) => {
+                drop(state);
+                self.store(key, &payload, label, stamp)
+            }
+        }
     }
 
     pub(crate) fn store(
@@ -400,6 +414,34 @@ impl Cache {
     }
 }
 
+/// A run that starts inside or at the end of the one held continues it: what it holds past
+/// that one's end is laid on, the samples both hold being the same.
+fn overlaps(held: &super::Run, more: &super::Run) -> bool {
+    let (a, b) = (held.samples.start, held.end());
+    a <= more.samples.start && more.samples.start <= b
+}
+
+/// `more` laid among `parts`, each touching pair joined into one.
+fn joined(parts: &mut Vec<sva_samples::Buffer>, more: Vec<sva_samples::Buffer>) {
+    for part in more {
+        parts.push(part);
+    }
+    parts.sort_by_key(|b| b.start);
+    let mut out: Vec<sva_samples::Buffer> = Vec::with_capacity(parts.len());
+    for part in parts.drain(..) {
+        match out.last_mut() {
+            Some(last) if last.extent().end >= part.start => {
+                let from = (last.extent().end - part.start) as usize;
+                for (held, more) in last.planes.iter_mut().zip(&part.planes) {
+                    held.extend_from_slice(&more[from.min(more.len())..]);
+                }
+            }
+            _ => out.push(part),
+        }
+    }
+    *parts = out;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,14 +457,10 @@ mod tests {
             fork: false,
             slot: None,
         };
-        let four = Payload::Samples(Box::new(Buffer::mono(8_000, vec![0.25; 4])));
-        for (rate, samples) in [(8_000, 5), (48_000, 4)] {
+        let four = Payload::Segments(vec![Buffer::mono(8_000, vec![0.25; 4])]);
+        for (rate, width) in [(48_000, 1), (8_000, 2)] {
             cache.store(key, &four, None, stamp);
-            let asked = Expected::Samples {
-                rate,
-                width: 1,
-                samples,
-            };
+            let asked = Expected::Segments { rate, width };
             assert!(cache.load(key, asked, stamp).is_none());
             assert!(!cache.holds(key));
             assert_eq!(cache.bytes(), 0);

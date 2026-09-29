@@ -26,7 +26,7 @@ pub use plan::transform_flops;
 
 use plan::Plan;
 pub(crate) use point::NoRefs;
-pub use point::{Refs, crop_gain, lane_of, unary};
+pub use point::{Refs, crop_gain, lane_of, shoulders, unary};
 pub use truncate::{Audible, spectral_sum as truncate_spectral_sum, written as truncate_written};
 
 /// One closed form's value at one instant, for a caller that already holds the spectral sum.

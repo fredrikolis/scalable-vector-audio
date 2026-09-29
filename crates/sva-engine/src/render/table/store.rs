@@ -1,0 +1,248 @@
+// Concern: what the store answers a value with before it computes, and what it leaves there after | Non-concern: the store's cap and evictions | IO: (value, Recording) -> samples loaded, entries
+
+use std::collections::BTreeMap;
+
+use sva_formula::Hash;
+use sva_samples::{Buffer, Extent, Machine, MachineState, Tape};
+
+use super::value::{Held, Kind, Value};
+use crate::cache::{Expected, Outcome, Payload, PayloadKind, Recording, Run, frames_key};
+
+/// Where a value sits in the store: its key, and what a policy weighs of it.
+#[derive(Clone, Debug)]
+pub(crate) struct Place {
+    pub(crate) key: Hash,
+    /// A run cut where its switches turn, each segment under the value's identity before the
+    /// next switch, the last under its own; the first starts where its run does.
+    pub(crate) segments: Vec<(i64, Hash)>,
+    pub(crate) fork: bool,
+    pub(crate) target: bool,
+    pub(crate) slot: Option<Hash>,
+    /// How many reads ask for it: the first computes it, each other reuses it.
+    pub(crate) reads: usize,
+    pub(crate) looked: bool,
+    /// Answered only up to a switch.
+    pub(crate) prefixed: bool,
+    /// The lookup its first ask made, once made.
+    pub(crate) noted: Option<usize>,
+}
+
+impl Place {
+    fn kind(value: &Value) -> PayloadKind {
+        match (&value.kind, &value.held) {
+            (Kind::Frames { .. }, _) => PayloadKind::Frames,
+            (_, Held::Run(_)) => PayloadKind::Run,
+            _ => PayloadKind::Segments,
+        }
+    }
+
+    fn keyed(&self, value: &Value) -> Hash {
+        match value.kind {
+            Kind::Frames { window, hop } => frames_key(self.key, window, hop),
+            _ => self.key,
+        }
+    }
+
+    fn end(&self, k: usize) -> i64 {
+        self.segments
+            .get(k + 1)
+            .map_or(i64::MAX, |(start, _)| *start)
+    }
+
+    fn parent(&self, k: usize) -> Option<Hash> {
+        k.checked_sub(1).map(|p| self.segments[p].1)
+    }
+}
+
+/// What the store holds of `value`, laid in beside what it holds itself; `false` where the
+/// store answered nothing.
+pub(crate) fn load(value: &mut Value, place: &mut Place, recording: &Recording) -> bool {
+    place.looked = true;
+    let kind = Place::kind(value);
+    let (rate, width) = (value.grid.rate, value.width);
+    let stamp = recording.stamp(place.slot, place.fork, kind);
+    if kind == PayloadKind::Run {
+        return resumed(value, place, recording);
+    }
+    let expected = match kind {
+        PayloadKind::Frames => Expected::Frames,
+        _ => Expected::Segments { rate, width },
+    };
+    let Some(entry) = recording.load(place.keyed(value), expected, stamp) else {
+        return false;
+    };
+    if entry.label.is_some() {
+        value.label = entry.label;
+    }
+    match entry.payload {
+        Payload::Segments(parts) => {
+            for part in parts {
+                value.hold(part);
+            }
+            true
+        }
+        Payload::Frames(frames) => {
+            value.held = Held::Frames(Some(frames));
+            true
+        }
+        Payload::Run(_) => false,
+    }
+}
+
+/// Segment by segment from the first: a segment's samples up to the next switch, on to the
+/// next segment where its state there is marked, else from its last mark. A value that has
+/// stepped already takes none.
+fn resumed(value: &mut Value, place: &mut Place, recording: &Recording) -> bool {
+    let Kind::Program(program) = &value.kind else {
+        return false;
+    };
+    if program.machine.is_some() {
+        return false;
+    }
+    let expected = Expected::Run {
+        rate: value.grid.rate,
+        width: value.width,
+    };
+    let stamp = recording.stamp(place.slot, place.fork, PayloadKind::Run);
+    let mut planes = vec![Vec::new(); value.width];
+    let (mut base, mut pos, mut reached) = (None, i64::MIN, 0);
+    let mut marks: BTreeMap<i64, MachineState> = BTreeMap::new();
+    for k in 0..place.segments.len() {
+        let Some(run) = recording
+            .load(place.segments[k].1, expected, stamp)
+            .and_then(|entry| entry.payload.run())
+        else {
+            break;
+        };
+        let placed = match k {
+            0 => true,
+            _ => run.samples.start == pos && run.parent == place.parent(k),
+        };
+        if !placed {
+            break;
+        }
+        if k == 0 {
+            (base, pos) = (Some(run.samples.start), run.samples.start);
+        }
+        let upto = place.end(k).min(run.end());
+        for (c, plane) in planes.iter_mut().enumerate() {
+            let at = |n: i64| run.samples.plane(c)[(n - run.samples.start) as usize];
+            plane.extend((pos..upto).map(at));
+        }
+        marks.extend(run.marks.range(pos..=upto).map(|(at, m)| (*at, m.clone())));
+        (pos, reached) = (upto, k + 1);
+        if upto < place.end(k) || !run.marks.contains_key(&upto) {
+            break;
+        }
+    }
+    let (Some(base), Some((&at, state))) = (base, marks.range(..=pos).next_back()) else {
+        return false;
+    };
+    let Ok(mut machine) = Machine::over(&program.spanned, value.grid, at) else {
+        return false;
+    };
+    if at <= base || !machine.carry(state) {
+        return false;
+    }
+    for plane in &mut planes {
+        plane.truncate((at - base) as usize);
+    }
+    let mut samples = Buffer::of_planes(value.grid.rate, planes);
+    samples.start = base;
+    place.prefixed = reached < place.segments.len();
+    let Kind::Program(program) = &mut value.kind else {
+        unreachable!("a program");
+    };
+    program.machine = Some(machine);
+    program.marks = marks.into_iter().filter(|(m, _)| *m <= at).collect();
+    value.held = Held::Run(Tape::from(samples));
+    true
+}
+
+/// The first time a value is asked: one lookup per read of it, the first answered by what it
+/// computes now, every other a reuse.
+pub(crate) fn noted(value: &Value, place: &mut Place, computes: bool, recording: &mut Recording) {
+    if place.noted.is_some() {
+        return;
+    }
+    let (kind, key) = (Place::kind(value), place.keyed(value));
+    let first = match (computes, place.prefixed) {
+        (_, true) => Outcome::Prefix,
+        (true, false) => Outcome::ComputedNotStored,
+        (false, false) => Outcome::Hit,
+    };
+    place.noted = Some(recording.note(&value.name, key, kind, first));
+    for _ in 1..place.reads.max(1) {
+        recording.note(&value.name, key, kind, Outcome::Hit);
+    }
+}
+
+/// What a value computed, stored where the policy keeps it: a run segment by segment, each
+/// with the states it marked.
+pub(crate) fn stored(
+    value: &mut Value,
+    place: &Place,
+    computed: &[Extent],
+    recording: &mut Recording,
+) {
+    let kind = Place::kind(value);
+    if computed.is_empty() || !value.pure || !recording.stores(place.fork, place.target) {
+        return;
+    }
+    let stamp = recording.stamp(place.slot, place.fork, kind);
+    let key = place.keyed(value);
+    let label = value.label.clone();
+    let payload = match &mut value.held {
+        Held::Segments(parts) => Payload::Segments(
+            computed
+                .iter()
+                .flat_map(|e| parts.iter().filter_map(move |b| over(b, *e)))
+                .collect(),
+        ),
+        Held::Frames(Some(frames)) => Payload::Frames(frames.clone()),
+        Held::Frames(None) => return,
+        Held::Run(tape) => {
+            let (Some(from), Kind::Program(program)) = (computed.first(), &mut value.kind) else {
+                return;
+            };
+            let Some(machine) = &program.machine else {
+                return;
+            };
+            program.marks.insert(tape.end(), machine.state());
+            let samples = tape.clone().into_buffer(value.grid.rate);
+            let marks = std::mem::take(&mut program.marks);
+            for (k, (start, segment)) in place.segments.iter().enumerate() {
+                let (lo, hi) = (from.start.max(*start), tape.end().min(place.end(k)));
+                if lo >= hi {
+                    continue;
+                }
+                let piece = Extent::new(lo, hi);
+                let Some(chunk) = over(&samples, piece) else {
+                    continue;
+                };
+                let run = Run {
+                    samples: chunk,
+                    marks: marks
+                        .range(piece.start..=piece.end)
+                        .map(|(at, m)| (*at, m.clone()))
+                        .collect(),
+                    parent: place.parent(k),
+                };
+                recording.store(
+                    (*segment, place.noted),
+                    Payload::Run(Box::new(run)),
+                    None,
+                    stamp,
+                );
+            }
+            return;
+        }
+    };
+    recording.store((key, place.noted), payload, label.as_ref(), stamp);
+}
+
+/// `buffer` over `e` where it holds all of it.
+fn over(buffer: &Buffer, e: Extent) -> Option<Buffer> {
+    let held = buffer.extent();
+    (!e.is_empty() && held.start <= e.start && e.end <= held.end).then(|| buffer.over(e, held))
+}

@@ -142,11 +142,13 @@ fn sampled_leaf(
         }
         crate::typing::Value::Read { source, at, .. } => under(vec![*source], open).or_else(|| {
             Some(match at {
-                crate::typing::When::Time(time) => format!(
-                    "a read at {}*t{:+}s",
-                    time.scale.to_f64(),
-                    time.shift.to_f64()
-                ),
+                crate::typing::When::At(time) => {
+                    format!(
+                        "a read at {}*t{:+}s",
+                        time.scale.to_f64(),
+                        time.shift.to_f64()
+                    )
+                }
                 crate::typing::When::Moving(_) => "a read at a moving time".to_string(),
                 crate::typing::When::Index(_) | crate::typing::When::Step(_) => {
                     "a read by sample index".to_string()

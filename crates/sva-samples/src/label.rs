@@ -13,7 +13,6 @@ pub struct Dropped {
     pub db: f64,
 }
 
-/// The rows declared once: enum, printed name, name read back.
 macro_rules! rules {
     ($($variant:ident => $text:literal,)+) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,6 +105,8 @@ pub struct Label {
     pub rate: u32,
     pub detail: Detail,
     pub cost: Option<Cost>,
+    /// The most seconds a read was moved to land on a whole sample.
+    pub moved: Option<f64>,
 }
 
 impl Label {
@@ -118,6 +119,7 @@ impl Label {
                 rule: Rule::Reading,
             },
             cost: None,
+            moved: None,
         }
     }
 
@@ -128,6 +130,7 @@ impl Label {
             rate,
             detail,
             cost: None,
+            moved: None,
         }
     }
 

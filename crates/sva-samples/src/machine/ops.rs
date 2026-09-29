@@ -44,19 +44,11 @@ pub(crate) enum Op {
     Map(Unary),
     Zip(Binary),
     Crop {
+        window: (i64, i64),
         a: f64,
         b: f64,
         rise: f64,
         fall: f64,
-    },
-    /// Ahead of a crop whose operand holds no state: where the window is shut, the `over` ops
-    /// up to the crop are skipped and the crop writes zero.
-    Guard {
-        a: f64,
-        b: f64,
-        rise: f64,
-        fall: f64,
-        over: usize,
     },
     Join(usize),
     Channel(usize),
@@ -151,7 +143,13 @@ fn lower(r: &NodeRenderer, layout: &Layout, out: &mut Lowered) -> Result<usize, 
             width,
             time,
         } => {
-            meet(1, lower(time, layout, out)?)?;
+            let times = lower(time, layout, out)?;
+            if times != 1 && times != *width {
+                return Err(SampleError::WidthMismatch {
+                    left: times,
+                    right: *width,
+                });
+            }
             out.formulas.push(formula.clone());
             let at = out.formulas.len() - 1;
             out.push(Op::Formula { at }, *width)
@@ -205,27 +203,15 @@ fn lower(r: &NodeRenderer, layout: &Layout, out: &mut Lowered) -> Result<usize, 
         }
         NodeRenderer::Crop {
             x,
+            window,
             a,
             b,
             rise,
             fall,
         } => {
-            let guarded = x.stateless();
-            let guard = out.ops.len();
-            if guarded {
-                out.push(Op::Const(0.0), 1);
-            }
             let w = lower(x, layout, out)?;
-            if guarded {
-                out.ops[guard] = Op::Guard {
-                    a: *a,
-                    b: *b,
-                    rise: *rise,
-                    fall: *fall,
-                    over: out.ops.len() - guard,
-                };
-            }
             let crop = Op::Crop {
+                window: *window,
                 a: *a,
                 b: *b,
                 rise: *rise,

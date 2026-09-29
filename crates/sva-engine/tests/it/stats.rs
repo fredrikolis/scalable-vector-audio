@@ -43,13 +43,21 @@ fn keys(stats: &CacheStats) -> BTreeSet<(Hash, String)> {
         .collect()
 }
 
+/// With no store, a render still notes each read, every one after the first a reuse.
 #[test]
-fn a_render_handed_no_store_reports_no_stats() {
+fn a_render_handed_no_store_reports_its_own_reuse_and_no_store() {
     let graph = demo("no-store");
-    let held = render(&graph, "a", RenderConfig::seconds(RATE, SECONDS), None).expect("a render");
-    assert_eq!(held.cache_stats, None);
+    let held = render(&graph, "b", RenderConfig::seconds(RATE, SECONDS), None).expect("a render");
+    let stats = held
+        .cache_stats
+        .expect("every render reports what it asked");
+    assert_eq!((stats.bytes, stats.entries), (0, 0));
+    assert!(stats.computed() > 0 && stats.stored() == 0, "{stats:?}");
+    let pad: Vec<_> = stats.lookups.iter().filter(|l| l.node == "pad").collect();
+    assert_eq!(pad.len(), 1, "one read of the pad: {stats:?}");
 }
 
+/// A second render finds the target the first stored, so nothing under it is asked.
 #[test]
 fn an_identical_second_render_is_all_hits() {
     let graph = demo("identical");
@@ -57,8 +65,10 @@ fn an_identical_second_render_is_all_hits() {
     let cold = stats(&graph, "b", &cache);
     let warm = stats(&graph, "b", &cache);
     assert!(!warm.lookups.is_empty());
-    assert_eq!(keys(&cold), keys(&warm), "the same lookups, asked again");
+    assert!(
+        keys(&warm).is_subset(&keys(&cold)),
+        "lookups the first render asked"
+    );
     assert_eq!(warm.hits(), warm.lookups.len());
     assert_eq!(warm.computed(), 0);
-    assert_eq!(warm.nodes(), cold.nodes());
 }

@@ -3,7 +3,6 @@
 mod calls;
 mod casts;
 mod constant;
-pub(crate) mod inline;
 pub(crate) mod physics;
 mod solvers;
 mod walk;
@@ -19,7 +18,7 @@ use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Cx, Instances, Node};
 use crate::loops::{self, SelfKind};
 use crate::overload;
-use crate::time::{Affine, Grid, Lattice};
+use crate::time::Grid;
 use crate::typing::{Node as Typed, Typing, Value, When};
 
 pub(crate) use calls::{noise_at, rand_arguments};
@@ -61,8 +60,8 @@ pub fn node(path: &str, inst: &Instances, typing: &mut Typing) -> Result<NodeId,
     }
 }
 
-/// `path` on `grid`, lowered once per grid with its inputs there. A node with no state has a
-/// value at any instant, so only its step, which `sp` counts in, changes what it lowers to.
+/// `path` on `grid`, lowered once per step with its inputs there: its step is what `sp` counts
+/// in and what a stateful node steps by.
 pub(crate) fn on(
     path: &str,
     grid: Grid,
@@ -72,10 +71,6 @@ pub(crate) fn on(
     let base = typing
         .id(path)
         .ok_or_else(|| EngineError::UnknownNode(path.to_string()))?;
-    let grid = match typing.pending(base) || holds_state(typing, base) {
-        true => grid,
-        false => grid.at_step(),
-    };
     if grid.is_rate() {
         return Ok(base);
     }
@@ -289,7 +284,7 @@ impl<'g> Lowering<'_, 'g> {
                             var: self.typing.var(id),
                             value: Value::Read {
                                 source: id,
-                                at: When::Time(Affine::NOW),
+                                at: When::At(crate::time::Affine::NOW),
                                 site,
                             },
                             grid: self.grid,
@@ -384,8 +379,8 @@ mod tests {
     }
 
     /// A signal passed in as `x` reads by index as a ref does: an allpass reads its stateful
-    /// input's nearest step at a delay between two samples, the input lowered once on the
-    /// render's grid, where `x(t - d)` lowers it again on a grid shifted by `d`.
+    /// input's nearest step at a delay between two samples, and `x(t - d)` reads the same one
+    /// value at the whole sample `d` rounds to.
     #[test]
     fn a_parameter_read_by_index_lowers_its_signal_once() {
         const RATE: u32 = 8_000;
@@ -425,8 +420,8 @@ mod tests {
         );
         assert_eq!(
             filters("shifted"),
-            2,
-            "a read at t - d lowers src again, shifted"
+            1,
+            "a read at t - d reads src's one value at a whole-sample shift"
         );
 
         let config = crate::RenderConfig::seconds(RATE, 0.05);

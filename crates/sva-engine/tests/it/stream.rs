@@ -245,13 +245,20 @@ fn a_stream_from_a_later_start_is_the_whole_render_over_the_same_range() {
     }
 }
 
+/// A read ahead of its reader streams: the value it reads is computed ahead of the block.
 #[test]
-fn a_node_no_block_reads_alone_refuses_the_stream() {
+fn a_read_ahead_streams_the_whole_render_bit_for_bit() {
     let g = composition();
-    let refused = Stream::open(&g, &at("ahead"), config(256, four()), None)
-        .err()
-        .expect("a read ahead refuses");
-    assert_eq!(refused.code(), "engine.no_stream", "{refused}");
+    let samples = secs(0.2);
+    let want = whole(&g, "ahead", samples);
+    sounds(&want);
+    for block in [1, 64, 777] {
+        assert_eq!(
+            streamed(&g, "ahead", block, samples),
+            want,
+            "in blocks of {block}"
+        );
+    }
 }
 
 /// A root whose support never ends streams on for as long as it is pulled, where a whole
@@ -398,19 +405,13 @@ fn a_filter_read_at_a_moving_time_refuses_whole_and_streamed() {
     assert_eq!(streamed.code(), "type.stateful_warp", "{streamed}");
 }
 
-/// A stream stands at one instant, so a read of output it has not computed refuses by code.
+/// A read backwards in time streams as the whole render reads it: the value it reads is held
+/// from where the stream first asks for it back to where it last does.
 #[test]
-fn a_streamed_read_backwards_in_time_refuses() {
+fn a_streamed_read_backwards_in_time_is_the_whole_render() {
     let g = reads();
-    let config = config(512, four());
-    let mut stream = Stream::open(&g, &at("reversed"), config, None).expect("it opens");
-    let refused = std::iter::repeat_with(|| stream.next_block())
-        .take(200)
-        .find_map(Result::err)
-        .expect("a backward read refuses");
-    assert_eq!(refused.code(), "engine.reads_ahead", "{refused}");
-    assert!(
-        render(&g, "reversed", RenderConfig::seconds(RATE, 0.5), None).is_ok(),
-        "a whole render reads it backwards"
-    );
+    let samples = secs(0.5);
+    let want = whole_at(&g, "reversed", RATE, samples);
+    sounds(&want);
+    assert_eq!(streamed_at(&g, "reversed", RATE, 512, samples), want);
 }

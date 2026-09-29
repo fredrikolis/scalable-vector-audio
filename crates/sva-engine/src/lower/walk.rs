@@ -138,10 +138,11 @@ impl Lowering<'_, '_> {
                 if let Some((_, id)) = self.own.iter().find(|(held, _)| *held == delay) {
                     return Ok(Piece::Value(*id));
                 }
-                When::Time(Affine {
+                let back = Affine {
                     scale: Q::ONE,
                     shift: delay.neg(),
-                })
+                };
+                When::At(back)
             }
             Tap::Moving => unreachable!("an index moves as an index, never as a time"),
             Tap::Indexed => self.sample_index(arg, span, cx)?,
@@ -400,18 +401,19 @@ impl Lowering<'_, '_> {
                     of,
                 }));
             }
-            Some(time) if stateful => match self.grid.read(time) {
-                Some(grid) => (on(path, grid, self.inst, self.typing)?, When::Time(time)),
-                None => (id, When::Time(time)),
-            },
-            Some(time) if !closed => (id, When::Time(time)),
             _ if closed => return self.warped(id, arg, span, cx, var),
+            Some(time) => {
+                let grid = self
+                    .grid
+                    .speed(time)
+                    .ok_or_else(|| self.unplaced(path, span))?;
+                (on(path, grid, self.inst, self.typing)?, When::At(time))
+            }
             None => match per_lane(arg) {
                 Some(_) => return Err(self.per_lane_on_samples(path, id, arg, span)),
                 None if stateful => return Err(self.stateful_warp(path, span)),
                 None => (id, When::Moving(self.time(arg, cx)?)),
             },
-            Some(_) => unreachable!("a closed form's time is matched above"),
         };
         Ok(Piece::Value(self.reading(id, at, span, var)))
     }
@@ -469,9 +471,11 @@ impl Lowering<'_, '_> {
         let id = match self.typing.value(id) {
             Value::Read {
                 source,
-                at: When::Time(Affine::NOW),
+                at: When::At(time),
                 ..
-            } if self.typing.grid(*source) == self.typing.grid(id) => *source,
+            } if *time == Affine::NOW && self.typing.grid(*source) == self.typing.grid(id) => {
+                *source
+            }
             _ => id,
         };
         self.stepped(id, at, span, var)
@@ -526,6 +530,16 @@ impl Lowering<'_, '_> {
             }
             _ => unreachable!("an integer is a whole literal, idx(...), or +, - and * of them"),
         }
+    }
+
+    /// A read whose constant lands past what a whole sample index holds.
+    fn unplaced(&self, path: &str, span: ByteSpan) -> EngineError {
+        self.refused_at(
+            "engine.unreadable_position",
+            format!("`@{path}` is read at a time past what a sample index holds"),
+            "read it nearer t = 0",
+            Some(span),
+        )
     }
 
     /// A stateful node has a value only at the steps it takes, which a time that moves

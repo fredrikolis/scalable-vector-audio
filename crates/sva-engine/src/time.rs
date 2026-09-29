@@ -1,6 +1,8 @@
-// Concern: a written time as an exact rational, and a read's time as `k*t + c` | Non-concern: folding an expression into one (loops.rs) | IO: (f64 or ints) -> Q
+// Concern: a written time as an exact rational, a read's time as `k*t + c`, and the whole sample it lands on | Non-concern: folding an expression into one (loops.rs) | IO: (f64 or ints) -> Q, Map
 
 use std::cmp::Ordering;
+
+use sva_samples::Map;
 
 /// An exact rational in lowest terms, `den > 0`. A written decimal is the rational it spells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -39,7 +41,6 @@ impl Q {
         }
     }
 
-    /// The shortest decimal that reads back as `x`.
     pub fn decimal(x: f64) -> Option<Q> {
         if !x.is_finite() {
             return None;
@@ -119,7 +120,6 @@ impl Q {
         self.sub(o.mul(Q::new(floor, 1)?)?)
     }
 
-    /// Correctly rounded, half to even.
     pub fn to_f64(self) -> f64 {
         let negative = self.num < 0;
         let (n, d) = (self.num.unsigned_abs(), self.den as u128);
@@ -197,22 +197,22 @@ impl Affine {
 
 pub use sva_samples::Grid;
 
-/// A grid's `(a*m + b)/d` as `step*m + phase` samples of its rate, exact: `step = a/d` and
-/// `0 <= phase = b/d < step`, the render's own grid or the one a reader's time asks for.
+/// A grid's `a*m/d` as `step*m` samples of its rate, exact, starting at t = 0.
 pub trait Lattice: Sized {
     fn step(self) -> Q;
-    fn phase(self) -> Q;
-    fn stepping(rate: u32, step: Q, phase: Q) -> Grid;
-    /// The same step, from the render's own first sample.
-    fn at_step(self) -> Grid;
+    fn stepping(rate: u32, step: Q) -> Grid;
     fn steps(self, n: Q) -> Option<Q>;
     fn steps_f64(self, n: f64) -> f64;
-    /// The grid a read at `time` steps its source on: the step scaled by `time`'s, and the
-    /// phase its instants land at.
-    fn read(self, time: Affine) -> Option<Grid>;
-    /// Sample `n` of this grid reads `time` at sample `(a*n + b)/d` of `on`, exactly.
+    /// The grid a read at `time` steps its source on.
+    fn speed(self, time: Affine) -> Option<Grid>;
+    /// Sample `n` reads sample `(a*n + b)/d` of `on`.
     fn landing(self, time: Affine, on: Grid) -> Option<(i128, i128, i128)>;
-    fn map(self, time: Affine, on: Grid) -> Option<sva_samples::Map>;
+    /// Where each sample reads on the `speed` grid, the shift rounded half to even: at most
+    /// half a sample of that grid off the written instant, as `moved` states exactly.
+    fn snapped(self, time: Affine) -> Option<Map>;
+    /// Seconds between `time` and the sample `snapped` reads.
+    fn moved(self, time: Affine) -> Option<Q>;
+    fn edge(self, edge: f64) -> i64;
 }
 
 fn rate_q(g: Grid) -> Q {
@@ -224,22 +224,12 @@ impl Lattice for Grid {
         Q::new(self.a, self.d).expect("a grid's step is a rational")
     }
 
-    fn phase(self) -> Q {
-        Q::new(self.b, self.d).expect("a grid's phase is a rational")
-    }
-
-    fn stepping(rate: u32, step: Q, phase: Q) -> Grid {
-        let d = step.den / gcd(step.den, phase.den) * phase.den;
+    fn stepping(rate: u32, step: Q) -> Grid {
         Grid {
             rate,
-            a: step.num * (d / step.den),
-            b: phase.num * (d / phase.den),
-            d,
+            a: step.num,
+            d: step.den,
         }
-    }
-
-    fn at_step(self) -> Grid {
-        Grid::stepping(self.rate, self.step(), Q::ZERO)
     }
 
     fn steps(self, n: Q) -> Option<Q> {
@@ -250,24 +240,18 @@ impl Lattice for Grid {
         n * self.step().to_f64() / f64::from(self.rate)
     }
 
-    fn read(self, time: Affine) -> Option<Grid> {
+    fn speed(self, time: Affine) -> Option<Grid> {
         let k = time.scale;
         let step = match k.is_zero() {
             true => self.step(),
             false => Q::new(k.num.abs(), k.den)?.mul(self.step())?,
         };
-        let at = k.mul(self.phase())?.add(time.shift.mul(rate_q(self))?)?;
-        Some(Grid::stepping(self.rate, step, at.rem(step)?))
+        Some(Grid::stepping(self.rate, step))
     }
 
     fn landing(self, time: Affine, on: Grid) -> Option<(i128, i128, i128)> {
         let a = time.scale.mul(self.step())?.div(on.step())?;
-        let b = time
-            .scale
-            .mul(self.phase())?
-            .add(time.shift.mul(rate_q(self))?)?
-            .sub(on.phase())?
-            .div(on.step())?;
+        let b = time.shift.mul(rate_q(self))?.div(on.step())?;
         let d = a.den.checked_mul(b.den)? / gcd(a.den, b.den);
         Some((
             a.num.checked_mul(d / a.den)?,
@@ -276,8 +260,58 @@ impl Lattice for Grid {
         ))
     }
 
-    fn map(self, time: Affine, on: Grid) -> Option<sva_samples::Map> {
-        let (a, b, d) = self.landing(time, on)?;
-        sva_samples::Map::new(a, b, d)
+    fn snapped(self, time: Affine) -> Option<Map> {
+        let on = self.speed(time)?;
+        let a = time.scale.num().signum();
+        let b = nearest(time.shift.mul(rate_q(self))?.div(on.step())?)?;
+        Some(Map::whole(a, b))
     }
+
+    fn moved(self, time: Affine) -> Option<Q> {
+        let on = self.speed(time)?;
+        let exact = time.shift.mul(rate_q(self))?.div(on.step())?;
+        let off = exact.sub(Q::int(nearest(exact)?))?;
+        let off = Q::new(off.num().abs(), off.den())?;
+        off.mul(on.step())?.div(rate_q(self))
+    }
+
+    fn edge(self, edge: f64) -> i64 {
+        first_at(self, edge)
+    }
+}
+
+/// `q` rounded to the nearest integer, ties to even; `None` past `i64`.
+pub fn nearest(q: Q) -> Option<i64> {
+    let (num, den) = (q.num(), q.den());
+    let (floor, rem) = (num.div_euclid(den), num.rem_euclid(den));
+    let k = match (2 * rem).cmp(&den) {
+        Ordering::Less => floor,
+        Ordering::Greater => floor + 1,
+        Ordering::Equal => floor + floor.rem_euclid(2),
+    };
+    i64::try_from(k).ok()
+}
+
+/// The first sample whose exact instant `a*n/(d*rate)` is at or past `edge`; an edge no
+/// 120-bit decimal spells is read at its binary value.
+fn first_at(grid: Grid, edge: f64) -> i64 {
+    let beyond = if edge < 0.0 { i64::MIN } else { i64::MAX };
+    if edge.is_nan() {
+        return beyond;
+    }
+    if edge.is_infinite() {
+        return beyond;
+    }
+    let decimal = || {
+        let steps = Q::decimal(edge)?
+            .mul(Q::new(grid.d.checked_mul(i128::from(grid.rate))?, 1)?)?
+            .div(Q::new(grid.a, 1)?)?;
+        let (num, den) = (steps.num(), steps.den());
+        Some(num.div_euclid(den) + i128::from(num.rem_euclid(den) != 0))
+    };
+    if let Some(n) = decimal() {
+        return i64::try_from(n).unwrap_or(beyond);
+    }
+    grid.step_at(edge, sva_samples::Round::Ceil)
+        .unwrap_or(beyond)
 }

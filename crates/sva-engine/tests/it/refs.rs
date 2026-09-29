@@ -4,7 +4,7 @@ use crate::fixtures::graph_of;
 use sva_engine::instantiate::{instantiate, resolve_ref_path};
 use sva_engine::schedule_from;
 use sva_engine::{Ask, EngineError, Held, RenderConfig, Representation, Var, render, types};
-use sva_engine::{DEFAULT_SAMPLE_RATE, Read, resolve, symbolic_hash};
+use sva_engine::{DEFAULT_SAMPLE_RATE, symbolic_hash};
 
 #[test]
 fn dependencies_precede_dependents() {
@@ -117,11 +117,12 @@ fn a_bar_offset_that_lands_on_the_grid_reads_a_sampled_ref() {
     }
 }
 
-/// A closed form ref is inlined into the reading closed form, and nothing is held for it.
+/// A closed form reading another keeps the read in its own body, the node and its shift, and
+/// the node read keeps its own body: a reading of lines composes them, and holds no buffer.
 #[test]
-fn a_law_ref_substitutes_and_allocates_no_buffer() {
+fn a_law_ref_stays_a_read_of_a_node_and_allocates_no_buffer() {
     let g = graph_of(
-        "substituted",
+        "read",
         &[
             ("src", "sin(2*pi*220*t)\n"),
             ("node", "@src*0.5 + @src(t - 0.01s)\n"),
@@ -134,15 +135,24 @@ fn a_law_ref_substitutes_and_allocates_no_buffer() {
     let held = render(&g, "node", config, None).expect("a law");
     assert!(held.buffers.is_empty(), "no buffer stands behind a law");
 
-    let id = held.id("node").expect("the root");
-    let Read::Substitute(form) =
-        resolve(&held.tys, id, Held::Form(Var::T)).expect("a law substitutes")
-    else {
-        panic!("a law ref substitutes rather than hitting a buffer");
+    let (id, src) = (
+        held.id("node").expect("the root"),
+        held.id("src").expect("src"),
+    );
+    let sva_engine::Value::ClosedForm(form) = held.tys.value(id) else {
+        panic!("a law");
+    };
+    assert_eq!(
+        sva_engine::nodes_in(&form.body),
+        vec![src],
+        "the read stays a node"
+    );
+    let sva_engine::Value::ClosedForm(own) = held.tys.value(src) else {
+        panic!("a law");
     };
     assert!(
-        sva_engine::nodes_in(&form.body).is_empty(),
-        "the referenced law is inlined, not left as a node"
+        sva_engine::nodes_in(&own.body).is_empty(),
+        "src is its own body alone"
     );
 }
 
@@ -173,8 +183,9 @@ fn a_law_read_at_a_grid_offset_renders() {
     }
 }
 
-/// A ref read at a time no offset names is the callee's closed form at that time: the read tiles,
-/// and the reading node is a point-sampled closed form rather than a pair.
+/// A ref read at a time no offset names is the callee's closed form at that time, the modulo
+/// exact: the read tiles, and the reading node is a point-sampled closed form rather than a
+/// pair.
 #[test]
 fn a_law_ref_tiled_by_modulo_point_samples() {
     let g = graph_of(
@@ -195,7 +206,8 @@ fn a_law_ref_tiled_by_modulo_point_samples() {
     let root = rendered.id("node").expect("the root");
     let buffer = rendered.output(root).expect("a point-sampled law");
     for i in 0..buffer.len() {
-        let want = (std::f64::consts::TAU * 100.0 * ((i as f64 / 8_000.0) % 0.0037)).sin();
+        let tiled = (i as i64 * 10_000) % (37 * 8_000);
+        let want = (std::f64::consts::TAU * 100.0 * (tiled as f64 / 80_000_000.0)).sin();
         assert!(
             (buffer.at(0, i) - want).abs() < 1e-9,
             "sample {i}: {} against {want}",

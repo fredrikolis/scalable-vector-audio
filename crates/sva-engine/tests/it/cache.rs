@@ -4,11 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::fixtures::{dir_of, samples};
-use sva_engine::{
-    Ask, Cache, PayloadKind, Render, RenderConfig, Representation, render, symbolic_key,
-};
-use sva_formula::hash::hash_closed_form_under;
-use sva_formula::{ClosedForm, Origin, Var};
+use sva_engine::{Ask, Cache, PayloadKind, Render, RenderConfig, Representation, render};
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
@@ -170,10 +166,9 @@ fn reordering_a_difference_never_shares_an_entry_with_its_reverse() {
     assert_ne!(difference, reversed);
 }
 
-/// Rate keys a buffer and nothing above it: the rate-free law behind two rates is one entry,
-/// so each rate gets its own buffer while sharing the sum that produced it.
+/// Rate keys every value: a render at another rate stores values of its own beside the first.
 #[test]
-fn a_rate_change_keys_a_new_buffer_but_reuses_the_rate_free_law() {
+fn a_rate_change_keys_new_values() {
     let dir = chain("rates");
     let graph = sva_ast::parse_composition(&dir).expect("a composition");
     let cache = Cache::new();
@@ -185,13 +180,8 @@ fn a_rate_change_keys_a_new_buffer_but_reuses_the_rate_free_law() {
     )
     .expect("a render");
     let id = first.id("master").expect("the root");
-    let symbolic = first
-        .symbolic
-        .get(&id)
-        .expect("the root's spectral sum")
-        .clone();
     let held_at_one_rate = cache.bytes();
-    assert!(held_at_one_rate > 0, "the first render kept its buffer");
+    assert!(held_at_one_rate > 0, "the first render kept its values");
 
     let second = render(
         &graph,
@@ -201,17 +191,12 @@ fn a_rate_change_keys_a_new_buffer_but_reuses_the_rate_free_law() {
     )
     .expect("a render at another rate");
     let second_id = second.id("master").expect("the root");
-    assert_eq!(
-        second.symbolic[&second_id], symbolic,
-        "one spectral sum answers both rates"
-    );
-
     let one = first.output(id).expect("a buffer");
     let two = second.output(second_id).expect("a buffer");
     assert_eq!(two.len(), one.len() * 2, "each rate keeps its own buffer");
     assert!(
         cache.bytes() > held_at_one_rate,
-        "the second rate's buffer is a new entry, not a reuse of the first"
+        "the second rate's values are new entries, not a reuse of the first"
     );
 }
 
@@ -259,23 +244,6 @@ fn a_loop_of_refs_refuses_rather_than_substituting_forever() {
         panic!("a loop of refs has no law");
     };
     assert_eq!(refused.code(), "engine.cyclic_substitution");
-}
-
-/// The table version is already inside a term's own hash, so a bump moves every symbolic
-/// key at once and the old entries are simply never asked for again.
-#[test]
-fn a_table_version_bump_retires_symbolic_entries() {
-    let form = ClosedForm {
-        var: Var::T,
-        body: sva_formula::Body::Line,
-        origin: Origin::UNKNOWN,
-    };
-    let now = symbolic_key(hash_closed_form_under(&form, sva_formula::TABLE_VERSION));
-    let later = symbolic_key(hash_closed_form_under(
-        &form,
-        sva_formula::TABLE_VERSION + 1,
-    ));
-    assert_ne!(now, later, "a bump is a new key for every law");
 }
 
 /// One analysis of one buffer is one entry, and the buffer's own content is in its key:
@@ -360,17 +328,14 @@ fn a_sampled_node_is_stored_and_answered_from_the_store() {
         sva_engine::Held::Sampled,
         "the node under test really is sampled"
     );
-    let id = cold.id("acc").expect("acc types");
-    let key = sva_engine::profiled_key(
-        sva_engine::buffer_key(
-            sva_engine::identity(&cold.tys, id).expect("acc has an identity"),
-            RATE,
-            sva_samples::Extent::secs(RATE, 0.0, SECONDS),
-            cold.tys.ty(id).width as usize,
-            sva_samples::AliasScore::NotAsked,
-        ),
-        &sva_samples::PSYCHOACOUSTIC_V1,
-    );
+    let stats = cold.cache_stats.as_ref().expect("a render handed a store");
+    let key = stats
+        .lookups
+        .iter()
+        .rev()
+        .find(|l| l.node == "acc")
+        .expect("acc was looked up")
+        .key;
     assert!(cache.holds(key), "the sampled node is in the store");
 
     let filled = cache.bytes();
@@ -395,12 +360,13 @@ fn every_buffer_hit(r: &Render) -> bool {
     stats
         .lookups
         .iter()
-        .filter(|l| l.kind == PayloadKind::Samples)
+        .filter(|l| matches!(l.kind, PayloadKind::Segments | PayloadKind::Run))
         .all(|l| matches!(l.outcome, sva_engine::Outcome::Hit))
 }
 
+/// A longer horizon extends the one value a shorter one stored, and either reads it back.
 #[test]
-fn two_horizons_of_one_node_are_two_entries() {
+fn two_horizons_of_one_node_are_one_value() {
     let dir = dir_of(
         "horizons",
         &[
@@ -453,10 +419,10 @@ fn sat_drives_a_sampled_operand_as_it_drives_a_closed_form() {
     assert_eq!(hard_key, written_key, "under one key");
 }
 
-/// A stateful node read between its steps is keyed by the grid it steps on: a second reader
-/// at the same offset is answered by the first one's entry, and a read at another is not.
+/// A stateful node read at any shift is one value, however many samples apart the reads are:
+/// a second reader at the same offset and a third at another are answered by the first.
 #[test]
-fn reads_of_a_stateful_node_at_one_offset_share_one_entry() {
+fn reads_of_a_stateful_node_at_any_offset_share_one_value() {
     let dir = dir_of(
         "offsets",
         &[
@@ -486,5 +452,5 @@ fn reads_of_a_stateful_node_at_one_offset_share_one_entry() {
     let again = kick("again");
     assert!(!again.is_empty() && again.iter().all(hit), "{again:?}");
     let later = kick("later");
-    assert!(!later.is_empty() && !later.iter().any(hit), "{later:?}");
+    assert!(!later.is_empty() && later.iter().all(hit), "{later:?}");
 }

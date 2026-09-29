@@ -112,10 +112,10 @@ fn close(got: &[f64], want: &[f64], at: &str) {
     }
 }
 
-/// `@kick(t - d)` steps the kick on the grid `d` shifts it to: the same as writing the shift
-/// into what it filters, from where that starts.
+/// `@kick(t - d)` reads the kick's one value `d` later, rounded to the nearest sample: the
+/// kick's own samples moved by that many, bit for bit, at every rate.
 #[test]
-fn a_stateful_node_read_between_its_steps_runs_on_the_grid_the_read_shifts_it_to() {
+fn a_stateful_node_read_between_its_steps_reads_the_nearest_whole_sample() {
     let g = graph_of(
         "shifted",
         &[
@@ -124,21 +124,29 @@ fn a_stateful_node_read_between_its_steps_runs_on_the_grid_the_read_shifts_it_to
                 "lowpass(crop(sample(sin(2*pi*55*t)), 0s, 0.05s), cutoff=900, q=0.8)\n",
             ),
             ("late", "@kick(t - 0.1234s)\n"),
-            (
-                "written",
-                "lowpass(crop(sample(sin(2*pi*55*(t - 0.1234s))), 0.1234s, 0.1734s), \
-                 cutoff=900, q=0.8)\n",
-            ),
         ],
     );
-    for rate in RATES {
+    for (rate, moved) in [
+        (8_000, 987),
+        (44_100, 5_442),
+        (48_000, 5_923),
+        (96_000, 11_846),
+    ] {
         let config = RenderConfig::seconds(rate, 0.3);
         let at = |target: &str| {
             let held = render(&g, target, config.clone(), None)
                 .unwrap_or_else(|e| panic!("{target} at {rate}: {e}"));
             plane(&held, target)
         };
-        close(&at("late"), &at("written"), &format!("{rate}"));
+        let (kick, late) = (at("kick"), at("late"));
+        assert!(
+            late.iter().any(|v| *v != 0.0),
+            "{rate}: silence tests nothing"
+        );
+        for (n, v) in late.iter().enumerate() {
+            let want = n.checked_sub(moved).map_or(0.0, |k| kick[k]);
+            assert_eq!(v.to_bits(), want.to_bits(), "{rate}: sample {n}");
+        }
     }
 }
 

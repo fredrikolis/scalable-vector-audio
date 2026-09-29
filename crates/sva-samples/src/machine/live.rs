@@ -1,39 +1,81 @@
-// Concern: runs one renderer span by span, each span without the reads that answer zero there | Non-concern: where a read is zero (the caller's windows) | IO: (NodeRenderer, Ctx, live windows) -> Buffer
+// Concern: cuts one renderer into spans, each compiled without the reads and crops zero there | Non-concern: where a read is zero, running a span | IO: (NodeRenderer, supports) -> Spanned
 
+use super::Program;
 use super::ops::{Layout, lowered};
-use super::renderer::{BufId, Map, NodeRenderer, Slot};
-use super::tape::Tape;
-use super::{Ctx, Machine};
-use crate::buffer::Buffer;
+use super::renderer::{BufId, Formula, Map, NodeRenderer, Slot};
 use crate::collapse::Extent;
 use crate::error::SampleError;
 
+#[derive(Clone)]
 pub struct Span {
     pub from: i64,
     pub to: i64,
     pub renderer: NodeRenderer,
 }
 
-impl NodeRenderer {
-    /// Outside `live[k]` read `k` answers exactly +0.0, which a sum starting from +0 drops
-    /// without a bit changing. Every call site's state and the node's own past run on
-    /// across the spans.
-    pub fn run_live(
-        &self,
+/// A renderer cut into spans each pruned of what is exact zero there: a sample's program
+/// depends on its index alone.
+#[derive(Clone)]
+pub struct Spanned {
+    spans: Vec<(Span, Program)>,
+    layout: Layout,
+}
+
+impl Spanned {
+    /// Outside `live[k]` read `k` answers exactly +0.0.
+    pub fn new(
+        renderer: &NodeRenderer,
         layout: &Layout,
-        ctx: &Ctx,
+        (from, to): (i64, i64),
         live: &[Extent],
-    ) -> Result<Buffer, SampleError> {
-        let end = ctx.start + ctx.len as i64;
-        let mut machine = Machine::live(self, layout, ctx.grid, (ctx.start, end), live)?;
-        let mut own = Tape::new(machine.width(), ctx.len, ctx.start);
-        machine.steps(end, ctx.reads, &mut own)?;
-        let mut out = Buffer::of_planes(ctx.grid.rate, own.into_planes());
-        out.start = ctx.start;
-        Ok(out)
+    ) -> Result<Spanned, SampleError> {
+        let spans = renderer
+            .spans(layout, (from, to), live)?
+            .into_iter()
+            .map(|span| {
+                let program = span.renderer.compile(layout)?;
+                Ok((span, program))
+            })
+            .collect::<Result<_, SampleError>>()?;
+        Ok(Spanned {
+            spans,
+            layout: layout.clone(),
+        })
     }
 
-    /// `[from, to)` cut where the set of dead reads changes.
+    pub fn spans(&self) -> impl Iterator<Item = &Span> {
+        self.spans.iter().map(|(span, _)| span)
+    }
+
+    pub(super) fn compiled(&self) -> &[(Span, Program)] {
+        &self.spans
+    }
+
+    /// A program writing +0 where no span reaches.
+    pub(super) fn silent(&self) -> Result<Program, SampleError> {
+        let zero = match self.layout.width {
+            0 | 1 => NodeRenderer::Const(0.0),
+            w => NodeRenderer::Join(vec![NodeRenderer::Const(0.0); w]),
+        };
+        zero.compile(&self.layout)
+    }
+
+    /// One per op over `[from, to)`, span by span, and each formula's own.
+    pub fn ops(&self, from: i64, to: i64) -> u128 {
+        self.spans
+            .iter()
+            .map(|(span, program)| {
+                let n = (to.min(span.to) - from.max(span.from)).max(0) as u128;
+                let formulas: usize = program.formulas.iter().map(Formula::ops).sum();
+                n * (program.ops.len() + formulas) as u128
+            })
+            .sum()
+    }
+}
+
+impl NodeRenderer {
+    /// `[from, to)` cut where the dead reads or shut crops change, each span pruned; any cut
+    /// of a run writes the same bits.
     pub fn spans(
         &self,
         layout: &Layout,
@@ -46,19 +88,17 @@ impl NodeRenderer {
         let mut edges = vec![from, to];
         for leaf in &leaves {
             let held = reach(*leaf);
-            edges.extend(
-                [held.start, held.end]
-                    .into_iter()
-                    .filter(|e| from < *e && *e < to),
-            );
+            edges.extend([held.start, held.end]);
         }
+        windows(self, &mut |(a, b)| edges.extend([a, b]));
+        edges.retain(|e| from <= *e && *e <= to);
         edges.sort_unstable();
         edges.dedup();
         let mut out: Vec<Span> = Vec::new();
         for pair in edges.windows(2) {
             let span = Extent::new(pair[0], pair[1]);
             let dead = |leaf: Leaf| reach(leaf).intersect(span).is_empty();
-            let renderer = pruned(self, &dead, layout)?;
+            let renderer = pruned(self, &Among { span, dead: &dead }, layout)?;
             match out.last_mut() {
                 Some(last) if last.renderer == renderer => last.to = span.end,
                 _ => out.push(Span {
@@ -72,19 +112,21 @@ impl NodeRenderer {
     }
 
     /// Each index read no reach bounds held to the samples up to the one being written, all a
-    /// machine stepping beside its sources has.
-    pub fn stepwise(&self) -> NodeRenderer {
+    /// machine stepping beside its source has, where `beside` names that source.
+    pub fn stepwise(&self, beside: &dyn Fn(Slot) -> bool) -> NodeRenderer {
         match self {
             NodeRenderer::Indexed {
                 slot,
                 index,
                 reach: None,
-            } => NodeRenderer::Indexed {
+            } if beside(*slot) => NodeRenderer::Indexed {
                 slot: *slot,
                 index: index.clone(),
                 reach: Some((i64::MIN, 0)),
             },
-            other => rebuilt(other, &mut |p| Ok(p.stepwise())).expect("a rewrite that cannot fail"),
+            other => {
+                rebuilt(other, &mut |p| Ok(p.stepwise(beside))).expect("a rewrite that cannot fail")
+            }
         }
     }
 
@@ -116,19 +158,37 @@ fn buffers(r: &NodeRenderer, out: &mut Vec<Leaf>) {
     }
 }
 
+/// One span: the reads dead over all of it, and the samples that shut its crops.
+struct Among<'a> {
+    span: Extent,
+    dead: &'a dyn Fn(Leaf) -> bool,
+}
+
+impl Among<'_> {
+    fn shut(&self, window: (i64, i64)) -> bool {
+        let open = Extent::new(window.0.min(window.1), window.1);
+        open.intersect(self.span).is_empty()
+    }
+}
+
 /// Every node over its pruned operands, then each sum without the terms that are exact zero
-/// where that keeps its width.
-fn pruned(
-    r: &NodeRenderer,
-    dead: &dyn Fn(Leaf) -> bool,
-    layout: &Layout,
-) -> Result<NodeRenderer, SampleError> {
+/// where that keeps its width. A product with a factor exact zero over the span, every other
+/// factor holding no state, is exact +0 there whatever those factors hold: its zero factor
+/// is outside its support.
+fn pruned(r: &NodeRenderer, among: &Among, layout: &Layout) -> Result<NodeRenderer, SampleError> {
     let whole = width(r, layout)?;
-    let held = rebuilt(r, &mut |p| pruned(p, dead, layout))?;
-    let zero = |p: &NodeRenderer| zero(p, dead);
+    let held = rebuilt(r, &mut |p| pruned(p, among, layout))?;
+    let zero = |p: &NodeRenderer| zero(p, among);
     Ok(match held {
+        NodeRenderer::Crop { x, window, .. } if among.shut(window) && x.stateless() => zeros(whole),
+        NodeRenderer::Mul(parts)
+            if parts.iter().any(zero) && parts.iter().all(NodeRenderer::stateless) =>
+        {
+            zeros(whole)
+        }
         NodeRenderer::Add(parts) => {
-            let live: Vec<NodeRenderer> = parts.iter().filter(|p| !nil(p, dead)).cloned().collect();
+            let live: Vec<NodeRenderer> =
+                parts.iter().filter(|p| !nil(p, among)).cloned().collect();
             match live.is_empty() {
                 true if whole == 1 => NodeRenderer::Const(0.0),
                 false if width(&NodeRenderer::Add(live.clone()), layout)? == whole => {
@@ -142,17 +202,27 @@ fn pruned(
     })
 }
 
+/// Exact +0 in each of `width` components.
+fn zeros(width: usize) -> NodeRenderer {
+    match width {
+        1 => NodeRenderer::Const(0.0),
+        w => NodeRenderer::Join(vec![NodeRenderer::Const(0.0); w]),
+    }
+}
+
 /// Exactly +0.0 at every sample of the span.
-fn zero(r: &NodeRenderer, dead: &dyn Fn(Leaf) -> bool) -> bool {
+fn zero(r: &NodeRenderer, among: &Among) -> bool {
     match r {
         NodeRenderer::Read {
             slot: Slot::Read(id),
             map,
-        } => dead((*id, *map)),
+        } => (among.dead)((*id, *map)),
         NodeRenderer::Const(v) => v.to_bits() == 0,
-        NodeRenderer::Crop { x, .. } => zero(x, dead),
-        NodeRenderer::Add(parts) => parts.iter().all(|p| nil(p, dead)),
-        NodeRenderer::Sub(a, b) => zero(a, dead) && zero(b, dead),
+        NodeRenderer::Crop { window, .. } if among.shut(*window) => true,
+        NodeRenderer::Crop { x, .. } => zero(x, among),
+        NodeRenderer::Add(parts) => parts.iter().all(|p| nil(p, among)),
+        NodeRenderer::Join(parts) => parts.iter().all(|p| zero(p, among)),
+        NodeRenderer::Sub(a, b) => zero(a, among) && zero(b, among),
         _ => false,
     }
 }
@@ -160,19 +230,29 @@ fn zero(r: &NodeRenderer, dead: &dyn Fn(Leaf) -> bool) -> bool {
 /// Exactly +0.0 or -0.0 at every sample of the span, which a sum starting from +0 drops alike.
 /// A product runs from 1 in order, so a zero factor zeroes it where the constants before it
 /// kept it finite and those after it are finite.
-fn nil(r: &NodeRenderer, dead: &dyn Fn(Leaf) -> bool) -> bool {
+fn nil(r: &NodeRenderer, among: &Among) -> bool {
     match r {
-        NodeRenderer::Mul(parts) => match parts.iter().position(|p| nil(p, dead)) {
+        NodeRenderer::Mul(parts) => match parts.iter().position(|p| nil(p, among)) {
             None => false,
             Some(at) => {
                 finite(fold(&parts[..at], 1.0, |a, b| a * b))
                     && parts[at + 1..]
                         .iter()
-                        .all(|p| nil(p, dead) || finite(constant(p)))
+                        .all(|p| nil(p, among) || finite(constant(p)))
             }
         },
-        NodeRenderer::Crop { x, .. } => nil(x, dead),
-        other => zero(other, dead),
+        NodeRenderer::Crop { x, .. } => zero(r, among) || nil(x, among),
+        other => zero(other, among),
+    }
+}
+
+/// Every crop's window of samples under `r`.
+fn windows(r: &NodeRenderer, found: &mut dyn FnMut((i64, i64))) {
+    if let NodeRenderer::Crop { window, .. } = r {
+        found(*window);
+    }
+    for part in operands(r) {
+        windows(part, found);
     }
 }
 
@@ -255,12 +335,14 @@ fn rebuilt(r: &NodeRenderer, each: &mut Each) -> Result<NodeRenderer, SampleErro
         NodeRenderer::Channel { x, k } => NodeRenderer::Channel { x: one(x)?, k: *k },
         NodeRenderer::Crop {
             x,
+            window,
             a,
             b,
             rise,
             fall,
         } => NodeRenderer::Crop {
             x: one(x)?,
+            window: *window,
             a: *a,
             b: *b,
             rise: *rise,

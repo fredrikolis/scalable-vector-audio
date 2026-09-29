@@ -1,16 +1,12 @@
-// Concern: holds a composition's decided types, the buffers a reading needed and each label | Non-concern: ordering the work (schedule.rs), a sampled shader (sampled.rs) | IO: (&Graph, target) -> Render
+// Concern: holds a composition's decided types, the buffers a reading needed and each label | Non-concern: computing a value (table/), what a reading asks (schedule.rs) | IO: (&Graph, target) -> Render
 
 mod answer;
 pub(crate) mod bound;
 mod drive;
-pub(crate) mod extent;
-mod pointwise;
-mod pull;
 mod quiet;
-mod reach;
-mod sampled;
 mod slots;
 mod stream;
+pub(crate) mod table;
 mod terms;
 pub mod until;
 mod volatile;
@@ -18,27 +14,23 @@ mod volatile;
 use std::collections::BTreeMap;
 
 use sva_ast::Graph;
-use sva_formula::{Held, NodeId, SpectralSum, hash_closed_form};
+use sva_formula::{NodeId, SpectralSum};
 use sva_samples::{
-    AliasScore, Buffer, Extent, FilterTrace, Frames, Label, PSYCHOACOUSTIC_V1, Profile, stft,
+    AliasScore, Buffer, Extent, FilterTrace, Frames, Label, PSYCHOACOUSTIC_V1, Profile,
 };
 
 use crate::bindings::Binding;
-use crate::cache::{
-    Cache, CachePolicy, CacheStats, Expected, Lens, Payload, Recording, frames_key, symbolic_key,
-};
-use crate::cast::Cast;
+use crate::cache::{Cache, CachePolicy, CacheStats, Recording};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate;
 use crate::query::Ask;
 use crate::refs;
 use crate::schedule::{self, Schedule};
-use crate::time::Lattice;
-use crate::typing::{self, Typing, Value};
+use crate::typing::{self, Typing};
+use table::Table;
+use table::support::Supports;
 
-/// Where a target is read, grid samples from sample 0 at t = 0. An unstated start is where
-/// the root starts, before t = 0 only where its support reaches there; an unstated end is
-/// where its support ends.
+/// Where a target is read, in samples from t = 0. Unstated, the root's own support.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Range {
     pub start: Option<i64>,
@@ -49,16 +41,15 @@ pub struct Range {
 pub struct RenderConfig {
     pub rate: u32,
     pub range: Range,
-    /// Where the render stops before the range ends; `None` reads the range to its end.
+    /// Where the render stops before the range ends.
     pub until: Option<Until>,
     pub profile: Profile,
     /// What the caller means to read. An empty list is audio out, which collapses the root.
     pub asks: Vec<Ask>,
-    /// The operation count this render may pay; the profile's own until a caller raises it.
+    /// The operation count this render may pay.
     pub flop_budget: u128,
     /// What reads one of these keeps one value in the store, its last.
     pub volatile: Vec<String>,
-    /// The store's own where `None`.
     pub cache_policy: Option<CachePolicy>,
 }
 
@@ -100,6 +91,9 @@ pub use stream::{STREAMED, Stream, StreamConfig};
 pub use terms::{Handle, NOTES};
 pub use until::Until;
 
+/// Samples a whole render pulls at once; any size writes the same bits.
+const BLOCK: usize = 1 << 12;
+
 pub struct Render {
     pub root: NodeId,
     pub tys: Typing,
@@ -112,15 +106,13 @@ pub struct Render {
     pub schedule: Schedule,
     pub bindings: BTreeMap<NodeId, Vec<Binding>>,
     pub cache_stats: Option<CacheStats>,
-    /// The most bytes the pass's nodes held at once, samples and state.
+    /// The most bytes the table held at once, samples and state.
     pub held_bytes: usize,
-    /// The samples the root was read over, at the render's rate; `None` where no reading
-    /// needed any.
+    /// The samples the root was read over; `None` where no reading needed any.
     pub range: Option<Extent>,
     pub(crate) unranged: Option<EngineError>,
-    pub(crate) extents: extent::Extents,
-    identities: std::cell::RefCell<BTreeMap<NodeId, sva_formula::Hash>>,
-    prefixes: std::cell::RefCell<refs::Prefixes>,
+    /// Every value the render read, each over the segments it computed.
+    pub(crate) table: Option<Table>,
 }
 
 impl Render {
@@ -145,37 +137,19 @@ impl Render {
             held_bytes: 0,
             range: None,
             unranged: None,
-            extents: extent::Extents::default(),
-            identities: Default::default(),
-            prefixes: Default::default(),
+            table: None,
         }
     }
 
-    /// The rate every node is stepped or collapsed at: the one the render was asked for.
     pub(crate) fn rate(&self) -> u32 {
         self.config.rate
     }
 
-    /// The instants `id` steps through: the render's own, or the ones a reader asked for.
     pub(crate) fn grid(&self, id: NodeId) -> sva_samples::Grid {
         self.tys.grid(id)
     }
 
-    pub(crate) fn identity(&self, id: NodeId) -> Result<sva_formula::Hash, EngineError> {
-        refs::identity_in(&self.tys, id, &mut self.identities.borrow_mut())
-    }
-
-    /// The node's switches and its identity before each, asked once however often.
-    pub(crate) fn prefixes<T>(&self, ask: impl FnOnce(&mut refs::Walk) -> T) -> T {
-        let (mut held, mut named) = (self.prefixes.borrow_mut(), self.identities.borrow_mut());
-        ask(&mut refs::Walk::new(&self.tys, &mut held, &mut named))
-    }
-
-    /// `key` with what a node's samples read beyond its content: its profile.
-    pub(crate) fn keyed(&self, key: sva_formula::Hash) -> sva_formula::Hash {
-        crate::cache::profiled_key(key, &self.config.profile)
-    }
-
+    /// What its schedule prices: every value once over the range, whatever the store answered.
     pub fn work(&self) -> crate::flops::Work {
         crate::flops::Work {
             samples: self.range.map_or(0, |range| range.len() as u64),
@@ -186,19 +160,10 @@ impl Render {
 
     /// A node's samples over the range, zero where it holds none.
     pub fn output(&self, node: NodeId) -> Result<Buffer, EngineError> {
-        match (self.buffers.contains_key(&node), self.range) {
-            (true, Some(range)) => Ok(self.aligned(node, range)),
+        match (self.buffers.get(&node), self.range) {
+            (Some(held), Some(range)) => Ok(held.over(range, held.extent())),
             _ => Err(answer::unheld(self, node)),
         }
-    }
-
-    /// A node's samples over `over`: its own where it holds them, zero outside its support.
-    pub(crate) fn aligned(&self, node: NodeId, over: Extent) -> Buffer {
-        self.buffers[&node].over(over, self.extents.support(node))
-    }
-
-    pub(crate) fn extent_of(&self, node: NodeId) -> Option<Extent> {
-        self.extents.decided.get(&node).copied().or(self.range)
     }
 
     pub fn buffer(&self, node: NodeId) -> Option<&Buffer> {
@@ -212,6 +177,17 @@ impl Render {
     /// The node a reading names, refusing by name where a file expanded into several.
     pub fn node(&self, path: &str) -> Result<NodeId, EngineError> {
         self.tys.resolve(path)
+    }
+
+    /// Each segment the render computed of `node`'s value, in order: a sample in two was
+    /// computed twice.
+    pub fn evaluated(&self, node: NodeId) -> Vec<Extent> {
+        let Some(table) = &self.table else {
+            return Vec::new();
+        };
+        table
+            .of(node)
+            .map_or(Vec::new(), |at| table.values[at].evaluated.clone())
     }
 
     /// The multiple a reading asks this node's score against, where one asks for a score at all.
@@ -237,30 +213,26 @@ impl Render {
     }
 }
 
-/// Nothing is materialized that no reading asked for: a closed form answered off its spectral sum
-/// allocates no buffer at all.
+/// Nothing is materialized that no reading asked for.
 pub fn render(
     graph: &Graph,
     target: &str,
     config: RenderConfig,
     cache: Option<&Cache>,
 ) -> Result<Render, EngineError> {
-    let recording = cache.map(|c| Recording::over(c, config.cache_policy));
-    let mut held = run(
-        prepared(graph, target, config.rate)?,
-        config,
-        recording.as_ref(),
-    )?;
-    held.cache_stats = recording.map(Recording::finish);
+    let recording = Recording::over(cache, config.cache_policy);
+    let mut held = planned(prepared(graph, target, config.rate)?, config)?;
+    pulled(&mut held, recording)?;
+    scored(&mut held)?;
+    compose_read(&mut held);
+    stamp(&mut held);
     Ok(held)
 }
 
 pub(crate) struct Prepared<'g> {
     pub(crate) instances: instantiate::Instances<'g>,
-    pub(crate) order: schedule::Order,
     pub(crate) tys: Typing,
     pub(crate) root: NodeId,
-    pub(crate) target: String,
 }
 
 pub(crate) fn prepared<'g>(
@@ -277,98 +249,123 @@ pub(crate) fn prepared<'g>(
         .ok_or_else(|| EngineError::UnknownNode(held.clone()))?;
     Ok(Prepared {
         instances,
-        order,
         tys,
         root,
-        target: target.to_string(),
     })
 }
 
-pub(crate) fn run(
-    prepared: Prepared,
-    config: RenderConfig,
-    recording: Option<&Recording>,
-) -> Result<Render, EngineError> {
-    let (mut held, instances, target, looped, costed) = planned(prepared, config)?;
-    let lenses = Lenses {
-        volatile: volatile::mark(&instances, &held, &target)?,
-        ..Lenses::of(recording, &held)
-    };
-    pull::computed(&mut held, &lenses, &looped, &costed)?;
-    compose_read(&mut held);
-    stamp(&mut held);
-    Ok(held)
-}
-
-type Planned<'g> = (
-    Render,
-    instantiate::Instances<'g>,
-    String,
-    BTreeMap<String, String>,
-    Vec<NodeId>,
-);
-
-fn planned(prepared: Prepared<'_>, config: RenderConfig) -> Result<Planned<'_>, EngineError> {
+fn planned(prepared: Prepared<'_>, config: RenderConfig) -> Result<Render, EngineError> {
     let Prepared {
         instances,
-        order,
         tys,
         root,
-        target,
+        ..
     } = prepared;
-    let schedule = schedule::plan(&tys, &order, root, &config.asks);
-    let audio = schedule::plan(&tys, &order, root, &[]).materialize;
-    let costed = match schedule.materialize.is_empty() && counts(&config.asks) {
-        true => audio.clone(),
-        false => schedule.materialize.clone(),
-    };
-    let looped = order.looped();
+    let schedule = schedule::plan(&tys, root, &config.asks);
     let bindings = tys
         .paths()
         .filter_map(|(path, id)| Some((id, resolved(&instances, path)?)))
         .collect();
     let mut held = Render::shell(tys, root, config, schedule);
     held.bindings = bindings;
-    reach::ranged(&mut held, &costed)?;
-    Ok((held, instances, target, looped, costed))
+    ranged(&mut held)?;
+    let target = held.tys.name(held.root).to_string();
+    let volatile = volatile::mark(&instances, &held, &target)?;
+    if let Some(table) = &mut held.table {
+        table.slots(|id| volatile.slot(id));
+    }
+    Ok(held)
 }
 
-/// The range and every extent a render of `target` decides, and no sample.
+/// The range and every value a render of `target` would compute, and no sample.
 pub fn plan(graph: &Graph, target: &str, config: RenderConfig) -> Result<Render, EngineError> {
-    planned(prepared(graph, target, config.rate)?, config).map(|(held, ..)| held)
+    planned(prepared(graph, target, config.rate)?, config)
 }
 
-/// A `flops` reading counts what the audio render would run, over the extents it would.
+/// A reading of samples or of their cost needs the range; lines and structure never do.
+fn ranged(held: &mut Render) -> Result<(), EngineError> {
+    let counts = counts(&held.config.asks);
+    let envelope = held.config.asks.iter().any(|ask| {
+        matches!(
+            ask.representation,
+            crate::query::Representation::Envelope { .. }
+        )
+    });
+    if !materializes(held) && !counts {
+        if envelope && let Err(refused) = range_of(held, Ends::Refused) {
+            held.unranged = Some(refused);
+        } else if envelope {
+            held.range = Some(range_of(held, Ends::Refused)?);
+        }
+        return Ok(());
+    }
+    held.range = Some(range_of(held, Ends::Refused)?);
+    let wanted: Vec<NodeId> = held.schedule.wanted.clone();
+    let mut table = Table::build(&held.tys, held.root, &wanted, &held.config.profile)?;
+    table.plan(held.range.expect("a range was decided"));
+    held.table = Some(table);
+    Ok(())
+}
+
+fn materializes(held: &Render) -> bool {
+    !held.schedule.wanted.is_empty()
+}
+
+pub(crate) enum Ends {
+    Refused,
+    Pulled,
+}
+
+pub(crate) fn range_of(held: &Render, ends: Ends) -> Result<Extent, EngineError> {
+    let support = Supports::new(&held.tys).of(held.root);
+    let start = held
+        .config
+        .range
+        .start
+        .unwrap_or_else(|| default_start(support));
+    let end = match held.config.range.end.or(default_end(support)) {
+        Some(end) => end,
+        None => match ends {
+            Ends::Pulled => i64::MAX,
+            Ends::Refused => return Err(endless(held)),
+        },
+    };
+    Ok(Extent::new(start, end.max(start)))
+}
+
+fn default_start(support: Extent) -> i64 {
+    match support.is_empty() || support.start == i64::MIN || support.start > 0 {
+        true => 0,
+        false => support.start,
+    }
+}
+
+fn default_end(support: Extent) -> Option<i64> {
+    (support.end != i64::MAX).then_some(support.end)
+}
+
+fn endless(held: &Render) -> EngineError {
+    let name = held.tys.name(held.root);
+    EngineError::refused(Diagnostic {
+        code: "render.no_end".to_string(),
+        message: format!(
+            "`{name}` is read over an interval with no end, and its support never ends"
+        ),
+        location: Located::at(name, None),
+        help: "give the interval an end, as `[0, 2s]`, or crop it".to_string(),
+    })
+}
+
+/// A `flops` reading counts what the audio render would run.
 fn counts(asks: &[Ask]) -> bool {
     asks.iter()
         .any(|ask| ask.representation == crate::query::Representation::Flops)
 }
 
-/// Nothing steps or substitutes a loop of refs, so a node held over one refuses.
-pub(super) fn unlooped(
-    held: &Render,
-    needed: &std::collections::BTreeSet<NodeId>,
-    looped: &BTreeMap<String, String>,
-) -> Result<(), EngineError> {
-    for id in held
-        .schedule
-        .materialize
-        .iter()
-        .filter(|id| needed.contains(id))
-    {
-        if let Some(member) = looped.get(held.tys.name(*id)) {
-            let at = held.tys.id(member).expect("a loop's own path types");
-            return Err(refs::cyclic(&held.tys, at));
-        }
-    }
-    Ok(())
-}
-
-/// A reading that materializes nothing is never refused for cost: asking what a render
-/// would cost is not paying for it. Anything that runs is counted first, and a count past
-/// the budget refuses before a sample is computed.
-pub(super) fn affordable(held: &Render) -> Result<(), EngineError> {
-    if held.schedule.materialize.is_empty() {
+/// A reading that materializes nothing is never refused for cost; a count past the budget
+/// refuses before a sample is computed.
+fn affordable(held: &Render) -> Result<(), EngineError> {
+    if !materializes(held) {
         return Ok(());
     }
     let total = crate::flops::total(held);
@@ -389,6 +386,110 @@ pub(super) fn affordable(held: &Render) -> Result<(), EngineError> {
     }))
 }
 
+/// Every wanted value pulled over the range, block by block, until `until` stops it.
+fn pulled(held: &mut Render, recording: Recording) -> Result<(), EngineError> {
+    affordable(held)?;
+    let (Some(table), Some(range)) = (held.table.take(), held.range) else {
+        return Ok(());
+    };
+    if !materializes(held) {
+        held.table = Some(table);
+        return Ok(());
+    }
+    let mut driver = drive::Driver::new(table, range, BLOCK, &held.config, recording);
+    while driver.pull()? {}
+    held.held_bytes = driver.most_bytes();
+    held.cache_stats = Some(driver.recording.stats());
+    if let Some(stop) = driver.stop().filter(|stop| *stop < range.end) {
+        held.range = Some(Extent::new(range.start, stop));
+    }
+    let range = held.range.expect("a pulled render has a range");
+    let table = driver.table;
+    for (id, at) in held.schedule.wanted.iter().map(|id| (*id, table.of(*id))) {
+        let Some(at) = at else {
+            continue;
+        };
+        match &table.values[at].held {
+            table::Held::Frames(Some(frames)) => {
+                held.frames.insert(id, (**frames).clone());
+            }
+            _ => {
+                held.buffers.insert(id, table.samples(at, range));
+                held.labels.insert(id, table.label(at));
+            }
+        }
+    }
+    held.table = Some(table);
+    Ok(())
+}
+
+/// A closed form's value `fine` times finer than the render's step: what an alias score
+/// reads against.
+pub(crate) fn finer(
+    render: &Render,
+    node: NodeId,
+    fine: u32,
+    over: Extent,
+) -> Result<Buffer, EngineError> {
+    let profile = &render.config.profile;
+    let mut table = Table::finer(&render.tys, node, &[node], profile, i128::from(fine))?;
+    let at = table.root;
+    table.pull(over, &mut Recording::over(None, None))?;
+    let mut held = table.samples(at, over);
+    held.rate = render.config.rate * fine;
+    Ok(held)
+}
+
+/// A point sampling a reading asks the score of says in its label what the grid lost.
+fn scored(held: &mut Render) -> Result<(), EngineError> {
+    let asked: Vec<NodeId> = held
+        .labels
+        .keys()
+        .copied()
+        .filter(|id| held.alias_oversample(*id).is_some())
+        .collect();
+    for id in asked {
+        let sva_samples::Detail::Point {
+            rule,
+            alias_db: None,
+        } = held.labels[&id].detail
+        else {
+            continue;
+        };
+        let buffer = held.output(id)?;
+        let alias_db = Some(answer::alias_db(held, id, &buffer)?);
+        let label = held.labels.get_mut(&id).expect("an asked label");
+        label.detail = sva_samples::Detail::Point { rule, alias_db };
+    }
+    Ok(())
+}
+
+/// `render` with every read its own value, as if each were written out where it is read.
+#[cfg(test)]
+pub(crate) fn render_apart(
+    graph: &Graph,
+    target: &str,
+    config: RenderConfig,
+) -> Result<Render, EngineError> {
+    let mut held = planned(prepared(graph, target, config.rate)?, config)?;
+    if let (Some(range), Some(_)) = (held.range, &held.table) {
+        let wanted = held.schedule.wanted.clone();
+        let mut table = Table::apart(&held.tys, held.root, &wanted, &held.config.profile)?;
+        table.plan(range);
+        held.table = Some(table);
+    }
+    pulled(&mut held, Recording::over(None, None))?;
+    Ok(held)
+}
+
+/// A node's value pulled over `over` in a table of its own.
+pub(crate) fn sampled(render: &Render, node: NodeId, over: Extent) -> Result<Buffer, EngineError> {
+    let mut table = Table::build(&render.tys, node, &[node], &render.config.profile)?;
+    let at = table.root;
+    table.pull(over, &mut Recording::over(None, None))?;
+    Ok(table.samples(at, over))
+}
+
 /// FORMAT 9.3: the render's own label says what it cost and what it was allowed.
 fn stamp(held: &mut Render) {
     let root = held.root;
@@ -398,14 +499,14 @@ fn stamp(held: &mut Render) {
     let counted = crate::flops::total(held);
     let label = sva_samples::Label {
         rate: held.config.rate,
+        moved: held.table.as_ref().map(|table| table.moved),
         ..label.costing(counted, held.config.flop_budget)
     };
     held.labels.insert(root, label);
 }
 
-/// One render, every reading: a closed form a reading asks for is composed once here, and each
-/// representation answers off that one form rather than walking the graph again. A form that
-/// refuses is left for the reading itself to raise, in its own words.
+/// One render, every reading: a closed form a reading asks for is composed once here; one
+/// that refuses is left for the reading to raise.
 fn compose_read(held: &mut Render) {
     for id in held.schedule.compose.clone() {
         if held.symbolic.contains_key(&id) {
@@ -415,453 +516,6 @@ fn compose_read(held: &mut Render) {
             held.symbolic.insert(id, sum);
         }
     }
-}
-
-pub(crate) struct Lenses<'r> {
-    pub(super) recording: Option<&'r Recording>,
-    volatile: volatile::Volatile,
-    forks: std::collections::BTreeSet<NodeId>,
-    root: NodeId,
-    /// The machines one run in the store answers wherever they are read.
-    pub(super) runs: std::collections::BTreeSet<NodeId>,
-}
-
-impl<'r> Lenses<'r> {
-    /// No parameter is volatile.
-    pub(super) fn of(recording: Option<&'r Recording>, held: &Render) -> Lenses<'r> {
-        let order = &held.schedule.materialize;
-        Lenses {
-            recording,
-            volatile: volatile::Volatile::default(),
-            forks: schedule::forks(&held.tys, order),
-            root: held.root,
-            runs: drive::node::runnable(held, order),
-        }
-    }
-
-    /// The same view through another recording.
-    pub(super) fn with<'s>(&self, recording: Option<&'s Recording>) -> Lenses<'s> {
-        Lenses {
-            recording,
-            volatile: volatile::Volatile::default(),
-            forks: self.forks.clone(),
-            root: self.root,
-            runs: self.runs.clone(),
-        }
-    }
-}
-
-impl Lenses<'_> {
-    pub(super) fn slot(&self, id: NodeId) -> Option<sva_formula::Hash> {
-        self.volatile.slot(id)
-    }
-
-    pub(super) fn at(&self, id: NodeId) -> Option<Lens<'_>> {
-        let fork = self.forks.contains(&id);
-        self.recording
-            .map(|r| r.at(self.volatile.slot(id), fork, id == self.root))
-    }
-
-    /// What a reading asks for, what the policy keeps, and what those read that the store
-    /// does not answer. A ledger holds them all.
-    pub(super) fn needed(&self, held: &Render) -> std::collections::BTreeSet<NodeId> {
-        let materialize = &held.schedule.materialize;
-        let ledger = held.config.asks.iter().any(|ask| {
-            matches!(
-                ask.representation,
-                crate::query::Representation::Ledger { .. }
-            )
-        });
-        let kept = |id: &NodeId| {
-            ledger
-                || self
-                    .recording
-                    .is_none_or(|r| r.stores(self.forks.contains(id), *id == self.root))
-        };
-        let mut needed: std::collections::BTreeSet<NodeId> = materialize
-            .iter()
-            .copied()
-            .filter(|id| held.schedule.wanted.contains(id) || kept(id))
-            .collect();
-        for id in materialize.iter().rev() {
-            if !needed.contains(id) || self.answered(held, *id) {
-                continue;
-            }
-            needed.extend(reads(held, *id));
-        }
-        needed
-    }
-
-    pub(super) fn answered(&self, held: &Render, id: NodeId) -> bool {
-        let (Some(recording), Held::Sampled) = (self.recording, held.tys.ty(id).held) else {
-            return false;
-        };
-        if !self.runs.contains(&id) {
-            return sampled::key(held, id).is_ok_and(|(key, _)| recording.holds(key));
-        }
-        drive::node::covered(held, id, recording)
-    }
-}
-
-/// The operations a sampled node's program runs over `extent`, where one lowers it; with
-/// no extent, the whole program's for one sample.
-pub(crate) fn sampled_ops(held: &Render, id: NodeId, extent: Option<Extent>) -> Option<u128> {
-    let program = sampled::program(held, id).ok()?;
-    match extent {
-        Some(extent) => program.priced(held, extent),
-        None => program
-            .renderer
-            .ops(&program.layout)
-            .ok()
-            .map(|ops| ops as u128),
-    }
-}
-
-/// What the schedule orders before `id`, and every buffer its program reads behind those.
-pub(super) fn reads(held: &Render, id: NodeId) -> Vec<NodeId> {
-    let mut out = schedule::materialized_operands(&held.tys, id);
-    if matches!(held.tys.ty(id).held, Held::Sampled)
-        && let Ok(program) = sampled::program(held, id)
-    {
-        out.extend(program.reads);
-    }
-    out.retain(|read| *read != id);
-    out
-}
-
-/// A sampled node found in the store answers for everything under it, so what it reads is
-/// held here only where it missed.
-pub(super) fn materialize(
-    held: &mut Render,
-    id: NodeId,
-    lenses: &Lenses,
-) -> Result<(), EngineError> {
-    if held.buffers.contains_key(&id) || held.frames.contains_key(&id) {
-        return Ok(());
-    }
-    let extent = held.extents.of(id);
-    if extent.is_empty() && !matches!(held.tys.ty(id).held, Held::Frames) {
-        let (rate, width) = (held.rate(), held.tys.ty(id).width as usize);
-        let mut silent = Buffer::silence(rate, width.max(1), 0);
-        silent.start = extent.start;
-        held.buffers.insert(id, silent);
-        held.labels
-            .insert(id, Label::measured(held.config.profile.name, rate));
-        return Ok(());
-    }
-    let lens = lenses.at(id);
-    if matches!(held.tys.ty(id).held, Held::Sampled) {
-        let key = match lens {
-            Some(_) => Some(sampled::key(held, id)?),
-            None => None,
-        };
-        if let Some((key, samples)) = key
-            && let Some((hit, label)) = warm(held, id, key, samples, lens.as_ref())
-        {
-            held.buffers.insert(id, hit);
-            held.labels.insert(id, label);
-            return Ok(());
-        }
-        for read in reads(held, id) {
-            materialize(held, read, lenses)?;
-        }
-        return sampled::run(held, id, key.map(|(key, _)| key), lens.as_ref());
-    }
-    for operand in schedule::materialized_operands(&held.tys, id) {
-        materialize(held, operand, lenses)?;
-    }
-    match held.tys.ty(id).held {
-        Held::Frames => frames_of(held, id, lens.as_ref()),
-        _ => collapse_closed_form(held, id, lens.as_ref()),
-    }
-}
-
-/// The one place a closed form becomes samples: `sample(...)` and the render root, and nothing else.
-fn collapse_closed_form(
-    held: &mut Render,
-    id: NodeId,
-    cache: Option<&Lens>,
-) -> Result<(), EngineError> {
-    if !held.grid(id).is_rate() {
-        return gridded(held, id, cache);
-    }
-    let var = held.tys.var(id);
-    let written = match refs::resolve(&held.tys, id, held.tys.ty(id).held) {
-        Ok(refs::Read::Substitute(form)) => Some(*form),
-        _ => None,
-    };
-    let symbolic = written.as_ref().map(|t| symbolic_key(hash_closed_form(t)));
-    let sum = remembered(held, id, symbolic, cache)
-        .map(Ok)
-        .unwrap_or_else(|| {
-            let found = refs::spectral_sum_of(&held.tys, id, var);
-            if let (Ok(sum), Some(key), Some(cache)) = (&found, symbolic, cache) {
-                cache.store(key, &Payload::Symbolic(Box::new(sum.clone())), None);
-            }
-            found
-        });
-    if let (Err(e), None) = (&sum, &written)
-        && var != sva_formula::Var::T
-    {
-        return Err(e.clone());
-    }
-    let identity = match cache {
-        Some(_) => Some(
-            refs::closed_form_identity(&sum, written.as_ref()).or_else(|_| held.identity(id))?,
-        ),
-        None => None,
-    };
-    let score = held.alias_score(id);
-    let (rate, profile) = (held.rate(), &held.config.profile);
-    let asked = held.extents.of(id);
-    let planned = match (&sum, &written) {
-        (Err(_), None) => None,
-        _ => Some(
-            sva_samples::planned(sum.as_ref().ok(), written.as_ref(), rate, asked, profile)
-                .map_err(|e| collapse_refused(held, id, &e))?,
-        ),
-    };
-    // A run over where the row writes nonzero is the same bits there, so the key names that.
-    let (over, route) = match (&planned, score) {
-        (Some(planned), AliasScore::NotAsked) => (planned.nonzero(rate, asked), planned.route()),
-        _ => (asked, Vec::new()),
-    };
-    let width = held.tys.ty(id).width as usize;
-    let key = match identity {
-        Some(identity) => Some(held.keyed(crate::cache::mixed(
-            crate::cache::buffer_key(identity, rate, over, width, score),
-            &route,
-        ))),
-        None => None,
-    };
-    if let Ok(sum) = &sum {
-        held.symbolic.insert(id, sum.clone());
-    }
-    // FORMAT 9.3: the label belongs to the value, so an entry without one is no value.
-    if let Some((hit, label)) = key.and_then(|key| warm(held, id, key, over.len(), cache)) {
-        held.buffers.insert(id, padded(hit, asked));
-        held.labels.insert(id, label);
-        return Ok(());
-    }
-    let (buffer, label) = match planned {
-        None => pointwise::point_sample(held, id, score)?,
-        Some(planned) => planned
-            .run(rate, over, profile, score)
-            .map_err(|e| collapse_refused(held, id, &e))?,
-    };
-    finite(held, id, buffer.planes.iter().flatten())?;
-    if let Some(key) = key {
-        store(key, &buffer, &label, cache);
-    }
-    held.buffers.insert(id, padded(buffer, asked));
-    held.labels.insert(id, label);
-    Ok(())
-}
-
-/// A form on a grid `step*m + phase` samples of the rate is the form moved by the phase, on
-/// the rows of the rate that step makes where that rate is whole: sample `m` either way.
-pub(crate) fn moved_rows(tys: &Typing, id: NodeId) -> Option<(u32, SpectralSum)> {
-    let grid = tys.grid(id);
-    let Value::ClosedForm(form) = tys.value(id) else {
-        return None;
-    };
-    let base = crate::time::Q::int(i64::from(grid.rate));
-    let rate = base.div(grid.step())?;
-    let rate = u32::try_from(rate.num())
-        .ok()
-        .filter(|_| rate.is_integer())?;
-    if grid.phase().is_zero() {
-        return Some((rate, refs::spectral_sum_of(tys, id, form.var).ok()?));
-    }
-    let moved = sva_formula::Body::Shift {
-        by: grid.phase().div(base)?.neg().to_f64(),
-        of: sva_formula::Part::bare(form.body.clone()),
-    };
-    Some((
-        rate,
-        refs::spectral_sum_of_body(tys, id, &moved, form.var).ok()?,
-    ))
-}
-
-/// Rows where `moved_rows` places the form and a row takes it, point samples elsewhere.
-fn gridded(held: &mut Render, id: NodeId, cache: Option<&Lens>) -> Result<(), EngineError> {
-    let (asked, width) = (held.extents.of(id), held.tys.ty(id).width as usize);
-    let rows = moved_rows(&held.tys, id).and_then(|(rate, sum)| {
-        let planned = sva_samples::planned(Some(&sum), None, rate, asked, &held.config.profile);
-        Some((rate, planned.ok()?))
-    });
-    let (over, route) = match &rows {
-        Some((rate, planned)) => (planned.nonzero(*rate, asked), planned.route()),
-        None => (asked, Vec::new()),
-    };
-    let key = match cache {
-        Some(_) => Some(held.keyed(crate::cache::mixed(
-            crate::cache::buffer_key(
-                held.identity(id)?,
-                held.rate(),
-                over,
-                width,
-                AliasScore::NotAsked,
-            ),
-            &route,
-        ))),
-        None => None,
-    };
-    if let Some((hit, label)) = key.and_then(|key| warm(held, id, key, over.len(), cache)) {
-        held.buffers.insert(id, padded(hit, asked));
-        held.labels.insert(id, label);
-        return Ok(());
-    }
-    let (mut buffer, label) = match rows {
-        Some((rate, planned)) => planned
-            .run(rate, over, &held.config.profile, AliasScore::NotAsked)
-            .map_err(|e| collapse_refused(held, id, &e))?,
-        None => pointwise::point_sample(held, id, AliasScore::NotAsked)?,
-    };
-    buffer.rate = held.rate();
-    finite(held, id, buffer.planes.iter().flatten())?;
-    if let Some(key) = key {
-        store(key, &buffer, &label, cache);
-    }
-    held.buffers.insert(id, padded(buffer, asked));
-    held.labels.insert(id, label);
-    Ok(())
-}
-
-/// A decay read long before its onset names no sample there.
-pub(crate) fn finite<'a>(
-    held: &Render,
-    id: NodeId,
-    mut samples: impl Iterator<Item = &'a f64>,
-) -> Result<(), EngineError> {
-    match samples.all(|v| v.is_finite()) {
-        true => Ok(()),
-        false => Err(EngineError::refused(Diagnostic {
-            code: "collapse.not_finite".to_string(),
-            message: format!(
-                "`{}` passes the largest double where it is read",
-                held.tys.name(id)
-            ),
-            location: Located::at(held.tys.name(id), None),
-            help: "crop a decay at its onset, so it is read only where it falls".to_string(),
-        })),
-    }
-}
-
-/// A buffer over part of `asked`, zero over the rest.
-fn padded(buffer: Buffer, asked: Extent) -> Buffer {
-    if buffer.extent() == asked {
-        return buffer;
-    }
-    let at = (buffer.start - asked.start).max(0) as usize;
-    let planes = buffer
-        .planes
-        .iter()
-        .map(|plane| {
-            let mut out = vec![0.0; asked.len()];
-            if !plane.is_empty() {
-                out[at..at + plane.len()].copy_from_slice(plane);
-            }
-            out
-        })
-        .collect();
-    let mut out = Buffer::of_planes(buffer.rate, planes);
-    out.start = asked.start;
-    out
-}
-
-fn collapse_refused(held: &Render, id: NodeId, e: &sva_samples::CollapseError) -> EngineError {
-    EngineError::refused(Diagnostic {
-        code: e.code().to_string(),
-        message: e.to_string(),
-        location: Located::at(held.tys.name(id), None),
-        help: e.help().to_string(),
-    })
-}
-
-/// A spectral sum is rate-free, so one entry answers every rate the same closed form is read at.
-fn remembered(
-    held: &Render,
-    id: NodeId,
-    key: Option<sva_formula::Hash>,
-    cache: Option<&Lens>,
-) -> Option<SpectralSum> {
-    let entry = cache?.load(key?, held.tys.name(id), Expected::Symbolic)?;
-    entry.payload.symbolic().cloned()
-}
-
-/// A warm entry is the same bytes the cold run would write, so a hit is returned as it
-/// stands rather than checked against a second collapse.
-pub(super) fn warm(
-    held: &Render,
-    id: NodeId,
-    key: sva_formula::Hash,
-    samples: usize,
-    cache: Option<&Lens>,
-) -> Option<(Buffer, Label)> {
-    let expected = Expected::Samples {
-        rate: held.rate(),
-        width: held.tys.ty(id).width as usize,
-        samples,
-    };
-    let entry = cache?.load(key, held.tys.name(id), expected)?;
-    Some((entry.payload.samples().cloned()?, entry.label?))
-}
-
-pub(super) fn store(key: sva_formula::Hash, buffer: &Buffer, label: &Label, cache: Option<&Lens>) {
-    if let Some(cache) = cache {
-        cache.store(
-            key,
-            &Payload::Samples(Box::new(buffer.clone())),
-            Some(label),
-        );
-    }
-}
-
-fn frames_of(held: &mut Render, id: NodeId, cache: Option<&Lens>) -> Result<(), EngineError> {
-    let Value::Cast(Cast::Stft { window, hop }, source) = *held.tys.value(id) else {
-        return Err(not_frames(held, id));
-    };
-    let buffer = held
-        .buffers
-        .get(&source)
-        .ok_or_else(|| not_frames(held, id))?;
-    let key = match cache {
-        Some(_) => Some(frames_key(
-            held.keyed(crate::cache::buffer_key(
-                held.identity(source)?,
-                buffer.rate,
-                buffer.extent(),
-                buffer.width,
-                AliasScore::NotAsked,
-            )),
-            window,
-            hop,
-        )),
-        None => None,
-    };
-    if let (Some(cache), Some(key)) = (cache, key)
-        && let Some(entry) = cache.load(key, held.tys.name(id), Expected::Frames)
-        && let Payload::Frames(frames) = entry.payload
-    {
-        held.frames.insert(id, *frames);
-        return Ok(());
-    }
-    let frames = stft::forward(buffer, window, hop).map_err(|e| sampled::refused(held, id, &e))?;
-    if let (Some(cache), Some(key)) = (cache, key) {
-        cache.store(key, &Payload::Frames(Box::new(frames.clone())), None);
-    }
-    held.frames.insert(id, frames);
-    Ok(())
-}
-
-fn not_frames(held: &Render, id: NodeId) -> EngineError {
-    EngineError::refused(Diagnostic {
-        code: "cast.stft_needs_samples".to_string(),
-        message: format!("`{}` holds no frames to read", held.tys.name(id)),
-        location: Located::at(held.tys.name(id), None),
-        help: "write stft(sample(x), window=, hop=)".to_string(),
-    })
 }
 
 fn resolved(instances: &instantiate::Instances, path: &str) -> Option<Vec<Binding>> {

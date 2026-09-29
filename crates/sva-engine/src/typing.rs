@@ -13,7 +13,7 @@ use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::Instances;
 use crate::lower;
 use crate::schedule::Order;
-use crate::time::{Affine, Grid, Lattice};
+use crate::time::Grid;
 
 /// A closed form is cast-free on one axis; every crossing is its own node.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,11 +47,11 @@ pub enum Value {
     },
 }
 
-/// A read's instant: exact, a closed form of `t` held as a node, a sample index one rounded
-/// line plus a count spells, or any other integer, which each sample evaluates.
+/// A read's instant: the exact time `k*t + s` written; a closed form of `t` held as a node;
+/// or an integer each sample evaluates.
 #[derive(Clone, Debug, PartialEq)]
 pub enum When {
-    Time(Affine),
+    At(crate::time::Affine),
     Moving(NodeId),
     Index(crate::index::Index),
     Step(Step),
@@ -81,23 +81,13 @@ impl Step {
 }
 
 impl When {
-    /// Which sample of `source` each sample of `reader` reads; `None` where one lands between
-    /// two, or the instant moves.
-    pub(crate) fn map(&self, reader: Grid, source: Grid) -> Option<sva_samples::Map> {
-        match self {
-            When::Time(time) => reader.map(*time, source),
-            When::Index(index) => index.map(reader),
-            When::Moving(_) | When::Step(_) => None,
-        }
-    }
-
     /// Every node it evaluates each sample.
     pub(crate) fn moving(&self) -> Vec<NodeId> {
         let mut out = Vec::new();
         match self {
             When::Moving(id) => out.push(*id),
             When::Step(step) => step.times(&mut out),
-            When::Time(_) | When::Index(_) => {}
+            When::At(_) | When::Index(_) => {}
         }
         out
     }

@@ -458,11 +458,11 @@ fn two_readings_share_one_collapse() {
     let buffers = stats
         .lookups
         .iter()
-        .filter(|l| l.kind == PayloadKind::Samples)
+        .filter(|l| l.node == "master" && l.kind == PayloadKind::Segments)
         .count();
     assert_eq!(
         buffers, 1,
-        "two readings collapse the one node once: {stats:?}"
+        "two readings compute the one node once: {stats:?}"
     );
 }
 

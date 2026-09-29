@@ -227,7 +227,7 @@ fn a_sum_of_two_indices_reads_the_sample_it_names() {
 }
 
 /// A read whose reach a constant or a clamp by constants bounds holds only that much of its
-/// source; one no bound holds keeps all of it, and still plays.
+/// source at any block; one no bound holds keeps all of it, and still plays.
 #[test]
 fn an_index_prunes_its_source_only_where_its_reach_is_bounded() {
     let g = graph_of(
@@ -242,7 +242,7 @@ fn an_index_prunes_its_source_only_where_its_reach_is_bounded() {
                 "clamped",
                 "@x[idx(t - min(max(0.002s*sin(2*pi*t), 0s), 0.002s))]\n",
             ),
-            ("unbounded", "@x[idx(t - 0.1s*sin(t % 0.3s))]\n"),
+            ("unbounded", "@x[idx(t - 0.1s*exp(sin(t % 0.3s)))]\n"),
         ],
     );
     let samples = 2 * RATE as usize;
@@ -259,12 +259,15 @@ fn an_index_prunes_its_source_only_where_its_reach_is_bounded() {
         };
         let at = sva_ast::parse_expr(&format!("@{target}")).expect("a ref");
         let mut stream = Stream::open(&g, &at, config, None).unwrap_or_else(|e| panic!("{e}"));
+        let mut most = 0;
         while stream
             .next_block()
             .unwrap_or_else(|e| panic!("{e}"))
             .is_some()
-        {}
-        stream.held_bytes()
+        {
+            most = most.max(stream.held_bytes());
+        }
+        most
     };
     let whole_source = samples * size_of::<f64>();
     for target in ["shifted", "clamped"] {

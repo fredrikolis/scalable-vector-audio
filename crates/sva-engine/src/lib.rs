@@ -26,14 +26,14 @@ pub use bindings::Binding;
 pub use cache::log::cache_log;
 pub use cache::{
     Cache, CachePolicy, CacheStats, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY, Hash, Lookup, Outcome,
-    PayloadKind, PrunePolicy, buffer_key, profiled_key, symbolic_key,
+    PayloadKind, PrunePolicy,
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
 pub use flops::{Row as FlopRow, Tree as FlopTree, Work};
 pub use meaning::{Meaning, meaning};
 pub use query::{Answer, Ask, DEFAULT_FRAME_SECS, Output, Representation};
-pub use refs::{Read, identity, nodes_in, resolve, spectral_sum_of, symbolic_hash};
+pub use refs::{identity, nodes_in, spectral_sum_of, symbolic_hash};
 pub use render::until::{Cmp, Term};
 pub use render::{
     Block, Handle, NOTES, QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, Range, Render, RenderConfig,

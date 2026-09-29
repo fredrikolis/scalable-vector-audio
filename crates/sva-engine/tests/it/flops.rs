@@ -38,16 +38,17 @@ fn counted(render: &Render) -> sva_engine::FlopTree {
     }
 }
 
-/// FORMAT 9.2, and a real sine is two lines.
+/// FORMAT 9.2, and a real sine is two lines, each summed over the one period the second folds
+/// into: 440 Hz repeats every 1024 samples at 8192 Hz.
 #[test]
-fn flops_of_a_line_spectrum_is_lines_times_samples() {
+fn flops_of_a_line_spectrum_is_lines_times_its_period() {
     let held = rendered(
         "flops-lines",
         &[("node", "sin(2*pi*440*t)\n")],
         config(1.0, None),
     );
     let tree = counted(&held);
-    assert_eq!(tree.total, 2 * u128::from(RATE));
+    assert_eq!(tree.total, 2 * 1024);
     let root = tree.rows.first().expect("the root row");
     assert_eq!(root.node, "node");
     assert_eq!(root.own, tree.total);
@@ -140,8 +141,8 @@ fn the_flag_admits_the_cost_and_the_label_carries_it() {
     assert!(cost.flops > budget);
 }
 
-/// A filter between a sampled root and the form it reads is still a read, and naming what
-/// dominates is the whole of what the tree is for.
+/// A filter over a form is the form it composes to, its lines each read through the response,
+/// and naming what dominates is the whole of what the tree is for.
 #[test]
 fn flops_tree_names_the_law_read_through_a_filter() {
     let files = &[
@@ -156,8 +157,8 @@ fn flops_tree_names_the_law_read_through_a_filter() {
     let law = tree
         .rows
         .iter()
-        .find(|r| r.node == "heavy")
-        .unwrap_or_else(|| panic!("the law read through the filter is named: {:?}", tree.rows));
+        .find(|r| r.depth == 1 && r.route.starts_with("line spectrum"))
+        .unwrap_or_else(|| panic!("the filtered law is a row of its own: {:?}", tree.rows));
     assert!(law.subtree > 500, "the law it reads is what costs");
 
     let g = graph_of("flops-filtered-render", files);
@@ -165,7 +166,10 @@ fn flops_tree_names_the_law_read_through_a_filter() {
         Err(refusal) => refusal.to_string(),
         Ok(_) => panic!("the referenced law's cost is the render's cost too"),
     };
-    assert!(text.contains("heavy"), "the refusal names it too: {text}");
+    assert!(
+        text.contains("line spectrum"),
+        "the refusal names it too: {text}"
+    );
 }
 
 fn children_of(
@@ -179,9 +183,9 @@ fn children_of(
         .filter(move |r| r.depth == depth + 1)
 }
 
-/// Two refs reaching one evaluation tree pay for it once: the first row names it, and the second
-/// is priced net of it. Charging each the whole of it read as costing more than the render pays,
-/// row by row.
+/// Two refs reaching one value pay for it once: the first row names it, and the second reads it
+/// as a shared row of no cost. Charging each the whole of it read as costing more than the
+/// render pays, row by row.
 #[test]
 fn sibling_rows_never_sum_past_their_parent() {
     let heavy = "sum(k, 1, 200, (1/k)*sin(2*pi*100*k*t))\n";
@@ -213,9 +217,15 @@ fn sibling_rows_never_sum_past_their_parent() {
             .clone()
     };
     let (held, second) = (named("shared"), named("b"));
+    let again = children_of(
+        &tree.rows,
+        tree.rows.iter().position(|r| *r == second).expect("b"),
+    )
+    .find(|r| r.node == "shared")
+    .unwrap_or_else(|| panic!("`b` reads the shared value too: {:?}", tree.rows));
     assert!(
-        second.shared,
-        "the ref that reached the tree second says so: {second:?}"
+        again.shared && again.subtree == 0,
+        "the ref that reached the value second says so: {again:?}"
     );
 
     // The same product with nothing else reading the heavy tree: what `b` costs on its own.

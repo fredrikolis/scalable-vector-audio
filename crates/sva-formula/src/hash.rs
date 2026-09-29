@@ -7,6 +7,7 @@ use crate::closed_form::{
     Unary, Var,
 };
 use crate::complex::{C64, canonical};
+use crate::env::NodeId;
 use crate::lanes::Lanes;
 use crate::run::Mirror;
 use crate::spectral_sum::atom::{Singular, SpectralAtom};
@@ -51,6 +52,16 @@ pub fn hash_closed_form_under(t: &ClosedForm, table_version: u64) -> Hash {
     s.finish()
 }
 
+/// A closed form that reads other nodes, each ref hashed as what `node` names it: the node's
+/// own content, never the number a graph gave it.
+pub fn hash_closed_form_with(t: &ClosedForm, node: &mut dyn FnMut(NodeId) -> Hash) -> Hash {
+    let mut s = Sink::new(0x04, TABLE_VERSION);
+    s.node = Some(node);
+    s.var(t.var);
+    s.formula(&t.body);
+    s.finish()
+}
+
 /// The unit-interval value one key and one seed name, wherever the pair is written.
 pub fn draw(seed: u64, key: f64) -> f64 {
     keyed(&format!("{key}"), seed) as f64 / u64::MAX as f64
@@ -64,18 +75,24 @@ pub fn keyed(key: &str, seed: u64) -> u64 {
     s.finish().0
 }
 
-struct Sink(Lanes<0>);
+struct Sink<'a> {
+    lanes: Lanes<0>,
+    node: Option<&'a mut dyn FnMut(NodeId) -> Hash>,
+}
 
-impl Sink {
-    fn new(tag: u8, table_version: u64) -> Sink {
-        let mut s = Sink(Lanes::default());
+impl<'a> Sink<'a> {
+    fn new(tag: u8, table_version: u64) -> Sink<'a> {
+        let mut s = Sink {
+            lanes: Lanes::default(),
+            node: None,
+        };
         s.byte(tag);
         s.u64(table_version);
         s
     }
 
     fn byte(&mut self, b: u8) {
-        self.0.word(u64::from(b));
+        self.lanes.word(u64::from(b));
     }
 
     /// Length-prefixed, so `("ab", "c")` and `("a", "bc")` cannot encode alike.
@@ -270,7 +287,13 @@ impl Sink {
             }
             Body::Node(n) => {
                 self.byte(0x14);
-                self.u64(u64::from(n.0));
+                match self.node.as_mut().map(|named| named(*n)) {
+                    Some(held) => {
+                        self.u64(held.0);
+                        self.u64(held.1);
+                    }
+                    None => self.u64(u64::from(n.0)),
+                }
             }
             Body::Add(parts) => {
                 self.byte(0x15);
@@ -388,7 +411,7 @@ impl Sink {
 
     /// One avalanche past the lanes, so a short input still fills both words.
     fn finish(&self) -> Hash {
-        let Hash(a, b) = self.0.finish();
+        let Hash(a, b) = self.lanes.finish();
         Hash(mix(a), mix(b))
     }
 }

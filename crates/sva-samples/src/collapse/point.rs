@@ -155,11 +155,15 @@ pub fn eval_body(
 }
 
 /// FORMAT 15.6's window: one over the plateau, a raised cosine over each shoulder, zero out.
-/// The sampled crop reads it too.
 pub fn crop_gain(t: f64, l: f64, r: f64, rise: f64, fall: f64) -> f64 {
     if t < l || t >= r {
         return 0.0;
     }
+    shoulders(t, l, r, rise, fall)
+}
+
+/// The window's gain at an instant already known to lie inside it.
+pub fn shoulders(t: f64, l: f64, r: f64, rise: f64, fall: f64) -> f64 {
     let opening = shoulder(t - l, rise);
     let closing = shoulder(r - t, fall);
     opening.min(closing)

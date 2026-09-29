@@ -6,8 +6,7 @@ use sva_core::{
     Answer, Asked, CliError, Job, Output, Printed, Report, SAMPLE_LIMIT, cwd, execute, query_data,
 };
 use sva_engine::{
-    Buffer, Cache, DEFAULT_CACHE_BYTES, DEFAULT_FRAME_SECS, PSYCHOACOUSTIC_V1, Representation,
-    answer_buffer, cache_log,
+    Buffer, DEFAULT_FRAME_SECS, PSYCHOACOUSTIC_V1, Representation, answer_buffer, cache_log,
 };
 
 use crate::args::{AnalyzeArgs, RenderArgs};
@@ -27,11 +26,8 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
         }
     }
     let source = sva_ast::Dir::at(&dir);
-    // The log reports a store's lookups, so a logged render is given one; its samples are the same bits.
     let logs = std::env::var("SVA_LOG").is_ok_and(|level| level == "debug");
-    let store = logs.then(|| Cache::holding(DEFAULT_CACHE_BYTES));
     let rendered = execute(Job {
-        cache: store.as_ref(),
         until: args.until.as_deref(),
         rate: args.rate,
         bits: args.bits,
@@ -41,7 +37,7 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
     })?;
 
     let rate = rendered.config.rate;
-    if let Some(stats) = &rendered.render.cache_stats {
+    if let (true, Some(stats)) = (logs, &rendered.render.cache_stats) {
         eprint!("{}", cache_log(stats, rate));
     }
     let bits = rendered.config.profile.precision_bits;

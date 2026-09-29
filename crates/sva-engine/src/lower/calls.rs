@@ -12,7 +12,7 @@ use crate::cast::Cast;
 use crate::error::EngineError;
 use crate::instantiate::Cx;
 use crate::lower::{Lowering, Piece};
-use crate::time::{Affine, Lattice};
+use crate::time::Lattice;
 use crate::typing::{Value, When};
 use crate::vocabulary::SERIES;
 
@@ -447,7 +447,7 @@ impl<'g> Lowering<'_, 'g> {
             let Some(written) = written.filter(|_| !view.iter().any(|(k, _)| k == key)) else {
                 continue;
             };
-            let id = self.automation((name, key), written, span, cx, var)?;
+            let id = self.automation((name, key), written, cx, var)?;
             if let Value::ClosedForm(form) = self.typing.value(id)
                 && let Some(v) = super::constant_value(&form.body, form.var)
             {
@@ -569,18 +569,30 @@ impl<'g> Lowering<'_, 'g> {
     ) -> Result<Piece, EngineError> {
         let bad = || EngineError::BadArity("rand".to_string());
         let (key, seed) = rand_arguments(args, |x| self.named_value(x, cx)).ok_or_else(bad)?;
-        let at = match crate::loops::time_of(self.inst, key, cx) {
+        let ty = sva_formula::Ty::discrete(sva_formula::Held::Sampled, sva_formula::Codomain::Real);
+        let (grid, at) = match crate::loops::time_of(self.inst, key, cx) {
             Some(at) if at.scale.is_zero() => {
                 let drawn = noise_at(seed, at.shift, self.inst.rate());
                 return Ok(Piece::ClosedForm(Body::Const(C64::real(drawn))));
             }
-            Some(at) => When::Time(at),
-            None => When::Moving(self.time(key, cx)?),
+            Some(at) => {
+                let unplaced = || EngineError::BadArity("rand".to_string());
+                (self.grid.speed(at).ok_or_else(unplaced)?, When::At(at))
+            }
+            None => (self.grid, When::Moving(self.time(key, cx)?)),
         };
-        let ty = sva_formula::Ty::discrete(sva_formula::Held::Sampled, sva_formula::Codomain::Real);
-        let noise = self.register(Value::Noise(seed), ty, var);
+        let noise = self.typing.push(
+            crate::typing::Node {
+                name: self.node.to_string(),
+                ty,
+                var,
+                value: Value::Noise(seed),
+                grid,
+            },
+            None,
+        );
         match at {
-            When::Time(at) if at == Affine::NOW => Ok(Piece::Value(noise)),
+            When::At(crate::time::Affine::NOW) => Ok(Piece::Value(noise)),
             at => Ok(Piece::Value(self.reading(noise, at, span, var))),
         }
     }

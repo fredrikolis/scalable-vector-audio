@@ -31,8 +31,13 @@ pub enum Between {
 
 impl Map {
     pub const fn shift(b: i64) -> Map {
+        Map::whole(1, b)
+    }
+
+    /// Reader sample `n` reads source sample `a*n + b`.
+    pub const fn whole(a: i128, b: i64) -> Map {
         Map {
-            a: 1,
+            a,
             b: b as i128,
             d: 1,
             between: Between::Exact,
@@ -211,38 +216,33 @@ fn extent(lo: Option<i128>, hi: Option<i128>) -> Extent {
     }
 }
 
-/// Sample `n` stands at `(a*n + b)/d` samples of `rate`, in lowest terms, `a, d > 0`.
+/// Sample `n` stands at `a*n/d` samples of `rate`, in lowest terms, `a, d > 0`: every grid
+/// starts at t = 0, so a sample index is the one clock every read and key counts in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Grid {
     pub rate: u32,
     pub a: i128,
-    pub b: i128,
     pub d: i128,
 }
 
 impl Grid {
     pub const fn of(rate: u32) -> Grid {
-        Grid {
-            rate,
-            a: 1,
-            b: 0,
-            d: 1,
-        }
+        Grid { rate, a: 1, d: 1 }
     }
 
     pub fn is_rate(&self) -> bool {
-        (self.a, self.b, self.d) == (1, 0, 1)
+        (self.a, self.d) == (1, 1)
     }
 
     fn exact(&self, n: i64) -> Option<(i128, i128)> {
-        let num = self.a.checked_mul(i128::from(n))?.checked_add(self.b)?;
+        let num = self.a.checked_mul(i128::from(n))?;
         Some((num, self.d.checked_mul(i128::from(self.rate))?))
     }
 
     /// One quotient: correctly rounded while both integers are under 2^53; past that each
     /// integer rounds once converting and the quotient once more.
     pub fn instant(&self, n: i64) -> f64 {
-        let num = self.a.saturating_mul(i128::from(n)).saturating_add(self.b);
+        let num = self.a.saturating_mul(i128::from(n));
         num as f64 / self.d.saturating_mul(i128::from(self.rate)) as f64
     }
 
@@ -251,7 +251,7 @@ impl Grid {
     }
 
     pub fn position(&self, n: i64) -> f64 {
-        self.a.saturating_mul(i128::from(n)).saturating_add(self.b) as f64 / self.d as f64
+        self.a.saturating_mul(i128::from(n)) as f64 / self.d as f64
     }
 
     pub fn sr(&self) -> f64 {
@@ -259,7 +259,7 @@ impl Grid {
     }
 
     pub fn count(&self, t: f64) -> f64 {
-        (t * f64::from(self.rate) * self.d as f64 - self.b as f64) / self.a as f64
+        t * f64::from(self.rate) * self.d as f64 / self.a as f64
     }
 
     /// The step `t` falls nearest, rounded exactly from `t`'s own binary value; `None` where
@@ -285,9 +285,7 @@ impl Grid {
             s if s < 127 => (mantissa, 1i128 << s),
             _ => return None,
         };
-        let top = num
-            .checked_mul(self.d.checked_mul(i128::from(self.rate))?)?
-            .checked_sub(self.b.checked_mul(den)?)?;
+        let top = num.checked_mul(self.d.checked_mul(i128::from(self.rate))?)?;
         let bottom = self.a.checked_mul(den)?;
         let (floor, rem) = (top.div_euclid(bottom), top.rem_euclid(bottom));
         let k = match round {
@@ -513,9 +511,11 @@ pub enum NodeRenderer {
     Pow(Box<NodeRenderer>, Box<NodeRenderer>),
     Map(Unary, Box<NodeRenderer>),
     Zip(Binary, Box<NodeRenderer>, Box<NodeRenderer>),
-    /// `x` over the window `[a, b)` with a raised-cosine `rise` and `fall` inside it.
+    /// `x` over the samples `window` holds, the instants `[a, b)` it was written as, with a
+    /// raised-cosine `rise` and `fall` inside it; zero at every sample outside.
     Crop {
         x: Box<NodeRenderer>,
+        window: (i64, i64),
         a: f64,
         b: f64,
         rise: f64,

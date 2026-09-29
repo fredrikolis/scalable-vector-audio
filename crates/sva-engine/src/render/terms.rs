@@ -1,10 +1,9 @@
-// Concern: a stream's note sum, one term per handle, each term that ended kept only as its identity | Non-concern: when a node ends (drive/), rebuilding nodes | IO: (Expr) -> Handle; (ended) -> ()
+// Concern: a stream's note sum, one term per handle, each term that ended kept only as its identity | Non-concern: when a value ends (table/), rebuilding nodes | IO: (Expr) -> Handle; (ended) -> ()
 
 use sva_ast::{Arg, BinOp, ByteSpan, Expr, Literal};
 use sva_formula::{Hash, NodeId};
 
 use crate::instantiate::Instances;
-use crate::time::Affine;
 use crate::typing::{SumSlot, Typing, Value};
 
 /// The node a stream defines as the sum of its terms, for its expression to read as `@notes`.
@@ -122,9 +121,9 @@ impl Terms {
         let mut at = match tys.value(notes) {
             Value::Read {
                 source,
-                at: crate::typing::When::Time(Affine::NOW),
+                at: crate::typing::When::At(time),
                 ..
-            } => Some(*source),
+            } if *time == crate::time::Affine::NOW => Some(*source),
             _ => Some(notes),
         };
         let count = self.live().count();

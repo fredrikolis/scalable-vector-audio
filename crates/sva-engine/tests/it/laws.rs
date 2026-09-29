@@ -104,7 +104,8 @@ fn noise_through_a_bandpass_is_a_pair_with_shaped_lines() {
     let root = held.id("band").expect("the root");
     assert!(held.tys.ty(root).has_dual());
 
-    let sum = held.symbolic.get(&root).expect("the filtered series");
+    let sum = sva_engine::spectral_sum_of(&held.tys, root, sva_engine::Var::T)
+        .expect("the filtered series");
     let [lane] = sum.lanes.as_slice() else {
         panic!("one lane");
     };

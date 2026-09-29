@@ -1,26 +1,27 @@
-// Concern: what each buffer a sampled node reads contributed to it | Non-concern: building the program (sampled.rs), sharing a target's energy out (sva-samples) | IO: (NodeId) -> a ref and its addend
+// Concern: what each value a node's program reads contributed to it | Non-concern: building the program (table/), sharing a target's energy out (sva-samples) | IO: (NodeId) -> a ref and its addend
 
 use sva_formula::NodeId;
 use sva_samples::{BufId, Buffer, NodeRenderer, Slot};
 
-use crate::cast::Cast;
 use crate::error::EngineError;
 use crate::render::Render;
-use crate::render::sampled::{self, Program};
-use crate::typing::Value;
+use crate::render::table::{Kind, Table};
 
-/// Every ref a sampled node reads, one row per name however many slots carry it.
+/// Every ref a node's program reads, one row per name however many slots carry it.
 pub(super) fn refs_read(
     render: &Render,
     node: NodeId,
     holds: &dyn Fn(NodeId) -> bool,
 ) -> Result<Vec<NodeId>, EngineError> {
-    let Some(program) = program(render, node)? else {
+    let Some((table, at)) = program(render, node) else {
         return Ok(Vec::new());
     };
     let here = render.tys.name(node);
     let mut out: Vec<NodeId> = Vec::new();
-    for source in program.reads {
+    for read in &table.values[at].reads {
+        let Some(source) = table.values[*read].node else {
+            continue;
+        };
         let Some(ref_node) = behind(render, here, source, holds) else {
             continue;
         };
@@ -32,22 +33,15 @@ pub(super) fn refs_read(
     Ok(out)
 }
 
-/// An `istft` reads frames, not slots; every other sampled node built this program once
-/// already, so a refusal here is a fault.
-fn program(render: &Render, node: NodeId) -> Result<Option<Program>, EngineError> {
-    match render.tys.value(node) {
-        Value::Cast(Cast::Istft, _) => Ok(None),
-        _ => sampled::program(render, node).map(Some),
-    }
+/// The table's program for `node`, where it computes one.
+fn program(render: &Render, node: NodeId) -> Option<(&Table, usize)> {
+    let table = render.table.as_ref()?;
+    let at = table.of(node)?;
+    matches!(table.values[at].kind, Kind::Program(_)).then_some((table, at))
 }
 
 pub(super) fn reads_held(render: &Render, node: NodeId) -> Result<bool, EngineError> {
-    Ok(program(render, node)?.is_none_or(|program| {
-        program
-            .reads
-            .iter()
-            .all(|read| render.buffers.contains_key(read))
-    }))
+    Ok(render.table.as_ref().is_some_and(|t| t.of(node).is_some()))
 }
 
 /// The ref one slot stands for: its source, or — where that source is a subterm written here,
@@ -72,21 +66,23 @@ fn behind(
     }
 }
 
-/// What one ref put into the sampled node reading it: that node's program run with every
-/// other slot silenced, so the refs of a sum add back to it. `None` is an edge no slot
-/// isolates, never a run that refused.
+/// What one ref put into the node reading it: that node's program run with every other slot
+/// silenced, so the refs of a sum add back to it. `None` is an edge no slot isolates, never a
+/// run that refused.
 pub(super) fn contributed(
     render: &Render,
     parent: NodeId,
     child: NodeId,
 ) -> Result<Option<Buffer>, EngineError> {
     let holds = |id: NodeId| render.buffers.contains_key(&id);
-    let Some((program, kept)) = isolated(render, parent, child, &holds)? else {
+    let Some((renderer, kept)) = isolated(render, parent, child, &holds)? else {
         return Ok(None);
     };
+    let (table, at) = program(render, parent).expect("an isolated edge is a program's");
+    let range = render.range.expect("a ledger reads a decided range");
     let held = |id: BufId| kept.contains(&id);
-    program
-        .writes(render, parent, &silenced(&program.renderer, &held))
+    table
+        .rerun(at, &silenced(&renderer, &held), range)
         .map(Some)
 }
 
@@ -95,24 +91,30 @@ pub(super) fn isolated(
     parent: NodeId,
     child: NodeId,
     holds: &dyn Fn(NodeId) -> bool,
-) -> Result<Option<(Program, Vec<BufId>)>, EngineError> {
-    let Some(program) = program(render, parent)? else {
+) -> Result<Option<(NodeRenderer, Vec<BufId>)>, EngineError> {
+    let Some((table, at)) = program(render, parent) else {
+        return Ok(None);
+    };
+    let Kind::Program(program) = &table.values[at].kind else {
         return Ok(None);
     };
     let (here, name) = (render.tys.name(parent), render.tys.name(child));
-    let kept: Vec<BufId> = program
+    let kept: Vec<BufId> = table.values[at]
         .reads
         .iter()
         .enumerate()
-        .filter(|(_, source)| {
-            behind(render, here, **source, holds).is_some_and(|id| render.tys.name(id) == name)
+        .filter(|(_, read)| {
+            table.values[**read]
+                .node
+                .and_then(|source| behind(render, here, source, holds))
+                .is_some_and(|id| render.tys.name(id) == name)
         })
         .map(|(slot, _)| BufId(slot as u32))
         .collect();
     let held = |id: BufId| kept.contains(&id);
     match kept.is_empty() || !separable(&program.renderer, &held) {
         true => Ok(None),
-        false => Ok(Some((program, kept))),
+        false => Ok(Some((program.renderer.clone(), kept))),
     }
 }
 
@@ -184,12 +186,14 @@ fn silenced(r: &NodeRenderer, kept: &dyn Fn(BufId) -> bool) -> NodeRenderer {
         NodeRenderer::Map(op, x) => NodeRenderer::Map(*op, one(x, kept)),
         NodeRenderer::Crop {
             x,
+            window,
             a,
             b,
             rise,
             fall,
         } => NodeRenderer::Crop {
             x: one(x, kept),
+            window: *window,
             a: *a,
             b: *b,
             rise: *rise,

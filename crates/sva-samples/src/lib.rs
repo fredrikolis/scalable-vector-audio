@@ -30,7 +30,7 @@ pub use machine::renderer::{
     Unary, Wrap,
 };
 pub use machine::tape::{Tape, Window};
-pub use machine::{Ctx, Machine, MachineState};
+pub use machine::{Machine, MachineState, Span, Spanned};
 pub use measure::Consumes;
 pub use measure::alias::{
     AUDIBLE_NMR_DB, Alias, AliasBand, PLAYBACK_DB_SPL, measure_alias, worst as worst_alias,

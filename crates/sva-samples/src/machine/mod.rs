@@ -1,4 +1,4 @@
-// Concern: runs one node renderer a sample at a time, whole or span after span | Non-concern: the op array's own shape (ops.rs), the tree the engine hands over | IO: (NodeRenderer, Ctx) -> Buffer
+// Concern: runs one node renderer a sample at a time, span after span, over a tape | Non-concern: the op array's own shape (ops.rs), cutting the spans (live.rs) | IO: (Spanned, reads, tape) -> samples
 
 mod live;
 pub mod ops;
@@ -6,7 +6,6 @@ mod read;
 pub mod renderer;
 pub mod tape;
 
-use crate::buffer::Buffer;
 use crate::error::SampleError;
 use crate::filters::FilterSite;
 use crate::physics::{Solver, site};
@@ -14,14 +13,14 @@ use ops::{Layout, Op, lowered};
 use renderer::{Formula, Grid, Index, NodeRenderer, Site};
 use tape::{Tape, Window};
 
-pub use live::Span;
+pub use live::{Span, Spanned};
 
 pub use ops::Layout as MachineLayout;
 
 /// The op array, one width per slot, the formulas its ops name and the call sites the run
 /// opens state for.
 #[derive(Clone)]
-struct Program {
+pub(super) struct Program {
     ops: Vec<Op>,
     widths: Vec<usize>,
     formulas: Vec<Formula>,
@@ -30,16 +29,8 @@ struct Program {
     pub width: usize,
 }
 
-/// A whole run writes `len` samples from grid sample `start`, reading each slot's window.
-pub struct Ctx<'a> {
-    pub grid: Grid,
-    pub start: i64,
-    pub len: usize,
-    pub reads: &'a [Window<'a>],
-}
-
 impl NodeRenderer {
-    fn compile(&self, layout: &Layout) -> Result<Program, SampleError> {
+    pub(super) fn compile(&self, layout: &Layout) -> Result<Program, SampleError> {
         let (lowered, width) = lowered(self, layout)?;
         Ok(Program {
             ops: lowered.ops,
@@ -49,16 +40,6 @@ impl NodeRenderer {
             sites: layout.sites.clone(),
             width,
         })
-    }
-
-    /// A loop reads what this run wrote, silent before `start`.
-    pub fn run(&self, layout: &Layout, ctx: &Ctx) -> Result<Buffer, SampleError> {
-        let mut machine = Machine::open(self, layout, ctx.grid)?;
-        let mut own = Tape::new(machine.width(), ctx.len, ctx.start);
-        machine.steps(ctx.start + ctx.len as i64, ctx.reads, &mut own)?;
-        let mut out = Buffer::of_planes(ctx.grid.rate, own.into_planes());
-        out.start = ctx.start;
-        Ok(out)
     }
 }
 
@@ -157,39 +138,28 @@ impl MachineState {
 }
 
 impl Machine {
-    pub fn open(
-        renderer: &NodeRenderer,
-        layout: &Layout,
-        grid: Grid,
-    ) -> Result<Machine, SampleError> {
-        let program = renderer.compile(layout)?;
-        let states = open(&program, grid)?;
-        let stack = Stack::of(&program.widths);
+    /// Stepping from `at`, each span's own program from where it starts.
+    pub fn over(spanned: &Spanned, grid: Grid, at: i64) -> Result<Machine, SampleError> {
+        let mut ahead: Vec<(i64, Program)> = spanned
+            .compiled()
+            .iter()
+            .filter(|(span, _)| span.to > at)
+            .map(|(span, program)| (span.from, program.clone()))
+            .collect();
+        ahead.reverse();
+        let first = match ahead.pop() {
+            Some((_, program)) => program,
+            None => spanned.silent()?,
+        };
+        let states = open(&first, grid)?;
+        let stack = Stack::of(&first.widths);
         Ok(Machine {
-            program,
+            program: first,
             states,
             stack,
             grid,
-            ahead: Vec::new(),
+            ahead,
         })
-    }
-
-    /// Runs `[from, to)` span by span, each span's program without the reads dead there.
-    pub fn live(
-        renderer: &NodeRenderer,
-        layout: &Layout,
-        grid: Grid,
-        (from, to): (i64, i64),
-        live: &[crate::collapse::Extent],
-    ) -> Result<Machine, SampleError> {
-        let mut machine = Machine::open(renderer, layout, grid)?;
-        machine.ahead = renderer
-            .spans(layout, (from, to), live)?
-            .into_iter()
-            .rev()
-            .map(|span| Ok((span.from, span.renderer.compile(layout)?)))
-            .collect::<Result<_, SampleError>>()?;
-        Ok(machine)
     }
 
     pub fn width(&self) -> usize {
@@ -339,24 +309,6 @@ fn step(
     let mut slot = 0;
     while slot < p.ops.len() {
         let op = &p.ops[slot];
-        if let Op::Guard {
-            a,
-            b,
-            rise,
-            fall,
-            over,
-        } = op
-        {
-            if crate::collapse::crop_gain(here.t, *a, *b, *rise, *fall) == 0.0 {
-                let crop = slot + over;
-                stack.values[crop].fill(0.0);
-                stack.pending.push(crop);
-                slot = crop + 1;
-            } else {
-                slot += 1;
-            }
-            continue;
-        }
         let at = stack.pending.len() - arity_of(op);
         let (done, rest) = stack.values.split_at_mut(slot);
         fill(
@@ -385,7 +337,6 @@ fn arity_of(op: &Op) -> usize {
         Op::Physics { arity, .. } => *arity,
         Op::Map(_) | Op::Crop { .. } | Op::Channel(_) | Op::Formula { .. } => 1,
         Op::Indexed { arity, .. } | Op::Instant { arity, .. } => *arity,
-        Op::Guard { .. } => 0,
         Op::Sub | Op::Div | Op::Pow | Op::Zip(_) => 2,
         Op::Add(n) | Op::Mul(n) | Op::Join(n) => *n,
         Op::Filter { .. } => 4,
@@ -438,10 +389,9 @@ fn fill(
             }
         }
         Op::Formula { at } => {
-            let when = arg(0)[0];
             for (c, slot) in result.iter_mut().enumerate() {
                 *slot = p.formulas[*at]
-                    .at(c, when)
+                    .at(c, part(arg(0), c))
                     .map_err(|_| SampleError::FormulaUnevaluable { at: n })?;
             }
         }
@@ -477,9 +427,17 @@ fn fill(
                 *slot = f.apply(part(arg(0), c));
             }
         }
-        Op::Guard { .. } => unreachable!("a guard is stepped over before any op fills"),
-        Op::Crop { a, b, rise, fall } => {
-            let gain = crate::collapse::crop_gain(t, *a, *b, *rise, *fall);
+        Op::Crop {
+            window,
+            a,
+            b,
+            rise,
+            fall,
+        } => {
+            let gain = match window.0 <= n && n < window.1 {
+                true => crate::collapse::shoulders(t, *a, *b, *rise, *fall),
+                false => 0.0,
+            };
             for (c, slot) in result.iter_mut().enumerate() {
                 *slot = match gain {
                     0.0 => 0.0,

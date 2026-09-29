@@ -267,9 +267,9 @@ fn a_repeated_render_is_all_hits() {
         field(&warm, "entries").as_f64(),
         Some(held.cache_entries() as f64)
     );
-    assert_eq!(
-        field(&warm, "nodes").as_f64(),
-        field(&cold, "nodes").as_f64()
+    assert!(
+        field(&warm, "nodes").as_f64() <= field(&cold, "nodes").as_f64(),
+        "the target answers for what it holds"
     );
     let first = lookups.get(0);
     for key in ["node", "key", "kind"] {
@@ -284,8 +284,9 @@ fn a_repeated_render_is_all_hits() {
     );
 }
 
-/// A note released after a held render reads the held run up to its release, and its lookup
-/// crosses as `prefix`; its samples are the cold render's.
+/// A note released after a held render reads the held run up to its release, resuming from
+/// the last state it marked, and its lookup crosses as `prefix`; its samples are the cold
+/// render's.
 #[wasm_bindgen_test]
 fn a_release_after_a_held_render_reads_it_as_a_prefix() {
     let mut held = Composition::new(None);
@@ -293,16 +294,20 @@ fn a_release_after_a_held_render_reads_it_as_a_prefix() {
         "string",
         "release = inf\nchaigne_askenfelt(440, damper_r=0.1*crop(1, release, inf))\n",
     );
-    held.insert("released", "@string(t, release=0.5)\n");
-    render(&held, "string");
-    let warm = render(&held, "released");
+    held.insert("released", "@string(t, release=2.5)\n");
+    let over = |node: &str| {
+        held.render(&format!("@{node}([0, 3s])"), None, options(&[]))
+            .unwrap_or_else(|_| unreachable!("`{node}` renders"))
+    };
+    over("string");
+    let warm = over("released");
     let outcomes: Vec<String> = items(&warm.stats().unwrap_or_else(|_| unreachable!()), "lookups")
         .iter()
         .filter_map(|l| field(&l, "outcome").as_string())
         .collect();
     assert!(outcomes.iter().any(|o| o == "prefix"), "{outcomes:?}");
     held.clear_cache();
-    assert_eq!(plane(&warm), plane(&render(&held, "released")));
+    assert_eq!(plane(&warm), plane(&over("released")));
 }
 
 fn knobbed() -> Composition {
@@ -434,7 +439,7 @@ fn a_prune_policy_crosses_by_name() {
     assert_eq!(held.prune_policy(), "forks");
     assert!(held.set_prune_policy("newest").is_err());
 
-    render(&held, "partials/one");
+    render(&held, "wide");
     render(&held, "master");
     let before = held.cache_evictions();
     held.prune("oldest")
@@ -764,7 +769,8 @@ fn a_stream_refuses_what_it_cannot_take_at_the_boundary() {
     refused_as(empty.err(), "engine.no_stream");
 }
 
-/// A sine is one line and its mirror, turned at every sample; a render prices its schedule.
+/// A sine is one line and its mirror, turned at each sample of its one period, 80 samples of
+/// 100 Hz at 8 kHz; a render prices its schedule.
 #[wasm_bindgen_test]
 fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
     let held = page();
@@ -776,7 +782,7 @@ fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
     let count = |of: &JsValue, name: &str| field(of, name).as_f64();
     let samples = (4 * BLOCK) as f64;
     assert_eq!(count(&work, "samples"), Some(samples));
-    assert_eq!(count(&work, "waves"), Some(2.0 * samples));
+    assert_eq!(count(&work, "waves"), Some(2.0 * 80.0));
     assert!(count(&work, "priced_flops").is_some_and(|f| f > 0.0));
 
     let whole = render(&held, "partials/one")

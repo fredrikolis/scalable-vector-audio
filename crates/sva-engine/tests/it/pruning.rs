@@ -3,7 +3,7 @@
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
 use sva_engine::{
-    Ask, Cache, Output, Range, Render, RenderConfig, Representation, answer, flops, render,
+    Ask, Cache, Extent, Output, Range, Render, RenderConfig, Representation, answer, flops, render,
 };
 
 const RATE: u32 = 8_000;
@@ -45,21 +45,39 @@ fn config(secs: f64) -> RenderConfig {
     }
 }
 
-/// A range reaching further past the last note is the same stored value.
+/// A song reading one note three times computes the note once, over its own half second:
+/// each sample is the note's own samples added from +0 in the order written, and a render
+/// reaching further finds the note whole in the store.
 #[test]
-fn a_closed_form_sums_only_the_atoms_live_at_each_instant() {
+fn a_note_read_three_times_is_computed_once_and_added() {
     let g = notes();
     let cache = Cache::new();
     let held = over(&g, "song", 6.0, Some(&cache));
-    let sum = &held.symbolic[&held.root];
+    let note = held.id("note").expect("the note");
+    assert_eq!(
+        held.evaluated(note),
+        vec![Extent::new(0, i64::from(RATE / 2))]
+    );
+    let alone = over(&g, "note", 6.0, None);
+    let own = alone
+        .output(alone.root)
+        .expect("the note")
+        .plane(0)
+        .to_vec();
+    let at = |n: i64| {
+        usize::try_from(n)
+            .ok()
+            .and_then(|n| own.get(n))
+            .copied()
+            .unwrap_or(0.0)
+    };
     let samples = held.output(held.root).expect("the song").plane(0).to_vec();
-    let step = 1.0 / f64::from(RATE);
+    let gap = 2 * i64::from(RATE);
     for (n, sample) in samples.iter().enumerate() {
-        let whole = sva_samples::eval_spectral_sum_at(sum, 0, n as f64 * step).expect("a value");
-        assert_eq!(sample.to_bits(), whole.re.to_bits(), "sample {n}");
+        let n = n as i64;
+        let added = 0.0 + at(n) + at(n - gap) + at(n - 2 * gap);
+        assert_eq!(sample.to_bits(), added.to_bits(), "sample {n}");
     }
-    let (atoms, live) = (2 * 3, u128::from(RATE / 2));
-    assert_eq!(held.work().priced_flops, atoms * live);
 
     let further = over(&g, "song", 8.0, Some(&cache));
     let stats = further.cache_stats.as_ref().expect("stats");
@@ -183,7 +201,8 @@ fn a_ramp_and_a_decay_end_where_they_are_exactly_zero() {
 
     let decay = open("decay");
     let end = decay.range.expect("a range").end;
-    let sum = &decay.symbolic[&decay.root];
+    let sum = &sva_engine::spectral_sum_of(&decay.tys, decay.root, sva_engine::Var::T)
+        .expect("a decay's sum");
     let step = 1.0 / f64::from(RATE);
     let at = |n: i64| sva_samples::eval_spectral_sum_at(sum, 0, n as f64 * step).expect("a value");
     let last = (0..end).rev().find(|n| !at(*n).is_zero()).expect("a sound");

@@ -4,11 +4,7 @@ use std::collections::BTreeSet;
 
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{
-    Cache, CachePolicy, Hash, Outcome, Render, RenderConfig, buffer_key, identity, profiled_key,
-    render,
-};
-use sva_samples::AliasScore;
+use sva_engine::{Cache, CachePolicy, Hash, Outcome, Render, RenderConfig, render};
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
@@ -33,17 +29,20 @@ fn rendered(graph: &Graph, cache: Option<&Cache>, policy: Option<CachePolicy>) -
     render(graph, "master", config, cache).expect("a render")
 }
 
-/// The node's own buffer key at 24 bits, as the store holds it.
+/// The node's own value's key, as the store holds it: every subterm it holds is looked up
+/// before it, dependencies first.
 fn own(render: &Render, node: &str) -> Hash {
-    let id = render.id(node).expect("the node types");
-    let buffer = buffer_key(
-        identity(&render.tys, id).expect("an identity"),
-        RATE,
-        sva_samples::Extent::secs(RATE, 0.0, SECONDS),
-        render.tys.ty(id).width as usize,
-        AliasScore::NotAsked,
-    );
-    profiled_key(buffer, &sva_samples::PSYCHOACOUSTIC_V1)
+    let stats = render
+        .cache_stats
+        .as_ref()
+        .expect("a render handed a store");
+    stats
+        .lookups
+        .iter()
+        .rev()
+        .find(|l| l.node == node)
+        .unwrap_or_else(|| panic!("`{node}` was looked up: {stats:?}"))
+        .key
 }
 
 fn stored(render: &Render) -> BTreeSet<Hash> {

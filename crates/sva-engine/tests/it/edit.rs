@@ -386,5 +386,10 @@ fn a_shifted_term_reads_and_extends_the_run_its_node_holds_in_the_store() {
     let twice = "@pluck(t - 1000sp, f0=523.25) + @pluck(t - 3000sp, f0=523.25)";
     let (mut cold, mut warm) = (opened(&g, twice, None), opened(&g, twice, Some(&cache)));
     assert_eq!(blocks(&mut warm, 16), blocks(&mut cold, 16));
-    assert_eq!(runs(&warm, Outcome::Hit), 1, "{:?}", warm.stats());
+    assert_eq!(
+        runs(&warm, Outcome::Hit),
+        2,
+        "the store answers the first read and the second reuses it: {:?}",
+        warm.stats()
+    );
 }

@@ -8,7 +8,7 @@ use sva_formula::spectral_sum::build::{multiply_lanes, sole_constant};
 use sva_formula::spectral_sum::image;
 use sva_formula::spectral_sum::merge::simplify;
 use sva_formula::{
-    Body, C64, ClosedForm, Held, Lane, Left, NodeId, Part, SpectralSum, Var, dual, inverse,
+    Body, C64, ClosedForm, Lane, Left, NodeId, Part, SpectralSum, Var, dual, inverse,
     normalize_closed_form,
 };
 
@@ -18,12 +18,10 @@ use crate::typing::{Typing, Value};
 
 mod identity;
 mod prefix;
-#[cfg(test)]
-mod prefix_law;
 
-pub(crate) use identity::identity_in;
-pub use identity::{closed_form_identity, identity, symbolic_hash};
-pub(crate) use prefix::{Prefixes, Walk};
+pub(crate) use identity::{formula_identity, identity_in};
+pub use identity::{identity, symbolic_hash};
+pub(crate) use prefix::switches;
 
 /// The spectral sum of one node read on `want`'s axis, with every ref it holds already
 /// composed in. A pair answers on either axis; anything else answers on its own.
@@ -33,17 +31,6 @@ pub fn spectral_sum_of(
     want: Var,
 ) -> Result<SpectralSum, EngineError> {
     composed(typing, node, want, &mut Vec::new())
-}
-
-/// One node's own body, rewritten, every ref composed in; its refs may reach back to it.
-pub(crate) fn spectral_sum_of_body(
-    typing: &Typing,
-    node: NodeId,
-    body: &Body,
-    var: Var,
-) -> Result<SpectralSum, EngineError> {
-    let folded = fold_constants(typing, body);
-    compose(typing, &folded, var, &mut vec![node])
 }
 
 /// `open` is the chain of refs still being composed: a form reaching itself through
@@ -128,7 +115,7 @@ fn turn(
 
 /// A form whose operands crossed a cast is held as an operation over values, and only
 /// the written form itself has atoms to compose.
-fn across(typing: &Typing, node: NodeId, call: &str) -> EngineError {
+pub(crate) fn across(typing: &Typing, node: NodeId, call: &str) -> EngineError {
     no_spectral_sum(typing.name(node), call)
 }
 
@@ -452,24 +439,6 @@ fn multiply(
 
 fn lane_at(n: &SpectralSum, at: usize) -> &Lane {
     n.lanes.get(at).unwrap_or(&n.lanes[0])
-}
-
-/// The two ways a node reads another, one per representation the reading node holds.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Read {
-    Substitute(Box<ClosedForm>),
-    Buffer(NodeId),
-}
-
-/// A form reading a form substitutes and allocates nothing; a sampled node reading
-/// anything reads a buffer.
-pub fn resolve(typing: &Typing, source: NodeId, reader: Held) -> Result<Read, EngineError> {
-    if !reader.is_closed_form() {
-        return Ok(Read::Buffer(source));
-    }
-    let form =
-        substituted_closed_form(typing, source).ok_or_else(|| no_closed_form(typing, source))?;
-    Ok(Read::Substitute(Box::new(form)))
 }
 
 /// Every ref inlined, where each is a form on the same axis; a crossing answers `None`.

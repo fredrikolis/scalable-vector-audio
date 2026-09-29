@@ -3,10 +3,11 @@
 use sva_formula::{ClosedForm, SpectralSum, Var, normalize_closed_form};
 
 use super::active::{self, Window};
-use super::lines::Direct;
+use super::lines::{self, Direct};
 use super::truncate::{self, Audible};
-use super::{plan, point, reaches_no_atom, span};
+use super::{atoms, plan, point, reaches_no_atom, span, tail};
 use crate::error::CollapseError;
+use crate::label::{Detail, Label, Rule, Source};
 use crate::machine::tape::Tape;
 use crate::profile::Profile;
 
@@ -16,10 +17,11 @@ pub struct Rows {
     row: Row,
     rate: u32,
     width: usize,
+    label: (Source, Detail),
 }
 
 enum Row {
-    /// Every kept line summed at each instant, as a whole render's direct route sums them.
+    /// Every kept line summed at each instant.
     Lines(Vec<Option<Direct>>),
     Sweep {
         sum: Box<SpectralSum>,
@@ -59,16 +61,38 @@ impl Rows {
         Ok(Rows::held(row, rate))
     }
 
-    fn held(row: Row, rate: u32) -> Rows {
+    fn held((row, label): (Row, (Source, Detail)), rate: u32) -> Rows {
         Rows {
             width: width(&row),
             row,
             rate,
+            label,
         }
     }
 
     pub fn width(&self) -> usize {
         self.width
+    }
+
+    /// How exact these rows are, stated once for every sample they write.
+    pub fn label(&self, profile: &Profile) -> Label {
+        let (source, detail) = self.label.clone();
+        Label::new(source, profile.name, self.rate, detail)
+    }
+
+    /// The lines a row of lines sums, each lane's, as hertz; `None` for any other row.
+    pub fn lines(&self) -> Option<Vec<f64>> {
+        let Row::Lines(lanes) = &self.row else {
+            return None;
+        };
+        Some(lanes.iter().flatten().flat_map(Direct::hz).collect())
+    }
+
+    /// `[from, to)` of every component, on the grid's own index.
+    pub fn planes(&self, from: i64, to: i64) -> Result<Vec<Vec<f64>>, CollapseError> {
+        (0..self.width)
+            .map(|c| values(&self.row, c, (from, to), self.rate))
+            .collect()
     }
 
     /// What writing `[from, to)` of every component takes, as `(priced flops, waves)`.
@@ -126,17 +150,52 @@ fn worked(row: &Row, c: usize, from: i64, to: i64, step: f64) -> (u128, u128) {
     }
 }
 
+type Labelled = (Row, (Source, Detail));
+
 /// `plan::of` with each row an extent picks by cost replaced by the one summed per instant.
-fn of_sum(sum: &SpectralSum, rate: u32, profile: &Profile) -> Result<Row, CollapseError> {
+fn of_sum(sum: &SpectralSum, rate: u32, profile: &Profile) -> Result<Labelled, CollapseError> {
     if sum.var == Var::F {
         return Err(CollapseError::NoBlockRow);
     }
-    if let Some(found) = plan::kept_lines(sum, profile, profile.ceiling(rate))? {
-        return Ok(Row::Lines(
-            found.kept.iter().map(|kept| Direct::of(kept)).collect(),
-        ));
+    let ceiling = profile.ceiling(rate);
+    if let Some(found) = plan::kept_lines(sum, profile, ceiling)? {
+        let (dropped, dropped_more) = lines::dropped_list(found.dropped());
+        let summed = lines::distinct(&found.kept);
+        let detail = Detail::Lines {
+            rule: Rule::LineSpectrumSummed,
+            placed: 0,
+            summed,
+            dropped,
+            dropped_more,
+            terms: Some(summed),
+            tail_db: found.tail(),
+        };
+        let row = Row::Lines(found.kept.iter().map(|kept| Direct::of(kept)).collect());
+        return Ok((row, (Source::Exact, detail)));
     }
     let truncated = truncate::spectral_sum(sum, Audible::of(profile, rate))?;
+    let label = match () {
+        () if atoms::band_limited(&truncated, ceiling, profile) => (
+            Source::Exact,
+            Detail::Continuous {
+                rule: Rule::BandLimited,
+            },
+        ),
+        () if atoms::windowed(&truncated) => (
+            Source::Measured,
+            Detail::Cropped {
+                rule: Rule::CroppedPair,
+                tail_db: tail::tail_db(&truncated, ceiling),
+            },
+        ),
+        () => (
+            Source::Measured,
+            Detail::Point {
+                rule: Rule::PointSampled,
+                alias_db: None,
+            },
+        ),
+    };
     let spans = truncated
         .lanes
         .iter()
@@ -148,38 +207,51 @@ fn of_sum(sum: &SpectralSum, rate: u32, profile: &Profile) -> Result<Row, Collap
         .iter()
         .map(|lane| active::windows(lane, step))
         .collect();
-    Ok(Row::Sweep {
+    let row = Row::Sweep {
         sum: Box::new(truncated),
         spans,
         windows,
-    })
+    };
+    Ok((row, label))
 }
 
 /// `plan::of_written`'s split into addends.
-fn of_written(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Row, CollapseError> {
+fn of_written(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelled, CollapseError> {
     let Some(addends) = plan::addends(form) else {
         return point(form, rate, profile);
     };
     let mut parts = Vec::with_capacity(addends.len());
+    let mut labels: Vec<(Source, Detail)> = Vec::new();
     for addend in &addends {
         match of_term(addend, rate, profile)? {
-            Row::Added(inner) => parts.extend(inner),
-            part => {
+            (Row::Added(inner), (source, Detail::Added { parts: details })) => {
+                parts.extend(inner);
+                labels.extend(details.into_iter().map(|d| (source, d)));
+            }
+            (part, (source, detail)) => {
                 let held = width(&part);
                 parts.push((part, held));
+                labels.push((source, detail));
             }
         }
     }
-    match parts
+    if parts
         .iter()
         .all(|(part, _)| matches!(part, Row::Point { .. }))
     {
-        true => point(form, rate, profile),
-        false => Ok(Row::Added(parts)),
+        return point(form, rate, profile);
     }
+    let source = match labels.iter().all(|(s, _)| *s == Source::Exact) {
+        true => Source::Exact,
+        false => Source::Measured,
+    };
+    let detail = Detail::Added {
+        parts: labels.into_iter().map(|(_, d)| d).collect(),
+    };
+    Ok((Row::Added(parts), (source, detail)))
 }
 
-fn of_term(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Row, CollapseError> {
+fn of_term(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelled, CollapseError> {
     let Ok(sum) = normalize_closed_form(form) else {
         return of_written(form, rate, profile);
     };
@@ -190,16 +262,21 @@ fn of_term(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Row, Colla
     }
 }
 
-fn point(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Row, CollapseError> {
+fn point(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelled, CollapseError> {
     let written = ClosedForm {
         body: truncate::written(&form.body, Audible::of(profile, rate))?,
         ..form.clone()
     };
     let width = point::width_of(&written.body, &point::NoRefs).max(1);
-    Ok(Row::Point {
+    let row = Row::Point {
         written: Box::new(written),
         width,
-    })
+    };
+    let detail = Detail::Point {
+        rule: Rule::PointSampled,
+        alias_db: None,
+    };
+    Ok((row, (Source::Measured, detail)))
 }
 
 fn width(row: &Row) -> usize {

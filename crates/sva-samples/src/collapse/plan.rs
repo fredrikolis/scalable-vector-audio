@@ -373,6 +373,16 @@ pub(super) struct Kept {
     tail: Option<f64>,
 }
 
+impl Kept {
+    pub(super) fn dropped(&self) -> &[Vec<Line>] {
+        &self.dropped
+    }
+
+    pub(super) fn tail(&self) -> Option<f64> {
+        self.tail
+    }
+}
+
 pub(super) fn kept_lines(
     sum: &SpectralSum,
     profile: &Profile,

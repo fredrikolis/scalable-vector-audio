@@ -55,6 +55,8 @@ impl Tape {
             planes: &self.planes,
             base: self.base,
             support,
+            period: None,
+            offset: 0,
         }
     }
 
@@ -107,11 +109,16 @@ impl From<Buffer> for Tape {
     }
 }
 
+/// A view of held samples; a periodic value's samples are held over one period from 0, and
+/// sample `k` is sample `k mod period`.
 #[derive(Clone, Copy, Debug)]
 pub struct Window<'a> {
     planes: &'a [Vec<f64>],
     base: i64,
     support: Extent,
+    period: Option<i64>,
+    /// Sample `k` of the view is sample `k + offset` of what it views.
+    offset: i64,
 }
 
 impl<'a> Window<'a> {
@@ -120,11 +127,33 @@ impl<'a> Window<'a> {
             planes: &buffer.planes,
             base: buffer.start,
             support,
+            period: None,
+            offset: 0,
+        }
+    }
+
+    pub fn folded(self, period: Option<i64>) -> Window<'a> {
+        Window { period, ..self }
+    }
+
+    pub fn shifted(self, by: i64) -> Window<'a> {
+        Window {
+            offset: self.offset + by,
+            ..self
+        }
+    }
+
+    fn fold(&self, k: i64) -> i64 {
+        let k = k.saturating_add(self.offset);
+        match self.period {
+            Some(n) if self.support.contains(k) => k.rem_euclid(n),
+            _ => k,
         }
     }
 
     /// `None` for a sample inside the support this window does not hold.
     pub fn get(&self, c: usize, k: i64) -> Option<f64> {
+        let k = self.fold(k);
         let plane = &self.planes[c];
         let held = k
             .checked_sub(self.base)
@@ -136,8 +165,9 @@ impl<'a> Window<'a> {
         }
     }
 
-    /// A sample not held inside the support is a reader past its extent: no value answers it.
+    /// A sample not held inside the support is a reader past its extent.
     pub fn at(&self, c: usize, k: i64) -> f64 {
+        let k = self.fold(k);
         let plane = &self.planes[c];
         if let Some(held) = k
             .checked_sub(self.base)

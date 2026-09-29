@@ -90,10 +90,13 @@ RENDER:
   `sp` count or `self[idx(t) - 1]` means one sample at whatever rate is asked.
   A discrete loop reads its own past only by index; `self(t - d)` in one
   refuses as `type.discrete_self_at_time`, naming what made it discrete. A
-  node that holds state read at `k*t - d` steps on the grid that read asks
-  for, `k` times the step and shifted by `d`, every input it reads, `sp` and
-  `idx` with it, and one grid is stepped once however many reads ask for it.
-  Read at a time that moves it refuses as `type.stateful_warp`, naming what
+  read `@x(k*t - d)` steps `x` at `k` times the step, every input it reads,
+  `sp` and `idx` with it, and rounds `d` to the nearest sample of that step,
+  ties to even: shifts are rounded to the nearest sample so placements share
+  one cached value; timing is exact to half a sample, and the label's
+  `moved_s` states the most any read moved. A node is computed once
+  per step however many reads ask for it. A node that holds state read at a
+  time that moves refuses as `type.stateful_warp`, naming what
   holds its state; `@x[idx(...)]` reads its nearest step instead, as `p[idx(...)]`
   does a signal passed in as parameter `p`, and any `idx`, as
   `idx(t - 5ms - 2ms*sin(2*pi*t))`, is read sample by sample. An edit to a
@@ -260,18 +263,19 @@ DEFAULTS:
                        is written.
 
 ENVIRONMENT:
-  SVA_LOG=debug        `render` goes through a fresh in-memory store and, once it
-                       ends, logs that store's lookups to stderr; stdout and the
-                       samples are unchanged. Any other value, or none, logs
-                       nothing. One line per second of output, then one per node
-                       and a total:
+  SVA_LOG=debug        `render` logs, once it ends, what it asked of each value
+                       to stderr, and creates no store; stdout and the samples
+                       are unchanged. Any other value, or none, logs nothing.
+                       One line per second of output, then one per node and a
+                       total:
                          sva-cache pass hit=0 miss=190 prefix=0 new=180 cum-hit=0.0%
                          sva-cache t=1.022s hit=1 miss=2 prefix=0 new=2 cum-hit=0.5%
                          sva-cache node hit=0 miss=2 prefix=0 new=1 <node>
                          sva-cache total hit=1 miss=198 prefix=0 new=... hit-rate=0.5% ...
                        `pass` is what was looked up before the first block;
-                       `hit` found the whole entry, `prefix` a run up to a
-                       switch, `miss` computed it, `new` wrote an entry.
+                       each read of a value past its first is a `hit`, reusing
+                       it; `prefix` found a stored run up to a switch, `miss`
+                       computed it, `new` wrote a store entry.
 
 EXIT CODES:
   0  success (error.code absent)
