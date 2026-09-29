@@ -74,15 +74,25 @@ pub struct Loudness {
 /// Every component weighs 1.0: BS.1770's 1.41 surround lift needs a channel identity an
 /// indexed component does not carry.
 pub fn analyze(planes: &[&[f64]], sr: f64, start_secs: f64) -> Loudness {
-    let squares: Vec<Vec<f64>> = planes.iter().map(|p| running_squares(p, sr)).collect();
-    let samples = planes.first().map_or(0, |p| p.len());
-
-    let momentary = blocks(&squares, samples, sr, start_secs, MOMENTARY_SECS);
-    let short_term = blocks(&squares, samples, sr, start_secs, SHORT_TERM_SECS);
     let sample_peak = planes
         .iter()
         .flat_map(|p| p.iter())
         .fold(0.0f64, |acc, v| acc.max(v.abs()));
+    let scale = headroom(sample_peak);
+    let squares: Vec<Vec<f64>> = planes
+        .iter()
+        .map(|p| running_squares(p, sr, scale))
+        .collect();
+    let samples = planes.first().map_or(0, |p| p.len());
+    let at = Blocks {
+        samples,
+        sr,
+        start_secs,
+        lift_db: 20.0 * scale.log10(),
+    };
+
+    let momentary = blocks(&squares, &at, MOMENTARY_SECS);
+    let short_term = blocks(&squares, &at, SHORT_TERM_SECS);
 
     Loudness {
         integrated_lufs: gated_mean(&momentary, INTEGRATED_GATE_LU),
@@ -97,8 +107,16 @@ pub fn analyze(planes: &[&[f64]], sr: f64, start_secs: f64) -> Loudness {
     }
 }
 
+/// A power of two over the peak: no square overflows, dividing is exact.
+fn headroom(peak: f64) -> f64 {
+    match peak > 1.0 {
+        true => 2f64.powi(peak.log2().ceil().min(f64::from(f64::MAX_EXP - 1)) as i32),
+        false => 1.0,
+    }
+}
+
 /// A prefix sum, so a block costs two reads rather than a pass of its own.
-fn running_squares(plane: &[f64], sr: f64) -> Vec<f64> {
+fn running_squares(plane: &[f64], sr: f64, scale: f64) -> Vec<f64> {
     let shelf = shelf(sr);
     let cut = highpass(sr);
     let mut first = State::default();
@@ -107,30 +125,31 @@ fn running_squares(plane: &[f64], sr: f64) -> Vec<f64> {
     let mut total = 0.0;
     out.push(0.0);
     for x in plane {
-        let k = second.step(&cut, first.step(&shelf, *x));
+        let k = second.step(&cut, first.step(&shelf, *x / scale));
         total += k * k;
         out.push(total);
     }
     out
 }
 
-fn blocks(
-    squares: &[Vec<f64>],
+struct Blocks {
     samples: usize,
     sr: f64,
     start_secs: f64,
-    block_secs: f64,
-) -> Vec<LoudnessFrame> {
-    let n = (block_secs * sr).round() as usize;
-    let step = ((STEP_SECS * sr).round() as usize).max(1);
-    if n == 0 || samples < n {
+    lift_db: f64,
+}
+
+fn blocks(squares: &[Vec<f64>], at: &Blocks, block_secs: f64) -> Vec<LoudnessFrame> {
+    let n = (block_secs * at.sr).round() as usize;
+    let step = ((STEP_SECS * at.sr).round() as usize).max(1);
+    if n == 0 || at.samples < n {
         return Vec::new();
     }
-    (0..=(samples - n))
+    (0..=(at.samples - n))
         .step_by(step)
-        .map(|at| LoudnessFrame {
-            t: start_secs + at as f64 / sr,
-            lufs: level(squares, at, n),
+        .map(|k| LoudnessFrame {
+            t: at.start_secs + k as f64 / at.sr,
+            lufs: level(squares, k, n) + at.lift_db,
         })
         .collect()
 }
@@ -153,11 +172,9 @@ fn mean_above(frames: &[LoudnessFrame], threshold: f64) -> Option<f64> {
     if kept.is_empty() {
         return None;
     }
-    let power: f64 = kept
-        .iter()
-        .map(|l| 10f64.powf((l - OFFSET_DB) / 10.0))
-        .sum();
-    Some(OFFSET_DB + 10.0 * (power / kept.len() as f64).log10())
+    let from = kept.iter().copied().fold(OFFSET_DB, f64::max);
+    let power: f64 = kept.iter().map(|l| 10f64.powf((l - from) / 10.0)).sum();
+    Some(from + 10.0 * (power / kept.len() as f64).log10())
 }
 
 /// Both relative gates measure down from the ABSOLUTE-gated mean, never from each other.

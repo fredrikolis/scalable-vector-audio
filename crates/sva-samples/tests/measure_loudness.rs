@@ -79,3 +79,20 @@ fn digital_silence_has_no_loudness_and_no_peak_in_decibels() {
     assert_eq!(l.sample_peak, 0.0);
     assert_eq!(l.sample_peak_dbfs, None);
 }
+
+/// A level whose weighted square passes the largest double is still a level, up to a peak
+/// near the largest double itself.
+#[test]
+fn a_finite_buffer_too_loud_to_square_still_reads_its_loudness() {
+    let sr = 48_000.0;
+    let quiet = sine(1_000.0, sr, 4.0, 1.0);
+    let at_scale = of(&[&quiet], sr).integrated_lufs.expect("a level");
+    for gain in [1e160, 1.5e308] {
+        let loud: Vec<f64> = quiet.iter().map(|v| v * gain).collect();
+        let level = of(&[&loud], sr)
+            .integrated_lufs
+            .expect("a level past the largest square");
+        let lift = 20.0 * f64::log10(gain);
+        assert!((level - at_scale - lift).abs() < 1e-6, "{gain}: {level}");
+    }
+}

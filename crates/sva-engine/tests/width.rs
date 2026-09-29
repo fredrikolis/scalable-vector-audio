@@ -60,3 +60,17 @@ fn a_mono_term_times_a_stereo_term_broadcasts() {
         "the right channel is not silent"
     );
 }
+
+/// A component past a value's width refuses when the node is typed, sampled or not, before
+/// and whether or not any sample of it is computed.
+#[test]
+fn a_component_past_a_sampled_width_refuses_at_typing() {
+    let g = graph_of(
+        "past",
+        &[("master", "ch(sample(0), 1) + ch(sample(join(0, 0)), 1)\n")],
+    );
+    let Err(refused) = sva_engine::types(&g, "master") else {
+        panic!("component 1 of a one-wide value types");
+    };
+    assert_eq!(refused.code(), "type.width_mismatch", "{refused:?}");
+}

@@ -272,3 +272,24 @@ fn a_supersaw_stack_of_series_point_samples() {
     assert_eq!(label.source, Source::Measured);
     assert_eq!(label.rule(), Rule::PointSampled);
 }
+
+/// A crop that is shut zeroes the product it is a factor of, even where a factor beside it,
+/// a decay read long before its onset, passes the largest double there.
+#[test]
+fn a_shut_crop_zeroes_a_factor_too_large_for_a_double() {
+    let g = graph_of(
+        "shut",
+        &[(
+            "gated",
+            "crop(crop(tanh(t - 3s), 3s, inf)*exp(-(t - 3s)*400), 0s, 4s)\n",
+        )],
+    );
+    let held = render(&g, "gated", RenderConfig::seconds(44_100, 4.0), None)
+        .expect("a shut crop is zero before its window");
+    let samples = held
+        .output(held.id("gated").expect("the root"))
+        .expect("a buffer");
+    let (before, after) = samples.plane(0).split_at(3 * 44_100);
+    assert!(before.iter().all(|v| *v == 0.0));
+    assert!(after.iter().all(|v| v.is_finite()) && after.iter().any(|v| *v != 0.0));
+}

@@ -65,7 +65,7 @@ pub fn apply(op: Unary, arg: &Part, origin: Origin, var: Var) -> Result<Spectral
         });
     };
     let atoms = match op {
-        Unary::Exp => vec![line_atom(b.exp(), a, origin)],
+        Unary::Exp => vec![exp_atom(a, b, origin)?],
         Unary::Cos => vec![
             line_atom((C64::I * b).exp().scale(0.5), C64::I * a, origin),
             line_atom((-C64::I * b).exp().scale(0.5), -C64::I * a, origin),
@@ -78,6 +78,34 @@ pub fn apply(op: Unary, arg: &Part, origin: Origin, var: Var) -> Result<Spectral
     let mut lane = Lane::of(atoms);
     simplify(&mut lane);
     Ok(SpectralSum::of(var, vec![lane]))
+}
+
+/// `e^{a t + b}`, anchored where it is one where `e^b` passes a double: `e^{sigma (t - mu)}`,
+/// `mu = -re(b)/sigma`, `mu`'s rounding carried exactly in the weight's own exponent.
+fn exp_atom(a: C64, b: C64, origin: Origin) -> Result<SpectralAtom, Left> {
+    let weight = b.exp();
+    if weight.is_finite() && !weight.is_zero() || a.re == 0.0 {
+        return match weight.is_finite() {
+            true => Ok(line_atom(weight, a, origin)),
+            false => Err(left(origin, Factor::Exponential, LeftReason::Overflow)),
+        };
+    }
+    let mu = -b.re / a.re;
+    let factors = Factors {
+        exp: Some(Exp {
+            sigma: a.re,
+            omega: a.im,
+            mu,
+        }),
+        ..Factors::NONE
+    };
+    let residue = C64::new(a.re.mul_add(mu, b.re), b.im).exp();
+    Ok(SpectralAtom::new(
+        residue,
+        factors,
+        Singular::Regular,
+        origin,
+    ))
 }
 
 fn line_atom(c: C64, alpha: C64, origin: Origin) -> SpectralAtom {

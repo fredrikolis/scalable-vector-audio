@@ -258,3 +258,40 @@ fn a_destination_that_already_holds_a_file_refuses_until_the_caller_confirms() {
         "the caller said so"
     );
 }
+
+/// A sample 32-bit floats cannot hold, or one past full scale in integer PCM, refuses by code
+/// and leaves no file behind, rather than writing an infinity or a clipped sample.
+#[test]
+fn a_sample_the_encoding_cannot_hold_refuses_and_writes_nothing() {
+    let dir = scratch("unrepresentable");
+    let out = scratch("unrepresentable-out");
+    put(&dir, "master", "crop(sample(exp(t*440)), 0s, 1s)\n");
+    put(&dir, "loud", "crop(2*sin(2*pi*220*t), 0s, 0.05s)\n");
+    let written = |target: &str, bits: &str, file: &str| {
+        let path = out.join(file);
+        let run = std::process::Command::new(env!("CARGO_BIN_EXE_sva-cli"))
+            .current_dir(&dir)
+            .args([
+                "render",
+                target,
+                "--bits",
+                bits,
+                "--representation",
+                &format!("samples={}", path.display()),
+            ])
+            .output()
+            .expect("the binary runs");
+        (String::from_utf8_lossy(&run.stdout).to_string(), path)
+    };
+    for (target, bits, file) in [("@master", "32", "float.wav"), ("@loud", "16", "pcm.wav")] {
+        let (printed, path) = written(target, bits, file);
+        assert!(
+            printed.contains("render.unrepresentable_sample"),
+            "{printed}"
+        );
+        assert!(!path.exists(), "{} was written", path.display());
+    }
+    let (printed, path) = written("@loud", "32", "held.wav");
+    assert!(printed.contains("\"status\": \"success\""), "{printed}");
+    assert!(path.exists());
+}

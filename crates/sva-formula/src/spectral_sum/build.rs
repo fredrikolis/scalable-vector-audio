@@ -5,7 +5,7 @@ use crate::closed_form::{Body, ClosedForm, Part, Series, Var};
 use crate::complex::C64;
 use crate::origin::Origin;
 use crate::rational::expand;
-use crate::refusal::{Factor, Left, LeftReason};
+use crate::refusal::{AtomSketch, Factor, Left, LeftReason};
 use crate::spectral_sum::atom::{Exp, Factors, Indicator, Pole, Singular, SpectralAtom};
 use crate::spectral_sum::image::{
     affine_atoms, apply, constant, crop, crop_window, delta, derive, fold, left, one,
@@ -17,11 +17,24 @@ use crate::spectral_sum::{Lane, SpectralSum};
 use crate::spectral_sum::{kink, spread};
 
 pub fn normalize_closed_form(t: &ClosedForm) -> Result<SpectralSum, Left> {
-    lower(&t.body, t.origin, t.var)
+    finite(lower(&t.body, t.origin, t.var)?)
 }
 
 pub fn normalize(f: &Body, var: Var) -> Result<SpectralSum, Left> {
-    lower(f, Origin::UNKNOWN, var)
+    finite(lower(f, Origin::UNKNOWN, var)?)
+}
+
+/// An amplitude past the largest double has no weight to carry, so the sum refuses there.
+fn finite(sum: SpectralSum) -> Result<SpectralSum, Left> {
+    let unheld = sum.atoms().find(|a| !a.c.is_finite()).map(|a| a.origin);
+    match unheld {
+        Some(origin) => Err(Left::new(
+            origin,
+            AtomSketch::of(Factor::Amplitude),
+            LeftReason::Overflow,
+        )),
+        None => Ok(sum),
+    }
 }
 
 fn lower(f: &Body, origin: Origin, var: Var) -> Result<SpectralSum, Left> {

@@ -3,6 +3,7 @@
 mod answer;
 mod builtins;
 mod cli_error;
+pub mod encode;
 pub mod json;
 mod lint_code;
 mod outline;

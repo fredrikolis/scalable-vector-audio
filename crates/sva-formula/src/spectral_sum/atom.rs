@@ -164,9 +164,9 @@ impl Factors {
 }
 
 impl SpectralAtom {
-    /// Folds every absent factor to `None`, and reduces a zeroth-order delta at its point.
+    /// Folds every absent factor to `None`, and reduces a zeroth-order delta at its point. An
+    /// amplitude past a double is refused where a sum is normalized and where one is read.
     pub fn new(c: C64, factors: Factors, sing: Singular, origin: Origin) -> SpectralAtom {
-        assert!(c.is_finite(), "an atom's amplitude must be finite");
         let atom = SpectralAtom {
             c,
             poly: factors.poly,

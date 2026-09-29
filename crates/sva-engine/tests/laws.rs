@@ -319,3 +319,34 @@ fn envelope_of_a_rational_in_t_is_measured() {
     let last = frames.last().expect("the window carries frames");
     assert!(last.rms < 0.55, "the tail falls away: {}", last.rms);
 }
+
+/// A decay steep enough that its weight from t = 0 passes the largest double is anchored at
+/// its onset, so it reads its own value there rather than stopping the render.
+#[test]
+fn a_steep_decay_cropped_at_a_late_onset_reads_its_value_there() {
+    for (name, decay) in [
+        ("exp", "crop(exp(-(t - 3s)*400), 3s, 4s)\n"),
+        ("struck", "crop(string(220, at=3s), 0s, 4s)\n"),
+    ] {
+        let g = graph_of(name, &[("decay", decay)]);
+        let held = render(&g, "decay", RenderConfig::seconds(44_100, 4.0), None)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let root = held.id("decay").expect("the root");
+        let samples = held.output(root).expect("a buffer").plane(0).to_vec();
+        assert!(samples[..3 * 44_100].iter().all(|v| *v == 0.0), "{name}");
+        assert!(samples.iter().all(|v| v.is_finite()), "{name}");
+        assert!(samples[3 * 44_100..].iter().any(|v| *v != 0.0), "{name}");
+    }
+    let g = graph_of("onset", &[("decay", "crop(exp(-(t - 3s)*400), 3s, 4s)\n")]);
+    let held = render(&g, "decay", RenderConfig::seconds(44_100, 4.0), None).expect("renders");
+    let samples = held
+        .output(held.id("decay").expect("the root"))
+        .expect("a buffer");
+    let at = |n: usize| samples.plane(0)[3 * 44_100 + n];
+    assert!((at(0) - 1.0).abs() < 1e-12, "{}", at(0));
+    assert!(
+        (at(1) - (-400.0f64 / 44_100.0).exp()).abs() < 1e-12,
+        "{}",
+        at(1)
+    );
+}

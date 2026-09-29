@@ -266,6 +266,19 @@ impl Lowering<'_, '_> {
             }
             args.push((id, constant));
         }
+        if name == crate::vocabulary::CHANNEL
+            && let ([x], [(of, false), (k, true)]) = (signals.as_slice(), args.as_slice())
+            && let Some(k) = constant::number_of(self.typing, *k)
+            && k >= f64::from(x.width)
+            && !crate::schedule::holds_self(self.typing, *of, &mut Default::default())
+        {
+            return Err(self.refused_at(
+                "type.width_mismatch",
+                format!("component {k} of a value {} components wide", x.width),
+                "read a component the value holds, counting from zero",
+                span,
+            ));
+        }
         let ty = match overload::resolve(name, &signals) {
             Err(m) if m.code == "type.samples_in_closed_form" => {
                 signals.clear();

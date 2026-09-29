@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use sva_core::{CliError, Output, Printed, Report, is_wav, query_data};
+use sva_core::{CliError, Output, Printed, Report, encode, is_wav, query_data};
 
 use crate::wav::{SampleEncoding, write_channels};
 use sva_core::success_envelope;
@@ -115,7 +115,14 @@ pub fn write(printed: &Printed, dest: &Path, framing: &Framing) -> Result<(), Cl
         let Output::Samples(buffer) = &printed.answer.value else {
             return Err(not_audio(&printed.name));
         };
-        let held: Vec<Vec<f32>> = (0..buffer.width).map(|c| buffer.as_f32(c)).collect();
+        let node = &framing.target;
+        let held: Vec<Vec<f32>> = (0..buffer.width)
+            .map(|c| encode::float32(node, buffer.plane(c)))
+            .collect::<Result<_, _>>()?;
+        if let SampleEncoding::Pcm(_) = framing.encoding {
+            held.iter()
+                .try_for_each(|plane| encode::full_scale(node, plane))?;
+        }
         let planes: Vec<&[f32]> = held.iter().map(Vec::as_slice).collect();
         return write_channels(&planes, buffer.rate, dest, framing.encoding);
     }

@@ -71,6 +71,22 @@ pub fn eval_spectral_sum(n: &SpectralSum, c: usize, t: f64) -> Result<C64, Colla
     eval_lane(&n.lanes[c.min(n.lanes.len() - 1)], t)
 }
 
+/// A shut crop zeroes a factor beside it that passes a double.
+fn product(
+    factors: impl Iterator<Item = Result<C64, CollapseError>>,
+) -> Result<C64, CollapseError> {
+    let mut held = Ok(C64::ONE);
+    for factor in factors {
+        match (factor, &held) {
+            (Ok(v), _) if v.is_zero() => return Ok(C64::ZERO),
+            (Ok(v), Ok(acc)) => held = Ok(*acc * v),
+            (Err(e), Ok(_)) => held = Err(e),
+            (_, Err(_)) => {}
+        }
+    }
+    held
+}
+
 /// The fallback for a closed form with no spectral sum at all: `tanh`, `sat`, `abs`, `log`, `sqrt`,
 /// a non-integer power, a non-affine `sin`. Nothing here is claimed exact.
 pub fn eval_body(
@@ -84,7 +100,7 @@ pub fn eval_body(
         Body::Const(c) => *c,
         Body::Line => C64::real(t),
         Body::Add(parts) => parts.iter().try_fold(C64::ZERO, |a, p| Ok(a + of(p)?))?,
-        Body::Mul(parts) => parts.iter().try_fold(C64::ONE, |a, p| Ok(a * of(p)?))?,
+        Body::Mul(parts) => product(parts.iter().map(of))?,
         Body::Div(a, b) => of(a)? / of(b)?,
         Body::Pow(a, n) => power(of(a)?, *n),
         Body::Apply(op, a) => unary(*op, of(a)?),

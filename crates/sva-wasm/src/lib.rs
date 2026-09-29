@@ -374,7 +374,8 @@ impl Rendering {
                 "read a component this node holds, counting from zero",
             ));
         }
-        Ok(buffer.as_f32(channel))
+        sva_core::encode::float32(&self.inner.expression, buffer.plane(channel))
+            .map_err(|e| thrown(&e))
     }
 
     /// Every lookup this render made of the composition's store, and what each came to.
@@ -460,10 +461,12 @@ impl Stream {
         let Some(held) = self.inner.next_block().map_err(engine)? else {
             return Ok(0);
         };
-        for c in 0..width {
-            for (slot, value) in out[c * block..].iter_mut().zip(held.plane(c)) {
-                *slot = *value as f32;
-            }
+        let planes: Vec<Vec<f32>> = (0..width)
+            .map(|c| sva_core::encode::float32(sva_engine::STREAMED, held.plane(c)))
+            .collect::<Result<_, _>>()
+            .map_err(|e| thrown(&e))?;
+        for (c, plane) in planes.iter().enumerate() {
+            out[c * block..c * block + plane.len()].copy_from_slice(plane);
         }
         Ok(held.len())
     }

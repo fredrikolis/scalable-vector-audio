@@ -27,11 +27,23 @@ pub fn atoms(bank: &ModalBank, origin: Origin) -> Vec<SpectralAtom> {
         .flat_map(|m| {
             [1.0, -1.0].map(|sign| {
                 let alpha = C64::new(-1.0 / m.tau, sign * m.omega);
+                let onset = C64::new(0.0, sign * m.phase).exp().scale(m.amp * 0.5);
+                let from_zero = onset * (-alpha.scale(start)).exp();
+                let (c, exp) = match from_zero.is_finite() {
+                    true => (from_zero, Exp::at(alpha.re, alpha.im)),
+                    false => (
+                        onset * C64::new(0.0, -alpha.im * start).exp(),
+                        Exp {
+                            sigma: alpha.re,
+                            omega: alpha.im,
+                            mu: start,
+                        },
+                    ),
+                };
                 SpectralAtom::new(
-                    C64::new(0.0, sign * m.phase).exp().scale(m.amp * 0.5)
-                        * (-alpha.scale(start)).exp(),
+                    c,
                     Factors {
-                        exp: Some(Exp::at(alpha.re, alpha.im)),
+                        exp: Some(exp),
                         ind: Some(Indicator {
                             l: Edge::at(start),
                             r: Edge::PosInf,
