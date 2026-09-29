@@ -1,0 +1,37 @@
+// Concern: gathers every sva-engine integration suite into one test binary | Non-concern: what any suite asserts (its own module) | IO: none
+
+mod arguments;
+mod bindings;
+mod cache;
+mod calculus;
+mod casts;
+mod echoes;
+mod edit;
+mod extents;
+mod fixtures;
+mod flops;
+mod instantiate;
+mod laws;
+mod ledger;
+mod loops;
+mod naming;
+mod observations;
+mod operators;
+mod pointwise;
+mod policies;
+mod pruning;
+mod refs;
+mod refusals;
+mod release;
+mod sampled;
+mod segments;
+mod stats;
+mod stores;
+mod stream;
+mod trace;
+mod triad;
+mod typing;
+mod vocabulary;
+mod volatile;
+mod width;
+mod work;

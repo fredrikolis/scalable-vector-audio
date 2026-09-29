@@ -1,1 +1,0 @@
-Concern: the render readings that leave the JSON object | Non-concern: the envelope itself | IO: (fixtures/*) -> a written file

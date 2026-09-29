@@ -1,0 +1,1 @@
+Concern: the render suite's tempo and written-file readings | Non-concern: what a render answers in the envelope (render_integration.rs) | IO: (fixtures/*) -> a duration, a refusal or a written file

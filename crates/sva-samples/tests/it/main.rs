@@ -1,0 +1,31 @@
+// Concern: gathers every sva-samples integration suite into one test binary | Non-concern: what any suite asserts (its own module) | IO: none
+
+mod biquad;
+mod collapse;
+mod collapse_blocks;
+mod collapse_route;
+mod collapse_run;
+mod collapse_window;
+mod filters;
+mod helpers;
+mod measure_alias;
+mod measure_bands;
+mod measure_crest;
+mod measure_envelope;
+mod measure_formants;
+mod measure_ledger;
+mod measure_loudness;
+mod measure_pitch;
+mod measure_spectrum;
+mod measure_stereo;
+mod physics_botteldooren;
+mod physics_bound;
+mod physics_chaigne_askenfelt;
+mod physics_chaigne_askenfelt_energy;
+mod physics_chaigne_doutaut;
+mod physics_darabundit_scavone;
+mod physics_hammer;
+mod physics_rhaouti_chaigne_joly;
+mod physics_willemsen_bilbao_serafin;
+mod reconstruct;
+mod stft;
