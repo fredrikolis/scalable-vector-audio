@@ -1,7 +1,7 @@
 // Concern: the parse tree of one expression text, each node beside the bytes it was written in | Non-concern: parsing it (parser.rs), what any node means (sva-engine) | IO: (&str) -> Outline or a Diag
 
 use crate::diag::{ByteSpan, Diag};
-use crate::expr::{Arg, BinOp, Expr, Literal};
+use crate::expr::{Address, Arg, BinOp, Expr, Literal};
 use crate::parser::{Mark, parse_marked};
 
 /// One node of the tree `parse_expr` builds. `written` is false for the two nodes the parser
@@ -34,10 +34,12 @@ pub enum Form {
         at: ByteSpan,
         arg: Box<Outline>,
         binds: Vec<Argument>,
+        address: Address,
     },
     SelfRef {
         at: ByteSpan,
         arg: Box<Outline>,
+        address: Address,
     },
 }
 
@@ -81,7 +83,11 @@ fn walk(e: &Expr, marks: &mut impl Iterator<Item = Mark>) -> Outline {
             });
         }
         Expr::Ref {
-            path, arg, binds, ..
+            path,
+            arg,
+            binds,
+            address,
+            ..
         } => {
             let arg = walk(arg, marks);
             let binds = binds.iter().map(|(k, v)| named(k, v, marks)).collect();
@@ -90,13 +96,15 @@ fn walk(e: &Expr, marks: &mut impl Iterator<Item = Mark>) -> Outline {
                 at,
                 arg: Box::new(arg),
                 binds,
+                address: *address,
             });
         }
-        Expr::SelfRef { arg, .. } => {
+        Expr::SelfRef { arg, address, .. } => {
             let arg = walk(arg, marks);
             return node(marks, |at| Form::SelfRef {
                 at,
                 arg: Box::new(arg),
+                address: *address,
             });
         }
     };

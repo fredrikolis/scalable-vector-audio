@@ -205,7 +205,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 81] = [
+pub static REGISTRY: [(&str, &str); 84] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -247,6 +247,14 @@ pub static REGISTRY: [(&str, &str); 81] = [
     (
         "type.non_integer_power",
         "a real exponent over a base that is not a positive constant",
+    ),
+    (
+        "type.non_integer_index",
+        "an index that is no integer: a time, a fraction, or a ref",
+    ),
+    (
+        "type.index_outside_read",
+        "idx(...) anywhere but inside an index read",
     ),
     ("cast.left_algebra", "fourier or ifourier on a non-pair"),
     (
@@ -420,6 +428,10 @@ pub static REGISTRY: [(&str, &str); 81] = [
     (
         "engine.unreadable_position",
         "a moving reading at no finite position",
+    ),
+    (
+        "engine.unreadable_index",
+        "an integer index that is more than one idx(...) of a line in t plus a count",
     ),
     (
         "engine.loop_reads_ahead",

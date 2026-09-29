@@ -28,6 +28,14 @@ impl<'g> Lowering<'_, 'g> {
         if name == SERIES {
             return self.sum(args, span, cx, var);
         }
+        if name == sva_ast::INDEX {
+            return Err(self.refused_at(
+                "type.index_outside_read",
+                "idx(...) names a lattice index, which only an index read takes".to_string(),
+                "read by index, as @x[idx(t - 0.5b)], or write the time itself",
+                Some(span),
+            ));
+        }
         let written = args.iter().filter(|a| matches!(a, Arg::Pos(_))).count();
         let keys: Vec<String> = args
             .iter()

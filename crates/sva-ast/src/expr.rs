@@ -4,6 +4,9 @@ use crate::diag::ByteSpan;
 
 pub const JOIN: &str = "join";
 pub const SERIES: &str = "sum";
+pub const INDEX: &str = "idx";
+pub const FLOOR: &str = "floor";
+pub const CEIL: &str = "ceil";
 
 #[derive(Clone, Copy, Debug)]
 pub enum BinOp {
@@ -57,6 +60,13 @@ pub enum Arg {
     Named(String, Expr),
 }
 
+/// `x(e)` reads an instant, `x[i]` a lattice index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Address {
+    Time,
+    Index,
+}
+
 /// Meaning only: which node a path names lives in `graph.rs`, so two structurally identical
 /// expressions from different files compare equal, `span` excluded from `Eq`. `binds` holds
 /// an invocation's named arguments in written order: `@lp-def(t, cutoff=800)`.
@@ -74,10 +84,12 @@ pub enum Expr {
         path: String,
         arg: Box<Expr>,
         binds: Vec<(String, Expr)>,
+        address: Address,
         span: ByteSpan,
     },
     SelfRef {
         arg: Box<Expr>,
+        address: Address,
         span: ByteSpan,
     },
 }
@@ -101,16 +113,29 @@ impl PartialEq for Expr {
                     path: p1,
                     arg: a1,
                     binds: b1,
+                    address: x1,
                     ..
                 },
                 Expr::Ref {
                     path: p2,
                     arg: a2,
                     binds: b2,
+                    address: x2,
                     ..
                 },
-            ) => p1 == p2 && a1 == a2 && b1 == b2,
-            (Expr::SelfRef { arg: a1, .. }, Expr::SelfRef { arg: a2, .. }) => a1 == a2,
+            ) => p1 == p2 && a1 == a2 && b1 == b2 && x1 == x2,
+            (
+                Expr::SelfRef {
+                    arg: a1,
+                    address: x1,
+                    ..
+                },
+                Expr::SelfRef {
+                    arg: a2,
+                    address: x2,
+                    ..
+                },
+            ) => a1 == a2 && x1 == x2,
             _ => false,
         }
     }
@@ -156,14 +181,16 @@ pub fn map_children<E>(
     Ok(match e {
         Expr::Lit(_) | Expr::Var(_) => e.clone(),
         Expr::Bin(op, l, r) => Expr::Bin(*op, Box::new(f(l)?), Box::new(f(r)?)),
-        Expr::SelfRef { arg, span } => Expr::SelfRef {
+        Expr::SelfRef { arg, address, span } => Expr::SelfRef {
             arg: Box::new(f(arg)?),
+            address: *address,
             span: *span,
         },
         Expr::Ref {
             path,
             arg,
             binds: bs,
+            address,
             span,
         } => {
             let arg = Box::new(f(arg)?);
@@ -182,6 +209,7 @@ pub fn map_children<E>(
                 path: path.clone(),
                 arg,
                 binds: rebuilt,
+                address: *address,
                 span: *span,
             }
         }
@@ -217,12 +245,14 @@ mod tests {
             path: "kick".to_string(),
             arg: Box::new(Expr::Var("t".to_string())),
             binds: Vec::new(),
+            address: Address::Time,
             span: ByteSpan::new(0, 4),
         };
         let b = Expr::Ref {
             path: "kick".to_string(),
             arg: Box::new(Expr::Var("t".to_string())),
             binds: Vec::new(),
+            address: Address::Time,
             span: ByteSpan::new(99, 200),
         };
         assert_eq!(a, b);

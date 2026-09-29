@@ -64,7 +64,7 @@ pub const NOTE_GRAMMAR: &str = "a bare identifier: a letter A-G, an optional acc
     twelve-tone equal temperament, up to G9 where MIDI's 128 notes end";
 
 /// `(name, its call shape)`.
-pub const SPECIAL_FORMS: [(&str, &str); 5] = [
+pub const SPECIAL_FORMS: [(&str, &str); 7] = [
     (
         "sum",
         "sum(index, lo, hi, expr) -- index is a name the series binds, not a value; hi may be \
@@ -81,6 +81,16 @@ pub const SPECIAL_FORMS: [(&str, &str); 5] = [
     (
         "ch",
         "ch(x, index) -- extracts one component of a wide value by a literal index",
+    ),
+    (
+        "x[i]",
+        "@x[i], self[i] -- the stored lattice sample at integer index i, read with no kernel; \
+         @x(e) reads the instant e",
+    ),
+    (
+        "idx",
+        "idx(time), idx(time, floor), idx(time, ceil) -- the lattice index nearest a time, \
+         ties to even, or the one below or above it; written only inside an index",
     ),
     (
         "noise",

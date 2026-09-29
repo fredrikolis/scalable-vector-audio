@@ -1,7 +1,7 @@
 // Concern: writes an expression's outline as the `data` object both front ends answer | Non-concern: building the outline (sva-ast) | IO: (&str) -> a JSON string or CliError
 
 use sva_ast::outline::{Argument, Form};
-use sva_ast::{BinOp, ByteSpan, Literal, Outline, Refusal};
+use sva_ast::{Address, BinOp, ByteSpan, Literal, Outline, Refusal};
 
 use crate::CliError;
 use crate::json::{escape, list, num};
@@ -55,19 +55,26 @@ fn node(o: &Outline) -> String {
             at,
             arg,
             binds,
+            address,
         } => (
             "ref",
             format!(
-                "\"path\": \"{}\", \"at\": {}, \"arg\": {}, \"binds\": {}",
+                "\"path\": \"{}\", \"at\": {}, \"read\": \"{}\", \"arg\": {}, \"binds\": {}",
                 escape(path),
                 span(*at),
+                read(*address),
                 node(arg),
                 list(binds, argument)
             ),
         ),
-        Form::SelfRef { at, arg } => (
+        Form::SelfRef { at, arg, address } => (
             "self",
-            format!("\"at\": {}, \"arg\": {}", span(*at), node(arg)),
+            format!(
+                "\"at\": {}, \"read\": \"{}\", \"arg\": {}",
+                span(*at),
+                read(*address),
+                node(arg)
+            ),
         ),
     };
     format!(
@@ -75,6 +82,14 @@ fn node(o: &Outline) -> String {
         span(o.span),
         o.written
     )
+}
+
+/// `time` for `x(e)`, `index` for `x[i]`.
+fn read(address: Address) -> &'static str {
+    match address {
+        Address::Time => "time",
+        Address::Index => "index",
+    }
 }
 
 fn argument(a: &Argument) -> String {

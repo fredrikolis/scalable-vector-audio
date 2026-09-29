@@ -1,6 +1,6 @@
 // Concern: the recursion over one node's written expression | Non-concern: what a call lowers to (calls.rs), classifying a loop (loops.rs) | IO: (&Expr, Cx, Var) -> a Piece
 
-use sva_ast::{Arg, BinOp, ByteSpan, Expr, Literal};
+use sva_ast::{Address, Arg, BinOp, ByteSpan, Expr, Literal};
 use sva_formula::{Body, C64, Held, IndexId, NodeId, Ty, Var, note};
 
 use crate::cast::Cast;
@@ -22,8 +22,19 @@ impl Lowering<'_, '_> {
             Node::Lit(l) => self.literal(l, var),
             Node::Name(name) => self.name(name, var),
             Node::Bin(op, l, r) => self.binary(op, l, r, cx, var),
-            Node::Read { path, arg, span } => self.read(path, arg, span, cx, var),
-            Node::Own { arg, span } => self.own(arg, span, cx, var),
+            Node::Read {
+                path,
+                arg,
+                address: Address::Time,
+                span,
+            } => self.read(path, arg, span, cx, var),
+            Node::Read {
+                path,
+                arg,
+                address: Address::Index,
+                span,
+            } => self.indexed(path, arg, span, cx, var),
+            Node::Own { arg, address, span } => self.own((arg, address), span, cx, var),
             Node::Call { name, args, span } => self.call(name, args, span, cx, var),
         }
     }
@@ -80,7 +91,7 @@ impl Lowering<'_, '_> {
     /// delays are two reads, never one.
     fn own(
         &mut self,
-        arg: &Expr,
+        (arg, address): (&Expr, Address),
         span: sva_ast::ByteSpan,
         cx: Cx,
         var: Var,
@@ -90,7 +101,7 @@ impl Lowering<'_, '_> {
             SelfMode::Sampled { gain } => gain,
             SelfMode::Absent => None,
         };
-        let tap = loops::tap_of(self.inst, arg, cx);
+        let tap = loops::tap_of(self.inst, arg, address, cx);
         let at = match tap {
             Tap::Back(delay) => {
                 if let Some((_, id)) = self.own.iter().find(|(held, _)| *held == delay) {
@@ -102,6 +113,7 @@ impl Lowering<'_, '_> {
                 })
             }
             Tap::Moving => When::Moving(self.time(arg, cx)?),
+            Tap::Indexed => When::Index(self.lattice_index(arg, span, cx)?),
             refused => {
                 return Err(loops::tap_refusal(refused, self.here(Some(span)))
                     .expect("a tap that is not a delay names its reason"));
@@ -360,6 +372,55 @@ impl Lowering<'_, '_> {
             Some(_) => unreachable!("a closed form's time is matched above"),
         };
         Ok(Piece::Value(self.reading(id, at, span, var)))
+    }
+
+    /// `x[i]` reads a stored lattice sample with no kernel; a closed form's lattice samples are
+    /// its collapse onto the lattice.
+    fn indexed(
+        &mut self,
+        path: &str,
+        arg: &Expr,
+        span: ByteSpan,
+        cx: Cx,
+        var: Var,
+    ) -> Result<Piece, EngineError> {
+        let id = self
+            .typing
+            .id(path)
+            .ok_or_else(|| EngineError::UnknownNode(path.to_string()))?;
+        let at = When::Index(self.lattice_index(arg, span, cx)?);
+        let source = match self.typing.ty(id).is_closed_form() {
+            true => {
+                let ty = Cast::Sample
+                    .resolve(&[self.typing.ty(id)])
+                    .map_err(|m| self.refuse(Cast::Sample.name(), &m, Some(span)))?;
+                self.register(Value::Cast(Cast::Sample, id), ty, var)
+            }
+            false => id,
+        };
+        Ok(Piece::Value(self.reading(source, at, span, var)))
+    }
+
+    /// An index is an integer, which typing refuses otherwise; `None` where no one rounded
+    /// line spells it, which evaluation refuses.
+    fn lattice_index(
+        &self,
+        arg: &Expr,
+        span: ByteSpan,
+        cx: Cx,
+    ) -> Result<Option<crate::index::Index>, EngineError> {
+        if !crate::index::integer(self.inst, arg, cx) {
+            return Err(self.refused_at(
+                "type.non_integer_index",
+                format!(
+                    "`{}` is no integer: an index must be an integer; use idx(…)",
+                    self.inst.render(arg, cx)
+                ),
+                "write idx(...) around a time, as @x[idx(t - 0.5b)], or a whole count",
+                Some(span),
+            ));
+        }
+        Ok(crate::index::read(self.inst, arg, cx))
     }
 
     /// One read of `source`'s samples at `at`.

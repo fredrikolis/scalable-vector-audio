@@ -144,6 +144,7 @@ fn sampled_leaf(
                     time.shift.to_f64()
                 ),
                 crate::typing::When::Moving(_) => "a read at a moving time".to_string(),
+                crate::typing::When::Index(_) => "a read by lattice index".to_string(),
             })
         }),
         crate::typing::Value::Op { args, .. } => under(args.clone(), open),

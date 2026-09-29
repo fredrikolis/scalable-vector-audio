@@ -90,16 +90,19 @@ fn relocate(e: &Expr, by: usize) -> Expr {
     match e {
         Expr::Lit(_) | Expr::Var(_) => e.clone(),
         Expr::Bin(op, l, r) => Expr::Bin(*op, Box::new(relocate(l, by)), Box::new(relocate(r, by))),
-        Expr::SelfRef { arg, span } => Expr::SelfRef {
+        Expr::SelfRef { arg, address, span } => Expr::SelfRef {
             arg: Box::new(relocate(arg, by)),
+            address: *address,
             span: moved(span),
         },
         Expr::Ref {
             path,
             arg,
             binds,
+            address,
             span,
         } => Expr::Ref {
+            address: *address,
             path: path.clone(),
             arg: Box::new(relocate(arg, by)),
             binds: binds

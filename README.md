@@ -2,10 +2,7 @@
 
 # SVA: Scalable Vector Audio
 
-[![Release](https://github.com/fredrikolis/scalable-vector-audio/actions/workflows/release.yml/badge.svg)](https://github.com/fredrikolis/scalable-vector-audio/actions/workflows/release.yml)
-[![crates.io](https://img.shields.io/crates/v/sva-cli)](https://crates.io/crates/sva-cli)
-[![npm sva-cli](https://img.shields.io/npm/v/@scalable-vector-audio/sva-cli?label=npm%20sva-cli)](https://www.npmjs.com/package/@scalable-vector-audio/sva-cli)
-[![npm sva-wasm](https://img.shields.io/npm/v/@scalable-vector-audio/sva-wasm?label=npm%20sva-wasm)](https://www.npmjs.com/package/@scalable-vector-audio/sva-wasm)
+[![Release](https://github.com/fredrikolis/scalable-vector-audio/actions/workflows/release.yml/badge.svg)](https://github.com/fredrikolis/scalable-vector-audio/actions/workflows/release.yml) [![crates.io](https://img.shields.io/crates/v/sva-cli)](https://crates.io/crates/sva-cli) [![npm sva-cli](https://img.shields.io/npm/v/@scalable-vector-audio/sva-cli?label=npm%20sva-cli)](https://www.npmjs.com/package/@scalable-vector-audio/sva-cli) [![npm sva-wasm](https://img.shields.io/npm/v/@scalable-vector-audio/sva-wasm?label=npm%20sva-wasm)](https://www.npmjs.com/package/@scalable-vector-audio/sva-wasm)
 
 Sounds written as equations. $`\sin(2\pi \cdot 440\,t)`$ is a 440 Hz tone. Rendering samples an
 equation at any rate, so the sound is a scalable vector.
@@ -23,9 +20,8 @@ $t$ is seconds, the value is amplitude, and $`\mathbf{C_4}`$ is the note C4.
 $`\tfrac{1}{2}\delta(f - \mathbf{C_4}) + \tfrac{1}{2}\delta(f + \mathbf{C_4}) + \tfrac{1}{2}\delta(f - \mathbf{E_4}) + \tfrac{1}{2}\delta(f + \mathbf{E_4}) + \tfrac{1}{2}\delta(f - \mathbf{G_4}) + \tfrac{1}{2}\delta(f + \mathbf{G_4})`$
 
 Each $\delta$ is a spectral line at half the amplitude, paired with its conjugate at the negative
-frequency, which is what a cosine is, and $\delta$ is the builtin `delta`. `ifourier` of that
-node is the cosine sum above, and `fourier` crosses a term from `t` to `f`. A node is a function
-of one variable: an expression holding both `t` and `f` refuses as `type.domain_mismatch`.
+frequency, which is what a cosine is; $\delta$ is the builtin `delta`. `ifourier` of that node is
+the cosine sum, `fourier` crosses a term from `t` to `f`, and an expression holding both refuses.
 
 ## Each equation is stored in a file
 
@@ -85,6 +81,14 @@ root. `1b` is a bar against the composition's own bpm and meter, and `1sp` is on
 lattice every filter, loop and solver runs on, 1/44100 s. The rest are `ms`, `m`, `h`, `khz`
 and `db`.
 
+## Reading a sample by index
+
+| Written | Reads |
+| ------- | ----- |
+| `@x(e)` | `x` at the instant `e`; at 128 bpm `@x(t - 0.5b)` reconstructs 41343.75 samples back |
+| `@x[i]` | `x`'s stored sample at lattice index `i`, with no kernel; `i` is a whole number, `idx(...)`, or `+`, `-` and `*` over those, so `@x[t - 0.5b]` refuses |
+| `idx(e)` | the lattice index nearest `e`, ties to even: `@x[idx(t - 0.5b)]` reads sample 41344, and `self[idx(t) - 1]` is `self(t - 1sp)` bit for bit; `idx(e, floor)` and `idx(e, ceil)` round down and up |
+
 ## sva-cli
 
 One Rust engine, JSON on stdout, one `--help` page listing every flag beside its default.
@@ -112,9 +116,7 @@ the node that made it discrete:
 "ty": "samples", "discrete": "sample(chord)", "down": ["chord", "master"]
 ```
 
-`master` is under `down` because `self` reads it. `sva-cli render '@chord' --representation
-lines` refuses and says why: the envelope's window widens every line, so `chord` has no line
-list. `atoms` prints its terms as they stand, off the expression, with no buffer allocated.
+`master` is under `down` because `self` reads it.
 
 ```
 sva-cli render '@master' --representation flops
@@ -135,12 +137,10 @@ reading of them, as long as its bound needs, listed under `bounds` with the erro
 `--rate` is legal with every representation.
 
 `sva-cli builtins` prints every builtin with its arity and named arguments, the unit suffixes
-and the note-name grammar; the vocabulary is closed, so a name outside it does not parse.
-`sva-cli new my-song` writes a larger composition, eleven files with a grid, a noise and a
-tempo, and prints nine commands in the order to run them.
+and the note-name grammar; a name outside that closed vocabulary does not parse. `sva-cli new
+my-song` writes eleven files with a grid, a noise and a tempo, and nine commands to run in order.
 
 `sva-wasm` runs the same compositions in a browser: `npm install @scalable-vector-audio/sva-wasm`.
-
 MIT. See `LICENSE`.
 
 ## Credit

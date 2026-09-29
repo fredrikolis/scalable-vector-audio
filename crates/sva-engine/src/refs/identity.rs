@@ -7,6 +7,7 @@ use sva_formula::{
 };
 
 use crate::error::{Diagnostic, EngineError};
+use crate::index::Round;
 use crate::typing::{SumSlot, Typing, Value, When};
 
 use super::{cyclic, nodes_in, spectral_sum_of, substituted_closed_form};
@@ -162,17 +163,29 @@ fn built(
 pub(super) fn when(sink: &mut Sink, typing: &Typing, at: When) {
     sink.text("at");
     match at {
-        When::Time(time) => {
-            for q in [time.scale, time.shift] {
-                sink.word(q.num() as u64);
-                sink.word((q.num() >> 64) as u64);
-                sink.word(q.den() as u64);
-            }
-        }
+        When::Time(time) => affine(sink, time),
         When::Moving(id) => match identity(typing, id) {
             Ok(held) => sink.hash(held),
             Err(_) => sink.text(typing.name(id)),
         },
+        When::Index(Some(index)) => {
+            sink.text(match index.round {
+                Round::Even => "index",
+                Round::Floor => "index floor",
+                Round::Ceil => "index ceil",
+            });
+            affine(sink, index.time);
+            sink.word(index.plus as u64);
+        }
+        When::Index(None) => sink.text("index unread"),
+    }
+}
+
+fn affine(sink: &mut Sink, time: crate::time::Affine) {
+    for q in [time.scale, time.shift] {
+        sink.word(q.num() as u64);
+        sink.word((q.num() >> 64) as u64);
+        sink.word(q.den() as u64);
     }
 }
 

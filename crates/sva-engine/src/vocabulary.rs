@@ -81,7 +81,7 @@ pub const BUILTINS: [&str; ARITHMETIC.len() + PHYSICS.len() + CASTS.len() + LAWS
 };
 
 pub fn is_builtin(name: &str) -> bool {
-    Shape::from_name(name).is_some() || BUILTINS.contains(&name)
+    Shape::from_name(name).is_some() || BUILTINS.contains(&name) || name == sva_ast::INDEX
 }
 
 /// Consts, so `recognized_named` hands back the same data a call site checks against.

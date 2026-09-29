@@ -1,7 +1,7 @@
 // Concern: builds an Expr from one expression string's tokens | Non-concern: lexing, ref resolution, TSV desugaring (tsv.rs) | IO: (&str) -> Expr or a located Diag
 
 use crate::diag::{ByteSpan, Diag, DiagCode};
-use crate::expr::{Arg, BinOp, Expr, Literal};
+use crate::expr::{Address, Arg, BinOp, CEIL, Expr, FLOOR, INDEX, Literal};
 use crate::filename::SpanUnit;
 use crate::lexer::{Token, TokenKind, tokenize};
 
@@ -46,6 +46,7 @@ fn parse_marking(src: &str, marks: Option<Vec<Mark>>) -> Result<(Expr, Option<Ve
     }
 
     let mut p = Parser {
+        src,
         tokens: &tokens,
         pos: 0,
         depth: 0,
@@ -95,6 +96,7 @@ fn bare(args: Vec<Placed>) -> Vec<Arg> {
 }
 
 struct Parser<'t> {
+    src: &'t str,
     tokens: &'t [Token],
     pos: usize,
     depth: u32,
@@ -206,6 +208,7 @@ impl<'t> Parser<'t> {
             let mut args = vec![Placed::receiver(lhs)];
             args.extend(self.parse_call_args()?);
             self.refuse_bare_times(&name, &args)?;
+            self.check_index_cast(&name, &args, name_span)?;
             lhs = Expr::Call {
                 name,
                 args: bare(args),
@@ -266,33 +269,38 @@ impl<'t> Parser<'t> {
                 }
             }
             TokenKind::Ref(path) => {
-                let (arg, binds) =
-                    if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::LParen)) {
-                        self.parse_invocation(path, span)?
-                    } else {
+                let (arg, binds, address) = match self.address() {
+                    Some(address) => {
+                        let (arg, binds) = self.parse_invocation(path, span, address)?;
+                        (arg, binds, address)
+                    }
+                    None => {
                         self.note(Mark::Node {
                             span: ByteSpan::at(span.end),
                             head: None,
                             written: false,
                         });
-                        (Expr::Var("t".to_string()), Vec::new())
-                    };
+                        (Expr::Var("t".to_string()), Vec::new(), Address::Time)
+                    }
+                };
                 self.mark(from, Some(span));
                 Ok(Expr::Ref {
                     path: path.clone(),
                     arg: Box::new(arg),
                     binds,
+                    address,
                     span,
                 })
             }
             TokenKind::Ident(name) if name == "self" => {
-                if !matches!(self.peek().map(|t| &t.kind), Some(TokenKind::LParen)) {
+                let Some(address) = self.address() else {
                     return Err(Diag::new(
                         DiagCode::UnexpectedToken,
                         self.peek().map_or_else(|| self.eof_span(), |t| t.span),
-                        "`self` requires a bounded self-reference argument: self(t - 1sp)",
+                        "`self` requires a bounded self-reference argument: self(t - 1sp) or \
+                         self[idx(t) - 1]",
                     ));
-                }
+                };
                 let mut args = self.parse_call_args()?;
                 if args.len() != 1 {
                     return Err(Diag::new(
@@ -302,7 +310,7 @@ impl<'t> Parser<'t> {
                     ));
                 }
                 let placed = args.remove(0);
-                self.refuse_bare_time(placed.from, placed.to)?;
+                self.refuse_in_slot(address, placed.from, placed.to)?;
                 let Arg::Pos(arg) = placed.arg else {
                     return Err(Diag::new(
                         DiagCode::BadArity,
@@ -313,6 +321,7 @@ impl<'t> Parser<'t> {
                 self.mark(from, Some(span));
                 Ok(Expr::SelfRef {
                     arg: Box::new(arg),
+                    address,
                     span,
                 })
             }
@@ -320,6 +329,7 @@ impl<'t> Parser<'t> {
                 if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::LParen)) {
                     let args = self.parse_call_args()?;
                     self.refuse_bare_times(name, &args)?;
+                    self.check_index_cast(name, &args, span)?;
                     self.mark(from, Some(span));
                     Ok(Expr::Call {
                         name: name.clone(),
@@ -344,15 +354,25 @@ impl<'t> Parser<'t> {
         }
     }
 
+    /// How the token after a ref or `self` addresses it: `(` an instant, `[` an index.
+    fn address(&self) -> Option<Address> {
+        match self.peek().map(|t| &t.kind) {
+            Some(TokenKind::LParen) => Some(Address::Time),
+            Some(TokenKind::LBracket) => Some(Address::Index),
+            _ => None,
+        }
+    }
+
+    /// The list a `(` or a `[` opens, up to the token that closes it.
     fn parse_call_args(&mut self) -> Result<Vec<Placed>, Diag> {
-        debug_assert!(matches!(
-            self.peek().map(|t| &t.kind),
-            Some(TokenKind::LParen)
-        ));
-        self.advance();
+        let indexed = matches!(self.advance().map(|t| &t.kind), Some(TokenKind::LBracket));
+        let closes = |k: Option<&TokenKind>| match indexed {
+            true => matches!(k, Some(TokenKind::RBracket)),
+            false => matches!(k, Some(TokenKind::RParen)),
+        };
 
         let mut args: Vec<Placed> = Vec::new();
-        if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::RParen)) {
+        if closes(self.peek().map(|t| &t.kind)) {
             self.advance();
             return Ok(args);
         }
@@ -368,16 +388,17 @@ impl<'t> Parser<'t> {
                 Some(TokenKind::Comma) => {
                     self.advance();
                 }
-                Some(TokenKind::RParen) => {
+                next if closes(next) => {
                     self.advance();
                     break;
                 }
                 Some(_) => {
                     let t = self.peek().unwrap();
+                    let close = if indexed { "]" } else { ")" };
                     return Err(Diag::new(
                         DiagCode::UnexpectedToken,
                         t.span,
-                        "expected , or ) in an argument list",
+                        format!("expected , or {close} in an argument list"),
                     ));
                 }
                 None => {
@@ -393,19 +414,21 @@ impl<'t> Parser<'t> {
     }
 
     /// `@f(t, cutoff=800)`: one positional argument, the time to sample at, then named
-    /// bindings. A second positional refuses — a file states no parameter ORDER, only which
-    /// names it leaves free, so there is nothing for a second position to mean.
+    /// bindings; `@f[i, cutoff=800]` reads lattice index `i` instead. A second positional
+    /// refuses — a file states no parameter ORDER, only which names it leaves free, so there
+    /// is nothing for a second position to mean.
     fn parse_invocation(
         &mut self,
         path: &str,
         span: ByteSpan,
+        address: Address,
     ) -> Result<(Expr, Vec<(String, Expr)>), Diag> {
         let args = self.parse_call_args()?;
         let mut arg = None;
         let mut binds: Vec<(String, Expr)> = Vec::new();
         for placed in args {
             if matches!(placed.arg, Arg::Pos(_)) && arg.is_none() && binds.is_empty() {
-                self.refuse_bare_time(placed.from, placed.to)?;
+                self.refuse_in_slot(address, placed.from, placed.to)?;
             }
             match placed.arg {
                 Arg::Pos(e) if arg.is_none() && binds.is_empty() => arg = Some(e),
@@ -414,8 +437,8 @@ impl<'t> Parser<'t> {
                         DiagCode::BadArity,
                         span,
                         format!(
-                            "`@{path}` takes one positional argument (the time to read it at); \
-                             every other argument must be named"
+                            "`@{path}` takes one positional argument (the time or index to read \
+                             it at); every other argument must be named"
                         ),
                     ));
                 }
@@ -431,25 +454,118 @@ impl<'t> Parser<'t> {
                 }
             }
         }
-        match arg {
-            Some(arg) => Ok((arg, binds)),
-            None => Err(Diag::new(
+        match (arg, address) {
+            (Some(arg), _) => Ok((arg, binds)),
+            (None, Address::Time) => Err(Diag::new(
                 DiagCode::BadArity,
                 span,
                 format!("`@{path}(...)` needs a time argument first, as in `@{path}(t, ...)`"),
             )),
+            (None, Address::Index) => Err(Diag::new(
+                DiagCode::BadArity,
+                span,
+                format!("`@{path}[...]` needs an index first, as in `@{path}[idx(t), ...]`"),
+            )),
         }
     }
 
-    /// `crop`'s bounds are the only time arguments a builtin takes; every other slot is a
-    /// level, a frequency or an index, and a bare number there means what it says.
+    /// A time slot takes the bare-time check; an index slot takes no unit at all.
+    fn refuse_in_slot(&self, address: Address, from: usize, to: usize) -> Result<(), Diag> {
+        match address {
+            Address::Time => self.refuse_bare_time(from, to),
+            Address::Index => self.refuse_timed_index(from, to),
+        }
+    }
+
+    /// A unit the tree folds into a number leaves typing no time or level to refuse; bars
+    /// and samples stay literals of their own, which typing refuses. A call's arguments are its
+    /// own.
+    fn refuse_timed_index(&self, from: usize, to: usize) -> Result<(), Diag> {
+        let mut at = from;
+        while at < to {
+            let token = &self.tokens[at];
+            let folded = match &token.kind {
+                TokenKind::Time(_, SpanUnit::Seconds) | TokenKind::Log(..) => true,
+                TokenKind::Num(_) => self.src[token.span.start..token.span.end]
+                    .bytes()
+                    .last()
+                    .is_some_and(|b| b.is_ascii_alphabetic()),
+                _ => false,
+            };
+            match &token.kind {
+                TokenKind::LParen if self.opens_call(at, from) => at = self.close_of(at, to),
+                TokenKind::LBracket => at = self.close_of(at, to),
+                _ if folded => {
+                    return Err(Diag::new(
+                        DiagCode::NonIntegerIndex,
+                        self.tokens[at].span,
+                        "an index must be an integer; use idx(…) to name the lattice index \
+                         nearest a time, as in @x[idx(t - 0.5b)]",
+                    ));
+                }
+                _ => at += 1,
+            }
+        }
+        Ok(())
+    }
+
+    /// `idx(e)`, `idx(e, floor)` or `idx(e, ceil)`: the rounding is a word, never a value.
+    fn check_index_cast(&self, name: &str, args: &[Placed], span: ByteSpan) -> Result<(), Diag> {
+        if name != INDEX {
+            return Ok(());
+        }
+        match args {
+            [
+                Placed {
+                    arg: Arg::Pos(_), ..
+                },
+            ] => Ok(()),
+            [
+                Placed {
+                    arg: Arg::Pos(_), ..
+                },
+                Placed {
+                    arg: Arg::Pos(Expr::Var(round)),
+                    ..
+                },
+            ] if round == FLOOR || round == CEIL => Ok(()),
+            [
+                Placed {
+                    arg: Arg::Pos(_), ..
+                },
+                second,
+            ] if second.to > second.from => Err(Diag::new(
+                DiagCode::UnexpectedToken,
+                ByteSpan::new(
+                    self.tokens[second.from].span.start,
+                    self.tokens[second.to - 1].span.end,
+                ),
+                "`idx` rounds by `floor` or `ceil`, or to the nearest index, ties to even, \
+                     where nothing is written",
+            )),
+            _ => Err(Diag::new(
+                DiagCode::BadArity,
+                span,
+                "`idx` takes one time, then `floor` or `ceil` where it does not round to the \
+                 nearest index",
+            )),
+        }
+    }
+
+    /// `crop`'s bounds and what `idx` rounds are the only time arguments a builtin takes;
+    /// every other slot is a level, a frequency or an index, and a bare number there means what
+    /// it says.
     fn refuse_bare_times(&self, name: &str, args: &[Placed]) -> Result<(), Diag> {
-        if name != "crop" {
+        if name != "crop" && name != INDEX {
             return Ok(());
         }
         let mut at = 0usize;
         for placed in args {
             let timed = match &placed.arg {
+                Arg::Pos(_) if name == INDEX => {
+                    at += 1;
+                    at == 1
+                }
                 Arg::Pos(_) => {
                     at += 1;
                     at == 2 || at == 3
@@ -472,6 +588,10 @@ impl<'t> Parser<'t> {
         let mut at = from;
         while at < to {
             let kind = &self.tokens[at].kind;
+            if matches!(kind, TokenKind::LBracket) {
+                at = self.close_of(at, to);
+                continue;
+            }
             if matches!(kind, TokenKind::LParen) {
                 let close = self.close_of(at, to);
                 let skip = if self.opens_call(at, from) {
@@ -499,13 +619,15 @@ impl<'t> Parser<'t> {
         Ok(())
     }
 
-    /// The index of the `)` closing the `(` at `open`, or `to` when the range ends first.
+    /// The index of the `)` or `]` closing the `(` or `[` at `open`, or `to` when the range
+    /// ends first.
     fn close_of(&self, open: usize, to: usize) -> usize {
+        let square = matches!(self.tokens[open].kind, TokenKind::LBracket);
         let mut depth = 0usize;
         for at in open..to {
-            match self.tokens[at].kind {
-                TokenKind::LParen => depth += 1,
-                TokenKind::RParen => {
+            match (&self.tokens[at].kind, square) {
+                (TokenKind::LParen, false) | (TokenKind::LBracket, true) => depth += 1,
+                (TokenKind::RParen, false) | (TokenKind::RBracket, true) => {
                     depth -= 1;
                     if depth == 0 {
                         return at;
@@ -547,7 +669,7 @@ impl<'t> Parser<'t> {
     }
 
     /// Whether a range writes a time of its own: bare `t`, or a literal already carrying a
-    /// span unit. A nested call's arguments are its own and do not count.
+    /// span unit. A nested call's arguments and an index are their own and do not count.
     fn carries_time(&self, from: usize, to: usize) -> bool {
         let mut at = from;
         while at < to {
@@ -555,6 +677,7 @@ impl<'t> Parser<'t> {
                 TokenKind::LParen if self.opens_call(at, from) => {
                     at = self.close_of(at, to);
                 }
+                TokenKind::LBracket => at = self.close_of(at, to),
                 TokenKind::Time(..) | TokenKind::Samples(..) => return true,
                 TokenKind::Ident(name) if name == "t" => return true,
                 _ => at += 1,
@@ -779,6 +902,7 @@ mod tests {
                 path: "kick".to_string(),
                 arg: Box::new(Expr::Var("t".to_string())),
                 binds: Vec::new(),
+                address: crate::expr::Address::Time,
                 span: ByteSpan::new(0, 5),
             }
         );
@@ -825,6 +949,50 @@ mod tests {
         assert_eq!(parse("self()").unwrap_err().code, DiagCode::BadArity);
         assert_eq!(parse("self(t, t)").unwrap_err().code, DiagCode::BadArity);
         assert_eq!(parse("self").unwrap_err().code, DiagCode::UnexpectedToken);
+    }
+
+    /// `x[i]` reads a lattice index: the same ref, addressed by a count, printed back to itself.
+    /// A unit in the index is a time, which only `idx(...)` turns into a count.
+    #[test]
+    fn brackets_read_an_index_on_a_ref_or_self() {
+        let Expr::Ref { arg, address, .. } = parse("@x[idx(t - 0.5b)]").unwrap() else {
+            panic!("expected a Ref")
+        };
+        assert_eq!(address, Address::Index);
+        assert!(matches!(*arg, Expr::Call { ref name, .. } if name == INDEX));
+        assert!(matches!(
+            parse("self[idx(t) - 1]").unwrap(),
+            Expr::SelfRef {
+                address: Address::Index,
+                ..
+            }
+        ));
+        assert_ne!(parse("@x[3]").unwrap(), parse("@x(3sp)").unwrap());
+        assert!(
+            parse("@x[t - 0.5b]").is_ok(),
+            "typing refuses a bar, which the tree keeps"
+        );
+        for src in [
+            "@x[idx(t - 0.5b)]",
+            "self[idx(t) - 1]",
+            "@f[idx(t, floor) + 2, k=1]",
+            "@x(t - @y[3]*1s)",
+        ] {
+            let printed = crate::render_expr(&parse(src).unwrap());
+            assert_eq!(parse(&printed).unwrap(), parse(src).unwrap(), "{src}");
+        }
+        for src in ["@x[2s]", "@x[idx(t) - 1ms]", "self[3db]", "@x[2khz]"] {
+            let d = parse(src).unwrap_err();
+            assert_eq!(d.code, DiagCode::NonIntegerIndex, "{src} must refuse");
+            assert!(d.message.contains("use idx("), "{src}");
+        }
+        assert_eq!(parse("idx(t - 0.5)").unwrap_err().code, DiagCode::BareTime);
+        assert_eq!(
+            parse("@x[idx(t, round)]").unwrap_err().code,
+            DiagCode::UnexpectedToken
+        );
+        assert_eq!(parse("@x[idx()]").unwrap_err().code, DiagCode::BadArity);
+        assert_eq!(parse("@x[]").unwrap_err().code, DiagCode::BadArity);
     }
 
     #[test]

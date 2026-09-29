@@ -11,7 +11,7 @@ use super::pointwise::{self, Point};
 use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::schedule;
-use crate::typing::{Typing, Value, When};
+use crate::typing::{Typing, Value};
 
 /// Where each node can be nonzero: outside its support a node is exactly zero.
 pub(crate) struct Supports<'a> {
@@ -55,15 +55,10 @@ impl<'a> Supports<'a> {
             Value::Op { name, args } => self.operation(name, args, &|arg| self.of(arg)),
             Value::SelfAt { .. } => Extent::NOWHERE,
             Value::Noise(_) => Extent::EVERYWHERE,
-            Value::Read {
-                source,
-                at: When::Time(time),
-                ..
-            } => match time.map(self.rate, self.rate) {
+            Value::Read { source, at, .. } => match at.map(self.rate, self.rate) {
                 Some(map) => map.preimage(self.of(*source), plain().half_width()),
                 None => Extent::EVERYWHERE,
             },
-            Value::Read { .. } => Extent::EVERYWHERE,
             Value::Filter { x, .. } => stateful(self.of(*x)),
             Value::Solver { .. } => Extent::from(0),
         }

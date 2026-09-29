@@ -10,6 +10,7 @@ mod edit;
 mod extents;
 mod fixtures;
 mod flops;
+mod index;
 mod instantiate;
 mod laws;
 mod ledger;

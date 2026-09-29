@@ -348,13 +348,16 @@ impl<'g> Builder<'g> {
                 self.scan(l, place, used, children)?;
                 self.scan(r, place, used, children)
             }
-            Expr::SelfRef { arg, span } => self.scan(arg, place.spanned(*span), used, children),
+            Expr::SelfRef { arg, span, .. } => self.scan(arg, place.spanned(*span), used, children),
             Expr::Call { name, args, span } => {
                 if self.out.binds(scope, name).is_some() {
                     return self.read_parameter(name, args, place.spanned(*span), used, children);
                 }
                 if name == SERIES {
                     return self.scan_series(args, place.spanned(*span), used, children);
+                }
+                if let (sva_ast::INDEX, [Arg::Pos(time), ..]) = (name.as_str(), args.as_slice()) {
+                    return self.scan(time, place.spanned(*span), used, children);
                 }
                 for a in args {
                     let (Arg::Pos(x) | Arg::Named(_, x)) = a;
@@ -375,6 +378,7 @@ impl<'g> Builder<'g> {
                 arg,
                 binds,
                 span,
+                ..
             } => {
                 self.scan(arg, place.spanned(*span), used, children)?;
                 let mut bound = Vec::with_capacity(binds.len());

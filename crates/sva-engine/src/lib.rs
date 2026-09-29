@@ -6,6 +6,7 @@ mod cache;
 mod cast;
 mod error;
 pub mod flops;
+mod index;
 pub mod instantiate;
 mod loops;
 mod lower;

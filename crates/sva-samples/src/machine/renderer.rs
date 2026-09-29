@@ -17,6 +17,16 @@ pub struct Map {
     pub a: i128,
     pub b: i128,
     pub d: i128,
+    pub between: Between,
+}
+
+/// A position between two samples read through the kernel, or as the one below or the nearest,
+/// ties to even.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Between {
+    Kernel,
+    Floor,
+    Even,
 }
 
 impl Map {
@@ -25,11 +35,17 @@ impl Map {
             a: 1,
             b: b as i128,
             d: 1,
+            between: Between::Kernel,
         }
     }
 
     /// Lowest terms, so two spellings of one map are one map.
     pub fn new(a: i128, b: i128, d: i128) -> Option<Map> {
+        Map::rounded(a, b, d, Between::Kernel)
+    }
+
+    /// A rounding every sample takes alike is folded into a whole map.
+    pub fn rounded(a: i128, b: i128, d: i128, between: Between) -> Option<Map> {
         let g = gcd(gcd(a.abs(), b.abs()), d.abs()).max(1);
         let sign = d.signum();
         let limit = 1i128 << 100;
@@ -37,34 +53,74 @@ impl Map {
             a: sign * a / g,
             b: sign * b / g,
             d: d.abs() / g,
+            between,
         };
-        (map.d > 0 && map.a.abs() < limit && map.b.abs() < limit && map.d < limit).then_some(map)
+        let held = map.d > 0 && map.a.abs() < limit && map.b.abs() < limit && map.d < limit;
+        held.then(|| map.settled())
+    }
+
+    fn settled(self) -> Map {
+        let linear = match self.between {
+            _ if self.d == 1 => true,
+            Between::Kernel => false,
+            Between::Floor => self.a % self.d == 0,
+            Between::Even => {
+                let tie = 2 * self.b.rem_euclid(self.d) == self.d;
+                self.a % self.d == 0 && (!tie || (self.a / self.d) % 2 == 0)
+            }
+        };
+        match linear {
+            true => Map {
+                a: self.a / self.d,
+                b: self.index_at(0),
+                d: 1,
+                between: Between::Kernel,
+            },
+            false => self,
+        }
     }
 
     pub fn whole(self) -> bool {
-        self.d == 1
+        self.d == 1 || self.between != Between::Kernel
     }
 
     pub fn at(self, n: i64) -> (i64, i128) {
         let num = self.a.saturating_mul(i128::from(n)).saturating_add(self.b);
-        let floor = num
-            .div_euclid(self.d)
-            .clamp(i128::from(i64::MIN), i128::from(i64::MAX));
-        (floor as i64, num.rem_euclid(self.d))
+        let clamp = |k: i128| k.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+        match self.between {
+            Between::Kernel => (clamp(num.div_euclid(self.d)), num.rem_euclid(self.d)),
+            _ => (clamp(self.index_at(i128::from(n))), 0),
+        }
     }
 
     /// Whether some sample reads a position past its own.
     pub fn ahead(self) -> bool {
-        self.a != self.d || self.b > 0
+        match self.between {
+            Between::Kernel => self.a != self.d || self.b > 0,
+            _ => self.a != self.d || self.lead(0) > 0,
+        }
     }
 
+    /// The most a sample reads past its own, taps and all.
     pub fn lead(self, half_width: usize) -> i64 {
-        let floor = self.b.div_euclid(self.d);
-        let floor = floor.clamp(i128::from(i64::MIN / 2), i128::from(i64::MAX / 2)) as i64;
+        let most = match self.between {
+            Between::Kernel | Between::Floor => self.b.div_euclid(self.d),
+            Between::Even => (2 * self.b + self.d).div_euclid(2 * self.d),
+        };
+        let most = most.clamp(i128::from(i64::MIN / 2), i128::from(i64::MAX / 2)) as i64;
         match self.whole() {
-            true => floor,
-            false => floor + half_width as i64,
+            true => most,
+            false => most + half_width as i64,
         }
+    }
+
+    /// The least a sample reads past its own, taps aside.
+    pub fn least(self) -> i64 {
+        let least = match self.between {
+            Between::Kernel | Between::Floor => self.b.div_euclid(self.d),
+            Between::Even => (2 * self.b + self.d - 1).div_euclid(2 * self.d),
+        };
+        least.clamp(i128::from(i64::MIN / 2), i128::from(i64::MAX / 2)) as i64
     }
 
     /// The source samples read over a reader's `over`.
@@ -77,7 +133,7 @@ impl Map {
             return widened(Extent::new(floor, floor.saturating_add(1)), rem != 0, reach);
         }
         let ends = (first(over), last(over));
-        let at = |n: Option<i128>| n.map(|n| self.floor_at(n));
+        let at = |n: Option<i128>| n.map(|n| self.index_at(n));
         let (lo, hi) = match self.a > 0 {
             true => (at(ends.0), at(ends.1)),
             false => (at(ends.1), at(ends.0)),
@@ -85,10 +141,24 @@ impl Map {
         widened(extent(lo, hi.map(|h| h + 1)), !self.whole(), reach)
     }
 
-    /// The reader samples whose reading touches `into`.
+    /// The reader samples whose reading touches `into`. Rounding to even reads at most one
+    /// below rounding half up.
     pub fn preimage(self, into: Extent, reach: usize) -> Extent {
         if into.is_empty() {
             return into;
+        }
+        if self.between == Between::Even {
+            let up = Map {
+                a: 2 * self.a,
+                b: 2 * self.b + self.d,
+                d: 2 * self.d,
+                between: Between::Floor,
+            };
+            let end = match into.end {
+                i64::MAX => i64::MAX,
+                e => e.saturating_add(1),
+            };
+            return up.preimage(Extent::new(into.start, end), reach);
         }
         let into = reached_from(into, !self.whole(), reach);
         if self.a == 0 {
@@ -112,11 +182,17 @@ impl Map {
         extent(lo, hi.map(|h| h + 1))
     }
 
-    fn floor_at(self, n: i128) -> i128 {
-        self.a
-            .saturating_mul(n)
-            .saturating_add(self.b)
-            .div_euclid(self.d)
+    fn index_at(self, n: i128) -> i128 {
+        let num = self.a.saturating_mul(n).saturating_add(self.b);
+        let (floor, rem) = (num.div_euclid(self.d), num.rem_euclid(self.d));
+        match self.between {
+            Between::Kernel | Between::Floor => floor,
+            Between::Even => match (2 * rem).cmp(&self.d) {
+                std::cmp::Ordering::Less => floor,
+                std::cmp::Ordering::Greater => floor + 1,
+                std::cmp::Ordering::Equal => floor + floor.rem_euclid(2),
+            },
+        }
     }
 }
 

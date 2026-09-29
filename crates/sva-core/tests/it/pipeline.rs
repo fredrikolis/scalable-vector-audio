@@ -29,6 +29,13 @@ fn a_target_splits_into_its_expression_and_the_interval_its_ref_reads() {
         Some((Edge::Secs(0.0), Edge::Samples(48_000.0)))
     );
     assert_eq!(target("@a*0.5").expect("no interval").interval, None);
+    let indexed = target("@a[idx(t) - 1]").expect("an index read, no interval");
+    assert_eq!(
+        (indexed.expr.as_str(), indexed.interval),
+        ("@a[idx(t) - 1]", None)
+    );
+    let held = target("@a([0, 1s], k=@b[3])").expect("an interval beside an index read");
+    assert_eq!(held.expr, "@a(t, k=@b[3])");
 }
 
 #[test]

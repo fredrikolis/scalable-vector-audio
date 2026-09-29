@@ -97,11 +97,23 @@ impl Gain {
     }
 }
 
-/// A read's instant: exact, or a closed form of `t` held as a node.
+/// A read's instant: exact, a closed form of `t` held as a node, or a lattice index, `None`
+/// where no one rounded line spells it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum When {
     Time(Affine),
     Moving(NodeId),
+    Index(Option<crate::index::Index>),
+}
+
+impl When {
+    pub(crate) fn map(self, reader: u32, lattice: u32) -> Option<sva_samples::Map> {
+        match self {
+            When::Time(time) => time.map(reader, lattice),
+            When::Index(index) => index?.map(reader, lattice),
+            When::Moving(_) => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

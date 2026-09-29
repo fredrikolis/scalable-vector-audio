@@ -1,6 +1,6 @@
 // Concern: writes an Expr back out as source text | Non-concern: parsing it (parser.rs), what a node's text names (sva-engine) | IO: (&Expr) -> String
 
-use crate::expr::{Arg, BinOp, Expr, JOIN, Literal};
+use crate::expr::{Address, Arg, BinOp, Expr, INDEX, JOIN, Literal};
 
 /// Parenthesizes by precedence, so a printed argument stays short enough to read.
 pub fn render(e: &Expr) -> String {
@@ -25,7 +25,8 @@ fn precedence(op: BinOp) -> u8 {
 }
 
 /// `time` marks a slot the parser reads back as a duration, where a bare number refuses. It
-/// reaches through `+` and `-` and through a `join`, and stops where the parser's check does.
+/// reaches through `+` and `-` and through a `join`, and stops where the parser's check does:
+/// an index is a count and never takes it.
 fn write(e: &Expr, outer: u8, time: bool) -> String {
     match e {
         Expr::Lit(Literal::Num(n)) if time => format!("{n}s"),
@@ -47,18 +48,32 @@ fn write(e: &Expr, outer: u8, time: bool) -> String {
         }
         Expr::Call { name, args, .. } => format!("{name}({})", args_text(name, args, time)),
         Expr::Ref {
-            path, arg, binds, ..
+            path,
+            arg,
+            binds,
+            address,
+            ..
         } => {
-            let mut inner = write(arg, 0, true);
+            let mut inner = write(arg, 0, *address == Address::Time);
             for (k, v) in binds {
                 inner.push_str(&format!(", {k}={}", write(v, 0, false)));
             }
-            match (&**arg, binds.is_empty()) {
-                (Expr::Var(name), true) if name == "t" => format!("@{path}"),
-                _ => format!("@{path}({inner})"),
+            match (&**arg, binds.is_empty(), address) {
+                (Expr::Var(name), true, Address::Time) if name == "t" => format!("@{path}"),
+                (.., Address::Time) => format!("@{path}({inner})"),
+                (.., Address::Index) => format!("@{path}[{inner}]"),
             }
         }
-        Expr::SelfRef { arg, .. } => format!("self({})", write(arg, 0, true)),
+        Expr::SelfRef {
+            arg,
+            address: Address::Time,
+            ..
+        } => format!("self({})", write(arg, 0, true)),
+        Expr::SelfRef {
+            arg,
+            address: Address::Index,
+            ..
+        } => format!("self[{}]", write(arg, 0, false)),
     }
 }
 
@@ -69,7 +84,12 @@ fn args_text(name: &str, args: &[Arg], time: bool) -> String {
         .map(|a| match a {
             Arg::Pos(e) => {
                 at += 1;
-                write(e, 0, joined || (name == "crop" && (at == 2 || at == 3)))
+                let timed = match name {
+                    "crop" => at == 2 || at == 3,
+                    INDEX => at == 1,
+                    _ => false,
+                };
+                write(e, 0, joined || timed)
             }
             Arg::Named(k, e) => format!(
                 "{k}={}",

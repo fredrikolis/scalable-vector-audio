@@ -362,6 +362,16 @@ impl Build<'_> {
                 }
             }),
             When::Moving(time) => Ok(At::moving(per_sec, reader, self.of(time)?, by_delay)),
+            When::Index(index) => at.map(self.rate, source).map(At::Map).ok_or_else(|| {
+                let why = match index {
+                    Some(_) => "a lattice index this far out has no map a machine can read",
+                    None => {
+                        "this engine reads an index only as one idx(...) of a line in t, \
+                         negated or not, plus a count"
+                    }
+                };
+                collapse_refused(&self.held.tys, self.owner, why, "engine.unreadable_index")
+            }),
         }
     }
 

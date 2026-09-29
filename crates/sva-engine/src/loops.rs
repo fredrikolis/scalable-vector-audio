@@ -1,6 +1,6 @@
 // Concern: classifies a self-reference, and folds a read's time or a number to its exact value | Non-concern: running a loop (sva-samples), lowering (lower/) | IO: (body, Cx) -> SelfKind, Affine
 
-use sva_ast::{Arg, BinOp, ByteSpan, Expr, Literal};
+use sva_ast::{Address, Arg, BinOp, ByteSpan, Expr, Literal};
 use sva_formula::closed_form::{map_children, read_at};
 use sva_formula::{Body, C64, IndexId, Part, Series, Var};
 
@@ -62,18 +62,22 @@ pub(crate) fn classify(inst: &Instances, e: &Expr, cx: Cx, at: &str, stepped: bo
     }
 }
 
-/// What one `self(...)` call site reads: a constant delay back, a time that moves, or the
-/// reason it reads nothing already written.
+/// What one `self(...)` call site reads: a constant delay back, a time that moves, whole
+/// samples at a delay that moves, or the reason it reads nothing already written.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Tap {
     Back(Q),
     Moving,
+    Indexed,
     Zero,
     Forward,
 }
 
 /// The one reading of a self-reference's time, so classification and lowering cannot drift.
-pub(crate) fn tap_of(inst: &Instances, arg: &Expr, cx: Cx) -> Tap {
+pub(crate) fn tap_of(inst: &Instances, arg: &Expr, address: Address, cx: Cx) -> Tap {
+    if address == Address::Index {
+        return indexed_tap(inst, arg, cx);
+    }
     let Some(time) = time_of(inst, arg, cx) else {
         return Tap::Moving;
     };
@@ -87,9 +91,27 @@ pub(crate) fn tap_of(inst: &Instances, arg: &Expr, cx: Cx) -> Tap {
     }
 }
 
+/// A loop steps on the lattice, so its index reads one delay back or a delay that moves. An
+/// index its lowering refuses reads as one that moves until the lowering says so.
+fn indexed_tap(inst: &Instances, arg: &Expr, cx: Cx) -> Tap {
+    let lattice = inst.lattice();
+    let map = crate::index::read(inst, arg, cx).and_then(|ix| ix.map(lattice, lattice));
+    let Some(map) = map.filter(|m| m.a == m.d) else {
+        return Tap::Indexed;
+    };
+    match (map.least(), map.lead(0)) {
+        (_, most) if most > 0 => Tap::Forward,
+        (_, 0) => Tap::Zero,
+        (least, most) if least == most => {
+            Q::new(-i128::from(least), i128::from(lattice)).map_or(Tap::Indexed, Tap::Back)
+        }
+        _ => Tap::Indexed,
+    }
+}
+
 pub(crate) fn tap_refusal(tap: Tap, at: Located) -> Option<EngineError> {
     let (code, message, help) = match tap {
-        Tap::Back(_) | Tap::Moving => return None,
+        Tap::Back(_) | Tap::Moving | Tap::Indexed => return None,
         Tap::Zero => (
             "samples.zero_delay_loop",
             "a loop reaches no sample it has already written.",
@@ -137,8 +159,8 @@ fn read(inst: &Instances, e: &Expr, cx: Cx, gain: C64) -> Reading {
         return r;
     }
     match inst.node(e, cx) {
-        Node::Own { arg, .. } => match tap_of(inst, arg, cx) {
-            tap @ (Tap::Back(_) | Tap::Moving) => Reading::Linear {
+        Node::Own { arg, address, .. } => match tap_of(inst, arg, address, cx) {
+            tap @ (Tap::Back(_) | Tap::Moving | Tap::Indexed) => Reading::Linear {
                 taps: vec![(gain, tap)],
                 plain: true,
                 norm: tap_gain(tap, gain.abs(), inst.lattice()),
@@ -319,7 +341,7 @@ fn join(a: Reading, b: Reading) -> Reading {
             for (g, tap) in more {
                 match held
                     .iter_mut()
-                    .find(|(_, t)| *t == tap && tap != Tap::Moving)
+                    .find(|(_, t)| *t == tap && matches!(tap, Tap::Back(_)))
                 {
                     Some((sum, _)) => *sum = *sum + g,
                     None => held.push((g, tap)),
@@ -561,6 +583,11 @@ pub(crate) fn tap_gain(tap: Tap, g: f64, lattice: u32) -> Gain {
             kernel: 0.0,
             lti: true,
         },
+        Tap::Indexed => Gain {
+            whole: g,
+            kernel: 0.0,
+            lti: false,
+        },
         _ => Gain {
             whole: 0.0,
             kernel: g,
@@ -627,7 +654,12 @@ fn folded(
         }
         Node::Call { name, args, span } => called(inst, (name, span), args, cx, chosen),
         // FORMAT 15.3: a ref naming one number is that number, read at bare `t`.
-        Node::Read { path, arg, .. } if inst.is_now(arg, cx) => {
+        Node::Read {
+            path,
+            arg,
+            address: Address::Time,
+            ..
+        } if inst.is_now(arg, cx) => {
             let (body, held) = inst.at(path)?;
             folded(inst, body, held, &mut None)
         }

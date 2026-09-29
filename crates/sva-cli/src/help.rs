@@ -189,10 +189,10 @@ OUTLINE:
 
   Prints the parse tree the engine builds from one expression, each node with
   the byte `span` it was written in: calls by `name` with positional and named
-  `args`, operators by `op`, refs by `path` with their `binds`, literals by
-  `value` and `unit`, names by `name`. A node the parser supplies itself, the
-  `0` of a prefix minus or the `t` of a bare `@ref`, has `written: false`.
-  Reads no composition.
+  `args`, operators by `op`, refs by `path` with their `binds`, refs and `self`
+  by how they `read`, `time` or `index`, literals by `value` and `unit`, names
+  by `name`. A node the parser supplies itself, the `0` of a prefix minus or the
+  `t` of a bare `@ref`, has `written: false`. Reads no composition.
 
 NEW:
   sva-cli new <name> [--idempotency-key <key>]

@@ -9,6 +9,7 @@ use super::{Render, extent, pointwise, sampled};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::loops;
 use crate::recirculation::Loop;
+use crate::time::Q;
 use crate::typing::{Gain, Typing, Value, When};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -193,6 +194,7 @@ impl Render {
         let kernel_read = |at: &When| match at {
             When::Time(back) => !loops::on_lattice(back.shift.neg(), self.lattice()),
             When::Moving(_) => true,
+            When::Index(_) => false,
         };
         if !taps.iter().any(|(at, _)| kernel_read(at)) {
             return Ok(None);
@@ -209,6 +211,13 @@ impl Render {
         for (at, _) in &taps {
             match at {
                 When::Time(back) => held.back(back.shift.neg()),
+                When::Index(_) => match at.map(lattice, lattice).filter(|m| m.a == m.d) {
+                    Some(map) => match Q::new(-i128::from(map.lead(0)), i128::from(lattice)) {
+                        Some(least) => held.back(least),
+                        None => held.moving(1, 0.0),
+                    },
+                    None => held.moving(1, 0.0),
+                },
                 When::Moving(time) => {
                     let at = sampled::closed_renderer(&self.tys, *time)
                         .map(|r| At::moving(f64::from(lattice), f64::from(lattice), r, true));

@@ -232,13 +232,12 @@ impl<'a> Walk<'a> {
     }
 }
 
-/// How far past its own sample a read at scale one reaches its source, taps and all.
+/// How far past its own sample a read at scale one reaches its source, taps and all, where
+/// every sample reaches it alike.
 fn lead(at: &When, lattice: u32) -> Option<i64> {
-    let When::Time(time) = at else {
-        return None;
-    };
-    let map = time.map(lattice, lattice)?;
-    (map.a == map.d).then(|| map.lead(sva_samples::plain().half_width()))
+    let map = at.map(lattice, lattice)?;
+    let alike = map.a == map.d && (!map.whole() || map.least() == map.lead(0));
+    alike.then(|| map.lead(sva_samples::plain().half_width()))
 }
 
 /// A crop's `[l, r)` and shoulders, as its evaluators read them.

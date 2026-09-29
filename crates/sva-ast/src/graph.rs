@@ -3,7 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::diag::{ByteSpan, DiagCode};
-use crate::expr::{Arg, BinOp, Binds, Expr, Literal, children, map_children, map_children_ok};
+use crate::expr::{
+    Address, Arg, BinOp, Binds, Expr, Literal, children, map_children, map_children_ok,
+};
 use crate::filename::{FileSpan, SpanUnit};
 use crate::ingest::{base_name, parse_file};
 use crate::refusal::Refusal;
@@ -261,6 +263,7 @@ impl Graph {
                 path,
                 arg,
                 binds,
+                address,
                 span: ref_span,
             } = e
             else {
@@ -272,7 +275,7 @@ impl Graph {
                      declared span",
                 ));
             };
-            if **arg != Expr::Var("t".to_string()) {
+            if **arg != Expr::Var("t".to_string()) || *address != Address::Time {
                 return Err(Refusal::new(
                     referencing,
                     *ref_span,
@@ -323,6 +326,7 @@ impl Graph {
                     Box::new(Expr::Lit(Literal::Num(start))),
                 )),
                 binds: binds.clone(),
+                address: Address::Time,
                 span: *ref_span,
             };
             terms.push(Expr::Call {

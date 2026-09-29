@@ -220,7 +220,13 @@ impl Reach<'_, '_> {
                     .collect(),
                 span,
             },
-            Node::Read { path, arg, span } => Expr::Ref {
+            Node::Read {
+                path,
+                arg,
+                address,
+                span,
+            } => Expr::Ref {
+                address,
                 path: match inst.holds(path) {
                     true => self.stripped(path),
                     false => path.to_string(),
@@ -229,8 +235,9 @@ impl Reach<'_, '_> {
                 binds: Vec::new(),
                 span,
             },
-            Node::Own { arg, span } => Expr::SelfRef {
+            Node::Own { arg, address, span } => Expr::SelfRef {
                 arg: Box::new(self.copy(arg, cx)),
+                address,
                 span,
             },
         }

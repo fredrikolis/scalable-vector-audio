@@ -9,7 +9,7 @@ mod solvers;
 mod walk;
 mod waves;
 
-use sva_ast::{Arg, ByteSpan, Expr, Literal};
+use sva_ast::{Address, Arg, ByteSpan, Expr, Literal};
 use sva_formula::{Body, ClosedForm, Held, IndexId, NodeId, Part, Ty, Var};
 
 use crate::cast::{Cast, Mismatch};
@@ -183,7 +183,11 @@ fn crosses(inst: &Instances, typing: &Typing, e: &Expr, cx: Cx) -> bool {
         Node::Lit(Literal::Samples(_)) => true,
         Node::Lit(_) | Node::Name(_) => false,
         Node::Bin(_, l, r) => crosses(inst, typing, l, cx) || crosses(inst, typing, r, cx),
-        Node::Own { .. } => false,
+        Node::Own { address, .. } => address == Address::Index,
+        Node::Read {
+            address: Address::Index,
+            ..
+        } => true,
         Node::Read { path, .. } => typing
             .id(path)
             .is_some_and(|id| !typing.ty(id).is_closed_form()),

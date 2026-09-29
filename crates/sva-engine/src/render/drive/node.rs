@@ -548,11 +548,13 @@ fn machine(
             at: At::Map(at),
             half_width,
         } if at.a == at.d => {
-            ahead |= at.b > 0;
+            ahead |= at.ahead();
             let lead = at.lead(*half_width);
             reads.push((slots[id.0 as usize], lead));
             if !at.whole() {
                 reads.push((slots[id.0 as usize], lead + 1 - 2 * *half_width as i64));
+            } else if at.least() != lead {
+                reads.push((slots[id.0 as usize], at.least()));
             }
         }
         NodeRenderer::Read {
@@ -568,7 +570,7 @@ fn machine(
             at: At::Map(at),
             half_width,
         } if at.a == at.d => {
-            let back = -at.lead(0) + i64::from(!at.whole()) * *half_width as i64;
+            let back = -at.least() + i64::from(!at.whole()) * *half_width as i64;
             own = own.max(back.max(0) as usize);
         }
         NodeRenderer::Read {

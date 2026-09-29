@@ -5,7 +5,7 @@ mod resolved;
 
 use std::collections::{BTreeMap, HashMap};
 
-use sva_ast::{Arg, BinOp, ByteSpan, Expr, Literal};
+use sva_ast::{Address, Arg, BinOp, ByteSpan, Expr, Literal};
 use sva_formula::filter::Shape;
 use sva_formula::note;
 use sva_samples::Profile;
@@ -129,10 +129,12 @@ pub enum Node<'a> {
     Read {
         path: &'a str,
         arg: &'a Expr,
+        address: Address,
         span: ByteSpan,
     },
     Own {
         arg: &'a Expr,
+        address: Address,
         span: ByteSpan,
     },
 }
@@ -291,12 +293,21 @@ impl<'g> Instances<'g> {
             Expr::Lit(l) => Node::Lit(l),
             Expr::Var(name) => Node::Name(name),
             Expr::Bin(op, l, r) => Node::Bin(*op, l, r),
-            Expr::SelfRef { arg, span } => Node::Own { arg, span: *span },
+            Expr::SelfRef { arg, address, span } => Node::Own {
+                arg,
+                address: *address,
+                span: *span,
+            },
             Expr::Ref {
-                path, arg, span, ..
+                path,
+                arg,
+                address,
+                span,
+                ..
             } => Node::Read {
                 path: self.site(e, cx.scope, path),
                 arg,
+                address: *address,
                 span: *span,
             },
             Expr::Call { name, args, span } if is_builtin(name) => Node::Call {
@@ -307,6 +318,7 @@ impl<'g> Instances<'g> {
             Expr::Call { name, span, .. } => Node::Read {
                 path: self.site(e, cx.scope, name),
                 arg: &self.time,
+                address: Address::Time,
                 span: *span,
             },
         }
@@ -412,15 +424,28 @@ impl<'g> Instances<'g> {
             (Node::Bin(o1, l1, r1), Node::Bin(o2, l2, r2)) => {
                 o1 == o2 && self.same(l1, ax, l2, by) && self.same(r1, ax, r2, by)
             }
-            (Node::Own { arg: x, .. }, Node::Own { arg: y, .. }) => self.same(x, ax, y, by),
+            (
+                Node::Own {
+                    arg: x, address: i, ..
+                },
+                Node::Own {
+                    arg: y, address: j, ..
+                },
+            ) => i == j && self.same(x, ax, y, by),
             (
                 Node::Read {
-                    path: p, arg: x, ..
+                    path: p,
+                    arg: x,
+                    address: i,
+                    ..
                 },
                 Node::Read {
-                    path: q, arg: y, ..
+                    path: q,
+                    arg: y,
+                    address: j,
+                    ..
                 },
-            ) => p == q && self.same(x, ax, y, by),
+            ) => p == q && i == j && self.same(x, ax, y, by),
             (
                 Node::Call {
                     name: n1, args: a1, ..

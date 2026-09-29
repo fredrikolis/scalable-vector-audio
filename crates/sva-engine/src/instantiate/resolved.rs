@@ -55,14 +55,21 @@ impl<'g> Instances<'g> {
                     .collect(),
                 span,
             },
-            Node::Read { path, arg, span } => Expr::Ref {
+            Node::Read {
+                path,
+                arg,
+                address,
+                span,
+            } => Expr::Ref {
+                address,
                 path: path.to_string(),
                 arg: Box::new(self.copy(arg, cx)),
                 binds: Vec::new(),
                 span,
             },
-            Node::Own { arg, span } => Expr::SelfRef {
+            Node::Own { arg, address, span } => Expr::SelfRef {
                 arg: Box::new(self.copy(arg, cx)),
+                address,
                 span,
             },
         }

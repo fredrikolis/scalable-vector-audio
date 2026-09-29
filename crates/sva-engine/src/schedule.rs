@@ -382,7 +382,7 @@ pub(crate) fn materialized_operands(typing: &Typing, id: NodeId) -> Vec<NodeId> 
 fn moving(at: When) -> Vec<NodeId> {
     match at {
         When::Moving(id) => vec![id],
-        When::Time(_) => Vec::new(),
+        When::Time(_) | When::Index(_) => Vec::new(),
     }
 }
 

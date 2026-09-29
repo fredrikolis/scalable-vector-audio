@@ -22,9 +22,14 @@ fn expr_of(o: &Outline) -> Expr {
             span: at,
         },
         Form::Ref {
-            path, arg, binds, ..
+            path,
+            arg,
+            binds,
+            address,
+            ..
         } => Expr::Ref {
             path: path.clone(),
+            address: *address,
             arg: Box::new(expr_of(arg)),
             binds: binds
                 .iter()
@@ -35,8 +40,9 @@ fn expr_of(o: &Outline) -> Expr {
                 .collect(),
             span: at,
         },
-        Form::SelfRef { arg, .. } => Expr::SelfRef {
+        Form::SelfRef { arg, address, .. } => Expr::SelfRef {
             arg: Box::new(expr_of(arg)),
+            address: *address,
             span: at,
         },
     }

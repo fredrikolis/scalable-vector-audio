@@ -43,12 +43,21 @@ pub struct Target {
 }
 
 /// An interval is the argument of the target's own ref, `@a([0, 2b], vel=0.5)`: nowhere else.
+/// A `[` right after a ref or `self` reads an index, which the expression grammar owns.
 pub fn target(text: &str) -> Result<Target, CliError> {
     let tokens = tokenize(text).map_err(|d| unparsed(text, &d.message))?;
+    let indexes = |at: usize| {
+        at > 0
+            && match &tokens[at - 1].kind {
+                TokenKind::Ref(_) => true,
+                TokenKind::Ident(name) => name == "self",
+                _ => false,
+            }
+    };
     let opens: Vec<usize> = tokens
         .iter()
         .enumerate()
-        .filter(|(_, t)| t.kind == TokenKind::LBracket)
+        .filter(|(at, t)| t.kind == TokenKind::LBracket && !indexes(*at))
         .map(|(at, _)| at)
         .collect();
     let at = match opens.as_slice() {

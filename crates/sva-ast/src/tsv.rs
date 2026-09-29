@@ -167,6 +167,7 @@ mod tests {
                 path: "kick".to_string(),
                 arg: Box::new(Expr::Var("t".to_string())),
                 binds: Vec::new(),
+                address: crate::expr::Address::Time,
                 span: ByteSpan::new(0, 5),
             }
         );
