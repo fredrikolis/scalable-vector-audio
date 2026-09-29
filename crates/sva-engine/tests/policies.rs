@@ -7,13 +7,14 @@ use std::collections::BTreeSet;
 use fixtures::graph_of;
 use sva_ast::Graph;
 use sva_engine::{
-    Cache, CachePolicy, Hash, Outcome, Render, RenderConfig, buffer_key, identity, precise_key,
+    Cache, CachePolicy, Hash, Outcome, Render, RenderConfig, buffer_key, identity, profiled_key,
     render,
 };
 use sva_samples::AliasScore;
+use sva_samples::LATTICE_8K;
 
 const SECONDS: f64 = 0.05;
-const RATE: u32 = 44_100;
+const RATE: u32 = LATTICE_8K.lattice_hz;
 
 /// `x` and `y` are each read by `a` and `b`, so they are the forks; `master` is the target.
 fn forked(master: &str) -> Graph {
@@ -30,7 +31,7 @@ fn forked(master: &str) -> Graph {
 }
 
 fn rendered(graph: &Graph, cache: Option<&Cache>, policy: Option<CachePolicy>) -> Render {
-    let mut config = RenderConfig::seconds(RATE, SECONDS);
+    let mut config = RenderConfig::seconds(RATE, SECONDS).under(LATTICE_8K);
     config.cache_policy = policy;
     render(graph, "master", config, cache).expect("a render")
 }
@@ -45,7 +46,7 @@ fn own(render: &Render, node: &str) -> Hash {
         render.tys.ty(id).width as usize,
         AliasScore::NotAsked,
     );
-    precise_key(buffer, 24)
+    profiled_key(buffer, &LATTICE_8K)
 }
 
 fn stored(render: &Render) -> BTreeSet<Hash> {

@@ -6,7 +6,7 @@ use fixtures::graph_of;
 use sva_engine::instantiate::{instantiate, resolve_ref_path};
 use sva_engine::schedule_from;
 use sva_engine::{Ask, EngineError, Held, RenderConfig, Representation, Var, render, types};
-use sva_engine::{Read, resolve, symbolic_hash};
+use sva_engine::{PSYCHOACOUSTIC_V1, Read, resolve, symbolic_hash};
 
 #[test]
 fn dependencies_precede_dependents() {
@@ -17,7 +17,7 @@ fn dependencies_precede_dependents() {
             ("lead", "@kick*0.5 + @kick(t - 0.01s)*0.3\n"),
         ],
     );
-    let instances = instantiate(&g, "lead").expect("a graph that instantiates");
+    let instances = instantiate(&g, "lead", PSYCHOACOUSTIC_V1).expect("a graph that instantiates");
     let order = schedule_from(&instances, &["lead".to_string()])
         .expect("a schedule")
         .groups

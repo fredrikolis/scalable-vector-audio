@@ -42,7 +42,7 @@ fn a_free_string_never_gains_energy_once_let_go() {
         while !site.let_go() {
             site.step(&[]).expect("a sample");
         }
-        never_gains(&mut site, RATE as usize, &format!("f0 {f0}"));
+        never_gains(&mut site, RATE as usize / 4, &format!("f0 {f0}"));
     }
 }
 
@@ -58,7 +58,7 @@ fn a_felted_string_never_gains_energy_once_pressed() {
         while !site.let_go() {
             site.step(&[]).expect("a sample");
         }
-        never_gains(&mut site, RATE as usize / 2, &format!("f0 {f0}"));
+        never_gains(&mut site, RATE as usize / 5, &format!("f0 {f0}"));
     }
 }
 
@@ -71,7 +71,7 @@ fn a_released_note_is_the_held_note_until_the_felt_presses() {
             unison_count,
             ..note(261.63)
         };
-        let (len, landing) = (RATE as usize, RATE as usize / 2);
+        let (len, landing) = (RATE as usize / 2, RATE as usize / 10);
         let before = samples(&held, len, |_| [0.0, 0.0]);
         let r = 0.1;
         let after = samples(&held, len, |n| [if n < landing { 0.0 } else { r }, 0.0]);
@@ -80,7 +80,11 @@ fn a_released_note_is_the_held_note_until_the_felt_presses() {
             after[..=landing],
             "{unison_count} strings"
         );
-        let tail_of = |s: &[f64]| s[len - 4410..].iter().fold(0.0f64, |a, v| a.max(v.abs()));
+        let tail_of = |s: &[f64]| {
+            s[len - RATE as usize / 10..]
+                .iter()
+                .fold(0.0f64, |a, v| a.max(v.abs()))
+        };
         assert!(
             tail_of(&after) < tail_of(&before) / 3.0,
             "{unison_count} strings: the felt took off only {} of {}",

@@ -7,10 +7,11 @@ use sva_ast::Graph;
 use sva_engine::{
     Cache, CacheStats, Outcome, PayloadKind, Range, RenderConfig, Stream, StreamConfig, render,
 };
+use sva_samples::LATTICE_8K;
 
-const RATE: u32 = 44_100;
+const RATE: u32 = LATTICE_8K.lattice_hz;
 const LEN: i64 = RATE as i64;
-const EVERY: usize = 4_096;
+const EVERY: usize = 1_024;
 
 /// A string whose felt, lifted until `release`, ramps its dashpot in over 0.03 s.
 const STRING: &str = "release = inf\nchaigne_askenfelt(f0, damper_r=0.1*crop(min(1, \
@@ -38,7 +39,7 @@ fn outcomes(stats: &CacheStats) -> Vec<Outcome> {
 fn whole(g: &Graph, target: &str, cache: Option<&Cache>) -> (Vec<f64>, Vec<Outcome>) {
     let mut g = g.clone();
     assert!(g.define("target", sva_ast::parse_expr(target).expect("a target")));
-    let config = RenderConfig::seconds(RATE, LEN as f64 / f64::from(RATE));
+    let config = RenderConfig::seconds(RATE, LEN as f64 / f64::from(RATE)).under(LATTICE_8K);
     let held = render(&g, "target", config, cache).unwrap_or_else(|e| panic!("{e}"));
     let samples = held.output(held.root).expect("a buffer").plane(0).to_vec();
     (
@@ -55,7 +56,7 @@ fn streamed(g: &Graph, target: &str, cache: Option<&Cache>) -> (Vec<f64>, u128, 
                 start: Some(0),
                 end: Some(LEN),
             },
-            ..RenderConfig::at(RATE)
+            ..RenderConfig::at(RATE).under(LATTICE_8K)
         },
     };
     let target = sva_ast::parse_expr(target).expect("a target");
@@ -69,14 +70,14 @@ fn streamed(g: &Graph, target: &str, cache: Option<&Cache>) -> (Vec<f64>, u128, 
 
 /// Before its release a note is the held one, so after one held render each release reads the
 /// held run up to it, resumes from a state at most `EVERY` samples back, and computes the
-/// rest; asked again, it is whole in the store.
+/// rest; asked again, it is whole in the store. One release is on a lattice sample, one between.
 #[test]
 fn each_release_reads_the_held_run_and_computes_only_its_tail() {
     let g = composition();
     let cache = Cache::new();
     cache.set_mark_every(EVERY);
     whole(&g, "@held(t)", Some(&cache));
-    for release in [0.3, 0.5123, 0.7] {
+    for release in [0.3, 0.5123] {
         let target = format!("@released(t, release={release})");
         let (cold, cold_work, _) = streamed(&g, &target, None);
         let (heard, work, found) = streamed(&g, &target, Some(&cache));

@@ -46,6 +46,6 @@ pub use measure::spectrum::{
 };
 pub use measure::stereo::{StereoFrame, StereoImage};
 pub use physics::{Params, Solver, site};
-pub use profile::{PSYCHOACOUSTIC_V1, Profile};
+pub use profile::{LATTICE_8K, PSYCHOACOUSTIC_V1, Profile};
 pub use reconstruct::{Bound, Kernel, KernelFamily, kernel, plain, shortest};
 pub use sva_formula::Shape;

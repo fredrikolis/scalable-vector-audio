@@ -141,7 +141,7 @@ fn read(inst: &Instances, e: &Expr, cx: Cx, gain: C64) -> Reading {
             tap @ (Tap::Back(_) | Tap::Moving) => Reading::Linear {
                 taps: vec![(gain, tap)],
                 plain: true,
-                norm: tap_gain(tap, gain.abs()),
+                norm: tap_gain(tap, gain.abs(), inst.lattice()),
             },
             refused => Reading::Refused(refused),
         },
@@ -231,7 +231,7 @@ fn called_on_self(inst: &Instances, (name, args): (&str, &[Arg]), cx: Cx, gain: 
             let (Some(cutoff), Some(q), Some(db)) = parameters else {
                 return Reading::Nonlinear;
             };
-            let rate = f64::from(lattice());
+            let rate = f64::from(inst.lattice());
             let (coeffs, _) = sva_samples::filters::coefficients(shape, cutoff, q, db, rate);
             match cutoff
                 .is_finite()
@@ -369,8 +369,8 @@ pub(crate) enum Expanded {
 
 const EXPANSIONS: usize = 256;
 
-pub(crate) fn expanded(taps: &[(f64, Q)], half: usize) -> Expanded {
-    let lattice = Q::int(i64::from(lattice()));
+pub(crate) fn expanded(taps: &[(f64, Q)], half: usize, lattice: u32) -> Expanded {
+    let lattice = Q::int(i64::from(lattice));
     let reach = Q::int(half as i64);
     let short = |d: &Q| {
         d.mul(lattice)
@@ -547,16 +547,16 @@ fn walk(inst: &Instances, e: &Expr, cx: Cx) -> Option<Term> {
         },
         Node::Lit(Literal::Num(n)) => Q::decimal(*n).map(Term::Number),
         Node::Lit(Literal::Samples(n)) => Some(Term::Number(
-            Q::decimal(*n)?.div(Q::int(i64::from(lattice())))?,
+            Q::decimal(*n)?.div(Q::int(i64::from(inst.lattice())))?,
         )),
         _ => Q::decimal(plain(amount(inst, e, cx)?)?).map(Term::Number),
     }
 }
 
 /// A tap's gain `g`, whole where it reads a lattice sample and through the kernel elsewhere.
-pub(crate) fn tap_gain(tap: Tap, g: f64) -> Gain {
+pub(crate) fn tap_gain(tap: Tap, g: f64, lattice: u32) -> Gain {
     match tap {
-        Tap::Back(d) if on_lattice(d) => Gain {
+        Tap::Back(d) if on_lattice(d, lattice) => Gain {
             whole: g,
             kernel: 0.0,
             lti: true,
@@ -570,22 +570,17 @@ pub(crate) fn tap_gain(tap: Tap, g: f64) -> Gain {
 }
 
 /// Fixed taps on a loop's own past, each `(delay, coefficient)`.
-pub(crate) fn own_gain(own: &[(Q, f64)]) -> Gain {
+pub(crate) fn own_gain(own: &[(Q, f64)], lattice: u32) -> Gain {
     own.iter().fold(Gain::default(), |held, (d, c)| {
-        held.plus(tap_gain(Tap::Back(*d), c.abs()))
+        held.plus(tap_gain(Tap::Back(*d), c.abs(), lattice))
     })
 }
 
 /// A delay of whole lattice steps, which a loop reads with no kernel.
-pub(crate) fn on_lattice(delay: Q) -> bool {
+pub(crate) fn on_lattice(delay: Q, lattice: u32) -> bool {
     delay
-        .mul(Q::int(i64::from(lattice())))
+        .mul(Q::int(i64::from(lattice)))
         .is_some_and(|samples| samples.is_integer())
-}
-
-/// The step every stateful node runs at, which `1sp` is one of.
-pub(crate) fn lattice() -> u32 {
-    sva_samples::PSYCHOACOUSTIC_V1.lattice_hz
 }
 
 /// A written number over every operator FORMAT 3.3 folds. What this drops is defaulted, never
@@ -616,7 +611,7 @@ fn folded(
     }
     match inst.node(e, cx) {
         Node::Lit(Literal::Num(n)) => Some(*n),
-        Node::Lit(Literal::Samples(n)) => Some(n / f64::from(lattice())),
+        Node::Lit(Literal::Samples(n)) => Some(n / f64::from(inst.lattice())),
         Node::Name("pi") => Some(std::f64::consts::PI),
         Node::Name("inf") => Some(f64::INFINITY),
         Node::Name(other) => sva_formula::note::frequency(other),
@@ -675,7 +670,7 @@ fn called(
 fn drawn(inst: &Instances, args: &[Arg], cx: Cx) -> Option<f64> {
     let (key, seed) = crate::lower::rand_arguments(args, |x| amount(inst, x, cx))?;
     let at = time_of(inst, key, cx)?;
-    (at.scale.is_zero()).then(|| crate::lower::noise_at(seed, at.shift))
+    (at.scale.is_zero()).then(|| crate::lower::noise_at(seed, at.shift, inst.profile))
 }
 
 pub(crate) fn plain(amount: f64) -> Option<f64> {

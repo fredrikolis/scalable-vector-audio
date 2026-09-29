@@ -532,7 +532,7 @@ impl<'g> Lowering<'_, 'g> {
         }) else {
             return Ok(0);
         };
-        let lattice = crate::time::Q::int(i64::from(crate::loops::lattice()));
+        let lattice = crate::time::Q::int(i64::from(self.inst.lattice()));
         let count = crate::loops::time_of(self.inst, written, cx)
             .filter(|at| at.scale.is_zero())
             .and_then(|at| at.shift.mul(lattice))
@@ -564,11 +564,13 @@ impl<'g> Lowering<'_, 'g> {
         let (key, seed) = rand_arguments(args, |x| self.named_value(x, cx)).ok_or_else(bad)?;
         let at = match crate::loops::time_of(self.inst, key, cx) {
             Some(at) if at.scale.is_zero() => {
-                if !on_lattice(at.shift) {
+                if !crate::loops::on_lattice(at.shift, self.inst.lattice()) {
                     self.typing.note_between(self.node);
                 }
                 return Ok(Piece::ClosedForm(Body::Const(C64::real(noise_at(
-                    seed, at.shift,
+                    seed,
+                    at.shift,
+                    self.inst.profile,
                 )))));
             }
             Some(at) => When::Time(at),
@@ -606,15 +608,10 @@ pub(crate) fn rand_arguments<'a>(
     Some((key, seed as u64))
 }
 
-fn on_lattice(at: crate::time::Q) -> bool {
-    let lattice = crate::time::Q::int(i64::from(crate::loops::lattice()));
-    at.mul(lattice).is_some_and(|p| p.is_integer())
-}
-
 /// The lattice noise at an instant: its draw where the instant is a lattice sample, the
 /// kernel's reading of its draws between two.
-pub(crate) fn noise_at(seed: u64, at: crate::time::Q) -> f64 {
-    let lattice = crate::time::Q::int(i64::from(crate::loops::lattice()));
+pub(crate) fn noise_at(seed: u64, at: crate::time::Q, profile: sva_samples::Profile) -> f64 {
+    let lattice = crate::time::Q::int(i64::from(profile.lattice_hz));
     let draw = |n: i64| hash::draw(seed, n as f64);
     let Some(p) = at.mul(lattice) else {
         return f64::NAN;

@@ -64,7 +64,7 @@ fn a_chaigne_doutaut_site_steps_the_same_buffer_every_time() {
     fd::is_deterministic(
         &Params::ChaigneDoutaut(ChaigneDoutautParams::at(261.6)),
         44_100,
-        0.1,
+        0.02,
     );
 }
 

@@ -883,13 +883,17 @@ mod tests {
     use super::Segments;
     use crate::cache::{Cache, Outcome, PayloadKind};
     use crate::render::{RenderConfig, plan, render};
+    use sva_samples::LATTICE_8K;
+
+    fn config() -> RenderConfig {
+        RenderConfig::seconds(LATTICE_8K.lattice_hz, 0.5).under(LATTICE_8K)
+    }
 
     const STRING: &str = "release = inf\nchaigne_askenfelt(f0, damper_r=0.1*crop(min(1, \
         (t - release)/0.03), release, inf))\n";
 
     fn rendered(g: &sva_ast::Graph, cache: Option<&Cache>) -> (Vec<f64>, Vec<Outcome>) {
-        let held =
-            render(g, "released", RenderConfig::seconds(44_100, 0.5), cache).expect("a render");
+        let held = render(g, "released", config(), cache).expect("a render");
         let runs = held.cache_stats.iter().flat_map(|s| s.lookups.clone());
         let found = runs
             .filter(|l| l.kind == PayloadKind::Run)
@@ -909,10 +913,10 @@ mod tests {
             .insert("released", "@string(t, f0=261.63, release=0.3)\n");
         let g = sva_ast::load(&files).expect("a composition");
         let cache = Cache::new();
-        render(&g, "held", RenderConfig::seconds(44_100, 0.5), Some(&cache)).expect("held");
+        render(&g, "held", config(), Some(&cache)).expect("held");
         let (cold, _) = rendered(&g, None);
         assert_eq!(rendered(&g, Some(&cache)).0, cold);
-        let planned = plan(&g, "released", RenderConfig::seconds(44_100, 0.5)).expect("a plan");
+        let planned = plan(&g, "released", config()).expect("a plan");
         for &id in &planned.schedule.materialize {
             let segments = Segments::of(&planned, id, planned.extents.of(id)).expect("keys");
             if segments.len() > 1 {

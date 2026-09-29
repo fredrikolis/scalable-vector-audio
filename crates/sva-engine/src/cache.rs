@@ -211,8 +211,15 @@ pub fn run_key(identity: Hash, rate: u32, width: usize) -> Hash {
     )
 }
 
-pub fn precise_key(buffer: Hash, bits: i32) -> Hash {
-    mixed(buffer, &[bits as u64])
+pub fn profiled_key(buffer: Hash, profile: &sva_samples::Profile) -> Hash {
+    mixed(
+        buffer,
+        &[
+            profile.precision_bits as u64,
+            profile.ceiling_hz.to_bits(),
+            u64::from(profile.lattice_hz),
+        ],
+    )
 }
 
 const ADDRESS_ROTATE: u32 = 17;

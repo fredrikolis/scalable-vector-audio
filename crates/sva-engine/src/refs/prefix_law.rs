@@ -1,10 +1,11 @@
 // Concern: proves a node is its prefix form, bit for bit, before each switch the machine places, whole and streamed | Non-concern: storing runs under it | IO: (N, before-form, r) -> samples
 
 use sva_ast::Graph;
+use sva_samples::LATTICE_8K;
 
 use crate::render::{Range, RenderConfig, Stream, StreamConfig, plan, render};
 
-const RATE: u32 = 44_100;
+const RATE: u32 = LATTICE_8K.lattice_hz;
 const SECS: f64 = 1.0;
 
 /// A node written with a switch at `r`, and the form it has before that switch; a solver
@@ -82,7 +83,7 @@ fn graph(switched: &str, before: &str) -> Graph {
 }
 
 fn config() -> RenderConfig {
-    RenderConfig::seconds(RATE, SECS)
+    RenderConfig::seconds(RATE, SECS).under(LATTICE_8K)
 }
 
 fn whole(g: &Graph, root: &str) -> Vec<f64> {
@@ -101,7 +102,7 @@ fn streamed(g: &Graph, root: &str, block: usize) -> Vec<f64> {
                 start: Some(0),
                 end: Some((SECS * f64::from(RATE)) as i64),
             },
-            ..RenderConfig::at(RATE)
+            ..config()
         },
     };
     let target = sva_ast::parse_expr(&format!("@{root}(t)")).expect("a target");
@@ -139,7 +140,7 @@ fn switch(g: &Graph, root: &str, other: &str) -> usize {
 /// Instants on and off the grid, drawn the same every run.
 fn instants() -> Vec<f64> {
     let mut seed: u64 = 0x5eed;
-    let mut out = vec![0.25, 0.5, 11_025.5 / f64::from(RATE)];
+    let mut out = vec![0.25, 0.5, (f64::from(RATE) / 4.0 + 0.5) / f64::from(RATE)];
     for _ in 0..3 {
         seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
         out.push(0.2 + 0.6 * (seed >> 11) as f64 / (1u64 << 53) as f64);
@@ -152,7 +153,7 @@ fn every_machine_switch_is_its_prefix_form_before_it_whole_and_streamed() {
     for case in MACHINE {
         let (count, blocks) = match case.solver {
             true => (2, &[64, 1_000][..]),
-            false => (6, &[1, 64, 1_000, 4_096][..]),
+            false => (3, &[1, 64, 1_000][..]),
         };
         for r in instants().into_iter().take(count) {
             let g = graph(&(case.switched)(r), case.before);

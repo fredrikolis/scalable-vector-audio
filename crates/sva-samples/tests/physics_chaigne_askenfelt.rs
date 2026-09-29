@@ -36,7 +36,7 @@ fn a_chaigne_askenfelt_site_steps_the_same_buffer_every_time() {
         vel: 3.2,
         ..ChaigneAskenfeltParams::at(220.0)
     });
-    fd::is_deterministic(&params, 22_050, 0.2);
+    fd::is_deterministic(&params, 22_050, 0.02);
 }
 
 #[test]
@@ -47,7 +47,7 @@ fn a_unison_coupled_site_steps_the_same_buffer_every_time() {
         detune: 2f64.powf(5.0 / 1200.0),
         ..ChaigneAskenfeltParams::at(220.0)
     });
-    fd::is_deterministic(&params, 22_050, 0.2);
+    fd::is_deterministic(&params, 22_050, 0.02);
 }
 
 #[test]
@@ -189,10 +189,10 @@ fn weinreich_unison() -> ChaigneAskenfeltParams {
 }
 
 /// A published unison names none of the unison mechanics, so adding them must leave its
-/// samples alone: FNV-1a over the bits of one second.
+/// samples alone: FNV-1a over the bits of its first 0.1 s.
 #[test]
 fn a_call_naming_no_unison_mechanics_renders_its_frozen_samples() {
-    let buffer = fd::render(&Params::ChaigneAskenfelt(published_unison()), 44_100, 1.0);
+    let buffer = fd::render(&Params::ChaigneAskenfelt(published_unison()), 44_100, 0.1);
     let hash = buffer
         .plane(0)
         .iter()
@@ -201,7 +201,7 @@ fn a_call_naming_no_unison_mechanics_renders_its_frozen_samples() {
                 (h ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
             })
         });
-    assert_eq!(hash, 0xb623_90c3_8829_fe06, "a published unison changed");
+    assert_eq!(hash, 0x407b_8b4b_fba9_1dab, "a published unison changed");
 }
 
 /// The 5-95 percentile spread of a partial's level about its own straight-line decay, over

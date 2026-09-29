@@ -5,8 +5,9 @@ mod fixtures;
 use fixtures::graph_of;
 use sva_ast::Graph;
 use sva_engine::{Range, RenderConfig, Stream, StreamConfig, render};
+use sva_samples::LATTICE_8K;
 
-const RATE: u32 = 44_100;
+const RATE: u32 = LATTICE_8K.lattice_hz;
 
 const PIANO3: &str = "0.0014822 * chaigne_askenfelt(f0, vel=vel, b=max(1.4e-4, \
     4.1e-4*pow(f0/262, 1.9)), strike_pos=0.12, hammer_mass=0.009, hammer_k=2e10*max(1, \
@@ -90,7 +91,7 @@ fn config(block: usize, range: Range) -> StreamConfig {
         block,
         render: RenderConfig {
             range,
-            ..RenderConfig::at(RATE)
+            ..RenderConfig::at(RATE).under(LATTICE_8K)
         },
     }
 }
@@ -109,10 +110,20 @@ fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Vec<f64> {
 
 fn whole(g: &Graph, target: &str, samples: usize) -> Vec<f64> {
     let secs = samples as f64 / f64::from(RATE);
-    let held = render(g, target, RenderConfig::seconds(RATE, secs), None)
-        .unwrap_or_else(|e| panic!("{target}: {e}"));
+    let held = render(
+        g,
+        target,
+        RenderConfig::seconds(RATE, secs).under(LATTICE_8K),
+        None,
+    )
+    .unwrap_or_else(|e| panic!("{target}: {e}"));
     let id = held.id(target).expect("the root");
     held.output(id).expect("a buffer").plane(0).to_vec()
+}
+
+/// `s` seconds of samples at the stream's rate.
+fn secs(s: f64) -> usize {
+    (s * f64::from(RATE)) as usize
 }
 
 fn sounds(samples: &[f64]) {
@@ -122,7 +133,7 @@ fn sounds(samples: &[f64]) {
 #[test]
 fn a_streamed_piano_note_is_the_whole_render_bit_for_bit() {
     let g = composition();
-    let samples = 9_000;
+    let samples = secs(0.2);
     let want = whole(&g, "note", samples);
     sounds(&want);
     for block in [128, 1_000] {
@@ -138,16 +149,16 @@ fn a_streamed_piano_note_is_the_whole_render_bit_for_bit() {
 #[test]
 fn an_echo_over_a_streamed_note_is_the_whole_render_bit_for_bit() {
     let g = composition();
-    let samples = 16_000;
+    let (samples, echoing) = (secs(0.36), secs(0.252));
     let want = whole(&g, "echoed", samples);
-    assert_ne!(want[11_100..], whole(&g, "note", samples)[11_100..]);
+    assert_ne!(want[echoing..], whole(&g, "note", samples)[echoing..]);
     assert_eq!(streamed(&g, "echoed", 1_024, samples), want);
 }
 
 #[test]
 fn a_biquad_chain_over_a_streamed_note_is_the_whole_render_bit_for_bit() {
     let g = composition();
-    let samples = 6_000;
+    let samples = secs(0.14);
     let want = whole(&g, "chain", samples);
     sounds(&want);
     assert_eq!(streamed(&g, "chain", 777, samples), want);
@@ -159,7 +170,7 @@ fn a_biquad_chain_over_a_streamed_note_is_the_whole_render_bit_for_bit() {
 #[test]
 fn a_streamed_closed_form_is_the_same_in_blocks_of_any_size() {
     let g = composition();
-    let samples = 5_000;
+    let samples = secs(0.12);
     for target in ["saw", "sawed", "spectrum"] {
         let one = streamed(&g, target, samples, samples);
         sounds(&one);
@@ -177,11 +188,11 @@ fn a_streamed_closed_form_is_the_same_in_blocks_of_any_size() {
 #[test]
 fn a_streamed_synth_voice_is_the_whole_render_bit_for_bit_in_blocks_of_any_size() {
     let g = composition();
-    let samples = 10_000;
+    let samples = secs(0.23);
     for target in ["low", "high"] {
         let want = whole(&g, target, samples);
         sounds(&want);
-        for block in [1, 64, 441, 5_000] {
+        for block in [1, 64, 441, samples / 2] {
             assert_eq!(
                 streamed(&g, target, block, samples),
                 want,
@@ -204,7 +215,7 @@ fn an_open_stream_ends_where_its_support_does() {
             heard.extend_from_slice(block.plane(0));
         }
         assert_eq!(Some(heard.len() as i64), stream.end(), "{target}");
-        let want = read_through(&g, target, RenderConfig::at(RATE));
+        let want = read_through(&g, target, RenderConfig::at(RATE).under(LATTICE_8K));
         assert_eq!(heard, want, "{target}");
     }
 }
@@ -214,7 +225,7 @@ fn an_open_stream_ends_where_its_support_does() {
 #[test]
 fn a_stream_from_a_later_start_is_the_whole_render_over_the_same_range() {
     let g = composition();
-    let (start, samples) = (11_000, 6_000);
+    let (start, samples) = (secs(0.25) as i64, secs(0.14) as i64);
     let range = Range {
         start: Some(start),
         end: Some(start + samples),
@@ -222,7 +233,7 @@ fn a_stream_from_a_later_start_is_the_whole_render_over_the_same_range() {
     for target in ["echoed", "chain", "low"] {
         let config = RenderConfig {
             range,
-            ..RenderConfig::at(RATE)
+            ..RenderConfig::at(RATE).under(LATTICE_8K)
         };
         let held = render(&g, target, config, None).unwrap_or_else(|e| panic!("{target}: {e}"));
         let want = held.output(held.root).expect("a buffer").plane(0).to_vec();
@@ -257,7 +268,8 @@ fn a_node_no_block_reads_alone_refuses_the_stream() {
 fn an_open_stream_whose_support_never_ends_streams_on_while_pulled() {
     let g = composition();
     for target in ["held", "tone", "bar", "damped"] {
-        let mut stream = Stream::open(&g, &at(target), config(4_410, Range::default()), None)
+        let block = secs(0.1);
+        let mut stream = Stream::open(&g, &at(target), config(block, Range::default()), None)
             .unwrap_or_else(|e| panic!("{target}: {e}"));
         let mut heard = Vec::new();
         for _ in 0..30 {
@@ -265,11 +277,16 @@ fn an_open_stream_whose_support_never_ends_streams_on_while_pulled() {
             heard.extend_from_slice(block.plane(0));
         }
         assert_eq!(stream.end(), None, "{target}");
-        sounds(&heard[heard.len() - 4_410..]);
+        sounds(&heard[heard.len() - block..]);
     }
-    let refused = render(&g, "at_damped", RenderConfig::at(RATE), None)
-        .err()
-        .expect("an open render with no end");
+    let refused = render(
+        &g,
+        "at_damped",
+        RenderConfig::at(RATE).under(LATTICE_8K),
+        None,
+    )
+    .err()
+    .expect("an open render with no end");
     assert_eq!(refused.code(), "render.no_end", "{refused}");
 }
 
@@ -314,7 +331,7 @@ fn streamed_at(g: &Graph, target: &str, rate: u32, block: usize, samples: usize)
                 start: Some(0),
                 end: Some(4 * i64::from(rate)),
             },
-            ..RenderConfig::at(rate)
+            ..RenderConfig::at(rate).under(LATTICE_8K)
         },
     };
     let mut stream = Stream::open(g, &at(target), config, None).unwrap_or_else(|e| panic!("{e}"));
@@ -331,8 +348,13 @@ fn streamed_at(g: &Graph, target: &str, rate: u32, block: usize, samples: usize)
 
 fn whole_at(g: &Graph, target: &str, rate: u32, samples: usize) -> Vec<f64> {
     let secs = samples as f64 / f64::from(rate);
-    let held = render(g, target, RenderConfig::seconds(rate, secs), None)
-        .unwrap_or_else(|e| panic!("{target}: {e}"));
+    let held = render(
+        g,
+        target,
+        RenderConfig::seconds(rate, secs).under(LATTICE_8K),
+        None,
+    )
+    .unwrap_or_else(|e| panic!("{target}: {e}"));
     held.output(held.root).expect("a buffer").plane(0).to_vec()
 }
 
@@ -341,13 +363,14 @@ fn whole_at(g: &Graph, target: &str, rate: u32, samples: usize) -> Vec<f64> {
 #[test]
 fn off_lattice_reads_stream_the_whole_render_bit_for_bit() {
     let g = reads();
-    for rate in [44_100u32, 48_000] {
+    for rate in [RATE, 11_025] {
         for target in ["shifted", "scaled", "warped"] {
-            let want = whole_at(&g, target, rate, 6_000);
+            let samples = rate as usize * 14 / 100;
+            let want = whole_at(&g, target, rate, samples);
             sounds(&want);
             for block in [256, 1_000] {
                 assert_eq!(
-                    streamed_at(&g, target, rate, block, 6_000),
+                    streamed_at(&g, target, rate, block, samples),
                     want,
                     "{target} at {rate} in blocks of {block}"
                 );
@@ -368,7 +391,13 @@ fn a_streamed_read_backwards_in_time_refuses() {
         .expect("a backward read refuses");
     assert_eq!(refused.code(), "engine.reads_ahead", "{refused}");
     assert!(
-        render(&g, "reversed", RenderConfig::seconds(RATE, 0.5), None).is_ok(),
+        render(
+            &g,
+            "reversed",
+            RenderConfig::seconds(RATE, 0.5).under(LATTICE_8K),
+            None
+        )
+        .is_ok(),
         "a whole render reads it backwards"
     );
 }

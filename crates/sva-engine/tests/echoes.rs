@@ -6,13 +6,19 @@ use std::f64::consts::TAU;
 
 use fixtures::graph_of;
 use sva_engine::{RenderConfig, render};
+use sva_samples::LATTICE_8K;
 
-const RATE: u32 = 44_100;
+const RATE: u32 = LATTICE_8K.lattice_hz;
 
 fn rendered(files: &[(&str, &str)], root: &str, secs: f64) -> Vec<f64> {
     let g = graph_of(root, files);
-    let held = render(&g, root, RenderConfig::seconds(RATE, secs), None)
-        .unwrap_or_else(|e| panic!("{root}: {e}"));
+    let held = render(
+        &g,
+        root,
+        RenderConfig::seconds(RATE, secs).under(LATTICE_8K),
+        None,
+    )
+    .unwrap_or_else(|e| panic!("{root}: {e}"));
     let id = held.id(root).expect("the root");
     held.output(id).expect("a buffer").plane(0).to_vec()
 }
@@ -65,7 +71,7 @@ fn a_cropped_burst_echoes_where_its_recurrence_does() {
     assert_within(
         &series,
         &sampled,
-        sva_samples::PSYCHOACOUSTIC_V1.half_lsb(),
+        LATTICE_8K.half_lsb(),
         "the series against the recurrence",
     );
     let want: Vec<f64> = (0..series.len())
@@ -82,7 +88,7 @@ fn a_cropped_burst_echoes_where_its_recurrence_does() {
     );
     let after = want[cut..].iter().fold(0.0f64, |m, v| m.max(v.abs()));
     assert!(
-        after <= sva_samples::PSYCHOACOUSTIC_V1.half_lsb(),
+        after <= LATTICE_8K.half_lsb(),
         "cut at {cut} with {after} still to come"
     );
 }

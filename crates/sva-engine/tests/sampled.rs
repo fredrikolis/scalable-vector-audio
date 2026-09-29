@@ -4,14 +4,22 @@ mod fixtures;
 
 use fixtures::graph_of;
 use sva_engine::{RenderConfig, render};
+use sva_samples::LATTICE_8K;
+
+/// The low-rate test lattice, read out on it; the filter and limiter tests keep 44.1 kHz.
+const RATE: u32 = LATTICE_8K.lattice_hz;
+
+fn low(rate: u32, secs: f64) -> RenderConfig {
+    RenderConfig::seconds(rate, secs).under(LATTICE_8K)
+}
 
 /// A solver is a family indexed by the rate, each run as long as its own grid.
 #[test]
 fn an_fd_node_renders_at_the_observation_rate() {
     let g = graph_of("fd", &[("body", "chaigne_askenfelt(261.63)\n")]);
-    for rate in [22_050u32, 44_100] {
-        let held = render(&g, "body", RenderConfig::seconds(rate, 0.02), None)
-            .unwrap_or_else(|e| panic!("{rate}: {e}"));
+    for rate in [RATE, 11_025] {
+        let held =
+            render(&g, "body", low(rate, 0.02), None).unwrap_or_else(|e| panic!("{rate}: {e}"));
         let root = held.id("body").expect("the root");
         let buffer = held.output(root).expect("a rendered solver");
         assert_eq!(buffer.rate, rate);
@@ -30,13 +38,7 @@ fn a_one_step_accumulator_renders() {
         "accumulator",
         &[("acc", "sample(0.25 + 0*t) + self(t - 1sp)\n")],
     );
-    let held = render(
-        &g,
-        "acc",
-        RenderConfig::seconds(44_100, 10.0 / 44_100.0),
-        None,
-    )
-    .expect("a recurrence");
+    let held = render(&g, "acc", low(RATE, 10.0 / f64::from(RATE)), None).expect("a recurrence");
     let root = held.id("acc").expect("the root");
     let buffer = held.output(root).expect("a rendered loop");
     assert_eq!(buffer.len(), 10);
@@ -79,16 +81,16 @@ fn a_one_pole_smoother_written_with_sp_renders_at_two_rates() {
         )],
     );
     let level = |rate: u32| -> f64 {
-        let held = render(&g, "smooth", RenderConfig::seconds(rate, 0.02), None)
-            .unwrap_or_else(|e| panic!("{rate}: {e}"));
+        let held =
+            render(&g, "smooth", low(rate, 0.02), None).unwrap_or_else(|e| panic!("{rate}: {e}"));
         let root = held.id("smooth").expect("the root");
         held.output(root)
             .expect("a rendered loop")
             .at(0, rate as usize / 100)
     };
     let settled = 1.0 - (-1.0f64).exp();
-    let (low, high) = (level(44_100), level(96_000));
-    for (rate, held) in [(44_100, low), (96_000, high)] {
+    let (low, high) = (level(RATE), level(12_000));
+    for (rate, held) in [(RATE, low), (12_000, high)] {
         let apart = 20.0 * (held / settled).log10();
         assert!(
             apart.abs() < 0.5,
@@ -140,13 +142,7 @@ fn a_self_read_is_founded_sample_by_sample_without_a_block() {
         "three-step",
         &[("acc", "sample(1 + 0*t) + 0.5*self(t - 3sp)\n")],
     );
-    let held = render(
-        &g,
-        "acc",
-        RenderConfig::seconds(44_100, 10.0 / 44_100.0),
-        None,
-    )
-    .expect("a recurrence");
+    let held = render(&g, "acc", low(RATE, 10.0 / f64::from(RATE)), None).expect("a recurrence");
     let root = held.id("acc").expect("the root");
     let buffer = held.output(root).expect("a rendered loop");
     assert_eq!(buffer.len(), 10);
@@ -167,8 +163,7 @@ fn a_self_read_is_founded_sample_by_sample_without_a_block() {
 }
 
 fn plane(g: &sva_ast::Graph, node: &str) -> Vec<f64> {
-    let held = render(g, node, RenderConfig::seconds(44_100, 0.05), None)
-        .unwrap_or_else(|e| panic!("{node}: {e}"));
+    let held = render(g, node, low(RATE, 0.05), None).unwrap_or_else(|e| panic!("{node}: {e}"));
     let id = held.id(node).unwrap_or_else(|| panic!("{node} typed"));
     held.output(id).expect("a rendered node").plane(0).to_vec()
 }
@@ -198,11 +193,11 @@ fn a_sampled_crop_takes_the_closed_forms_window() {
             (c - s).abs() < 1e-9,
             "sample {i}: the closed form reads {c}, the sampled crop {s}"
         );
-        let inside = (441..1764).contains(&i);
+        let inside = (RATE as usize / 100..RATE as usize * 4 / 100).contains(&i);
         assert!(inside || *s == 0.0, "sample {i} lies outside [10ms, 40ms)");
     }
     let hard = plane(&g, "hard");
-    let first = (0.01 * 44_100.0) as usize + 1;
+    let first = (0.01 * f64::from(RATE)) as usize + 1;
     assert!(
         sampled[first].abs() < hard[first].abs(),
         "the rise opens the window gradually: {} against {}",
@@ -220,7 +215,7 @@ fn a_sampled_crop_refuses_the_shoulders_a_closed_form_refuses() {
             "crop(sample(sin(2*pi*220*t)), 10ms, 20ms, rise=6ms, fall=6ms)\n",
         )],
     );
-    let Err(refused) = render(&g, "body", RenderConfig::seconds(44_100, 0.05), None) else {
+    let Err(refused) = render(&g, "body", low(RATE, 0.05), None) else {
         panic!("two shoulders longer than their window render nothing");
     };
     assert!(

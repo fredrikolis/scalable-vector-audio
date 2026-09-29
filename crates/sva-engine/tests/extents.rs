@@ -5,8 +5,9 @@ mod fixtures;
 use fixtures::graph_of;
 use sva_ast::Graph;
 use sva_engine::{Range, RenderConfig, render};
+use sva_samples::LATTICE_8K;
 
-const RATE: u32 = 44_100;
+const RATE: u32 = LATTICE_8K.lattice_hz;
 
 fn composition() -> Graph {
     graph_of(
@@ -45,7 +46,7 @@ fn over(g: &Graph, target: &str, start: i64, end: i64) -> Vec<f64> {
             start: Some(start),
             end: Some(end),
         },
-        ..RenderConfig::at(RATE)
+        ..RenderConfig::at(RATE).under(LATTICE_8K)
     };
     let held = render(g, target, config, None).unwrap_or_else(|e| panic!("{target}: {e}"));
     held.output(held.root).expect("the root").plane(0).to_vec()
@@ -162,7 +163,7 @@ fn a_filter_starts_where_its_support_does_whatever_reads_it() {
 /// A short-time transform reads its input whole, so an input with no end refuses.
 #[test]
 fn a_transform_of_an_endless_input_refuses() {
-    let config = RenderConfig::seconds(RATE, 0.1);
+    let config = RenderConfig::seconds(RATE, 0.1).under(LATTICE_8K);
     let Err(refused) = render(&composition(), "whole", config, None) else {
         panic!("a transform of an endless input rendered");
     };

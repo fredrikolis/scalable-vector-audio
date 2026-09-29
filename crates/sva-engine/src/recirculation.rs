@@ -1,6 +1,6 @@
 // Concern: a loop's proven error through one kernel, and the shortest kernel within precision | Non-concern: a body's gains (loops.rs), refusing (render/bounds.rs) | IO: (Gain, reach, Bound) -> error
 
-use sva_samples::{Bound, Kernel, PSYCHOACOUSTIC_V1, kernel, shortest};
+use sva_samples::{Bound, Kernel, Profile, kernel, shortest};
 
 use crate::loops::{self, Expanded};
 use crate::time::Q;
@@ -10,14 +10,15 @@ type Taps = Vec<(Q, f64)>;
 
 /// The expansion of a fixed linear loop's taps that the shortest kernel within precision
 /// needs, `None` where the loop as written already meets it or no expansion does.
-pub(crate) fn expansion(taps: &[(f64, Q)], gain: Gain) -> Option<(Taps, Taps)> {
-    let (family, precision) = (PSYCHOACOUSTIC_V1.kernel, PSYCHOACOUSTIC_V1.half_lsb());
+pub(crate) fn expansion(taps: &[(f64, Q)], gain: Gain, profile: Profile) -> Option<(Taps, Taps)> {
+    let (family, precision) = (profile.kernel, profile.half_lsb());
     let written: Taps = taps.iter().map(|(g, d)| (*d, *g)).collect();
     for half_width in family.lengths(family.most) {
-        let (held, expanded) = match loops::expanded(taps, half_width) {
-            Expanded::Needless => (Loop::fixed(gain, &written), None),
+        let (held, expanded) = match loops::expanded(taps, half_width, profile.lattice_hz) {
+            Expanded::Needless => (Loop::fixed(gain, &written, profile), None),
             Expanded::Taps { rest, own } => {
-                (Loop::fixed(loops::own_gain(&own), &own), Some((rest, own)))
+                let gain = loops::own_gain(&own, profile.lattice_hz);
+                (Loop::fixed(gain, &own, profile), Some((rest, own)))
             }
             Expanded::Unreachable => continue,
         };
@@ -39,22 +40,24 @@ pub(crate) struct Loop {
     pub least_whole: Option<i64>,
     pub len: Option<i64>,
     pub position: f64,
+    pub profile: Profile,
 }
 
 impl Loop {
-    pub fn over(gain: Gain, len: Option<i64>) -> Loop {
+    pub fn over(gain: Gain, len: Option<i64>, profile: Profile) -> Loop {
         Loop {
             gain,
             least_delay: i64::MAX,
             least_whole: None,
             len,
             position: 0.0,
+            profile,
         }
     }
 
     /// Over no end, each `(delay, coefficient)`.
-    pub fn fixed(gain: Gain, own: &[(Q, f64)]) -> Loop {
-        let mut held = Loop::over(gain, None);
+    pub fn fixed(gain: Gain, own: &[(Q, f64)], profile: Profile) -> Loop {
+        let mut held = Loop::over(gain, None, profile);
         for (d, _) in own {
             held.back(*d);
         }
@@ -63,7 +66,7 @@ impl Loop {
 
     /// One whose samples overflow is taken as one back.
     pub fn back(&mut self, d: Q) {
-        let lattice = Q::int(i64::from(PSYCHOACOUSTIC_V1.lattice_hz));
+        let lattice = Q::int(i64::from(self.profile.lattice_hz));
         match d.mul(lattice) {
             Some(s) if s.is_integer() => {
                 let samples = s.num() as i64;
@@ -117,13 +120,13 @@ impl Loop {
     }
 
     pub fn bound(&self, k: &Kernel) -> Option<Bound> {
-        let p = PSYCHOACOUSTIC_V1;
+        let p = self.profile;
         k.bound(p.ceiling_hz, p.lattice_hz)
             .map(|b| b.moved(self.position, p.lattice_hz))
     }
 
     pub fn kernel(&self) -> Option<(&'static Kernel, f64)> {
-        let (p, precision) = (PSYCHOACOUSTIC_V1, PSYCHOACOUSTIC_V1.half_lsb());
+        let (p, precision) = (self.profile, self.profile.half_lsb());
         let moved = |b: &Bound| b.moved(self.position, p.lattice_hz);
         let meets = |b: &Bound| self.error(&moved(b)).is_some_and(|e| e <= precision);
         let k = shortest(self.most(), meets)?;
@@ -134,7 +137,7 @@ impl Loop {
         let b = self.bound(k)?;
         let (a, room) = (
             self.amplified(&b),
-            PSYCHOACOUSTIC_V1.half_lsb() / self.injected(&b),
+            self.profile.half_lsb() / self.injected(&b),
         );
         let mut n = match a == 1.0 {
             true => room.floor(),

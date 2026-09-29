@@ -36,7 +36,7 @@ pub fn quiet_tails(
     target: &str,
     config: RenderConfig,
 ) -> Result<Vec<QuietTail>, EngineError> {
-    let held = prepared(graph, target)?;
+    let held = prepared(graph, target, config.profile)?;
     let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
     let audio = schedule.materialize.clone();
     let mut shell = Render::shell(held.tys.clone(), held.root, config, schedule);

@@ -53,7 +53,11 @@ fn a_stepped_spectrum_matches_the_closed_open_quarter_wave_formula() {
 
 #[test]
 fn a_darabundit_scavone_site_steps_the_same_buffer_every_time() {
-    fd::is_deterministic(&Params::DarabunditScavone(BoreParams::at(0.4)), 22_050, 0.2);
+    fd::is_deterministic(
+        &Params::DarabunditScavone(BoreParams::at(0.4)),
+        22_050,
+        0.02,
+    );
 }
 
 /// Scavone & Smith (ISMA-97) Fig. 4/6 on far-end pressure: the same causal shape.

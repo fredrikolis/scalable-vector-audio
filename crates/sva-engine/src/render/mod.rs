@@ -87,6 +87,15 @@ impl RenderConfig {
         }
     }
 
+    /// Under `profile`, paying its own budget.
+    pub fn under(self, profile: Profile) -> RenderConfig {
+        RenderConfig {
+            profile,
+            flop_budget: profile.flop_budget,
+            ..self
+        }
+    }
+
     pub fn asking(mut self, asks: Vec<Ask>) -> RenderConfig {
         self.asks = asks;
         self
@@ -203,10 +212,9 @@ impl Render {
         ))
     }
 
-    /// `key` with what a node's samples read beyond its content: the precision a collapse
-    /// truncates at.
+    /// `key` with what a node's samples read beyond its content: its profile.
     pub(crate) fn keyed(&self, key: sva_formula::Hash) -> sva_formula::Hash {
-        crate::cache::precise_key(key, self.config.profile.precision_bits)
+        crate::cache::profiled_key(key, &self.config.profile)
     }
 
     pub fn work(&self) -> crate::flops::Work {
@@ -308,7 +316,11 @@ pub fn render(
     cache: Option<&Cache>,
 ) -> Result<Render, EngineError> {
     let recording = cache.map(|c| Recording::over(c, config.cache_policy));
-    let mut held = run(prepared(graph, target)?, config, recording.as_ref())?;
+    let mut held = run(
+        prepared(graph, target, config.profile)?,
+        config,
+        recording.as_ref(),
+    )?;
     held.cache_stats = recording.map(Recording::finish);
     Ok(held)
 }
@@ -321,8 +333,12 @@ pub(crate) struct Prepared<'g> {
     pub(crate) target: String,
 }
 
-pub(crate) fn prepared<'g>(graph: &'g Graph, target: &str) -> Result<Prepared<'g>, EngineError> {
-    let instances = instantiate::instantiate(graph, target)?;
+pub(crate) fn prepared<'g>(
+    graph: &'g Graph,
+    target: &str,
+    profile: Profile,
+) -> Result<Prepared<'g>, EngineError> {
+    let instances = instantiate::instantiate(graph, target, profile)?;
     let held = instances.instance_of(target)?;
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&held))?;
     let tys = typing::infer_all(&instances, &order)?;
@@ -389,7 +405,7 @@ fn planned(prepared: Prepared<'_>, config: RenderConfig) -> Result<Planned<'_>, 
 
 /// The range and every extent a render of `target` decides, and no sample.
 pub fn plan(graph: &Graph, target: &str, config: RenderConfig) -> Result<Render, EngineError> {
-    planned(prepared(graph, target)?, config).map(|(held, ..)| held)
+    planned(prepared(graph, target, config.profile)?, config).map(|(held, ..)| held)
 }
 
 /// A `flops` reading counts what the audio render would run, over the extents it would.

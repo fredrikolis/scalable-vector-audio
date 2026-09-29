@@ -131,7 +131,7 @@ impl Lowering<'_, '_> {
             )),
             Literal::Bars(_) => Err(EngineError::UnresolvedBars(self.here(None))),
             Literal::Samples(n) => Ok(Piece::ClosedForm(Body::Const(C64::real(
-                n / f64::from(loops::lattice()),
+                n / f64::from(self.inst.lattice()),
             )))),
             Literal::Str(s) => match note::frequency(s) {
                 Some(hz) => Ok(Piece::ClosedForm(Body::Const(C64::real(hz)))),

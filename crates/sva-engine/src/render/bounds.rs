@@ -3,7 +3,7 @@
 use sva_formula::spectral_sum::sup::sup_from;
 use sva_formula::{Held, NodeId, Var};
 use sva_samples::machine::position_error;
-use sva_samples::{At, Bound, Extent, NodeRenderer, PSYCHOACOUSTIC_V1, Slot, kernel, plain};
+use sva_samples::{At, Bound, Extent, NodeRenderer, Profile, Slot, kernel, plain};
 
 use super::{Render, extent, pointwise, sampled};
 use crate::error::{Diagnostic, EngineError, Located};
@@ -39,7 +39,7 @@ pub(crate) struct Looped {
 
 impl Render {
     pub fn reconstructions(&self) -> Vec<Reconstruction> {
-        let Some(bound) = plain_bound() else {
+        let Some(bound) = plain_bound(&self.config.profile) else {
             return Vec::new();
         };
         let mut out = Vec::new();
@@ -115,8 +115,10 @@ impl Render {
                     Ok(Some(held)) => ("loop", Some(held.bound), Some(held.error)),
                     _ => return,
                 },
-                (Slot::Read(_), At::Map(map)) if map.a == map.d => ("shift", plain_bound(), None),
-                (Slot::Read(_), At::Map(_)) => ("scale", plain_bound(), None),
+                (Slot::Read(_), At::Map(map)) if map.a == map.d => {
+                    ("shift", plain_bound(&self.config.profile), None)
+                }
+                (Slot::Read(_), At::Map(_)) => ("scale", plain_bound(&self.config.profile), None),
                 (Slot::Read(_), At::Moving { .. }) => ("moving", self.moved(at, over), None),
             };
             out.push(Row {
@@ -170,7 +172,7 @@ impl Render {
     /// The plain kernel's bound, with a moving position's rounding over `extent` counted.
     fn moved(&self, at: &At, (extent, rate): (Extent, u32)) -> Option<Bound> {
         let delta = position_error(at, (extent.start, extent.end), rate)?;
-        Some(plain_bound()?.moved(delta, self.lattice()))
+        Some(plain_bound(&self.config.profile)?.moved(delta, self.lattice()))
     }
 
     /// `None` where no tap reads the loop's own past between lattice samples.
@@ -189,7 +191,7 @@ impl Render {
             })
             .collect();
         let kernel_read = |at: &When| match at {
-            When::Time(back) => !loops::on_lattice(back.shift.neg()),
+            When::Time(back) => !loops::on_lattice(back.shift.neg(), self.lattice()),
             When::Moving(_) => true,
         };
         if !taps.iter().any(|(at, _)| kernel_read(at)) {
@@ -199,7 +201,11 @@ impl Render {
             return Err(unproven(name));
         };
         let lattice = self.lattice();
-        let mut held = Loop::over(gain, extent.is_bounded().then(|| extent.len() as i64));
+        let mut held = Loop::over(
+            gain,
+            extent.is_bounded().then(|| extent.len() as i64),
+            self.config.profile,
+        );
         for (at, _) in &taps {
             match at {
                 When::Time(back) => held.back(back.shift.neg()),
@@ -246,8 +252,7 @@ impl Render {
     }
 }
 
-fn plain_bound() -> Option<Bound> {
-    let p = PSYCHOACOUSTIC_V1;
+fn plain_bound(p: &Profile) -> Option<Bound> {
     plain().bound(p.ceiling_hz, p.lattice_hz)
 }
 
@@ -285,7 +290,7 @@ fn refusal(code: &str, name: &str, message: String, help: String) -> EngineError
 
 /// The widest kernel a loop's delay leaves room for says how far it runs within precision.
 fn past(name: &str, held: &Loop, extent: Extent) -> EngineError {
-    let family = PSYCHOACOUSTIC_V1.kernel;
+    let family = held.profile.kernel;
     let Some(widest) = family.lengths(held.most()).last().map(kernel) else {
         return refusal(
             "engine.loop_reads_ahead",
@@ -301,8 +306,8 @@ fn past(name: &str, held: &Loop, extent: Extent) -> EngineError {
             ),
         );
     };
-    let bits = PSYCHOACOUSTIC_V1.precision_bits;
-    let lattice = f64::from(PSYCHOACOUSTIC_V1.lattice_hz);
+    let bits = held.profile.precision_bits;
+    let lattice = f64::from(held.profile.lattice_hz);
     let error = held.bound(widest).and_then(|b| held.error(&b));
     match (error, extent.is_bounded()) {
         (None, false) => refusal(

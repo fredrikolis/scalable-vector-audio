@@ -72,7 +72,7 @@ pub fn node(path: &str, inst: &Instances, typing: &mut Typing) -> Result<NodeId,
         Some(SelfKind::Series { gain, delay }) => Some((gain, delay)),
         Some(SelfKind::Sampled { gain, taps }) => {
             if let (Some(taps), Some(gain)) = (taps.as_deref(), gain)
-                && let Some(expansion) = crate::recirculation::expansion(taps, gain)
+                && let Some(expansion) = crate::recirculation::expansion(taps, gain, inst.profile)
             {
                 return expanded_loop(path, inst, typing, (expr, cx), var, expansion);
             }
@@ -139,7 +139,7 @@ fn expanded_loop(
     };
     let body = low.walk(expr, cx, var)?;
     let body = low.seal(body, var, None)?;
-    let gain = loops::own_gain(&own);
+    let gain = loops::own_gain(&own, inst.lattice());
     let back = |d: crate::time::Q| {
         When::Time(Affine {
             scale: crate::time::Q::ONE,

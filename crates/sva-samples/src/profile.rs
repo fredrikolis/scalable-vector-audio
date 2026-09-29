@@ -36,17 +36,33 @@ pub const PSYCHOACOUSTIC_V1: Profile = Profile {
     },
 };
 
+pub const LATTICE_8K: Profile = PSYCHOACOUSTIC_V1.on_lattice("lattice-8k", 8_000);
+
+// One kernel family (reconstruct.rs) serves every profile.
+const _: () = assert!(LATTICE_8K.fold_margin() == PSYCHOACOUSTIC_V1.fold_margin());
+
 pub fn named(name: &str) -> Option<Profile> {
-    (name == PSYCHOACOUSTIC_V1.name).then_some(PSYCHOACOUSTIC_V1)
+    [PSYCHOACOUSTIC_V1, LATTICE_8K]
+        .into_iter()
+        .find(|p| p.name == name)
 }
 
 impl Profile {
+    pub const fn on_lattice(self, name: &'static str, lattice_hz: u32) -> Profile {
+        Profile {
+            name,
+            ceiling_hz: self.ceiling_hz / self.lattice_hz as f64 * lattice_hz as f64,
+            lattice_hz,
+            ..self
+        }
+    }
+
     pub fn ceiling(&self, rate: u32) -> f64 {
         self.ceiling_hz.min(f64::from(rate) / 2.0)
     }
 
-    pub fn fold_margin(&self) -> f64 {
-        0.5 - self.ceiling_hz / f64::from(self.lattice_hz)
+    pub const fn fold_margin(&self) -> f64 {
+        0.5 - self.ceiling_hz / self.lattice_hz as f64
     }
 
     pub fn half_lsb(&self) -> f64 {

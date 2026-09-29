@@ -5,9 +5,10 @@ mod fixtures;
 use fixtures::graph_of;
 use sva_ast::Graph;
 use sva_engine::{Cache, Outcome, PayloadKind, Range, RenderConfig, Stream, StreamConfig, render};
+use sva_samples::LATTICE_8K;
 
-const RATE: u32 = 44_100;
-const BLOCK: usize = 1_024;
+const RATE: u32 = LATTICE_8K.lattice_hz;
+const BLOCK: usize = 256;
 
 /// piano3 with its damper wired to `release`: lifted until then, ramped in over 0.03 s.
 const PIANO: &str = "release = inf\n0.0014822 * chaigne_askenfelt(f0, vel=vel, \
@@ -74,7 +75,7 @@ fn config_at(rate: u32, end: Option<i64>) -> StreamConfig {
                 start: Some(0),
                 end,
             },
-            ..RenderConfig::at(rate)
+            ..RenderConfig::at(rate).under(LATTICE_8K)
         },
     }
 }
@@ -113,8 +114,13 @@ fn whole(g: &Graph, target: &str, samples: usize) -> Vec<f64> {
 
 fn whole_at(rate: u32, g: &Graph, target: &str, samples: usize) -> Vec<f64> {
     let secs = samples as f64 / f64::from(rate);
-    let held = render(g, target, RenderConfig::seconds(rate, secs), None)
-        .unwrap_or_else(|e| panic!("{target}: {e}"));
+    let held = render(
+        g,
+        target,
+        RenderConfig::seconds(rate, secs).under(LATTICE_8K),
+        None,
+    )
+    .unwrap_or_else(|e| panic!("{target}: {e}"));
     let id = held.id(target).expect("the root");
     held.output(id).expect("a buffer").plane(0).to_vec()
 }
@@ -142,8 +148,8 @@ fn released_at_rate(rate: u32, target: &str, whole_target: &str, k: usize) {
 
     let want = whole_at(rate, &g, whole_target, heard.len());
     assert_ne!(
-        want[k + 2_000..],
-        blocks(&mut held, 8)[2_000..],
+        want[k + 2 * BLOCK..],
+        blocks(&mut held, 8)[2 * BLOCK..],
         "{target}: the damper did nothing"
     );
     match rate == RATE {
@@ -154,7 +160,7 @@ fn released_at_rate(rate: u32, target: &str, whole_target: &str, k: usize) {
 
 #[test]
 fn key_up_between_lattice_samples_is_the_whole_render_released_there() {
-    released_at_rate(48_000, "string", "struck", 3 * BLOCK);
+    released_at_rate(11_025, "string", "struck", 3 * BLOCK);
 }
 
 #[test]
@@ -216,13 +222,14 @@ fn a_note_pressed_and_released_mid_stream_is_the_whole_render_of_the_last_edit()
 fn a_note_past_its_end_leaves_the_sum_and_its_echo_rings_on() {
     let g = composition(1.0);
     let mut stream = opened(&g, "@echo(t, x=@notes)", None);
-    let (a, b) = ("@blip(t - 1024sp, f0=200)", "@blip(t - 8192sp, f0=300)");
+    let a = format!("@blip(t - {BLOCK}sp, f0=200)");
+    let b = format!("@blip(t - {}sp, f0=300)", 8 * BLOCK);
     let added = |stream: &mut Stream, term: &str| {
         stream
             .add(&g, &expr(term))
             .unwrap_or_else(|e| panic!("`{term}`: {e}"))
     };
-    let (held_a, held_b) = (added(&mut stream, a), added(&mut stream, b));
+    let (held_a, held_b) = (added(&mut stream, &a), added(&mut stream, &b));
     let mut heard = blocks(&mut stream, 20);
     assert_eq!(
         stream.remove(held_a).ok(),
@@ -230,8 +237,8 @@ fn a_note_past_its_end_leaves_the_sum_and_its_echo_rings_on() {
         "the first note ended"
     );
     heard.extend(blocks(&mut stream, 10));
-    let c = "@blip(t - 30720sp, f0=250)";
-    added(&mut stream, c);
+    let c = format!("@blip(t - {}sp, f0=250)", 30 * BLOCK);
+    added(&mut stream, &c);
     assert_eq!(
         stream.remove(held_b).ok(),
         Some(false),
@@ -242,7 +249,7 @@ fn a_note_past_its_end_leaves_the_sum_and_its_echo_rings_on() {
     let mut whole_g = g.clone();
     assert!(whole_g.define("final", expr(&format!("@echo(t, x={a} + {b} + {c})"))));
     let want = whole(&whole_g, "final", heard.len());
-    let gap = 8192 + 17_640..30 * BLOCK;
+    let gap = 8 * BLOCK + (0.4 * f64::from(RATE)) as usize..30 * BLOCK;
     assert!(
         heard[gap].iter().any(|v| *v != 0.0),
         "the echo rings between notes"
@@ -261,8 +268,8 @@ fn a_term_removed_while_it_sounds_is_cut_where_the_stream_stands() {
             .add(&g, &expr(term))
             .unwrap_or_else(|e| panic!("`{term}`: {e}"))
     };
-    let first = added("@blip(t - 1024sp, f0=200)");
-    added("@blip(t - 4096sp, f0=300)");
+    let first = added(&format!("@blip(t - {BLOCK}sp, f0=200)"));
+    added(&format!("@blip(t - {}sp, f0=300)", 4 * BLOCK));
     let mut heard = blocks(&mut stream, 6);
     assert_eq!(stream.remove(first).ok(), Some(true));
     assert_eq!(stream.remove(first).ok(), Some(false), "a removed handle");
@@ -282,8 +289,14 @@ fn a_term_removed_while_it_sounds_is_cut_where_the_stream_stands() {
 fn a_live_edit_starts_a_node_with_no_state_silent_and_names_it() {
     let g = composition(1.0);
     let cache = Cache::new();
-    cache.set_mark_every(1_024);
-    render(&g, "string", RenderConfig::seconds(RATE, 0.5), Some(&cache)).expect("a render");
+    cache.set_mark_every(BLOCK);
+    render(
+        &g,
+        "string",
+        RenderConfig::seconds(RATE, 0.5).under(LATTICE_8K),
+        Some(&cache),
+    )
+    .expect("a render");
     let held = "@echo(t, x=@pluck(t, f0=523.25))";
     let released = "@echo(t, x=@pluck(t, f0=523.25, release=0.1))";
     let (mut exact, mut live) = (
@@ -327,7 +340,7 @@ fn a_constant_moved_inside_a_loop_keeps_its_tail_ringing() {
 /// levels off within the first seconds and never climbs past that.
 #[test]
 fn a_long_session_holds_no_more_than_its_first_seconds() {
-    let rate = 8_000;
+    let rate = RATE;
     let g = composition(1.0);
     let config = StreamConfig {
         block: 256,
@@ -336,7 +349,7 @@ fn a_long_session_holds_no_more_than_its_first_seconds() {
                 start: Some(0),
                 end: Some(3_600 * i64::from(rate)),
             },
-            ..RenderConfig::at(rate)
+            ..RenderConfig::at(rate).under(LATTICE_8K)
         },
     };
     let mut stream = Stream::open(&g, &expr("@echo(t, x=0)"), config, None).expect("opens");
@@ -374,7 +387,13 @@ fn a_long_session_holds_no_more_than_its_first_seconds() {
 fn a_shifted_term_reads_and_extends_the_run_its_node_holds_in_the_store() {
     let g = composition(1.0);
     let cache = Cache::new();
-    render(&g, "string", RenderConfig::seconds(RATE, 0.2), Some(&cache)).expect("a render");
+    render(
+        &g,
+        "string",
+        RenderConfig::seconds(RATE, 0.2).under(LATTICE_8K),
+        Some(&cache),
+    )
+    .expect("a render");
     let runs = |stream: &Stream, outcome: Outcome| {
         let stats = stream.stats();
         let lookups = stats.lookups.iter();

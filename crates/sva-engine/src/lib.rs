@@ -25,7 +25,7 @@ pub use arguments::{Argument, Arguments, Called, Chosen};
 pub use bindings::Binding;
 pub use cache::{
     Cache, CachePolicy, CacheStats, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY, Hash, Lookup, Outcome,
-    PayloadKind, PrunePolicy, buffer_key, precise_key, symbolic_key,
+    PayloadKind, PrunePolicy, buffer_key, profiled_key, symbolic_key,
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
@@ -53,7 +53,7 @@ pub use vocabulary::{BUILTINS, MAX_WIDTH, RESERVED, is_builtin, named_may_move, 
 
 use sva_ast::Graph;
 
-pub const DEFAULT_SAMPLE_RATE: u32 = 44100;
+pub const DEFAULT_SAMPLE_RATE: u32 = PSYCHOACOUSTIC_V1.lattice_hz;
 
 /// One inference, so a lint and a render refuse identically.
 pub fn check_structure(graph: &Graph, root: &str) -> Result<(), EngineError> {
@@ -62,7 +62,11 @@ pub fn check_structure(graph: &Graph, root: &str) -> Result<(), EngineError> {
 
 /// One `Ty` per node, across refs, over the instances `root` reaches.
 pub fn types(graph: &Graph, root: &str) -> Result<Typing, EngineError> {
-    let instances = instantiate::instantiate(graph, root)?;
+    types_under(graph, root, PSYCHOACOUSTIC_V1)
+}
+
+pub fn types_under(graph: &Graph, root: &str, profile: Profile) -> Result<Typing, EngineError> {
+    let instances = instantiate::instantiate(graph, root, profile)?;
     // A root names the instance its own defaults resolved to, as `render` asks for.
     let held = instances.instance_of(root)?;
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&held))?;

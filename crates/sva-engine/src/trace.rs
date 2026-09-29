@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sva_ast::Graph;
+use sva_samples::PSYCHOACOUSTIC_V1;
 
 use crate::error::{BindingFault, EngineError};
 use crate::instantiate::Instances;
@@ -29,7 +30,7 @@ pub struct Traced {
     pub up: Vec<Up>,
 }
 
-/// No audio: structure alone, over the instances every root reaches.
+/// No audio: structure alone, over the instances every root reaches, under the default profile.
 pub fn trace(graph: &Graph, roots: &[String], target: &str) -> Result<Traced, EngineError> {
     // A bare file name is the file on its own terms, as `render` and `lint` read it.
     let seeded = (graph.defines(target) && !roots.iter().any(|r| r == target)).then(|| {
@@ -38,14 +39,14 @@ pub fn trace(graph: &Graph, roots: &[String], target: &str) -> Result<Traced, En
         held
     });
     let (inst, entries) = match &seeded {
-        None => crate::instantiate::from_roots(graph, roots)?,
-        Some(held) => match crate::instantiate::from_roots(graph, held) {
+        None => crate::instantiate::from_roots(graph, roots, PSYCHOACOUSTIC_V1)?,
+        Some(held) => match crate::instantiate::from_roots(graph, held, PSYCHOACOUSTIC_V1) {
             Ok(found) => found,
             // Own terms a caller must complete are none: the call sites' are what is left.
             Err(EngineError::Binding {
                 fault: BindingFault::Unbound(..),
                 ..
-            }) => crate::instantiate::from_roots(graph, roots)?,
+            }) => crate::instantiate::from_roots(graph, roots, PSYCHOACOUSTIC_V1)?,
             Err(other) => return Err(other),
         },
     };

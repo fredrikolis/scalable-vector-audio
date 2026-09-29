@@ -10,6 +10,7 @@ use sva_engine::{
 pub fn help_text() -> String {
     let budget = PSYCHOACOUSTIC_V1.flop_budget;
     let bits = PSYCHOACOUSTIC_V1.precision_bits;
+    let lattice = PSYCHOACOUSTIC_V1.lattice_hz;
     let quiet = 20.0 * QUIET_LEVEL.log10();
     format!(
         r#"USAGE:
@@ -79,7 +80,7 @@ RENDER:
   point where a series is truncated, and the encoding of a `.wav`, integer PCM
   at n bits up to 16 and 32-bit float above. `--rate <hz>` is the output's
   sample rate and sets only the instants it is read at: filters, loops,
-  solvers and `rand` step on the profile's 44.1 kHz lattice, where `1sp` is
+  solvers and `rand` step on the profile's {lattice} Hz lattice, where `1sp` is
   one step, and a read between two lattice samples is a windowed-sinc reading
   of them, the shortest of the profile's family whose bound meets its
   precision. Off the lattice's rate, what holds no state, a crop or a sum
@@ -212,7 +213,7 @@ EXAMPLES:
 
 OUTPUT:
   {{"status": "success", "data": {{"target": "@master([0, 8b])", "sample_rate":
-  44100, "bits": 24, "bounds": {{"items": [...]}}, "profile":
+  {DEFAULT_SAMPLE_RATE}, "bits": {bits}, "bounds": {{"items": [...]}}, "profile":
   "psychoacoustic-v1", "interval": {{"start_secs":
   0, "end_secs": 16}}, "label": {{...}}, "written": {{"items": [...]}},
   "representations": {{"ledger": {{...}}}}, "diagnostics": {{"items": []}}}},

@@ -454,7 +454,7 @@ fn shelled(
             )));
         }
     }
-    let mut held = prepared(&wrapped, STREAMED)?;
+    let mut held = prepared(&wrapped, STREAMED, config.profile)?;
     terms.typed(&held.instances, &mut held.tys);
     let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
     let audio = schedule.materialize.clone();

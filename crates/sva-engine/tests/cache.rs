@@ -12,9 +12,10 @@ use sva_engine::{
 };
 use sva_formula::hash::hash_closed_form_under;
 use sva_formula::{ClosedForm, Origin, Var};
+use sva_samples::LATTICE_8K;
 
 const SECONDS: f64 = 0.05;
-const RATE: u32 = 44_100;
+const RATE: u32 = LATTICE_8K.lattice_hz;
 
 fn store_all() -> Cache {
     Cache::new()
@@ -22,8 +23,13 @@ fn store_all() -> Cache {
 
 fn rendered(dir: &Path, root: &str, cache: Option<&Cache>) -> Render {
     let graph = sva_ast::parse_composition(dir).expect("a composition that parses");
-    render(&graph, root, RenderConfig::seconds(RATE, SECONDS), cache)
-        .unwrap_or_else(|e| panic!("rendering `{root}`: {e}"))
+    render(
+        &graph,
+        root,
+        RenderConfig::seconds(RATE, SECONDS).under(LATTICE_8K),
+        cache,
+    )
+    .unwrap_or_else(|e| panic!("rendering `{root}`: {e}"))
 }
 
 /// Every node held as samples, which is what a reading that consumes buffers asks for.
@@ -39,7 +45,9 @@ fn all_of(dir: &Path, root: &str, nodes: &[&str], cache: Option<&Cache>) -> Rend
     render(
         &graph,
         root,
-        RenderConfig::seconds(RATE, SECONDS).asking(asks),
+        RenderConfig::seconds(RATE, SECONDS)
+            .under(LATTICE_8K)
+            .asking(asks),
         cache,
     )
     .unwrap_or_else(|e| panic!("rendering `{root}`: {e}"))
@@ -190,7 +198,7 @@ fn a_rate_change_keys_a_new_buffer_but_reuses_the_rate_free_law() {
     let first = render(
         &graph,
         "master",
-        RenderConfig::seconds(RATE, SECONDS),
+        RenderConfig::seconds(RATE, SECONDS).under(LATTICE_8K),
         Some(&cache),
     )
     .expect("a render");
@@ -206,7 +214,7 @@ fn a_rate_change_keys_a_new_buffer_but_reuses_the_rate_free_law() {
     let second = render(
         &graph,
         "master",
-        RenderConfig::seconds(RATE * 2, SECONDS),
+        RenderConfig::seconds(RATE * 2, SECONDS).under(LATTICE_8K),
         Some(&cache),
     )
     .expect("a render at another rate");
@@ -264,7 +272,12 @@ fn a_loop_of_refs_refuses_rather_than_substituting_forever() {
         ],
     );
     let graph = sva_ast::parse_composition(&dir).expect("a composition");
-    let refused = render(&graph, "master", RenderConfig::seconds(RATE, SECONDS), None);
+    let refused = render(
+        &graph,
+        "master",
+        RenderConfig::seconds(RATE, SECONDS).under(LATTICE_8K),
+        None,
+    );
     let Err(refused) = refused else {
         panic!("a loop of refs has no law");
     };
@@ -371,7 +384,7 @@ fn a_sampled_node_is_stored_and_answered_from_the_store() {
         "the node under test really is sampled"
     );
     let id = cold.id("acc").expect("acc types");
-    let key = sva_engine::precise_key(
+    let key = sva_engine::profiled_key(
         sva_engine::buffer_key(
             sva_engine::identity(&cold.tys, id).expect("acc has an identity"),
             RATE,
@@ -379,7 +392,7 @@ fn a_sampled_node_is_stored_and_answered_from_the_store() {
             cold.tys.ty(id).width as usize,
             sva_samples::AliasScore::NotAsked,
         ),
-        24,
+        &LATTICE_8K,
     );
     assert!(cache.holds(key), "the sampled node is in the store");
 
@@ -394,7 +407,7 @@ fn over(dir: &Path, root: &str, seconds: f64, cache: &Cache) -> Render {
     render(
         &graph,
         root,
-        RenderConfig::seconds(RATE, seconds),
+        RenderConfig::seconds(RATE, seconds).under(LATTICE_8K),
         Some(cache),
     )
     .unwrap_or_else(|e| panic!("rendering `{root}` for {seconds}s: {e}"))

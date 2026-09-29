@@ -57,7 +57,7 @@ impl<'a> Walk<'a> {
         match self.typing.value(id) {
             Value::Read { source, at, .. } => {
                 // A scaled or moving read switches nowhere: its prefix is its whole identity.
-                if let Some(lead) = lead(at) {
+                if let Some(lead) = lead(at, self.rate) {
                     let moved = self.change_points(*source);
                     out.extend(moved.into_iter().map(|c| c.saturating_sub(lead)));
                 }
@@ -148,7 +148,7 @@ impl<'a> Walk<'a> {
             Value::Read {
                 source, at: when, ..
             } => {
-                let lead = lead(when).expect("a read with switches is at scale one");
+                let lead = lead(when, self.rate).expect("a read with switches is at scale one");
                 sink.text("read");
                 sink.hash(self.prefix_identity(*source, at.saturating_add(lead))?);
                 super::identity::when(&mut sink, typing, *when);
@@ -233,11 +233,10 @@ impl<'a> Walk<'a> {
 }
 
 /// How far past its own sample a read at scale one reaches its source, taps and all.
-fn lead(at: &When) -> Option<i64> {
+fn lead(at: &When, lattice: u32) -> Option<i64> {
     let When::Time(time) = at else {
         return None;
     };
-    let lattice = crate::loops::lattice();
     let map = time.map(lattice, lattice)?;
     (map.a == map.d).then(|| map.lead(sva_samples::plain().half_width()))
 }
@@ -382,6 +381,9 @@ fn constant_identity(v: f64, var: sva_formula::Var) -> Hash {
 #[cfg(test)]
 mod tests {
     use crate::render::{Render, RenderConfig, plan};
+    use sva_samples::LATTICE_8K;
+
+    const RATE: u32 = LATTICE_8K.lattice_hz;
 
     const PAD: &str = "release = inf\nlowpass(sample(0.3*vel*saw(f0)*(crop(1, 0s, release) + crop(exp(-(t - \
         release)/0.3), release, 3600s))), cutoff=900, q=0.9)\n";
@@ -410,7 +412,7 @@ mod tests {
             )
             .insert("late", "@env(t - 100sp)\n");
         let g = sva_ast::load(&files).expect("a composition");
-        plan(&g, root, RenderConfig::seconds(44_100, 1.0)).expect("a plan")
+        plan(&g, root, RenderConfig::seconds(RATE, 1.0).under(LATTICE_8K)).expect("a plan")
     }
 
     fn asked<T>(root: &str, ask: impl FnOnce(&mut super::Walk, sva_formula::NodeId) -> T) -> T {
@@ -424,7 +426,7 @@ mod tests {
     fn a_released_note_is_the_held_note_before_its_release() {
         let held =
             asked("held", |walk, id| walk.prefix_identity(id, i64::MAX)).expect("an identity");
-        let at = (0.61237f64 * 44_100.0).ceil() as i64;
+        let at = (0.61237 * f64::from(RATE)).ceil() as i64;
         asked("released", |walk, id| {
             assert!(walk.change_points(id).contains(&at));
             for (before, same) in [(1, true), (at, true), (at + 1, false)] {
@@ -441,7 +443,8 @@ mod tests {
         assert!(asked("pad_released", |walk, id| walk.change_points(id)).is_empty());
         let now = asked("env", |walk, id| walk.change_points(id));
         let late = asked("late", |walk, id| walk.change_points(id));
-        assert_eq!(now, [11_025, 17_639].into());
+        let rate = i64::from(RATE);
+        assert_eq!(now, [rate / 4, rate * 2 / 5 - 1].into());
         assert_eq!(late, now.iter().map(|c| c + 100).collect());
     }
 }

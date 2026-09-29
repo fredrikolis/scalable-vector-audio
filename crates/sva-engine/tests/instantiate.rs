@@ -4,7 +4,7 @@ mod fixtures;
 
 use fixtures::graph_of;
 use sva_engine::instantiate::{Instances, SIGNAL_PARAM, from_roots, instantiate};
-use sva_engine::{BindingFault, EngineError};
+use sva_engine::{BindingFault, EngineError, PSYCHOACOUSTIC_V1};
 
 fn fault_of(e: EngineError) -> BindingFault {
     match e {
@@ -21,7 +21,7 @@ fn named(i: &Instances) -> Vec<String> {
 #[test]
 fn an_unparameterized_composition_instantiates_under_its_own_paths() {
     let g = graph_of("plain", &[("kick", "sin(t)\n"), ("song", "@kick*0.5\n")]);
-    let i = instantiate(&g, "song").unwrap();
+    let i = instantiate(&g, "song", PSYCHOACOUSTIC_V1).unwrap();
     assert_eq!(
         named(&i),
         vec!["kick", "song"],
@@ -43,7 +43,7 @@ fn each_argument_tuple_is_its_own_instance_and_equal_tuples_share_one() {
             ),
         ],
     );
-    let i = instantiate(&g, "song").unwrap();
+    let i = instantiate(&g, "song", PSYCHOACOUSTIC_V1).unwrap();
     assert_eq!(
         named(&i),
         vec!["gain(k=2, x=@src)", "gain(k=3, x=@src)", "song", "src"],
@@ -64,8 +64,12 @@ fn a_name_a_different_tuple_already_holds_takes_the_next_suffix() {
             ("song", "@f(t, k=1) + @f(t, k=2)\n"),
         ],
     );
-    let (i, roots) =
-        from_roots(&g, &["f(k=2)".to_string(), "song".to_string()]).expect("two roots");
+    let (i, roots) = from_roots(
+        &g,
+        &["f(k=2)".to_string(), "song".to_string()],
+        PSYCHOACOUSTIC_V1,
+    )
+    .expect("two roots");
     assert_eq!(roots, vec!["f(k=2)".to_string(), "song".to_string()]);
     assert_eq!(i.origin("f(k=2)"), Some("f(k=2)"), "the file took the name");
     assert!(
@@ -88,7 +92,7 @@ fn an_unbound_variable_and_an_unused_argument_both_refuse() {
         ],
     );
     assert_eq!(
-        fault_of(instantiate(&g, "song").unwrap_err()),
+        fault_of(instantiate(&g, "song", PSYCHOACOUSTIC_V1).unwrap_err()),
         BindingFault::Unbound("f".to_string(), "k".to_string())
     );
 
@@ -101,7 +105,7 @@ fn an_unbound_variable_and_an_unused_argument_both_refuse() {
         ],
     );
     assert_eq!(
-        fault_of(instantiate(&g, "song").unwrap_err()),
+        fault_of(instantiate(&g, "song", PSYCHOACOUSTIC_V1).unwrap_err()),
         BindingFault::Unused("f".to_string(), "gain".to_string())
     );
 }
@@ -118,7 +122,9 @@ fn a_missing_argument_is_located_at_the_invocation_rather_than_at_the_free_varia
             ("song", "0.5 + @fx/gain(t, x=@src)\n"),
         ],
     );
-    let EngineError::Binding { node, span, fault } = instantiate(&g, "song").unwrap_err() else {
+    let EngineError::Binding { node, span, fault } =
+        instantiate(&g, "song", PSYCHOACOUSTIC_V1).unwrap_err()
+    else {
         panic!("expected a binding refusal")
     };
     assert_eq!(node, "song");
@@ -140,11 +146,11 @@ fn the_free_names_and_a_series_index_bind_without_an_argument() {
             "sum(k, 1, inf, sin(2*pi*k*220*t)/k) + exp(i*2*pi*f) + pv(f) + delta(t, k=1)\n",
         )],
     );
-    assert!(instantiate(&g, "song").is_ok());
+    assert!(instantiate(&g, "song", PSYCHOACOUSTIC_V1).is_ok());
 
     let loose = graph_of("freenames-loose", &[("song", "sin(k*t)\n")]);
     assert_eq!(
-        fault_of(instantiate(&loose, "song").unwrap_err()),
+        fault_of(instantiate(&loose, "song", PSYCHOACOUSTIC_V1).unwrap_err()),
         BindingFault::Unbound("song".to_string(), "k".to_string()),
         "an index is bound by its own series, not by the file"
     );
@@ -157,7 +163,7 @@ fn a_parameter_may_not_take_a_name_the_language_already_binds() {
         &[("f", "x*2\n"), ("song", "@f(t, x=1, sin=2)\n")],
     );
     assert_eq!(
-        fault_of(instantiate(&g, "song").unwrap_err()),
+        fault_of(instantiate(&g, "song", PSYCHOACOUSTIC_V1).unwrap_err()),
         BindingFault::Reserved("sin".to_string())
     );
 }
@@ -171,7 +177,7 @@ fn a_self_argument_and_a_shifted_read_of_a_stateful_one_refuse() {
         &[("f", "x*2\n"), ("song", "@f(t, x=self(t - 1sp))\n")],
     );
     assert_eq!(
-        fault_of(instantiate(&g, "song").unwrap_err()),
+        fault_of(instantiate(&g, "song", PSYCHOACOUSTIC_V1).unwrap_err()),
         BindingFault::SelfInArgument("x".to_string())
     );
 
@@ -184,7 +190,7 @@ fn a_self_argument_and_a_shifted_read_of_a_stateful_one_refuse() {
         ],
     );
     assert_eq!(
-        fault_of(instantiate(&g, "song").unwrap_err()),
+        fault_of(instantiate(&g, "song", PSYCHOACOUSTIC_V1).unwrap_err()),
         BindingFault::ShiftedRead("x".to_string(), "lp".to_string())
     );
 }
@@ -199,7 +205,7 @@ fn a_chained_or_plain_call_to_a_file_binds_its_receiver_to_the_signal_parameter(
             ("song", "@src.gain(k=2) + gain(@src, k=2)\n"),
         ],
     );
-    let i = instantiate(&g, "song").unwrap();
+    let i = instantiate(&g, "song", PSYCHOACOUSTIC_V1).unwrap();
     assert!(
         i.holds("gain(k=2, x=@src)"),
         "both spellings reach one instance: {:?}",
@@ -219,7 +225,7 @@ fn a_bareword_invocation_binding_one_name_twice_refuses_as_a_duplicate() {
         ],
     );
     assert_eq!(
-        fault_of(instantiate(&g, "song").unwrap_err()),
+        fault_of(instantiate(&g, "song", PSYCHOACOUSTIC_V1).unwrap_err()),
         BindingFault::Duplicate("k".to_string())
     );
 }
@@ -235,7 +241,7 @@ fn a_second_positional_argument_refuses_rather_than_guessing_an_order() {
         ],
     );
     assert!(matches!(
-        instantiate(&g, "song"),
+        instantiate(&g, "song", PSYCHOACOUSTIC_V1),
         Err(EngineError::BadArity(_))
     ));
 }
@@ -250,7 +256,7 @@ fn two_parameters_sharing_seven_bytes_and_a_length_each_answer() {
             ("song", "@f(t, abcdefg1=2, abcdefg2=3)\n"),
         ],
     );
-    let i = instantiate(&g, "song").unwrap();
+    let i = instantiate(&g, "song", PSYCHOACOUSTIC_V1).unwrap();
     let copies = i.exprs();
     assert_eq!(
         sva_ast::render_expr(&copies["f(abcdefg1=2, abcdefg2=3)"]),
@@ -269,7 +275,7 @@ fn bindings_holds_the_override_a_default_never_reaches() {
             ("song", "@f(t, x=@src, k=2)\n"),
         ],
     );
-    let i = instantiate(&g, "song").unwrap();
+    let i = instantiate(&g, "song", PSYCHOACOUSTIC_V1).unwrap();
     let path = i.paths().find(|p| p.starts_with("f(")).unwrap().to_string();
     let vars: Vec<(String, String)> = i
         .bindings(&path)
@@ -301,7 +307,7 @@ fn a_resolved_walk_reads_as_the_substituted_copy_did() {
             ("song", "@outer(t, z=@src(t)*3)\n"),
         ],
     );
-    let i = instantiate(&g, "song").unwrap();
+    let i = instantiate(&g, "song", PSYCHOACOUSTIC_V1).unwrap();
     let copies = i.exprs();
     let printed: Vec<String> = copies
         .iter()
@@ -324,7 +330,7 @@ fn a_resolved_walk_reads_as_the_substituted_copy_did() {
 fn a_default_may_not_take_a_name_the_language_already_binds() {
     let g = graph_of("shadowed", &[("song", "crop = 5\ncrop(sin(t), 0s, 1s)\n")]);
     assert_eq!(
-        fault_of(instantiate(&g, "song").unwrap_err()),
+        fault_of(instantiate(&g, "song", PSYCHOACOUSTIC_V1).unwrap_err()),
         BindingFault::Reserved("crop".to_string())
     );
 }
@@ -344,7 +350,7 @@ fn a_default_may_hold_a_written_signal_and_may_not_name_one() {
             &[("song", &format!("held = {body}\nheld*0.5\n"))],
         );
         assert!(
-            instantiate(&g, "song").is_ok(),
+            instantiate(&g, "song", PSYCHOACOUSTIC_V1).is_ok(),
             "`{body}` is written out, so no invocation has to resolve it"
         );
     }
@@ -356,7 +362,8 @@ fn a_default_may_hold_a_written_signal_and_may_not_name_one() {
             ("song", "held = @tone\nheld*0.5\n"),
         ],
     );
-    let refused = instantiate(&g, "song").expect_err("a named signal is no number");
+    let refused =
+        instantiate(&g, "song", PSYCHOACOUSTIC_V1).expect_err("a named signal is no number");
     assert_eq!(refused.code(), "engine.default_reads_buffer");
 }
 
@@ -372,7 +379,8 @@ fn a_default_may_read_a_scalar_variable() {
             ("master", "@partial(t)\n"),
         ],
     );
-    let held = instantiate(&g, "master").expect("a scalar ref folds in a default");
+    let held =
+        instantiate(&g, "master", PSYCHOACOUSTIC_V1).expect("a scalar ref folds in a default");
     assert!(
         held.paths().any(|p| p.starts_with("partial(")),
         "one instance, its default resolved: {:?}",
@@ -387,7 +395,8 @@ fn a_default_may_read_a_scalar_variable() {
             ("master", "@voice(t)\n"),
         ],
     );
-    let refused = instantiate(&g, "master").expect_err("a signal is not a default");
+    let refused =
+        instantiate(&g, "master", PSYCHOACOUSTIC_V1).expect_err("a signal is not a default");
     assert_eq!(refused.code(), "engine.default_reads_buffer");
 
     let g = graph_of(
@@ -410,7 +419,8 @@ sin(2*pi*f0*t)
             ),
         ],
     );
-    let refused = instantiate(&g, "master").expect_err("a quotient at zero is no number");
+    let refused =
+        instantiate(&g, "master", PSYCHOACOUSTIC_V1).expect_err("a quotient at zero is no number");
     assert_eq!(refused.code(), "engine.default_reads_buffer");
 }
 
@@ -423,7 +433,8 @@ fn a_default_may_read_a_bound_default() {
         ("master", "@motif(t) + @motif(t, key=300)\n"),
     ];
     let g = graph_of("chained-defaults", files);
-    let held = instantiate(&g, "master").expect("a default reads the line above it");
+    let held =
+        instantiate(&g, "master", PSYCHOACOUSTIC_V1).expect("a default reads the line above it");
 
     let mut named: Vec<String> = held
         .paths()
@@ -453,7 +464,8 @@ fn a_series_index_shadows_a_bound_default() {
         ("master", "@motif(t) + @motif(t, key=300)\n"),
     ];
     let g = graph_of("series-shadows-default", files);
-    let held = instantiate(&g, "master").expect("a series over a parameter's name");
+    let held =
+        instantiate(&g, "master", PSYCHOACOUSTIC_V1).expect("a series over a parameter's name");
 
     let mut named: Vec<String> = held
         .paths()
