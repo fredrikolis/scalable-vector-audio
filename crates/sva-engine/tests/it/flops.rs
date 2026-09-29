@@ -283,3 +283,28 @@ fn a_pointwise_root_prices_at_least_its_children() {
         tree.rows
     );
 }
+
+/// A crop's operand is walked only inside its window, so each cropped term of a sum is priced
+/// over its own support, not over the whole sum's.
+#[test]
+fn a_cropped_term_is_priced_over_its_own_support() {
+    let term = "tanh(3*sin(2*pi*55*t))";
+    let price = |name: &str, text: String, secs: f64| {
+        let tree = counted(&rendered(name, &[("node", &text)], counting(secs, None)));
+        assert_eq!(tree.rows[0].route, "point sampling", "{name}");
+        tree.total
+    };
+    let alone = price("flops-crop-alone", format!("crop({term}, 0s, 1s)\n"), 1.0);
+    let apart = price(
+        "flops-crop-apart",
+        format!("crop({term}, 0s, 1s) + crop({term}, 3s, 4s)\n"),
+        4.0,
+    );
+    let rate = u128::from(RATE);
+    assert_eq!(
+        apart,
+        4 * rate * 3 + 2 * (alone - rate),
+        "an add and two crops at each of 4 s of instants, and each term's own operand only \
+         over the second its crop holds"
+    );
+}

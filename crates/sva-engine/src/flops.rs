@@ -168,7 +168,7 @@ fn read_as(
         }
     };
     Some((
-        plan.flops(len).saturating_sub(carried),
+        plan.flops(rate, extent).saturating_sub(carried),
         plan.rule().as_str(),
         shared,
     ))
@@ -302,7 +302,7 @@ fn closed_form_flops(
     });
     match plan {
         Some(plan) => (
-            plan.flops(len) + scored(render, id, &plan, len),
+            plan.flops(rate, extent) + scored(render, id, &plan, rate, extent),
             plan.rule().as_str(),
         ),
         None => (
@@ -316,16 +316,19 @@ fn closed_form_flops(
 /// the operation over each node it reads, each of those at its own price.
 fn pointwise_flops(render: &Render, id: NodeId, extent: Extent, paid: &mut Carried) -> u128 {
     let own = match render.tys.value(id) {
-        crate::typing::Value::ClosedForm(form) => plan::point_nodes(&form.body),
-        _ => ops_of(render, id),
+        crate::typing::Value::ClosedForm(form) => plan::point_flops(
+            &form.body,
+            1.0 / f64::from(render.rate()),
+            (extent.start, extent.end),
+        ),
+        _ => ops_of(render, id) as u128 * extent.len() as u128,
     };
-    schedule::read_operands(&render.tys, id).into_iter().fold(
-        own as u128 * extent.len() as u128,
-        |sum, read| match paid.opens(read) {
+    schedule::read_operands(&render.tys, id)
+        .into_iter()
+        .fold(own, |sum, read| match paid.opens(read) {
             true => sum + costed_at(render, read, extent, paid).0,
             false => sum,
-        },
-    )
+        })
 }
 
 /// One streamed sample of a node no row takes, priced as a whole render prices one sample of
@@ -354,9 +357,11 @@ pub struct Work {
 }
 
 /// Two references, because the render takes two: the label's, and the reading's own.
-fn scored(render: &Render, id: NodeId, plan: &plan::Plan, len: usize) -> u128 {
+fn scored(render: &Render, id: NodeId, plan: &plan::Plan, rate: u32, extent: Extent) -> u128 {
     match render.alias_oversample(id) {
-        Some(asked) => plan.alias_flops(len) + plan.alias_flops_at(len, asked as usize),
+        Some(asked) => {
+            plan.alias_flops(rate, extent) + plan.alias_flops_at(rate, extent, asked as usize)
+        }
         None => 0,
     }
 }

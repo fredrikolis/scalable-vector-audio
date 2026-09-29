@@ -59,10 +59,10 @@ pub enum Plan {
     Spectrum(Box<SpectralSum>),
     Lines(Box<LinePlan>),
     Sampled(Box<Sampled>),
-    /// Row 4 over the written closed form: every node the truncation leaves, at every instant.
+    /// Row 4 over the written closed form: every node the truncation leaves, at each instant
+    /// it is walked.
     Point {
         written: Box<ClosedForm>,
-        nodes: usize,
         width: usize,
     },
     /// A sum whose addends name different rows, each taking its own.
@@ -194,40 +194,123 @@ fn point_plan(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Plan, C
     };
     let width = point::width_of(&written.body, &point::NoRefs).max(1);
     Ok(Plan::Point {
-        nodes: point_nodes(&written.body),
         written: Box::new(written),
         width,
     })
 }
 
-/// What one instant's evaluation walks over every component: a join walks that component's branch.
-pub fn point_nodes(f: &Body) -> usize {
+/// The nodes every component's evaluation walks over the samples `[from, to)` of a grid `step`
+/// apart.
+pub fn point_flops(f: &Body, step: f64, span: Window) -> u128 {
     let width = point::width_of(f, &point::NoRefs).max(1);
-    (0..width).map(|c| point_work(f, c).0).sum()
+    (0..width).map(|c| point_work(f, c, step, span).0).sum()
 }
 
-/// One component's `(nodes, waves)` at one instant: a run is priced by its Horner steps and
-/// turns its lines; every other node is one.
-pub fn point_work(f: &Body, component: usize) -> (usize, usize) {
-    let add = |a: (usize, usize), b: (usize, usize)| (a.0 + b.0, a.1 + b.1);
-    let branch = |part: &Part, c: usize| add((1, 0), point_work(&part.body, c));
+/// One component's `(nodes, waves)` over the samples `[from, to)` of a grid `step` apart, as
+/// `point::eval_body` walks them: a run is priced by its Horner steps and turns its lines,
+/// every other node is one, and a crop's operand counts only at the instants its window holds.
+pub fn point_work(f: &Body, component: usize, step: f64, span: Window) -> (u128, u128) {
+    walked(f, component, &Clock::grid(step), span)
+}
+
+/// The instant a subterm is read at, from the grid's index: `None` once a warp moves it.
+#[derive(Clone)]
+struct Clock {
+    step: f64,
+    shifts: Option<Vec<f64>>,
+}
+
+impl Clock {
+    fn grid(step: f64) -> Clock {
+        Clock {
+            step,
+            shifts: Some(Vec::new()),
+        }
+    }
+
+    fn shifted(&self, by: f64) -> Clock {
+        Clock {
+            step: self.step,
+            shifts: self
+                .shifts
+                .as_ref()
+                .map(|held| [held.as_slice(), &[by]].concat()),
+        }
+    }
+
+    fn warped(&self) -> Clock {
+        Clock {
+            step: self.step,
+            shifts: None,
+        }
+    }
+
+    /// Where a crop's gain is not zero: inside `[l, r)` less the instants a shoulder opens at.
+    fn cropped(&self, span: Window, crop: &Body) -> Window {
+        let (
+            Body::Crop {
+                l, r, rise, fall, ..
+            },
+            Some(shifts),
+        ) = (crop, &self.shifts)
+        else {
+            return span;
+        };
+        let at = |n: i64| shifts.iter().fold(n as f64 * self.step, |t, by| t - by);
+        let (l, r) = (l.value(), r.value());
+        let (mut from, mut to) = active::meet(span, active::between(l, r, at));
+        let shut = |n: i64| point::crop_gain(at(n), l, r, *rise, *fall) == 0.0;
+        while from < to && shut(from) {
+            from += 1;
+        }
+        while from < to && shut(to - 1) {
+            to -= 1;
+        }
+        (from, to)
+    }
+}
+
+fn walked(f: &Body, component: usize, clock: &Clock, span: Window) -> (u128, u128) {
+    let n = (i128::from(span.1) - i128::from(span.0)).max(0) as u128;
+    if n == 0 {
+        return (0, 0);
+    }
+    let add = |a: (u128, u128), b: (u128, u128)| (a.0 + b.0, a.1 + b.1);
+    let branch = |part: &Part, c: usize, clock: &Clock, span: Window| {
+        add((n, 0), walked(&part.body, c, clock, span))
+    };
     match f {
-        Body::Run(run) => (super::run::steps(run), run.len()),
+        Body::Run(run) => (super::run::steps(run) as u128 * n, run.len() as u128 * n),
         Body::Join(parts) => {
             let widths: Vec<usize> = parts
                 .iter()
                 .map(|p| point::width_of(&p.body, &point::NoRefs))
                 .collect();
             match point::lane_of(&widths, component) {
-                Some((at, inner)) => branch(&parts[at], inner),
-                None => (1, 0),
+                Some((at, inner)) => branch(&parts[at], inner, clock, span),
+                None => (n, 0),
             }
         }
-        Body::Channel(of, k) => branch(of, usize::from(*k)),
+        Body::Channel(of, k) => branch(of, usize::from(*k), clock, span),
+        Body::Crop { of, .. } => branch(of, component, clock, clock.cropped(span, f)),
+        // `point::product` walks no factor past one a shut crop zeroed.
+        Body::Mul(parts) => {
+            let mut live = span;
+            parts.iter().fold((n, 0), |held, part| {
+                let walked = walked(&part.body, component, clock, live);
+                live = clock.cropped(live, &part.body);
+                add(held, walked)
+            })
+        }
+        Body::Shift { by, of } => branch(of, component, &clock.shifted(*by), span),
+        Body::Warp { at, of } => add(
+            branch(at, component, clock, span),
+            walked(&of.body, component, &clock.warped(), span),
+        ),
         other => sva_formula::closed_form::children(other)
             .iter()
-            .map(|part| point_work(&part.body, component))
-            .fold((1, 0), add),
+            .map(|part| walked(&part.body, component, clock, span))
+            .fold((n, 0), add),
     }
 }
 
@@ -536,26 +619,38 @@ impl Plan {
         }
     }
 
-    pub fn flops(&self, len: usize) -> u128 {
+    pub fn flops(&self, rate: u32, extent: Extent) -> u128 {
+        let len = extent.len();
         match self {
             Plan::Spectrum(_) => transform_flops(len),
             Plan::Lines(found) => found.flops(len),
             Plan::Sampled(held) => held.lanes.iter().map(|lane| lane.flops()).sum(),
-            Plan::Point { nodes, .. } => *nodes as u128 * len as u128,
-            Plan::Added(parts) => parts.iter().map(|part| part.flops(len)).sum(),
+            Plan::Point { written, .. } => point_flops(
+                &written.body,
+                1.0 / f64::from(rate),
+                (extent.start, extent.end),
+            ),
+            Plan::Added(parts) => parts.iter().map(|part| part.flops(rate, extent)).sum(),
         }
     }
 
-    pub fn alias_flops(&self, len: usize) -> u128 {
-        self.alias_flops_at(len, super::ALIAS_OVERSAMPLE)
+    pub fn alias_flops(&self, rate: u32, extent: Extent) -> u128 {
+        self.alias_flops_at(rate, extent, super::ALIAS_OVERSAMPLE)
     }
 
     /// The multiple a reading names need not be the label's `ALIAS_OVERSAMPLE`. Every component
     /// is scored, so every component's reference is paid for.
-    pub fn alias_flops_at(&self, len: usize, oversample: usize) -> u128 {
-        let reference = (len * oversample) as u128;
+    pub fn alias_flops_at(&self, rate: u32, extent: Extent, oversample: usize) -> u128 {
+        let reference = (extent.len() * oversample) as u128;
         match self {
-            Plan::Point { nodes, .. } => *nodes as u128 * reference,
+            Plan::Point { written, .. } => {
+                let finer = oversample as i64;
+                point_flops(
+                    &written.body,
+                    1.0 / (f64::from(rate) * oversample as f64),
+                    (extent.start * finer, extent.end * finer),
+                )
+            }
             Plan::Sampled(held) if held.rule == Rule::PointSampled => held
                 .lanes
                 .iter()
@@ -563,7 +658,7 @@ impl Plan {
                 .sum(),
             Plan::Added(parts) => parts
                 .iter()
-                .map(|part| part.alias_flops_at(len, oversample))
+                .map(|part| part.alias_flops_at(rate, extent, oversample))
                 .sum(),
             Plan::Spectrum(_) | Plan::Lines(_) | Plan::Sampled(_) => 0,
         }

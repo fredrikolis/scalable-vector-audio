@@ -74,7 +74,7 @@ impl Rows {
     /// What writing `[from, to)` of every component takes, as `(priced flops, waves)`.
     pub fn work(&self, from: i64, to: i64) -> (u128, u128) {
         (0..self.width).fold((0, 0), |held, c| {
-            let (priced, waves) = worked(&self.row, c, from, to);
+            let (priced, waves) = worked(&self.row, c, from, to, 1.0 / f64::from(self.rate));
             (held.0 + priced, held.1 + waves)
         })
     }
@@ -99,7 +99,7 @@ impl Rows {
 
 /// `(priced flops, waves)` one component's row takes over `[from, to)`: a line, a node walked
 /// or an atom inside its spans, a sample each, as a whole render prices them.
-fn worked(row: &Row, c: usize, from: i64, to: i64) -> (u128, u128) {
+fn worked(row: &Row, c: usize, from: i64, to: i64, step: f64) -> (u128, u128) {
     let n = (to - from) as u128;
     let times = |(priced, waves): (usize, usize), n: u128| (priced as u128 * n, waves as u128 * n);
     match row {
@@ -111,13 +111,13 @@ fn worked(row: &Row, c: usize, from: i64, to: i64) -> (u128, u128) {
                 active::evaluated(&windows[c], &inside(spans[c].as_deref(), (from, to)));
             (evaluated, evaluated)
         }
-        Row::Point { written, .. } => times(plan::point_work(&written.body, c), n),
+        Row::Point { written, .. } => plan::point_work(&written.body, c, step, (from, to)),
         Row::Added(parts) => {
             parts
                 .iter()
                 .fold((0, 0), |held, (part, width)| match lane(*width, c) {
                     Some(lane) => {
-                        let (priced, waves) = worked(part, lane, from, to);
+                        let (priced, waves) = worked(part, lane, from, to, step);
                         (held.0 + priced, held.1 + waves)
                     }
                     None => held,

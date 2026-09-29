@@ -26,11 +26,7 @@ pub(crate) fn window(a: &SpectralAtom, step: f64) -> Window {
     }
     let mut held = OPEN;
     if let Some(ind) = a.ind {
-        let (l, r) = (ind.l.value(), ind.r.value());
-        held = meet(
-            held,
-            (start(|n| l <= at(n, step)), end(|n| r <= at(n, step))),
-        );
+        held = meet(held, between(ind.l.value(), ind.r.value(), |n| at(n, step)));
     }
     if a.pole.is_some() || !reaches_finite(a, step) {
         return held;
@@ -73,7 +69,12 @@ fn reaches_finite(a: &SpectralAtom, step: f64) -> bool {
     (a.c.re.abs() + a.c.im.abs()) * farthest.powi(i32::from(a.poly)) < FINITE
 }
 
-fn meet(a: Window, b: Window) -> Window {
+/// The indices whose instant, increasing in the index, lies in `[l, r)`.
+pub(crate) fn between(l: f64, r: f64, at: impl Fn(i64) -> f64) -> Window {
+    (start(|n| l <= at(n)), end(|n| r <= at(n)))
+}
+
+pub(crate) fn meet(a: Window, b: Window) -> Window {
     let held = (a.0.max(b.0), a.1.min(b.1));
     match held.0 < held.1 {
         true => held,

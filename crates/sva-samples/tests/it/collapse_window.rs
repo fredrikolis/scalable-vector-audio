@@ -51,7 +51,7 @@ fn a_cropped_noise_series_costs_its_uncropped_route() {
         * len as u128;
     let cost = collapse::plan::of(&sum, RATE, extent, &PSYCHOACOUSTIC_V1, len)
         .expect("a row")
-        .flops(len);
+        .flops(RATE, extent);
     assert!(
         cost < swept,
         "a cropped series costs its placed route, not {swept} for a sweep: {cost}"
@@ -109,7 +109,7 @@ fn a_windowed_series_plus_a_line_keeps_its_route() {
         let sum = sva_formula::normalize_closed_form(&form(body)).expect("a spectral sum");
         sva_samples::collapse::plan::of(&sum, RATE, extent, &PSYCHOACOUSTIC_V1, len)
             .expect("a row")
-            .flops(len)
+            .flops(RATE, extent)
     };
     let sum = || {
         Body::Add(vec![
@@ -176,7 +176,7 @@ fn a_shouldered_noise_series_places_by_its_route() {
         * len as u128;
     let cost = sva_samples::collapse::plan::of(&sum, RATE, extent, &PSYCHOACOUSTIC_V1, len)
         .expect("a row")
-        .flops(len);
+        .flops(RATE, extent);
     assert!(
         cost < swept,
         "a shouldered series costs its placed route, not {swept} for a sweep: {cost}"
