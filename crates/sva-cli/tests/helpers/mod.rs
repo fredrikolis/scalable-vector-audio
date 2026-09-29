@@ -50,7 +50,7 @@ pub fn buffer(r: &Rendered, node: &str) -> Buffer {
     let id = r.render.id(node).unwrap_or_else(|| panic!("{node} typed"));
     r.render
         .output(id)
-        .unwrap_or_else(|| panic!("{node} rendered"))
+        .unwrap_or_else(|e| panic!("{node} rendered: {e}"))
 }
 
 pub fn plane(r: &Rendered, node: &str) -> Vec<f64> {

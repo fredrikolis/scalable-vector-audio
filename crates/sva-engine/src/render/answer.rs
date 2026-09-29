@@ -74,9 +74,10 @@ pub fn answer(
             })
         }
         _ => {
-            let buffer = render
-                .output(node)
-                .ok_or_else(|| unmaterialized(render, node, representation))?;
+            if render.buffer(node).is_none() {
+                return Err(unmaterialized(render, node, representation));
+            }
+            let buffer = render.output(node)?;
             Ok(Answer::whole(
                 measured(render, node, representation, &buffer)?,
                 Source::Measured,
@@ -109,8 +110,8 @@ pub(super) fn on_the_grid(
     render: &Render,
     node: sva_formula::NodeId,
 ) -> Result<Buffer, EngineError> {
-    if let Some(held) = render.output(node) {
-        return Ok(held);
+    if render.buffer(node).is_some() {
+        return render.output(node);
     }
     let extent = render.output.ok_or_else(|| {
         render.unranged.clone().unwrap_or_else(|| {
@@ -942,6 +943,15 @@ fn too_narrow(render: &Render, node: sva_formula::NodeId, need: usize, held: usi
         node,
         "type.width_mismatch",
         format!("this reading needs {need} components and the node holds {held}"),
+    )
+}
+
+pub(super) fn unheld(render: &Render, node: sva_formula::NodeId) -> EngineError {
+    refused(
+        render,
+        node,
+        "engine.not_materialized",
+        "this render held no samples of it".to_string(),
     )
 }
 

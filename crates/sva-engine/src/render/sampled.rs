@@ -106,19 +106,28 @@ pub(super) fn at_output(
     id: NodeId,
     width_of: &dyn Fn(NodeId) -> usize,
 ) -> Result<Option<Program>, EngineError> {
+    match held.extents.decided.get(&id) {
+        Some(extent) => at_output_over(held, id, width_of, *extent),
+        None => Ok(None),
+    }
+}
+
+/// Before the render holds `extent`, so its reads can be demanded.
+pub(super) fn at_output_over(
+    held: &Render,
+    id: NodeId,
+    width_of: &dyn Fn(NodeId) -> usize,
+    extent: Extent,
+) -> Result<Option<Program>, EngineError> {
     let stepped = held.tys.ty(id).held == sva_formula::Held::Sampled
         && !matches!(held.tys.value(id), Value::Cast(Cast::Istft, _));
-    let (Some(extent), true, false) = (
-        held.extents.decided.get(&id),
-        stepped,
-        held.on_its_lattice(),
-    ) else {
-        return Ok(None);
-    };
-    if !pointwise_safe(&program_reading(held, id, width_of)?.renderer) {
+    if !stepped || held.on_its_lattice() {
         return Ok(None);
     }
-    let program = built(held, id, width_of, (*extent, held.config.rate, true))?;
+    if !pointwise_safe(&program_over(held, id, width_of, extent)?.renderer) {
+        return Ok(None);
+    }
+    let program = built(held, id, width_of, (extent, held.config.rate, true))?;
     Ok(Some(program))
 }
 
@@ -199,7 +208,12 @@ impl Program {
     }
 
     /// A program `at_output` builds, run over the output samples `over`.
-    pub(super) fn at_output(&self, held: &Render, over: Extent) -> Buffer {
+    pub(super) fn at_output(
+        &self,
+        held: &Render,
+        id: NodeId,
+        over: Extent,
+    ) -> Result<Buffer, EngineError> {
         let buffers: Vec<Window> = self
             .reads
             .iter()
@@ -213,7 +227,7 @@ impl Program {
         };
         self.renderer
             .run(&self.layout, &ctx)
-            .expect("the lattice samples an output reads are all held")
+            .map_err(|e| refused(held, id, &e))
     }
 
     /// What the program runs over `extent`, span by span without the reads dead there, each

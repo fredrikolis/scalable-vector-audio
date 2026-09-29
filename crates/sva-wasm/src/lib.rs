@@ -8,7 +8,7 @@ use sva_core::{
     Asked, CliError, Diagnostic, Job, Printed, Rendered, Report, SAMPLE_LIMIT, error_envelope,
     execute, query_data, stats_json, stream_stats_json, work_json,
 };
-use sva_engine::{Buffer, Cache, CachePolicy, CacheStats, Handle, PrunePolicy};
+use sva_engine::{Cache, CachePolicy, CacheStats, Handle, PrunePolicy};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -355,16 +355,21 @@ impl Rendering {
 
     #[wasm_bindgen(getter)]
     pub fn channels(&self) -> usize {
-        self.buffer().map_or(0, |b| b.width)
+        let render = &self.inner.render;
+        render.buffer(render.root).map_or(0, |b| b.width)
     }
 
     pub fn samples(&self, channel: usize) -> Result<Vec<f32>, JsValue> {
-        let buffer = self.buffer().ok_or_else(|| {
-            refuse(
+        let render = &self.inner.render;
+        if render.buffer(render.root).is_none() {
+            return Err(refuse(
                 format!("`{}` read no samples of its root", self.inner.expression),
                 "ask for `samples` among the representations",
-            )
-        })?;
+            ));
+        }
+        let buffer = render
+            .output(render.root)
+            .map_err(|e| thrown(&CliError::Engine(e)))?;
         if channel >= buffer.width {
             return Err(refuse(
                 format!(
@@ -426,10 +431,6 @@ impl Rendering {
             limit: Some(SAMPLE_LIMIT),
             bounds: &bounds,
         }))
-    }
-
-    fn buffer(&self) -> Option<Buffer> {
-        self.inner.render.output(self.inner.render.root)
     }
 }
 

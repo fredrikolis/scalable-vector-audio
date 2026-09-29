@@ -252,3 +252,27 @@ fn an_sp_limiter_releases_alike_at_every_output_rate() {
         .position(|g| *g <= 0.5 / std::f64::consts::E);
     assert_eq!(released, Some(3_999), "90.7 ms after the target lets go");
 }
+
+/// An output instant off the lattice reads kernel taps past a crop's edges.
+#[test]
+fn an_output_off_the_lattice_reads_samples_past_every_edge() {
+    let g = graph_of(
+        "off-lattice",
+        &[
+            ("tone", "crop(sample(sin(2*pi*440*t)), 0s, 20ms)\n"),
+            ("late", "crop(rand(t - 0.5ms, seed=1), 0s, 20ms)\n"),
+        ],
+    );
+    let rate = 11_025;
+    let read = |node: &str| {
+        let held = render(&g, node, low(rate, 0.02), None).unwrap_or_else(|e| panic!("{e}"));
+        held.output(held.root)
+            .unwrap_or_else(|e| panic!("{node}: {e}"))
+    };
+    let tone = read("tone");
+    for (n, s) in tone.plane(0).iter().enumerate() {
+        let want = (2.0 * std::f64::consts::PI * 440.0 * n as f64 / f64::from(rate)).sin();
+        assert!((s - want).abs() < 1e-4, "sample {n}: {s} against {want}");
+    }
+    assert_eq!(read("late").len(), tone.len());
+}

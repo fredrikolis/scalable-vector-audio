@@ -101,7 +101,10 @@ pub(super) fn decided(
             .filter(|id| !rows.contains(id) || measured.as_ref().is_none_or(|m| m.contains(id)))
             .map(|id| (*id, range)),
     );
-    extent::decide(held, costed, &demands)
+    let output = held
+        .output
+        .map(|output| super::cut(output, held.out_map(), range.end));
+    extent::decide(held, costed, &demands, output)
 }
 
 fn endless(held: &Render) -> EngineError {

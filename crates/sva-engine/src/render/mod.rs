@@ -226,30 +226,30 @@ impl Render {
     }
 
     /// A node's samples at each output instant, read off its lattice where that differs.
-    pub fn output(&self, node: NodeId) -> Option<Buffer> {
-        self.buffers.contains_key(&node).then_some(())?;
-        if self.on_its_lattice() {
-            return Some(self.aligned(node, self.range?));
+    pub fn output(&self, node: NodeId) -> Result<Buffer, EngineError> {
+        if !self.buffers.contains_key(&node) {
+            return Err(answer::unheld(self, node));
         }
-        let map = self.out_map();
-        let over = self.output?;
+        let unranged = || answer::unheld(self, node);
+        if self.on_its_lattice() {
+            return Ok(self.aligned(node, self.range.ok_or_else(unranged)?));
+        }
+        let over = self.output.ok_or_else(unranged)?;
         let widths = |r: NodeId| self.buffers.get(&r).map_or(1, |b| b.width);
-        let pointwise = sampled::at_output(self, node, &widths)
-            .expect("a node that rendered builds at its output's instants");
-        if let Some(program) = pointwise {
-            return Some(program.at_output(self, over));
+        if let Some(program) = sampled::at_output(self, node, &widths)? {
+            return program.at_output(self, node, over);
         }
         let window = sva_samples::Window::of(&self.buffers[&node], self.extents.support(node));
         let planes = sva_samples::machine::resample(
             window,
-            (map, sva_samples::plain().half_width()),
+            (self.out_map(), sva_samples::plain().half_width()),
             over,
             self.buffers[&node].width,
         )
-        .expect("a range's lattice samples are all held");
+        .map_err(|e| sampled::refused(self, node, &e))?;
         let mut out = Buffer::of_planes(self.config.rate, planes);
         out.start = over.start;
-        Some(out)
+        Ok(out)
     }
 
     /// A node's samples over `over`: its own where it holds them, zero outside its support.

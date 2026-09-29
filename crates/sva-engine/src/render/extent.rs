@@ -540,11 +540,13 @@ impl Extents {
 }
 
 /// `order` lists the held nodes dependencies first, so walking it backwards meets every
-/// reader of a node before the node. `demands` seeds the root and every node a reading asks.
+/// reader of a node before the node. `demands` seeds the root and every node a reading asks,
+/// each also read at the instants of `output` where it is stepped there.
 pub(crate) fn decide(
     held: &Render,
     order: &[NodeId],
     demands: &[(NodeId, Extent)],
+    output: Option<Extent>,
 ) -> Result<Extents, EngineError> {
     let supports = Supports::new(held);
     let mut demand: BTreeMap<NodeId, Extent> = BTreeMap::new();
@@ -561,7 +563,15 @@ pub(crate) fn decide(
         if extent.is_empty() {
             continue;
         }
-        for (source, wants) in reads(held, &supports, id, extent)? {
+        let mut wanted = reads(held, &supports, id, extent)?;
+        let widths = |r: NodeId| held.buffers.get(&r).map_or(1, |b| b.width);
+        if let Some(output) = output
+            && demands.iter().any(|(seeded, _)| *seeded == id)
+            && let Some(program) = super::sampled::at_output_over(held, id, &widths, extent)?
+        {
+            wanted.extend(program_reads(&program, &supports, output, held.config.rate));
+        }
+        for (source, wants) in wanted {
             debug_assert!(
                 !decided.contains_key(&source),
                 "a node is read after its extent was decided"
@@ -626,34 +636,7 @@ fn reads(
         (Held::Sampled, _) => {
             let widths = |r: NodeId| held.buffers.get(&r).map_or(1, |b| b.width);
             let program = super::sampled::program_over(held, id, &widths, extent)?;
-            let mut out = Vec::new();
-            let rate = held.lattice();
-            windowed(
-                &program.renderer,
-                extent,
-                rate,
-                &mut |leaf, over| match leaf {
-                    NodeRenderer::Read {
-                        slot: Slot::Read(slot),
-                        at: At::Map(at),
-                        half_width,
-                    } => {
-                        let source = program.reads[slot.0 as usize];
-                        out.push((source, at.image(over, *half_width)));
-                    }
-                    NodeRenderer::Read {
-                        slot: Slot::Read(slot),
-                        at: at @ At::Moving { .. },
-                        half_width,
-                    } => {
-                        let source = program.reads[slot.0 as usize];
-                        let reached = reached(at, *half_width, over, rate);
-                        out.push((source, reached.unwrap_or_else(|| supports.of(source))));
-                    }
-                    _ => {}
-                },
-            );
-            Ok(out)
+            Ok(program_reads(&program, supports, extent, held.lattice()))
         }
         _ if schedule::materialized_operands(&held.tys, id).is_empty() => Ok(Vec::new()),
         _ => {
@@ -672,6 +655,42 @@ fn reads(
                 .collect())
         }
     }
+}
+
+/// Every buffer `program` reads while stepping `extent` at `rate`, and the samples of each.
+fn program_reads(
+    program: &super::sampled::Program,
+    supports: &Supports,
+    extent: Extent,
+    rate: u32,
+) -> Vec<(NodeId, Extent)> {
+    let mut out = Vec::new();
+    windowed(
+        &program.renderer,
+        extent,
+        rate,
+        &mut |leaf, over| match leaf {
+            NodeRenderer::Read {
+                slot: Slot::Read(slot),
+                at: At::Map(at),
+                half_width,
+            } => {
+                let source = program.reads[slot.0 as usize];
+                out.push((source, at.image(over, *half_width)));
+            }
+            NodeRenderer::Read {
+                slot: Slot::Read(slot),
+                at: at @ At::Moving { .. },
+                half_width,
+            } => {
+                let source = program.reads[slot.0 as usize];
+                let reached = reached(at, *half_width, over, rate);
+                out.push((source, reached.unwrap_or_else(|| supports.of(source))));
+            }
+            _ => {}
+        },
+    );
+    out
 }
 
 /// Each buffer a pointwise tree reads and how far from the instant it reads it, in seconds;

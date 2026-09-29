@@ -12,7 +12,7 @@ fn rendered(name: &str, body: &str) -> Vec<f64> {
         .unwrap_or_else(|e| panic!("{name} in `{body}`: {e}"));
     let root = held.id("node").expect("the root");
     held.output(root)
-        .unwrap_or_else(|| panic!("{name}: a buffer"))
+        .unwrap_or_else(|e| panic!("{name}: {e}"))
         .plane(0)
         .to_vec()
 }
