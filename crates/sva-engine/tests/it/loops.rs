@@ -1,4 +1,6 @@
-// Concern: proves a loop is classified as a series or as a sampled loop by what its members are | Non-concern: running either (sva-samples) | IO: (a composition) -> Ty or a refusal
+// Concern: proves a loop is a continuous series or a discrete loop reading itself by index | Non-concern: running a recurrence (sva-samples) | IO: (a composition) -> Ty, samples or a refusal
+
+use std::f64::consts::TAU;
 
 use crate::fixtures::graph_of;
 use sva_engine::{
@@ -36,11 +38,15 @@ fn a_linear_self_keeps_its_dual() {
 }
 
 #[test]
-fn an_sp_delayed_self_is_discrete() {
+fn an_indexed_self_is_discrete() {
     assert_eq!(
-        form("sampled", "sample(sin(2*pi*220*t)) + 0.5*self(t - 1sp)\n").expect("a recurrence"),
+        form(
+            "sampled",
+            "sample(sin(2*pi*220*t)) + 0.5*self[idx(t) - 1]\n"
+        )
+        .expect("a recurrence"),
         Held::Sampled,
-        "the sp unit puts the loop on the observation's grid"
+        "an index read puts the loop on the render's samples"
     );
 }
 
@@ -52,8 +58,8 @@ fn unit_gain_refuses() {
     };
     assert_eq!(d.code, "type.self_gain_unbounded");
     assert!(
-        d.help.contains("1sp"),
-        "the sampled loop is offered: {}",
+        d.help.contains("self[idx("),
+        "the discrete loop is offered: {}",
         d.help
     );
 
@@ -61,30 +67,143 @@ fn unit_gain_refuses() {
     assert_eq!(above.code(), "type.self_gain_unbounded");
 }
 
+/// A discrete loop's past is a sequence, so each construct that makes a loop discrete refuses
+/// a read of it at an instant, by name, and offers the index read.
 #[test]
-fn a_modulated_delay_is_sampled() {
-    assert_eq!(
-        form(
-            "modulated",
-            "sample(sin(2*pi*220*t)) + 0.5*self(t - (0.01s + 0.002s*sin(2*pi*3*t)))\n"
-        )
-        .expect("a recurrence"),
-        Held::Sampled,
-        "a delay that moves cannot be one shift of a series"
-    );
+fn a_discrete_loop_reading_itself_at_an_instant_refuses_at_typing() {
+    for (body, construct) in [
+        ("sin(2*pi*200*t) + lp(self(t - 17ms), cutoff=2000)\n", "lp"),
+        ("sin(2*pi*200*t) + tanh(self(t - 17ms)*2)\n", "tanh"),
+        ("sample(sin(2*pi*200*t)) + 0.5*self(t - 17ms)\n", "sample"),
+        ("sin(2*pi*200*t) + 0.5*self(t - 1sp)\n", "sp"),
+        (
+            "sin(2*pi*200*t) + 0.5*self(t - (0.01s + 0.002s*sin(2*pi*3*t)))\n",
+            "moves",
+        ),
+    ] {
+        let refused = form("discrete", body).expect_err(body);
+        let EngineError::Refused(d) = &refused else {
+            panic!("{body}: expected a written refusal, got {refused:?}");
+        };
+        assert_eq!(d.code, "type.discrete_self_at_time", "{body}");
+        assert!(d.message.contains(construct), "{body}: {}", d.message);
+        assert!(d.help.contains("self[idx("), "{body}: {}", d.help);
+    }
 }
 
-/// The other row of FORMAT 11: no series expands a nonlinearity.
+const RATES: [u32; 4] = [8_000, 44_100, 48_000, 96_000];
+
+fn at_rate(files: &[(&str, &str)], root: &str, rate: u32, secs: f64) -> sva_engine::Render {
+    let g = graph_of("rated", files);
+    render(&g, root, RenderConfig::seconds(rate, secs), None)
+        .unwrap_or_else(|e| panic!("{root} at {rate}: {e}"))
+}
+
+/// Over a formula, `x + 0.5*self(t - 17ms)` is its delay-equation series, exact at every
+/// rate whether or not 17 ms is a whole number of its samples.
 #[test]
-fn a_nonlinear_self_is_sampled() {
-    assert_eq!(
-        form(
-            "nonlinear",
-            "sample(sin(2*pi*220*t)) + tanh(self(t - 0.01s)*2)\n"
-        )
-        .expect("a recurrence"),
-        Held::Sampled
+fn a_continuous_loop_renders_its_series_exactly_at_any_rate() {
+    let x = |t: f64| match (0.0..0.005).contains(&t) {
+        true => (TAU * 200.0 * t).sin(),
+        false => 0.0,
+    };
+    for rate in RATES {
+        let held = at_rate(
+            &[(
+                "loop",
+                "crop(sin(2*pi*200*t), 0s, 0.005s) + 0.5*self(t - 17ms)\n",
+            )],
+            "loop",
+            rate,
+            0.06,
+        );
+        let id = held.id("loop").expect("the root");
+        for (n, v) in held.output(id).expect("a comb").plane(0).iter().enumerate() {
+            let t = n as f64 / f64::from(rate);
+            let want: f64 = (0..4)
+                .map(|k| 0.5f64.powi(k) * x(t - 0.017 * f64::from(k)))
+                .sum();
+            assert!(
+                (v - want).abs() < 1e-12,
+                "{rate}, sample {n}: {v} against {want}"
+            );
+        }
+    }
+}
+
+/// The same filter in the loop, read by index, steps on the render's own samples.
+#[test]
+fn a_filter_over_an_indexed_self_renders_at_any_rate() {
+    for rate in RATES {
+        let held = at_rate(
+            &[(
+                "loop",
+                "sample(crop(sin(2*pi*200*t), 0s, 0.005s)) + \
+                 0.5*lp(self[idx(t - 17ms)], cutoff=2000)\n",
+            )],
+            "loop",
+            rate,
+            0.03,
+        );
+        let id = held.id("loop").expect("the root");
+        let plane = held.output(id).expect("a loop").plane(0).to_vec();
+        let echo = (0.017 * f64::from(rate)).round() as usize;
+        assert!(plane.iter().all(|v| v.is_finite()), "{rate}");
+        assert!(
+            plane[echo..].iter().any(|v| v.abs() > 1e-3),
+            "{rate}: the burst comes back through the filter"
+        );
+    }
+}
+
+/// Karplus-Strong at 440 Hz: whole samples of delay by index, the fraction by a first-order
+/// allpass written out in the loop, `a[n] = c*v[n] + v[n-1] - c*a[n-1]` over the averaged
+/// delay line `v`, with `a[n-1] = y[n-1] - x[n-1]`.
+#[test]
+fn a_karplus_strong_loop_with_an_allpass_fraction_is_its_recurrence() {
+    const RATE: u32 = 44_100;
+    const N: usize = 99;
+    let fraction = f64::from(RATE) / 440.0 - 0.5 - N as f64;
+    let c = (1.0 - fraction) / (1.0 + fraction);
+    let lp = 0.498;
+    let held = at_rate(
+        &[
+            ("burst", "crop(sample(rand(t, seed=7)), 0s, 0.002s)\n"),
+            (
+                "string",
+                &format!(
+                    "@burst + {c}*{lp}*(self[idx(t) - 99] + self[idx(t) - 100]) + \
+                     {lp}*(self[idx(t) - 100] + self[idx(t) - 101]) - \
+                     {c}*(self[idx(t) - 1] - @burst[idx(t) - 1])\n"
+                ),
+            ),
+        ],
+        "string",
+        RATE,
+        0.05,
     );
+    let plane = |node: &str| {
+        held.output(held.id(node).expect("held"))
+            .expect("a buffer")
+            .plane(0)
+            .to_vec()
+    };
+    let (x, y) = (plane("burst"), plane("string"));
+    let at = |v: &[f64], n: usize, back: usize| n.checked_sub(back).map_or(0.0, |i| v[i]);
+    let mut want = vec![0.0; y.len()];
+    for n in 0..y.len() {
+        want[n] = x[n]
+            + c * lp * (at(&want, n, N) + at(&want, n, N + 1))
+            + lp * (at(&want, n, N + 1) + at(&want, n, N + 2))
+            - c * (at(&want, n, 1) - at(&x, n, 1));
+    }
+    assert!(
+        y[N * 3..].iter().any(|v| v.abs() > 1e-3),
+        "the string rings"
+    );
+    for (n, (v, w)) in y.iter().zip(&want).enumerate() {
+        assert!((v - w).abs() < 1e-9, "sample {n}: {v} against {w}");
+    }
 }
 
 /// A body already in samples runs on the grid, with its feedback intact.
@@ -92,7 +211,10 @@ fn a_nonlinear_self_is_sampled() {
 fn a_constant_delay_over_sampled_input_runs_on_the_grid() {
     let g = graph_of(
         "crossed",
-        &[("loop", "sample(sin(2*pi*220*t)) + 0.5*self(t - 0.01s)\n")],
+        &[(
+            "loop",
+            "sample(sin(2*pi*220*t)) + 0.5*self[idx(t - 0.01s)]\n",
+        )],
     );
     let typing = types(&g, "loop").expect("a recurrence");
     let id = typing.id("loop").expect("the root");
@@ -132,7 +254,7 @@ fn a_loop_body_the_series_cannot_carry_refuses() {
             ("chord", "sin(2*pi*220*t)\n"),
             (
                 "loop",
-                "sample(lowpass(@chord, 800, 0.7)) + 0.5*self(t - 1sp)\n",
+                "sample(lowpass(@chord, 800, 0.7)) + 0.5*self[idx(t) - 1]\n",
             ),
         ],
     );
@@ -150,7 +272,7 @@ fn two_self_reads_at_two_delays_stay_apart() {
         "two-taps",
         &[(
             "loop",
-            "sample(sin(2*pi*220*t)) + 0.4*self(t - 1sp) + 0.3*self(t - 2sp)\n",
+            "sample(sin(2*pi*220*t)) + 0.4*self[idx(t) - 1] + 0.3*self[idx(t) - 2]\n",
         )],
     );
     let typing = types(&g, "loop").expect("a recurrence");
@@ -180,14 +302,14 @@ fn a_zero_delay_loop_refuses() {
     assert_eq!(refused.code(), "samples.zero_delay_loop");
 }
 
-/// FORMAT 11 row three: a delay in `sp` runs on the grid whatever its gain, which is what
-/// makes a running sum writable. Only the seconds row, a geometric series, refuses.
+/// A discrete loop runs on the grid whatever its gain, which is what makes a running sum
+/// writable. Only a continuous loop, a geometric series, refuses.
 #[test]
-fn a_stepped_delay_at_unit_gain_is_a_grid_loop() {
+fn a_discrete_loop_at_unit_gain_is_a_grid_loop() {
     assert_eq!(
         form(
             "stepped-unit",
-            "sample(sin(2*pi*220*t)) + 1.0*self(t - 1sp)\n"
+            "sample(sin(2*pi*220*t)) + 1.0*self[idx(t) - 1]\n"
         )
         .expect("a running sum"),
         Held::Sampled
@@ -275,8 +397,8 @@ fn an_fdn_of_sampled_delays_types_as_samples() {
         "fdn",
         &[
             ("send", "sample(sin(2*pi*220*t))\n"),
-            ("a", "@send + 0.45*(self(t - 1019sp) + @b(t - 1380sp))\n"),
-            ("b", "@send + 0.45*(@a(t - 1019sp) - self(t - 1380sp))\n"),
+            ("a", "@send + 0.45*(self[idx(t) - 1019] + @b(t - 1380sp))\n"),
+            ("b", "@send + 0.45*(@a(t - 1019sp) - self[idx(t) - 1380])\n"),
         ],
     );
     let typing = types(&g, "a").expect("a network its own members type");

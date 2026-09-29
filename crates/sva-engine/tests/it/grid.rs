@@ -21,10 +21,6 @@ fn composition() -> sva_ast::Graph {
                  seed=3) + @decay\n",
             ),
             ("between", "@lfo(t - 0.0123456s)\n"),
-            (
-                "comb",
-                "crop(sample(sin(2*pi*220*t)), 0s, 0.01s) + 0.5*self(t - 0.0123456s)\n",
-            ),
         ],
     )
 }
@@ -90,16 +86,10 @@ fn a_formula_read_at_any_instant_is_exact() {
 fn a_read_between_a_stateful_nodes_samples_refuses() {
     let g = composition();
     for rate in RATES {
-        for target in ["between", "comb"] {
-            let Err(refused) = render(&g, target, RenderConfig::seconds(rate, 0.05), None) else {
-                panic!("{target} at {rate} reads between samples");
-            };
-            assert_eq!(
-                refused.code(),
-                "render.off_grid_read",
-                "{target}: {refused}"
-            );
-        }
+        let Err(refused) = render(&g, "between", RenderConfig::seconds(rate, 0.05), None) else {
+            panic!("between at {rate} reads between samples");
+        };
+        assert_eq!(refused.code(), "render.off_grid_read", "{refused}");
     }
 }
 

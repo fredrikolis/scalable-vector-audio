@@ -221,7 +221,7 @@ fn a_constant_factor_beside_an_inline_solver_has_no_share() {
 /// the product.
 #[test]
 fn a_constant_factor_beside_a_self_read_has_no_share() {
-    let master = "sample(@gain) * self(t - 1sp) + sample(0.25)\n";
+    let master = "sample(@gain) * self[idx(t) - 1] + sample(0.25)\n";
     let entries = ledger("self-read", &[("gain", "0.5\n"), ("master", master)], 1);
     let gain = named(&entries, "gain");
     assert_eq!(gain.share, None, "`gain` is a factor, not an addend");
@@ -266,7 +266,7 @@ fn ledger_walks_through_a_sampled_node_to_its_slots() {
                 "crop(0.3*sin(2*pi*3000*t), 0s, 0.4s, rise=0.002s, fall=0.2s)\n",
             ),
             ("chord", "0.2*sin(2*pi*220*t)\n"),
-            ("glue", "sample(@chord(t)) + 0.3*self(t - 1sp)\n"),
+            ("glue", "sample(@chord(t)) + 0.3*self[idx(t) - 1]\n"),
             (
                 "master",
                 "crop(0.6*(@glue(t) + sample(@hat(t)) + sample(@hat(t - 0.5s))), 0s, 1s)\n",

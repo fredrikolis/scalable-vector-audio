@@ -20,7 +20,7 @@ const PIANO: &str = "release = inf\n0.0014822 * chaigne_askenfelt(f0, vel=vel, \
 const PLUCK: &str = "release = inf\nchaigne_askenfelt(f0, damper_r=0.1*pow(262/f0, 2)\
     *crop(min(1, (t - release)/0.03), release, inf))\n";
 
-const ECHO: &str = "feedback = 0.35\nx + feedback*self(t - 0.25s)\n";
+const ECHO: &str = "feedback = 0.35\nsample(x) + feedback*self[idx(t - 0.25s)]\n";
 
 fn composition(released: f64) -> Graph {
     graph_of(

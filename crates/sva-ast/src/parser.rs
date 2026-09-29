@@ -297,7 +297,7 @@ impl<'t> Parser<'t> {
                     return Err(Diag::new(
                         DiagCode::UnexpectedToken,
                         self.peek().map_or_else(|| self.eof_span(), |t| t.span),
-                        "`self` requires a bounded self-reference argument: self(t - 1sp) or \
+                        "`self` requires a bounded self-reference argument: self(t - 17ms) or \
                          self[idx(t) - 1]",
                     ));
                 };

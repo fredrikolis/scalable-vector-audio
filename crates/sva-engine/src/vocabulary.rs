@@ -16,7 +16,10 @@ pub const RESERVED: [(&str, &str); 6] = [
         "infinity, a value: a crop edge never reached, a sum's open bound; arithmetic that \
          leaves no number refuses",
     ),
-    (SELF, "a bounded self-reference, call-only: self(t - 1sp)"),
+    (
+        SELF,
+        "a loop's own past: self(t - 17ms) in a continuous loop, self[idx(t) - 1] in a discrete one",
+    ),
 ];
 
 pub const SELF: &str = "self";

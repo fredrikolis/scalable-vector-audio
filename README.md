@@ -66,12 +66,11 @@ $y(t) = \tfrac{1}{2}(\mathrm{chord}(t) + 0.3 y(t - T))$:
 
 ```
 ; Models: the triad through one short feedback delay | Neglects: a second bar, and any mix beside the gain | IO: (t) -> amplitude | Tags: master
-crop(0.5*(sample(@chord(t)) + 0.3*self(t - 1sp)), 0s, 2s)
+crop(0.5*(sample(@chord(t)) + 0.3*self[idx(t) - 1]), 0s, 2s)
 ```
 
-`sample(...)` is the one crossing from algebra to a buffer. Above it every term is exact and
-rate-free; below it there is a rate. `self` reads only what `sample` has already written, so
-a feedback term sits under a `sample` and comes last in that chain.
+`sample(...)` is the one crossing from algebra to a buffer: above it every term is exact and
+rate-free, below it there is a rate, and a feedback term reading what it wrote sits under it.
 
 ## Literals
 
@@ -87,7 +86,8 @@ rate a render samples at: 1/44100 s by default, 1/48000 s at `--rate 48000`. The
 | ------- | ----- |
 | `@x(e)` | `x` at the instant `e`: exact anywhere where `x` is a closed form; where `x` is a filter, loop or solver, only on its samples, so at 128 bpm and 44.1 kHz `@x(t - 0.5b)`, 41343.75 samples back, refuses |
 | `@x[i]` | `x`'s stored sample at index `i`; `i` is a whole number, `idx(...)`, or `+`, `-` and `*` over those, so `@x[t - 0.5b]` refuses |
-| `idx(e)` | the sample index nearest `e`, ties to even: `@x[idx(t - 0.5b)]` reads sample 41344 at 44.1 kHz, and `self[idx(t) - 1]` is `self(t - 1sp)` bit for bit at any rate; `idx(e, floor)` and `idx(e, ceil)` round down and up |
+| `idx(e)` | the sample index nearest `e`, ties to even: `@x[idx(t - 0.5b)]` reads sample 41344 at 44.1 kHz, and `self[idx(t) - 1]` is a loop's sample before this one at any rate; `idx(e, floor)` and `idx(e, ceil)` round down and up |
+| `self(t - d)`, `self[i]` | a loop's own past. A continuous loop, one constant delay at a gain under 1 over a closed form as in `x + 0.5*self(t - 17ms)`, reads `self(t - d)` and is its exact series at any rate. A `sample`, filter, nonlinearity, `sp` step, second delay or moving delay in a loop makes it discrete, and it reads only `self[i]`; `self(t - d)` there refuses before rendering, naming what made it discrete and the index read to write |
 
 ## sva-cli
 
@@ -133,7 +133,7 @@ names an interval; with none, a render ends where `master`'s support does.
 Every reading says whether it is `exact` or `measured`, under which profile and at which
 rate. `--rate` is the one rate a render samples at: the target is read at its instants, and
 each node at the instants its reader asks for. A closed form is exact at any instant; a filter,
-loop or solver steps at that rate, and a read between two of its samples refuses by code.
+discrete loop or solver steps at that rate, and a read between two of its samples refuses by code.
 `--rate` is legal with every representation.
 
 `sva-cli builtins` prints every builtin with its arity and named arguments, the unit suffixes

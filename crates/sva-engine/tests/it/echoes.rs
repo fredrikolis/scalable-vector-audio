@@ -55,7 +55,7 @@ fn a_cropped_burst_echoes_where_its_recurrence_does() {
     let sampled = rendered(
         &[(
             "echo",
-            "sample(crop(sin(2*pi*440*t), 0.3s, 0.35s)) + 0.35*self(t - 0.25s)\n",
+            "sample(crop(sin(2*pi*440*t), 0.3s, 0.35s)) + 0.35*self[idx(t - 0.25s)]\n",
         )],
         "echo",
         secs,

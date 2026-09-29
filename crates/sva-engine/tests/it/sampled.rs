@@ -29,7 +29,7 @@ fn an_fd_node_renders_at_the_observation_rate() {
 fn a_one_step_accumulator_renders() {
     let g = graph_of(
         "accumulator",
-        &[("acc", "sample(0.25 + 0*t) + self(t - 1sp)\n")],
+        &[("acc", "sample(0.25 + 0*t) + self[idx(t) - 1]\n")],
     );
     let held = render(
         &g,
@@ -76,7 +76,7 @@ fn a_one_pole_smoother_written_with_sp_renders_at_two_rates() {
         "smoother",
         &[(
             "smooth",
-            "1 - exp(0 - 1sp/0.01) + self(t - 1sp)*exp(0 - 1sp/0.01)\n",
+            "1 - exp(0 - 1sp/0.01) + self[idx(t) - 1]*exp(0 - 1sp/0.01)\n",
         )],
     );
     let level = |rate: u32| -> f64 {
@@ -139,7 +139,7 @@ fn a_swept_cutoff_on_samples_renders() {
 fn a_self_read_is_founded_sample_by_sample_without_a_block() {
     let g = graph_of(
         "three-step",
-        &[("acc", "sample(1 + 0*t) + 0.5*self(t - 3sp)\n")],
+        &[("acc", "sample(1 + 0*t) + 0.5*self[idx(t) - 3]\n")],
     );
     let held = render(
         &g,
@@ -239,7 +239,7 @@ fn an_sp_limiter_releases_after_the_same_steps_at_every_rate() {
         "limiter",
         &[
             ("target", "sample(crop(0.5 + 0*t, 0s, 0.1s))\n"),
-            ("gr", "max(@target, self(t - 1sp)*0.99975)\n"),
+            ("gr", "max(@target, self[idx(t) - 1]*0.99975)\n"),
         ],
     );
     let at = |rate: u32| {

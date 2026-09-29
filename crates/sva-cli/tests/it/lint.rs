@@ -59,8 +59,8 @@ fn a_literal_sample_rate_refuses() {
     let dir = composition(
         "literal-rate",
         &[
-            ("acc", "self(t - 1sp) + sample(sin(2*pi*220*t))/44100\n"),
-            ("clean", "self(t - 1sp) + sample(sin(2*pi*220*t))*1sp\n"),
+            ("acc", "self[idx(t) - 1] + sample(sin(2*pi*220*t))/44100\n"),
+            ("clean", "self[idx(t) - 1] + sample(sin(2*pi*220*t))*1sp\n"),
         ],
     );
     let Err(sva_core::CliError::LintRefused(found)) = lint(&dir, None) else {

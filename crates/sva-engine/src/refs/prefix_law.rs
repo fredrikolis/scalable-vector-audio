@@ -42,8 +42,8 @@ const MACHINE: &[Case] = &[
     },
     Case {
         name: "a loop over a sampled crop ending at r",
-        switched: |r| format!("crop(sample(@tone), 0s, {r}s) + 0.4*self(t - 0.05s)\n"),
-        before: "crop(sample(@tone), 0s, inf) + 0.4*self(t - 0.05s)\n",
+        switched: |r| format!("crop(sample(@tone), 0s, {r}s) + 0.4*self[idx(t - 0.05s)]\n"),
+        before: "crop(sample(@tone), 0s, inf) + 0.4*self[idx(t - 0.05s)]\n",
         solver: false,
     },
     Case {

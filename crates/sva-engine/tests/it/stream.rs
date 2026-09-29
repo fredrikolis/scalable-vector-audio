@@ -24,7 +24,7 @@ const VOICE: &str = "release = inf\nlowpass(sample(0.3*vel*(saw(f0*8ct) + saw(f0
 const STRING: &str = "release = inf\nchaigne_askenfelt(f0, damper_r=0.1*pow(262/f0, 2)\
     *crop(min(1, (t - release)/0.03), release, inf))\n";
 
-const ECHO: &str = "feedback = 0.35\nx + feedback*self(t - 0.25s)\n";
+const ECHO: &str = "feedback = 0.35\nsample(x) + feedback*self[idx(t - 0.25s)]\n";
 
 fn composition() -> Graph {
     graph_of(

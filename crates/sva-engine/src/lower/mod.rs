@@ -32,13 +32,13 @@ pub enum Piece {
     Value(NodeId),
 }
 
-/// What `self(...)` stands for while this node's body is lowered: nothing, the zero a
-/// Neumann series expands around, or a read of the node's own past, stepped.
-#[derive(Clone, Copy, PartialEq)]
+/// What `self` stands for while this node's body is lowered: nothing, the zero a Neumann
+/// series expands around, or a read of the node's own past, stepped, where the construct it
+/// names makes the loop discrete.
 enum SelfMode {
     Absent,
     Zero,
-    Sampled,
+    Discrete(String),
 }
 
 pub struct Lowering<'a, 'g> {
@@ -63,14 +63,16 @@ pub fn node(path: &str, inst: &Instances, typing: &mut Typing) -> Result<NodeId,
     let kind = match inst.reads_self(path) {
         false => None,
         true => {
-            let stepped = crosses(inst, typing, expr, cx);
-            Some(loops::classify(inst, expr, cx, path, stepped))
+            let discrete = crosses(inst, typing, expr, cx);
+            Some(loops::classify(inst, expr, cx, path, discrete))
         }
     };
     let closed = match kind {
         Some(SelfKind::Refuse(e)) => return Err(*e),
         Some(SelfKind::Series { gain, delay }) => Some((gain, delay)),
-        Some(SelfKind::Sampled) => return sampled_loop(path, inst, typing, (expr, cx), var),
+        Some(SelfKind::Discrete { why }) => {
+            return discrete_loop(path, inst, typing, (expr, cx), var, why);
+        }
         None => None,
     };
     let mut low = Lowering {
@@ -92,50 +94,60 @@ pub fn node(path: &str, inst: &Instances, typing: &mut Typing) -> Result<NodeId,
     low.seal(piece, var, Some(path))
 }
 
-fn sampled_loop(
+fn discrete_loop(
     path: &str,
     inst: &Instances,
     typing: &mut Typing,
     (expr, cx): (&Expr, Cx),
     var: Var,
+    why: String,
 ) -> Result<NodeId, EngineError> {
     let mut low = Lowering {
         inst,
         typing,
         node: path,
         indices: Vec::new(),
-        mode: SelfMode::Sampled,
+        mode: SelfMode::Discrete(why),
         own: Vec::new(),
     };
     let piece = low.walk(expr, cx, var)?;
     low.seal(piece, var, Some(path))
 }
 
-/// Whether the body leaves the closed form: a series expands a closed form around itself, and nothing that
-/// already reached samples can be one of its terms.
-fn crosses(inst: &Instances, typing: &Typing, e: &Expr, cx: Cx) -> bool {
+/// What in the body leaves the closed form, if anything: a series expands a closed form around
+/// itself, and nothing that already reached samples can be one of its terms.
+fn crosses(inst: &Instances, typing: &Typing, e: &Expr, cx: Cx) -> Option<String> {
     if let Some(r) = inst.follow(e, cx, |e2, cx2| crosses(inst, typing, e2, cx2)) {
         return r;
     }
     match inst.node(e, cx) {
-        Node::Lit(Literal::Samples(_)) => true,
-        Node::Lit(_) | Node::Name(_) => false,
-        Node::Bin(_, l, r) => crosses(inst, typing, l, cx) || crosses(inst, typing, r, cx),
-        Node::Own { address, .. } => address == Address::Index,
-        Node::Read {
+        Node::Lit(Literal::Samples(_)) => Some("a step in `sp`".to_string()),
+        Node::Lit(_) | Node::Name(_) => None,
+        Node::Bin(_, l, r) => crosses(inst, typing, l, cx).or_else(|| crosses(inst, typing, r, cx)),
+        Node::Own {
             address: Address::Index,
             ..
-        } => true,
+        } => Some("the index read `self[...]`".to_string()),
+        Node::Own { arg, .. } => crosses(inst, typing, arg, cx),
+        Node::Read {
+            path,
+            address: Address::Index,
+            ..
+        } => Some(format!("the index read `@{path}[...]`")),
         Node::Read { path, .. } => typing
             .id(path)
-            .is_some_and(|id| !typing.ty(id).is_closed_form()),
+            .is_some_and(|id| !typing.ty(id).is_closed_form())
+            .then(|| format!("the sampled input `@{path}`")),
         Node::Call { name, args, .. } => {
-            matches!(name, "sample" | "stft" | "istft")
-                || crate::overload::FINITE_DIFFERENCE.contains(&name)
-                || args.iter().any(|a| {
+            let sampled = matches!(name, "sample" | "stft" | "istft")
+                || crate::overload::FINITE_DIFFERENCE.contains(&name);
+            match sampled {
+                true => Some(format!("the sampled input `{name}(...)`")),
+                false => args.iter().find_map(|a| {
                     let (Arg::Pos(x) | Arg::Named(_, x)) = a;
                     crosses(inst, typing, x, cx)
-                })
+                }),
+            }
         }
     }
 }

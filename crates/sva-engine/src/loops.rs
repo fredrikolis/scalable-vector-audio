@@ -15,30 +15,58 @@ pub(crate) enum SelfKind {
         gain: C64,
         delay: f64,
     },
-    /// Stepped on the grid its reader induces.
-    Sampled,
+    /// A sequence stepped on the grid its reader induces; `why` names the construct that
+    /// makes it one.
+    Discrete {
+        why: String,
+    },
     Refuse(Box<EngineError>),
 }
 
-/// Linear in one `self` a constant delay back with `abs(g) < 1` is a series. A loop written in
-/// steps, which `sp` in its body says, is stepped; there a running sum is a value.
-pub(crate) fn classify(inst: &Instances, e: &Expr, cx: Cx, at: &str, stepped: bool) -> SelfKind {
-    match read(inst, e, cx, C64::ONE) {
-        Reading::Refused(tap) => SelfKind::Refuse(Box::new(
-            tap_refusal(tap, Located::at(at, None)).expect("a refused tap names its reason"),
-        )),
-        Reading::Free | Reading::Nonlinear => SelfKind::Sampled,
-        Reading::Linear { taps, plain } => match (plain, taps.as_slice()) {
-            (true, [(g, Tap::Back(delay))]) if !stepped && g.abs() < 1.0 => SelfKind::Series {
+/// Decided before any rate is. One linear `self` a constant delay back at `abs(g) < 1` over a
+/// closed form is continuous, its series. Any other loop is discrete and names why: a call or
+/// product over `self`, a moving or second delay, or `discrete`, samples already in its body.
+pub(crate) fn classify(
+    inst: &Instances,
+    e: &Expr,
+    cx: Cx,
+    at: &str,
+    discrete: Option<String>,
+) -> SelfKind {
+    let (taps, apart) = match read(inst, e, cx, C64::ONE) {
+        Reading::Refused(tap) => {
+            return SelfKind::Refuse(Box::new(
+                tap_refusal(tap, Located::at(at, None)).expect("a refused tap names its reason"),
+            ));
+        }
+        Reading::Nonlinear(why) => return SelfKind::Discrete { why },
+        Reading::Free => (Vec::new(), None),
+        Reading::Linear { taps, apart } => (taps, apart),
+    };
+    match (&discrete, &apart, taps.as_slice()) {
+        (None, None, [(g, Tap::Back(delay))]) if g.abs() < 1.0 => {
+            return SelfKind::Series {
                 gain: *g,
                 delay: delay.to_f64(),
-            },
-            (true, [(g, Tap::Back(_))]) if !stepped || g.abs() > 1.0 => {
-                SelfKind::Refuse(Box::new(unbounded(*g, at)))
-            }
-            _ => SelfKind::Sampled,
-        },
+            };
+        }
+        (None, None, [(g, Tap::Back(_))]) => return SelfKind::Refuse(Box::new(unbounded(*g, at))),
+        (Some(_), None, [(g, Tap::Back(_))]) if g.abs() > 1.0 => {
+            return SelfKind::Refuse(Box::new(unbounded(*g, at)));
+        }
+        _ => {}
     }
+    let moving = taps
+        .iter()
+        .any(|(_, tap)| *tap == Tap::Moving)
+        .then(|| "a delay that moves".to_string());
+    let second = (taps.len() > 1).then(|| "a second delay of `self`".to_string());
+    let why = moving
+        .or(apart)
+        .or(discrete)
+        .or(second)
+        .expect("a loop that is no series holds what makes it discrete");
+    SelfKind::Discrete { why }
 }
 
 /// What one `self(...)` call site reads: a constant delay back, a time that moves, whole
@@ -94,12 +122,12 @@ pub(crate) fn tap_refusal(tap: Tap, at: Located) -> Option<EngineError> {
         Tap::Zero => (
             "samples.zero_delay_loop",
             "a loop reaches no sample it has already written.",
-            "write self(t - 1sp) for a one-step loop",
+            "write self[idx(t) - 1] for a one-step loop",
         ),
         Tap::Forward => (
             "engine.forward_self_read",
             "a loop reads its own output before it is written.",
-            "write self at an earlier time, as in self(t - 1sp)",
+            "read an earlier sample, as in self[idx(t) - 1]",
         ),
     };
     Some(EngineError::refused(Diagnostic {
@@ -115,28 +143,35 @@ fn unbounded(gain: C64, at: &str) -> EngineError {
         code: "type.self_gain_unbounded".to_string(),
         message: format!("loop gain {} does not settle.", gain.abs()),
         location: Located::at(at, None),
-        help: "write self(t - 1sp) for a sampled loop".to_string(),
+        help: "write a gain under 1, or step a running sum as a discrete loop, as in \
+               self[idx(t) - 1]"
+            .to_string(),
     })
 }
 
-/// What one subterm gives: nothing, scaled reads of `self`, or a shape no one series spells.
-/// A component taken or joined keeps its taps but no longer spells one series.
+/// What one subterm gives: nothing, scaled reads of `self`, or a construct no series spells,
+/// named. A component taken or joined keeps its taps, but `apart` names the call that took
+/// them out of one series.
 enum Reading {
     Free,
-    Linear { taps: Vec<(C64, Tap)>, plain: bool },
+    Linear {
+        taps: Vec<(C64, Tap)>,
+        apart: Option<String>,
+    },
     Refused(Tap),
-    Nonlinear,
+    Nonlinear(String),
 }
 
 fn read(inst: &Instances, e: &Expr, cx: Cx, gain: C64) -> Reading {
     if let Some(r) = inst.follow(e, cx, |e2, cx2| read(inst, e2, cx2, gain)) {
         return r;
     }
+    let product = || Reading::Nonlinear("`self` times a factor that moves".to_string());
     match inst.node(e, cx) {
         Node::Own { arg, address, .. } => match tap_of(inst, arg, address, cx) {
             tap @ (Tap::Back(_) | Tap::Moving | Tap::Indexed) => Reading::Linear {
                 taps: vec![(gain, tap)],
-                plain: true,
+                apart: None,
             },
             refused => Reading::Refused(refused),
         },
@@ -147,44 +182,62 @@ fn read(inst: &Instances, e: &Expr, cx: Cx, gain: C64) -> Reading {
         Node::Bin(BinOp::Mul, l, r) => match (holds(inst, l, cx), holds(inst, r, cx)) {
             (false, true) => match constant(inst, l, cx) {
                 Some(k) => read(inst, r, cx, gain * k),
-                None => Reading::Nonlinear,
+                None => product(),
             },
             (true, false) => match constant(inst, r, cx) {
                 Some(k) => read(inst, l, cx, gain * k),
-                None => Reading::Nonlinear,
+                None => product(),
             },
             (false, false) => Reading::Free,
-            (true, true) => Reading::Nonlinear,
+            (true, true) => product(),
         },
         Node::Bin(BinOp::Div, l, r) => match (holds(inst, l, cx), holds(inst, r, cx)) {
             (true, false) => match constant(inst, r, cx) {
                 Some(k) if !k.is_zero() => read(inst, l, cx, gain / k),
-                _ => Reading::Nonlinear,
+                _ => Reading::Nonlinear("`self` over a divisor that moves".to_string()),
             },
             (false, false) => Reading::Free,
-            _ => Reading::Nonlinear,
+            _ => Reading::Nonlinear("a division by `self`".to_string()),
         },
         Node::Call { name, args, .. } if name == crate::vocabulary::CHANNEL => match args {
-            [Arg::Pos(x), Arg::Pos(k)] if !holds(inst, k, cx) => opaque(read(inst, x, cx, gain)),
-            _ => Reading::Nonlinear,
+            [Arg::Pos(x), Arg::Pos(k)] if !holds(inst, k, cx) => {
+                opaque(read(inst, x, cx, gain), name)
+            }
+            _ => construct(name),
         },
         Node::Call { name, args, .. } if name == crate::vocabulary::JOIN => args
             .iter()
             .map(|a| match a {
-                Arg::Pos(x) => opaque(read(inst, x, cx, gain)),
-                Arg::Named(..) => Reading::Nonlinear,
+                Arg::Pos(x) => opaque(read(inst, x, cx, gain), name),
+                Arg::Named(..) => construct(name),
             })
             .fold(Reading::Free, join),
-        other => match holds_in(inst, &other, cx) {
-            true => Reading::Nonlinear,
-            false => Reading::Free,
+        other => match (holds_in(inst, &other, cx), &other) {
+            (false, _) => Reading::Free,
+            (true, Node::Call { name, .. }) => construct(name),
+            (true, Node::Read { path, .. }) => {
+                Reading::Nonlinear(format!("`@{path}` read at a time `self` moves"))
+            }
+            (true, _) => Reading::Nonlinear("`%` over `self`".to_string()),
         },
     }
 }
 
-fn opaque(r: Reading) -> Reading {
+/// A call over the loop's own past: a filter, which holds state of its own, or any other,
+/// which no series expands.
+fn construct(name: &str) -> Reading {
+    Reading::Nonlinear(match sva_formula::filter::Shape::from_name(name) {
+        Some(_) => format!("the filter `{name}(...)`"),
+        None => format!("`{name}(...)` over `self`"),
+    })
+}
+
+fn opaque(r: Reading, by: &str) -> Reading {
     match r {
-        Reading::Linear { taps, .. } => Reading::Linear { taps, plain: false },
+        Reading::Linear { taps, apart } => Reading::Linear {
+            taps,
+            apart: apart.or_else(|| Some(format!("`{by}(...)` over `self`"))),
+        },
         other => other,
     }
 }
@@ -192,16 +245,16 @@ fn opaque(r: Reading) -> Reading {
 fn join(a: Reading, b: Reading) -> Reading {
     match (a, b) {
         (Reading::Refused(tap), _) | (_, Reading::Refused(tap)) => Reading::Refused(tap),
-        (Reading::Nonlinear, _) | (_, Reading::Nonlinear) => Reading::Nonlinear,
+        (Reading::Nonlinear(why), _) | (_, Reading::Nonlinear(why)) => Reading::Nonlinear(why),
         (Reading::Free, other) | (other, Reading::Free) => other,
         (
             Reading::Linear {
                 taps: mut held,
-                plain: p1,
+                apart: a1,
             },
             Reading::Linear {
                 taps: more,
-                plain: p2,
+                apart: a2,
             },
         ) => {
             for (g, tap) in more {
@@ -215,7 +268,7 @@ fn join(a: Reading, b: Reading) -> Reading {
             }
             Reading::Linear {
                 taps: held,
-                plain: p1 && p2,
+                apart: a1.or(a2),
             }
         }
     }

@@ -83,12 +83,16 @@ RENDER:
   at n bits up to 16 and 32-bit float above. `--rate <hz>` (default
   {DEFAULT_SAMPLE_RATE}) is the one rate a render samples at: the target is read
   at its instants, and every node at the instants its reader asks for. A
-  closed form is exact at any instant. A filter, a loop, a solver and `rand`
-  step at the rate asked for, where `1sp` is one step, so an `sp` count or
-  `self[idx(t) - 1]` means one sample at whatever rate is asked. A read of a
-  node that holds state between two of its samples, at a scaled time or at a
-  time that moves refuses as `render.off_grid_read`; `@x[idx(...)]` reads the
-  nearest sample instead. An edit to a stream plays from the next sample on.
+  closed form is exact at any instant, and so is a continuous loop, one
+  constant delay at a gain under 1 over a closed form such as
+  `x + 0.5*self(t - 17ms)`, which is its series. A filter, a discrete loop, a
+  solver and `rand` step at the rate asked for, where `1sp` is one step, so an
+  `sp` count or `self[idx(t) - 1]` means one sample at whatever rate is asked.
+  A discrete loop reads its own past only by index; `self(t - d)` in one
+  refuses as `type.discrete_self_at_time`, naming what made it discrete. A
+  read of a node that holds state between two of its samples, at a scaled time
+  or at a time that moves refuses as `render.off_grid_read`; `@x[idx(...)]`
+  reads the nearest sample instead. An edit to a stream plays from the next sample on.
   `--flop-budget <n>` is the operation count paid before a render refuses.
 
   `ledger` prints one row per node under the target. A row's `share` is the

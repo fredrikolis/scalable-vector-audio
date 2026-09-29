@@ -93,7 +93,7 @@ fn a_render_over_budget_refuses_naming_the_dominating_node() {
 #[test]
 fn a_sampled_node_counts_the_law_it_reads_beside_its_own_program() {
     let files = &[
-        ("node", "sample(@heavy(t)) + 0.5*self(t - 1sp)\n"),
+        ("node", "sample(@heavy(t)) + 0.5*self[idx(t) - 1]\n"),
         ("heavy", "sum(k, 1, 300, (1/k)*sin(2*pi*30*k*t))\n"),
     ];
     let held = rendered("flops-sampled-count", files, counting(1.0, Some(500)));
@@ -147,7 +147,7 @@ fn flops_tree_names_the_law_read_through_a_filter() {
     let files = &[
         (
             "node",
-            "sample(lowpass(@heavy(t), 800, 0.7)) + 0.5*self(t - 1sp)\n",
+            "sample(lowpass(@heavy(t), 800, 0.7)) + 0.5*self[idx(t) - 1]\n",
         ),
         ("heavy", "sum(k, 1, 300, (1/k)*sin(2*pi*30*k*t))\n"),
     ];

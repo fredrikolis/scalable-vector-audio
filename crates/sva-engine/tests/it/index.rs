@@ -52,22 +52,6 @@ fn at_128_bpm(name: &str, files: &[(&str, &str)]) -> Graph {
 
 const ONSET: &str = "crop(sample(sin(2*pi*220*t)), 0s, 0.05s)";
 
-#[test]
-fn a_loop_one_index_back_is_the_loop_one_step_back_bit_for_bit() {
-    let g = graph_of(
-        "index-loop",
-        &[
-            ("indexed", &format!("{ONSET} + 0.5*self[idx(t) - 1]\n")),
-            ("stepped", &format!("{ONSET} + 0.5*self(t - 1sp)\n")),
-        ],
-    );
-    let config = RenderConfig::seconds(RATE, 0.1);
-    assert_eq!(
-        bits(&whole(&g, "indexed", &config)),
-        bits(&whole(&g, "stepped", &config))
-    );
-}
-
 /// Half a bar at 128 bpm is 41343.75 samples of 44.1 kHz: the index rounds it to 41344 and
 /// reads that sample, where the instant itself lies between two samples and refuses.
 #[test]

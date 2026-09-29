@@ -57,7 +57,8 @@ impl Lowering<'_, '_> {
                 "a closed loop expands its body once per term, and this body holds a value \
                  no term can carry"
                     .to_string(),
-                "collapse the body with sample(...) and write self(t - 1sp) for a sampled loop",
+                "collapse the body with sample(...) and read self by index, as self[idx(t) - 1], \
+                 for a discrete loop",
             ));
         };
         let index = self.index();
@@ -86,9 +87,9 @@ impl Lowering<'_, '_> {
         self.typing.next_index()
     }
 
-    /// Reading the node's own output: the zero a series expands around, or a read of its own
-    /// past, which is what makes the whole node discrete. Two call sites at two delays are two
-    /// reads, never one.
+    /// The zero a series expands around, or a discrete loop's past by index. Which sample a
+    /// recurrence reads is part of its meaning; `self(e)` names an instant, on a sample only at
+    /// some rates, and typing knows no rate. So it is a type error, as `x[t]` is.
     fn own(
         &mut self,
         (arg, address): (&Expr, Address),
@@ -96,8 +97,39 @@ impl Lowering<'_, '_> {
         cx: Cx,
         var: Var,
     ) -> Result<Piece, EngineError> {
-        if self.mode == SelfMode::Zero {
-            return Ok(Piece::ClosedForm(Body::Const(C64::ZERO)));
+        let why = match &self.mode {
+            SelfMode::Zero => return Ok(Piece::ClosedForm(Body::Const(C64::ZERO))),
+            SelfMode::Discrete(why) => why,
+            SelfMode::Absent => unreachable!("a node that reads itself is a series or discrete"),
+        };
+        if address == Address::Time {
+            let written = |arg: Expr, address| {
+                sva_ast::render_expr(&Expr::SelfRef {
+                    arg: Box::new(arg),
+                    address,
+                    span,
+                })
+            };
+            let indexed = Expr::Call {
+                name: sva_ast::INDEX.to_string(),
+                args: vec![Arg::Pos(arg.clone())],
+                span,
+            };
+            return Err(self.refused_at(
+                "type.discrete_self_at_time",
+                format!(
+                    "`{}` is a discrete loop, made so by {why}: it steps from sample to \
+                     sample, and `{}` names an instant rather than a sample, on one at some \
+                     rates and between two at others",
+                    self.node,
+                    written(arg.clone(), Address::Time)
+                ),
+                &format!(
+                    "read its past by index, as {}",
+                    written(indexed, Address::Index)
+                ),
+                Some(span),
+            ));
         }
         let tap = loops::tap_of(self.inst, arg, address, cx);
         let at = match tap {
@@ -110,7 +142,7 @@ impl Lowering<'_, '_> {
                     shift: delay.neg(),
                 })
             }
-            Tap::Moving => When::Moving(self.time(arg, cx)?),
+            Tap::Moving => unreachable!("an index moves as an index, never as a time"),
             Tap::Indexed => When::Index(self.sample_index(arg, span, cx)?),
             refused => {
                 return Err(loops::tap_refusal(refused, self.here(Some(span)))

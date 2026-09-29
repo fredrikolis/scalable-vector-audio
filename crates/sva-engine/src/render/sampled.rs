@@ -267,17 +267,15 @@ impl Build<'_> {
         }
     }
 
-    /// A loop's own past, at a whole sample before the one being written.
+    /// A loop's own past, by index: a whole sample before the one being written.
     fn own(&mut self, at: When) -> Result<NodeRenderer, EngineError> {
-        match at.map(self.held.rate()) {
-            Some(map) => Ok(NodeRenderer::Read {
+        match (at.map(self.held.rate()), at) {
+            (Some(map), _) => Ok(NodeRenderer::Read {
                 slot: Slot::Own,
                 map,
             }),
-            None => match at {
-                When::Index(index) => Err(unreadable_index(self.held, self.owner, index)),
-                _ => Err(off_grid(self.held, self.owner, self.owner, at)),
-            },
+            (None, When::Index(index)) => Err(unreadable_index(self.held, self.owner, index)),
+            (None, _) => unreachable!("typing reads a loop's past by index only"),
         }
     }
 

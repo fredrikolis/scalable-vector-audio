@@ -172,7 +172,7 @@ fn a_parameter_may_not_take_a_name_the_language_already_binds() {
 fn a_self_argument_and_a_shifted_read_of_a_stateful_one_refuse() {
     let g = graph_of(
         "selfarg",
-        &[("f", "x*2\n"), ("song", "@f(t, x=self(t - 1sp))\n")],
+        &[("f", "x*2\n"), ("song", "@f(t, x=self[idx(t) - 1])\n")],
     );
     assert_eq!(
         fault_of(instantiate(&g, "song", DEFAULT_SAMPLE_RATE).unwrap_err()),

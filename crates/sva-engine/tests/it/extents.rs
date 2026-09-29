@@ -19,7 +19,7 @@ fn composition() -> Graph {
             ("said_late", "@tone(t - 0.5s)\n"),
             (
                 "echo",
-                "sample(crop(0.5*sin(2*pi*440*t), 0s, 0.2s)) + 0.5*self(t - 0.25s)\n",
+                "sample(crop(0.5*sin(2*pi*440*t), 0s, 0.2s)) + 0.5*self[idx(t - 0.25s)]\n",
             ),
             (
                 "ring",

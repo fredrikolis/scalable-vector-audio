@@ -83,7 +83,7 @@ crop(gain*noise(1, period=0.5, color=1), 0s, 0.4s, rise=0.002s, fall=0.2s)
     (
         "fx/glue",
         r"; Models: the pitched layers glued by one short feedback -- the pitched chain's one crossing into samples, and the last thing that chain does, because `self` may read only what `sample` has already written | Neglects: the hats, which master sums in beside this under a `sample` of their own | IO: (t) -> amplitude | Tags: fx, feedback
-sample(0.5*@../chord/home(t) + @../grid/phrase-2b(t)) + 0.3*self(t - 1sp)
+sample(0.5*@../chord/home(t) + @../grid/phrase-2b(t)) + 0.3*self[idx(t) - 1]
 ",
     ),
     (

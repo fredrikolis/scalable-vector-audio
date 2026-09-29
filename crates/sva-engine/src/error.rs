@@ -205,7 +205,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 79] = [
+pub static REGISTRY: [(&str, &str); 80] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -239,6 +239,10 @@ pub static REGISTRY: [(&str, &str); 79] = [
     (
         "type.self_gain_unbounded",
         "a linear self whose loop gain does not settle",
+    ),
+    (
+        "type.discrete_self_at_time",
+        "a discrete loop reading its own past at an instant rather than by index",
     ),
     (
         "type.bars_in_frequency",

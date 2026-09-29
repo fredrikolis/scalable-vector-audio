@@ -349,7 +349,7 @@ fn a_sampled_node_is_stored_and_answered_from_the_store() {
         "sampled-cache",
         &[
             ("tone", "sin(2*pi*220*t)\n"),
-            ("acc", "self(t - 1sp)*0.5 + sample(@tone)\n"),
+            ("acc", "self[idx(t) - 1]*0.5 + sample(@tone)\n"),
             ("master", "@acc*0.5\n"),
         ],
     );
