@@ -555,29 +555,6 @@ pub struct Report<'a> {
     /// envelope only says which reading ran, under which profile, and at what rate.
     pub analyses: &'a [(String, String)],
     pub limit: Option<usize>,
-    /// Every reading the render took between lattice samples, each with its bound.
-    pub bounds: &'a [sva_engine::Reconstruction],
-}
-
-/// A reading between lattice samples: what it read, how, and the error per source component
-/// below and above the band edge.
-fn bound_json(r: &sva_engine::Reconstruction) -> String {
-    format!(
-        "{{ \"node\": \"{}\", \"source\": \"{}\", \"reading\": \"{}\", \
-         \"kernel\": \"{}\", \"taps\": {}, \"band_hz\": {}, \"in_band\": {}, \
-         \"above_band\": {}, \"position\": {}, \"lebesgue\": {}, \"looped\": {} }}",
-        escape(&r.node),
-        escape(&r.source),
-        r.reading,
-        r.bound.kernel,
-        r.bound.taps,
-        num(r.bound.band_hz),
-        num(r.bound.in_band),
-        num(r.bound.above_band),
-        num(r.bound.position),
-        num(r.bound.lebesgue),
-        r.looped.map_or(NONE.to_string(), num)
-    )
 }
 
 /// `written` names every reading that went to a file rather than into `representations`.
@@ -621,10 +598,8 @@ pub fn query_data(report: &Report) -> String {
             num(end)
         )
     });
-    let bounds = list(report.bounds, bound_json);
     format!(
         "{{\n  \"target\": \"{}\",\n  \"sample_rate\": {},\n  \"bits\": {},\n  \
-         \"bounds\": {bounds},\n  \
          \"profile\": \"{}\",\n  \"interval\": {interval},\n  \"label\": {label},\n  \
          \"written\": {written},\n  \"representations\": {{\n    {reads}\n  }}\n}}",
         escape(report.target),

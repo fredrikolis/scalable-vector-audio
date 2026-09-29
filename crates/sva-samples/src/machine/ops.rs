@@ -1,7 +1,9 @@
 // Concern: the postfix op array one node renderer lowers to, and the width each slot holds | Non-concern: lowering into it or running it (mod.rs) | IO: (&NodeRenderer, &Layout) -> Vec<Op> + Vec<usize>
 
 use crate::error::SampleError;
-use crate::machine::renderer::{At, Binary, Map, NodeRenderer, Site, SiteId, Slot, Unary, Wrap};
+use crate::machine::renderer::{
+    Binary, Formula, Map, NodeRenderer, Site, SiteId, Slot, Unary, Wrap,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Op {
@@ -12,21 +14,16 @@ pub(crate) enum Op {
     Read {
         slot: Slot,
         at: Map,
-        half_width: usize,
     },
     /// A read times a constant, the bits of `Mul` over the two.
     ReadScaled {
         slot: Slot,
         at: Map,
-        half_width: usize,
         by: f64,
     },
-    /// A reading at the position the operand below it names, in seconds.
-    Moving {
-        slot: Slot,
-        per_sec: f64,
-        line: bool,
-        half_width: usize,
+    /// The program's formula `at`, at the instant the operand below it names.
+    Formula {
+        at: usize,
     },
     Add(usize),
     Mul(usize),
@@ -82,99 +79,88 @@ fn meet(a: usize, b: usize) -> Result<usize, SampleError> {
     }
 }
 
+/// The ops, one width per op, and the formulas a `Formula` op names by position.
+#[derive(Default)]
+pub(crate) struct Lowered {
+    pub(crate) ops: Vec<Op>,
+    pub(crate) widths: Vec<usize>,
+    pub(crate) formulas: Vec<Formula>,
+}
+
 /// Postfix, so the runner needs no recursion and every operand's width is already settled
 /// by the time the op that consumes it is reached.
-pub(crate) fn lower(
+pub(crate) fn lowered(
     renderer: &NodeRenderer,
     layout: &Layout,
-    ops: &mut Vec<Op>,
-    widths: &mut Vec<usize>,
-) -> Result<usize, SampleError> {
-    let push = |op: Op, width: usize, ops: &mut Vec<Op>, widths: &mut Vec<usize>| {
-        ops.push(op);
-        widths.push(width);
+) -> Result<(Lowered, usize), SampleError> {
+    let mut out = Lowered::default();
+    let width = lower(renderer, layout, &mut out)?;
+    Ok((out, width))
+}
+
+impl Lowered {
+    fn push(&mut self, op: Op, width: usize) -> usize {
+        self.ops.push(op);
+        self.widths.push(width);
         width
-    };
-    let w = match renderer {
-        NodeRenderer::Const(v) => push(Op::Const(*v), 1, ops, widths),
-        NodeRenderer::Time => push(Op::Time, 1, ops, widths),
-        NodeRenderer::Wrap(wrap) => push(Op::Wrap(*wrap), 1, ops, widths),
-        NodeRenderer::Noise(seed) => push(Op::Noise(*seed), 1, ops, widths),
-        NodeRenderer::Read {
-            slot,
-            at: At::Map(at),
-            half_width,
-        } => push(
+    }
+}
+
+fn lower(r: &NodeRenderer, layout: &Layout, out: &mut Lowered) -> Result<usize, SampleError> {
+    let w = match r {
+        NodeRenderer::Const(v) => out.push(Op::Const(*v), 1),
+        NodeRenderer::Time => out.push(Op::Time, 1),
+        NodeRenderer::Wrap(wrap) => out.push(Op::Wrap(*wrap), 1),
+        NodeRenderer::Noise(seed) => out.push(Op::Noise(*seed), 1),
+        NodeRenderer::Read { slot, map } => out.push(
             Op::Read {
                 slot: *slot,
-                at: *at,
-                half_width: *half_width,
+                at: *map,
             },
             slot_width(*slot, layout),
-            ops,
-            widths,
         ),
-        NodeRenderer::Read {
-            slot,
-            at:
-                At::Moving {
-                    per_sec,
-                    line,
-                    time,
-                },
-            half_width,
+        NodeRenderer::Formula {
+            formula,
+            width,
+            time,
         } => {
-            meet(1, lower(time, layout, ops, widths)?)?;
-            let op = Op::Moving {
-                slot: *slot,
-                per_sec: *per_sec,
-                line: *line,
-                half_width: *half_width,
-            };
-            push(op, slot_width(*slot, layout), ops, widths)
+            meet(1, lower(time, layout, out)?)?;
+            out.formulas.push(formula.clone());
+            let at = out.formulas.len() - 1;
+            out.push(Op::Formula { at }, *width)
         }
-        NodeRenderer::Mul(parts) if let Some((slot, at, half_width, by)) = scaled_read(parts) => {
-            push(
-                Op::ReadScaled {
-                    slot,
-                    at,
-                    half_width,
-                    by,
-                },
-                slot_width(slot, layout),
-                ops,
-                widths,
-            )
+        NodeRenderer::Mul(parts) if let Some((slot, at, by)) = scaled_read(parts) => {
+            out.push(Op::ReadScaled { slot, at, by }, slot_width(slot, layout))
         }
         NodeRenderer::Add(parts) | NodeRenderer::Mul(parts) => {
             let mut width = 1;
             for p in parts {
-                width = meet(width, lower(p, layout, ops, widths)?)?;
+                width = meet(width, lower(p, layout, out)?)?;
             }
-            let op = match renderer {
+            let op = match r {
                 NodeRenderer::Add(_) => Op::Add(parts.len()),
                 _ => Op::Mul(parts.len()),
             };
-            push(op, width, ops, widths)
+            out.push(op, width)
         }
         NodeRenderer::Sub(a, b) | NodeRenderer::Div(a, b) | NodeRenderer::Pow(a, b) => {
-            let wa = lower(a, layout, ops, widths)?;
-            let wb = lower(b, layout, ops, widths)?;
-            let op = match renderer {
+            let wa = lower(a, layout, out)?;
+            let wb = lower(b, layout, out)?;
+            let op = match r {
                 NodeRenderer::Sub(..) => Op::Sub,
                 NodeRenderer::Div(..) => Op::Div,
                 _ => Op::Pow,
             };
-            push(op, meet(wa, wb)?, ops, widths)
+            out.push(op, meet(wa, wb)?)
         }
         NodeRenderer::Map(f, x) => {
-            let w = lower(x, layout, ops, widths)?;
-            push(Op::Map(*f), w, ops, widths)
+            let w = lower(x, layout, out)?;
+            out.push(Op::Map(*f), w)
         }
         NodeRenderer::Zip(f, a, b) => {
-            let wa = lower(a, layout, ops, widths)?;
-            let wb = lower(b, layout, ops, widths)?;
-            push(Op::Zip(*f), meet(wa, wb)?, ops, widths)
+            let wa = lower(a, layout, out)?;
+            let wb = lower(b, layout, out)?;
+            out.push(Op::Zip(*f), meet(wa, wb)?)
         }
         NodeRenderer::Crop {
             x,
@@ -184,19 +170,18 @@ pub(crate) fn lower(
             fall,
         } => {
             let guarded = x.stateless();
-            let guard = ops.len();
+            let guard = out.ops.len();
             if guarded {
-                ops.push(Op::Const(0.0));
-                widths.push(1);
+                out.push(Op::Const(0.0), 1);
             }
-            let w = lower(x, layout, ops, widths)?;
+            let w = lower(x, layout, out)?;
             if guarded {
-                ops[guard] = Op::Guard {
+                out.ops[guard] = Op::Guard {
                     a: *a,
                     b: *b,
                     rise: *rise,
                     fall: *fall,
-                    over: ops.len() - guard,
+                    over: out.ops.len() - guard,
                 };
             }
             let crop = Op::Crop {
@@ -205,21 +190,21 @@ pub(crate) fn lower(
                 rise: *rise,
                 fall: *fall,
             };
-            push(crop, w, ops, widths)
+            out.push(crop, w)
         }
         NodeRenderer::Join(parts) => {
             let mut width = 0;
             for p in parts {
-                width += lower(p, layout, ops, widths)?;
+                width += lower(p, layout, out)?;
             }
-            push(Op::Join(parts.len()), width, ops, widths)
+            out.push(Op::Join(parts.len()), width)
         }
         NodeRenderer::Channel { x, k } => {
-            let w = lower(x, layout, ops, widths)?;
+            let w = lower(x, layout, out)?;
             if *k >= w {
                 return Err(SampleError::ChannelOutOfRange { k: *k, width: w });
             }
-            push(Op::Channel(*k), 1, ops, widths)
+            out.push(Op::Channel(*k), 1)
         }
         NodeRenderer::Filter {
             site,
@@ -229,26 +214,26 @@ pub(crate) fn lower(
             q,
             gain,
         } => {
-            let mut width = lower(x, layout, ops, widths)?;
+            let mut width = lower(x, layout, out)?;
             for arg in [cutoff, q, gain] {
-                width = meet(width, lower(arg, layout, ops, widths)?)?;
+                width = meet(width, lower(arg, layout, out)?)?;
             }
             let op = Op::Filter {
                 site: *site,
                 from: *from,
             };
-            push(op, width, ops, widths)
+            out.push(op, width)
         }
         NodeRenderer::Physics { site, from, args } => {
             for arg in args {
-                meet(1, lower(arg, layout, ops, widths)?)?;
+                meet(1, lower(arg, layout, out)?)?;
             }
             let op = Op::Physics {
                 site: *site,
                 from: *from,
                 arity: args.len(),
             };
-            push(op, 1, ops, widths)
+            out.push(op, 1)
         }
     };
     Ok(w)
@@ -261,24 +246,10 @@ fn slot_width(slot: Slot, layout: &Layout) -> usize {
     }
 }
 
-fn scaled_read(parts: &[NodeRenderer]) -> Option<(Slot, Map, usize, f64)> {
+fn scaled_read(parts: &[NodeRenderer]) -> Option<(Slot, Map, f64)> {
     match parts {
-        [
-            NodeRenderer::Read {
-                slot,
-                at: At::Map(at),
-                half_width,
-            },
-            NodeRenderer::Const(by),
-        ]
-        | [
-            NodeRenderer::Const(by),
-            NodeRenderer::Read {
-                slot,
-                at: At::Map(at),
-                half_width,
-            },
-        ] => Some((*slot, *at, *half_width, *by)),
+        [NodeRenderer::Read { slot, map }, NodeRenderer::Const(by)]
+        | [NodeRenderer::Const(by), NodeRenderer::Read { slot, map }] => Some((*slot, *map, *by)),
         _ => None,
     }
 }

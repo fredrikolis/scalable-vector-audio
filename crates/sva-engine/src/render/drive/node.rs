@@ -3,9 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sva_formula::{Hash, Held, NodeId};
-use sva_samples::{
-    At, Buffer, Extent, Machine, MachineState, NodeRenderer, Rows, Slot, Standing, Tape, Window,
-};
+use sva_samples::{Buffer, Extent, Machine, MachineState, NodeRenderer, Rows, Slot, Tape, Window};
 
 use super::super::pointwise::{self, Point};
 use super::super::{Lenses, Render, collapse_refused, sampled};
@@ -83,7 +81,7 @@ pub(in crate::render) struct Segments {
 impl Segments {
     fn of(shell: &Render, id: NodeId, extent: Extent) -> Result<Segments, EngineError> {
         let width = usize::from(shell.tys.ty(id).width).max(1);
-        let rate = shell.lattice();
+        let rate = shell.rate();
         let points = shell.prefixes(|walk| walk.change_points(id));
         let (mut starts, mut keys) = (vec![extent.start], Vec::new());
         for &at in points.iter().filter(|at| **at > extent.start) {
@@ -148,13 +146,8 @@ impl Segments {
 
 /// How a driver holds its nodes' samples.
 pub(in crate::render) enum Hold {
-    /// A block, and as far back as its readers reach; the root and each of `read` `root_keep`
-    /// samples besides.
-    Trailing {
-        block: usize,
-        root_keep: usize,
-        read: Vec<NodeId>,
-    },
+    /// A block, and as far back as its readers reach; the root `root_keep` samples besides.
+    Trailing { block: usize, root_keep: usize },
     /// Every sample, the nodes held here whole before any reader runs.
     Every(BTreeMap<NodeId, Buffer>),
 }
@@ -233,15 +226,10 @@ pub(in crate::render) fn built(
     for at in holds {
         nodes[at].keep = WHOLE;
     }
-    if let Hold::Trailing {
-        block,
-        root_keep,
-        read,
-    } = hold
-    {
+    if let Hold::Trailing { block, root_keep } = hold {
         let last = shell.range.map_or(i64::MAX, |range| range.end);
         for (at, node) in nodes.iter_mut().enumerate() {
-            if Some(at) == root || read.contains(&node.id) {
+            if Some(at) == root {
                 node.keep = node.keep.max(root_keep);
             }
             let leaf = node.reads.is_empty()
@@ -262,7 +250,7 @@ pub(in crate::render) fn built(
     Ok(nodes)
 }
 
-/// A keep past any extent: a reader at a moving time may come back to any sample.
+/// A keep past any extent: a reader whose index scales may come back to any sample.
 const WHOLE: usize = usize::MAX;
 
 /// Each node's lag, the least its readers need, and its keep, the most they reach back.
@@ -307,13 +295,9 @@ pub(in crate::render) fn runnable(shell: &Render, order: &[NodeId]) -> BTreeSet<
         };
         let mut ahead = false;
         crate::render::extent::leaves(&program.renderer, &mut |leaf| {
-            ahead |= match leaf {
-                NodeRenderer::Read {
-                    at: At::Map(at), ..
-                } => at.ahead(),
-                NodeRenderer::Read { .. } => true,
-                _ => false,
-            };
+            if let NodeRenderer::Read { map, .. } = leaf {
+                ahead |= map.ahead();
+            }
         });
         let reads = program.reads.iter().all(|r| out.contains(r));
         if !ahead && reads && (program.layout.sites.is_empty() || program.reads.is_empty()) {
@@ -343,7 +327,7 @@ fn found(
     let (Some(lens), Some(recording)) = (lenses.at(id), lenses.recording) else {
         return Ok(None);
     };
-    let (rate, width) = (shell.lattice(), usize::from(shell.tys.ty(id).width).max(1));
+    let (rate, width) = (shell.rate(), usize::from(shell.tys.ty(id).width).max(1));
     let segments = Segments::of(shell, id, extent)?;
     let mut recorded = Recorded {
         held: vec![i64::MIN; segments.len()],
@@ -469,7 +453,7 @@ pub(in crate::render) fn covered(shell: &Render, id: NodeId, recording: &Recordi
 
 pub(in crate::render) fn run_key_of(shell: &Render, id: NodeId) -> Result<Hash, EngineError> {
     let width = usize::from(shell.tys.ty(id).width).max(1);
-    Ok(shell.keyed(run_key(shell.identity(id)?, shell.lattice(), width)))
+    Ok(shell.keyed(run_key(shell.identity(id)?, shell.rate(), width)))
 }
 
 /// A node held whole before any reader runs.
@@ -545,33 +529,27 @@ fn machine(
     crate::render::extent::leaves(&program.renderer, &mut |leaf| match leaf {
         NodeRenderer::Read {
             slot: Slot::Read(id),
-            at: At::Map(at),
-            half_width,
-        } if at.a == at.d => {
-            ahead |= at.ahead();
-            let lead = at.lead(*half_width);
+            map,
+        } if map.a == map.d => {
+            ahead |= map.ahead();
+            let lead = map.lead();
             reads.push((slots[id.0 as usize], lead));
-            if !at.whole() {
-                reads.push((slots[id.0 as usize], lead + 1 - 2 * *half_width as i64));
-            } else if at.least() != lead {
-                reads.push((slots[id.0 as usize], at.least()));
+            if map.least() != lead {
+                reads.push((slots[id.0 as usize], map.least()));
             }
         }
         NodeRenderer::Read {
             slot: Slot::Read(id),
-            half_width,
             ..
         } => {
-            reads.push((slots[id.0 as usize], *half_width as i64));
+            reads.push((slots[id.0 as usize], 0));
             held.push(slots[id.0 as usize]);
         }
         NodeRenderer::Read {
             slot: Slot::Own,
-            at: At::Map(at),
-            half_width,
-        } if at.a == at.d => {
-            let back = -at.least() + i64::from(!at.whole()) * *half_width as i64;
-            own = own.max(back.max(0) as usize);
+            map,
+        } if map.a == map.d => {
+            own = own.max((-map.least()).max(0) as usize);
         }
         NodeRenderer::Read {
             slot: Slot::Own, ..
@@ -595,7 +573,7 @@ fn machine(
             _ => nodes[r].support,
         })
         .collect();
-    let rate = shell.lattice();
+    let rate = shell.rate();
     let span = (extent.start, extent.end);
     let machine = Machine::live(&program.renderer, &program.layout, rate, span, &live)
         .map_err(|e| sampled::refused(shell, id, &e))?;
@@ -618,7 +596,7 @@ fn closed_form(shell: &Render, id: NodeId) -> Result<(Kind, usize), EngineError>
         _ => None,
     };
     let sum = refs::spectral_sum_of(&shell.tys, id, shell.tys.var(id));
-    let (rate, profile) = (shell.lattice(), &shell.config.profile);
+    let (rate, profile) = (shell.rate(), &shell.config.profile);
     let rows = match (&sum, &written) {
         (Err(_), None) => return point(shell, id),
         (Ok(sum), written) => Rows::of_spectral_sum_or_point(sum, written.as_ref(), rate, profile),
@@ -698,10 +676,14 @@ impl Driven {
                 super::super::finite(shell, id, planes.flatten())?;
             }
             Kind::Point(tree) => {
-                let step = 1.0 / f64::from(shell.lattice());
+                let step = 1.0 / f64::from(shell.rate());
                 for n in self.tape.end()..to {
                     for c in 0..self.width {
-                        let v = pointwise::value(shell, tree, c, n as f64 * step)
+                        let at = pointwise::Instant {
+                            t: n as f64 * step,
+                            n: Some(n),
+                        };
+                        let v = pointwise::value(shell, tree, c, at)
                             .map_err(|e| pointwise::refused(shell, id, &e))?;
                         self.tape.push(c, v.re);
                     }
@@ -797,7 +779,7 @@ impl Driven {
         {
             recorded.marks.insert(end, machine.state());
         }
-        let samples = self.tape.clone().into_buffer(shell.lattice());
+        let samples = self.tape.clone().into_buffer(shell.rate());
         let segments = &recorded.segments;
         for k in 0..segments.len() {
             let (from, to) = (segments.starts[k], segments.end(k).min(end));
@@ -822,27 +804,6 @@ impl Driven {
             recorded.held[k] = to;
         }
         recorded.stored = end;
-    }
-
-    /// A whole node never moves, and an ended one holds nothing.
-    pub(super) fn stood(&self) -> Option<(i64, Option<Standing>)> {
-        match &self.kind {
-            Kind::Machine { machine, .. } => Some((self.tape.end(), Some(machine.standing()))),
-            Kind::Rows(_) | Kind::Point(_) => Some((self.tape.end(), None)),
-            Kind::Whole | Kind::Ended => None,
-        }
-    }
-
-    /// Its samples since forgotten; one ended since holds none to forget.
-    pub(super) fn back_to(&mut self, (end, standing): (i64, Option<Standing>)) {
-        if matches!(self.kind, Kind::Ended) {
-            return;
-        }
-        assert!(self.tape.end() >= end, "a node only runs on from its mark");
-        if let (Kind::Machine { machine, .. }, Some(standing)) = (&mut self.kind, standing) {
-            machine.stand(standing);
-        }
-        self.tape.cut(end);
     }
 
     /// Held only where its tape ends at `at`; a machine with no call site holds none.
@@ -885,10 +846,9 @@ mod tests {
     use super::Segments;
     use crate::cache::{Cache, Outcome, PayloadKind};
     use crate::render::{RenderConfig, plan, render};
-    use sva_samples::LATTICE_8K;
 
     fn config() -> RenderConfig {
-        RenderConfig::seconds(LATTICE_8K.lattice_hz, 0.5).under(LATTICE_8K)
+        RenderConfig::seconds(8_000, 0.5)
     }
 
     const STRING: &str = "release = inf\nchaigne_askenfelt(f0, damper_r=0.1*crop(min(1, \

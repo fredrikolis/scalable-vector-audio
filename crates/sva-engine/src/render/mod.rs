@@ -2,7 +2,6 @@
 
 mod answer;
 pub(crate) mod bound;
-mod bounds;
 mod drive;
 pub(crate) mod extent;
 mod pointwise;
@@ -87,15 +86,6 @@ impl RenderConfig {
         }
     }
 
-    /// Under `profile`, paying its own budget.
-    pub fn under(self, profile: Profile) -> RenderConfig {
-        RenderConfig {
-            profile,
-            flop_budget: profile.flop_budget,
-            ..self
-        }
-    }
-
     pub fn asking(mut self, asks: Vec<Ask>) -> RenderConfig {
         self.asks = asks;
         self
@@ -103,7 +93,6 @@ impl RenderConfig {
 }
 
 pub use answer::{answer, answer_buffer, sketch_atom};
-pub use bounds::Reconstruction;
 pub use drive::Block;
 pub use quiet::{QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, quiet_tails};
 pub use stream::{STREAMED, Stream, StreamConfig};
@@ -119,15 +108,12 @@ pub struct Render {
     pub labels: BTreeMap<NodeId, Label>,
     pub traces: Vec<FilterTrace>,
     pub config: RenderConfig,
-    /// The output's rate where the render holds only closed forms, else the profile's lattice.
-    pub lattice: u32,
     pub schedule: Schedule,
     pub bindings: BTreeMap<NodeId, Vec<Binding>>,
     pub cache_stats: Option<CacheStats>,
-    /// The lattice samples the root was read over; `None` where no reading needed any.
+    /// The samples the root was read over, at the render's rate; `None` where no reading
+    /// needed any.
     pub range: Option<Extent>,
-    /// The output samples those stand for, at the render's rate.
-    pub output: Option<Extent>,
     pub(crate) unranged: Option<EngineError>,
     pub(crate) extents: extent::Extents,
     identities: std::cell::RefCell<BTreeMap<NodeId, sva_formula::Hash>>,
@@ -141,14 +127,8 @@ impl Render {
         config: RenderConfig,
         schedule: Schedule,
     ) -> Self {
-        let stateful = (0..tys.len()).any(|n| !tys.ty(NodeId(n as u32)).is_closed_form());
-        let lattice = match stateful {
-            true => config.profile.lattice_hz,
-            false => config.rate,
-        };
         Render {
             root,
-            lattice,
             tys,
             buffers: BTreeMap::new(),
             frames: BTreeMap::new(),
@@ -160,7 +140,6 @@ impl Render {
             bindings: BTreeMap::new(),
             cache_stats: None,
             range: None,
-            output: None,
             unranged: None,
             extents: extent::Extents::default(),
             identities: Default::default(),
@@ -168,33 +147,9 @@ impl Render {
         }
     }
 
-    /// A node's content address, each node under it named once however often it is asked.
-    pub(crate) fn lattice(&self) -> u32 {
-        self.lattice
-    }
-
-    pub(crate) fn out_map(&self) -> sva_samples::Map {
-        let (lattice, rate) = (i128::from(self.lattice), i128::from(self.config.rate));
-        sva_samples::Map::new(lattice, 0, rate).expect("two rates make one map")
-    }
-
-    /// The output is read at the lattice's own samples.
-    pub(crate) fn on_its_lattice(&self) -> bool {
-        let map = self.out_map();
-        map.whole() && map.a == 1
-    }
-
-    pub(crate) fn cut_output(&mut self, stop: i64) {
-        self.output = self.output.map(|output| cut(output, self.out_map(), stop));
-    }
-
-    pub(crate) fn on_lattice(&self, over: Extent) -> Extent {
-        self.out_map()
-            .image(over, sva_samples::plain().half_width())
-    }
-
-    pub(crate) fn to_output(&self, over: Extent) -> Extent {
-        self.out_map().preimage(over, 0)
+    /// The rate every node is stepped or collapsed at: the one the render was asked for.
+    pub(crate) fn rate(&self) -> u32 {
+        self.config.rate
     }
 
     pub(crate) fn identity(&self, id: NodeId) -> Result<sva_formula::Hash, EngineError> {
@@ -206,7 +161,7 @@ impl Render {
         let (mut held, mut named) = (self.prefixes.borrow_mut(), self.identities.borrow_mut());
         ask(&mut refs::Walk::new(
             &self.tys,
-            self.lattice,
+            self.config.rate,
             &mut held,
             &mut named,
         ))
@@ -219,37 +174,18 @@ impl Render {
 
     pub fn work(&self) -> crate::flops::Work {
         crate::flops::Work {
-            samples: self.output.map_or(0, |range| range.len() as u64),
+            samples: self.range.map_or(0, |range| range.len() as u64),
             priced_flops: crate::flops::total(self),
             waves: None,
         }
     }
 
-    /// A node's samples at each output instant, read off its lattice where that differs.
+    /// A node's samples over the range, zero where it holds none.
     pub fn output(&self, node: NodeId) -> Result<Buffer, EngineError> {
-        if !self.buffers.contains_key(&node) {
-            return Err(answer::unheld(self, node));
+        match (self.buffers.contains_key(&node), self.range) {
+            (true, Some(range)) => Ok(self.aligned(node, range)),
+            _ => Err(answer::unheld(self, node)),
         }
-        let unranged = || answer::unheld(self, node);
-        if self.on_its_lattice() {
-            return Ok(self.aligned(node, self.range.ok_or_else(unranged)?));
-        }
-        let over = self.output.ok_or_else(unranged)?;
-        let widths = |r: NodeId| self.buffers.get(&r).map_or(1, |b| b.width);
-        if let Some(program) = sampled::at_output(self, node, &widths)? {
-            return program.at_output(self, node, over);
-        }
-        let window = sva_samples::Window::of(&self.buffers[&node], self.extents.support(node));
-        let planes = sva_samples::machine::resample(
-            window,
-            (self.out_map(), sva_samples::plain().half_width()),
-            over,
-            self.buffers[&node].width,
-        )
-        .map_err(|e| sampled::refused(self, node, &e))?;
-        let mut out = Buffer::of_planes(self.config.rate, planes);
-        out.start = over.start;
-        Ok(out)
     }
 
     /// A node's samples over `over`: its own where it holds them, zero outside its support.
@@ -297,16 +233,6 @@ impl Render {
     }
 }
 
-/// `output` ended where its readings through `map` stop being whole before `stop`.
-pub(crate) fn cut(output: Extent, map: sva_samples::Map, stop: i64) -> Extent {
-    let reach = match map.whole() {
-        true => 0,
-        false => sva_samples::plain().half_width() as i64,
-    };
-    let inside = map.preimage(Extent::new(i64::MIN, stop - reach), 0);
-    Extent::new(output.start, inside.end.clamp(output.start, output.end))
-}
-
 /// Nothing is materialized that no reading asked for: a closed form answered off its spectral sum
 /// allocates no buffer at all.
 pub fn render(
@@ -317,7 +243,7 @@ pub fn render(
 ) -> Result<Render, EngineError> {
     let recording = cache.map(|c| Recording::over(c, config.cache_policy));
     let mut held = run(
-        prepared(graph, target, config.profile)?,
+        prepared(graph, target, config.rate)?,
         config,
         recording.as_ref(),
     )?;
@@ -336,9 +262,9 @@ pub(crate) struct Prepared<'g> {
 pub(crate) fn prepared<'g>(
     graph: &'g Graph,
     target: &str,
-    profile: Profile,
+    rate: u32,
 ) -> Result<Prepared<'g>, EngineError> {
-    let instances = instantiate::instantiate(graph, target, profile)?;
+    let instances = instantiate::instantiate(graph, target, rate)?;
     let held = instances.instance_of(target)?;
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&held))?;
     let tys = typing::infer_all(&instances, &order)?;
@@ -405,7 +331,7 @@ fn planned(prepared: Prepared<'_>, config: RenderConfig) -> Result<Planned<'_>, 
 
 /// The range and every extent a render of `target` decides, and no sample.
 pub fn plan(graph: &Graph, target: &str, config: RenderConfig) -> Result<Render, EngineError> {
-    planned(prepared(graph, target, config.profile)?, config).map(|(held, ..)| held)
+    planned(prepared(graph, target, config.rate)?, config).map(|(held, ..)| held)
 }
 
 /// A `flops` reading counts what the audio render would run, over the extents it would.
@@ -611,7 +537,7 @@ pub(super) fn materialize(
     }
     let extent = held.extents.of(id);
     if extent.is_empty() && !matches!(held.tys.ty(id).held, Held::Frames) {
-        let (rate, width) = (held.lattice(), held.tys.ty(id).width as usize);
+        let (rate, width) = (held.rate(), held.tys.ty(id).width as usize);
         let mut silent = Buffer::silence(rate, width.max(1), 0);
         silent.start = extent.start;
         held.buffers.insert(id, silent);
@@ -679,7 +605,7 @@ fn collapse_closed_form(
         None => None,
     };
     let score = held.alias_score(id);
-    let (rate, profile) = (held.lattice(), &held.config.profile);
+    let (rate, profile) = (held.rate(), &held.config.profile);
     let asked = held.extents.of(id);
     let planned = match (&sum, &written) {
         (Err(_), None) => None,
@@ -797,7 +723,7 @@ pub(super) fn warm(
     cache: Option<&Lens>,
 ) -> Option<(Buffer, Label)> {
     let expected = Expected::Samples {
-        rate: held.lattice(),
+        rate: held.rate(),
         width: held.tys.ty(id).width as usize,
         samples,
     };

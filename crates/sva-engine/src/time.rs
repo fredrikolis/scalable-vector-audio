@@ -194,17 +194,20 @@ impl Affine {
         shift: Q::ZERO,
     };
 
-    /// Reader sample `n` on a lattice of `reader` a second lands on source sample
-    /// `(a*n + b)/d` of a lattice of `source` a second.
-    pub fn map(self, reader: u32, source: u32) -> Option<sva_samples::Map> {
-        let scale = self
-            .scale
-            .mul(Q::int(i64::from(source)))?
-            .div(Q::int(i64::from(reader)))?;
-        let shift = self.shift.mul(Q::int(i64::from(source)))?;
+    /// Sample `n` stepped at `rate` reads the instant of sample `(a*n + b)/d`, exactly.
+    pub fn position(self, rate: u32) -> Option<(i128, i128, i128)> {
+        let scale = self.scale;
+        let shift = self.shift.mul(Q::int(i64::from(rate)))?;
         let d = scale.den.checked_mul(shift.den)? / gcd(scale.den, shift.den);
         let a = scale.num.checked_mul(d / scale.den)?;
         let b = shift.num.checked_mul(d / shift.den)?;
+        Some((a, b, d))
+    }
+
+    /// The stored sample each sample stepped at `rate` reads; `None` where one lands between
+    /// two.
+    pub fn map(self, rate: u32) -> Option<sva_samples::Map> {
+        let (a, b, d) = self.position(rate)?;
         sva_samples::Map::new(a, b, d)
     }
 }

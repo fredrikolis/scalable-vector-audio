@@ -1,7 +1,7 @@
 // Concern: runs one renderer span by span, each span without the reads that answer zero there | Non-concern: where a read is zero (the caller's windows) | IO: (NodeRenderer, Ctx, live windows) -> Buffer
 
-use super::ops::{Layout, Op, lower};
-use super::renderer::{At, BufId, Map, NodeRenderer, Slot};
+use super::ops::{Layout, lowered};
+use super::renderer::{BufId, Map, NodeRenderer, Slot};
 use super::tape::Tape;
 use super::{Ctx, Machine};
 use crate::buffer::Buffer;
@@ -42,7 +42,7 @@ impl NodeRenderer {
     ) -> Result<Vec<Span>, SampleError> {
         let mut leaves = Vec::new();
         buffers(self, &mut leaves);
-        let reach = |(id, at, half): Leaf| at.preimage(live[id.0 as usize], half);
+        let reach = |(id, at): Leaf| at.preimage(live[id.0 as usize]);
         let mut edges = vec![from, to];
         for leaf in &leaves {
             let held = reach(*leaf);
@@ -71,44 +71,28 @@ impl NodeRenderer {
         Ok(out)
     }
 
-    /// One per op, a kernel reading its taps' multiply-adds and, where its fraction moves, the
-    /// weights it interpolates each sample.
+    /// One per op, and a formula's own.
     pub fn ops(&self, layout: &Layout) -> Result<usize, SampleError> {
-        let (mut ops, mut widths) = (Vec::new(), Vec::new());
-        lower(self, layout, &mut ops, &mut widths)?;
-        Ok(ops
-            .iter()
-            .zip(&widths)
-            .map(|(op, width)| match op {
-                Op::Read { at, half_width, .. } | Op::ReadScaled { at, half_width, .. }
-                    if !at.whole() =>
-                {
-                    let held = at.a % at.d == 0 || at.d <= 1024;
-                    4 * half_width * width + usize::from(!held) * 20 * half_width
-                }
-                Op::Moving { half_width, .. } => 4 * half_width * width + 20 * half_width,
-                _ => 1,
-            })
-            .sum())
+        let (lowered, _) = lowered(self, layout)?;
+        let formulas: usize = lowered.formulas.iter().map(|f| f.ops()).sum();
+        Ok(lowered.ops.len() + formulas)
     }
 }
 
 fn width(r: &NodeRenderer, layout: &Layout) -> Result<usize, SampleError> {
-    let (mut ops, mut widths) = (Vec::new(), Vec::new());
-    lower(r, layout, &mut ops, &mut widths)
+    Ok(lowered(r, layout)?.1)
 }
 
-/// A buffer read at a fixed map, and its kernel's half width.
-type Leaf = (BufId, Map, usize);
+/// A buffer read at a fixed map.
+type Leaf = (BufId, Map);
 
 fn buffers(r: &NodeRenderer, out: &mut Vec<Leaf>) {
     if let NodeRenderer::Read {
         slot: Slot::Read(id),
-        at: At::Map(at),
-        half_width,
+        map,
     } = r
     {
-        out.push((*id, *at, *half_width));
+        out.push((*id, *map));
     }
     for part in operands(r) {
         buffers(part, out);
@@ -146,9 +130,8 @@ fn zero(r: &NodeRenderer, dead: &dyn Fn(Leaf) -> bool) -> bool {
     match r {
         NodeRenderer::Read {
             slot: Slot::Read(id),
-            at: At::Map(at),
-            half_width,
-        } => dead((*id, *at, *half_width)),
+            map,
+        } => dead((*id, *map)),
         NodeRenderer::Const(v) => v.to_bits() == 0,
         NodeRenderer::Crop { x, .. } => zero(x, dead),
         NodeRenderer::Add(parts) => parts.iter().all(|p| zero(p, dead)),
@@ -173,10 +156,7 @@ fn operands(r: &NodeRenderer) -> Vec<&NodeRenderer> {
             x, cutoff, q, gain, ..
         } => vec![x, cutoff, q, gain],
         NodeRenderer::Physics { args, .. } => args.iter().collect(),
-        NodeRenderer::Read {
-            at: At::Moving { time, .. },
-            ..
-        } => vec![time],
+        NodeRenderer::Formula { time, .. } => vec![time],
         _ => Vec::new(),
     }
 }
@@ -234,23 +214,14 @@ fn rebuilt(r: &NodeRenderer, each: &mut Each) -> Result<NodeRenderer, SampleErro
             from: *from,
             args: args.iter().map(&mut *each).collect::<Result<_, _>>()?,
         },
-        NodeRenderer::Read {
-            slot,
-            at:
-                At::Moving {
-                    per_sec,
-                    line,
-                    time,
-                },
-            half_width,
-        } => NodeRenderer::Read {
-            slot: *slot,
-            at: At::Moving {
-                per_sec: *per_sec,
-                line: *line,
-                time: one(time)?,
-            },
-            half_width: *half_width,
+        NodeRenderer::Formula {
+            formula,
+            width,
+            time,
+        } => NodeRenderer::Formula {
+            formula: formula.clone(),
+            width: *width,
+            time: one(time)?,
         },
         leaf => leaf.clone(),
     })

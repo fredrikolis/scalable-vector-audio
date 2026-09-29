@@ -30,6 +30,13 @@ pub(super) enum Point {
     Buffer(NodeId),
 }
 
+/// An instant, and the sample it is where it is one of the render's own.
+#[derive(Clone, Copy)]
+pub(super) struct Instant {
+    pub t: f64,
+    pub n: Option<i64>,
+}
+
 /// FORMAT 9.1 row 4 over the value tree rather than over one written closed form: the operands of a
 /// closed form with no dual may have crossed a cast, and a crossing has no atoms to compose.
 pub fn point_sample(
@@ -38,7 +45,7 @@ pub fn point_sample(
     score: AliasScore,
 ) -> Result<(Buffer, Label), EngineError> {
     let tree = plan(held, id)?;
-    let rate = held.lattice();
+    let rate = held.rate();
     let extent = held.extents.of(id);
     let width = usize::from(held.tys.ty(id).width);
     let mut planes = Vec::with_capacity(width);
@@ -82,10 +89,14 @@ fn sweep(
     extent: Extent,
     oversample: usize,
 ) -> Result<Vec<f64>, EngineError> {
-    let step = 1.0 / (f64::from(held.lattice()) * oversample as f64);
+    let step = 1.0 / (f64::from(held.rate()) * oversample as f64);
     (0..extent.len() * oversample)
         .map(|i| {
-            value(held, tree, component, extent.instant(i, oversample, step))
+            let at = Instant {
+                t: extent.instant(i, oversample, step),
+                n: (oversample == 1).then(|| extent.start + i as i64),
+            };
+            value(held, tree, component, at)
                 .map(|v| v.re)
                 .map_err(|e| refused(held, id, &e))
         })
@@ -106,36 +117,39 @@ pub(super) fn value(
     held: &Render,
     tree: &Point,
     component: usize,
-    t: f64,
+    at: Instant,
 ) -> Result<C64, CollapseError> {
     match tree {
-        Point::SpectralSum(sum) => eval_spectral_sum_at(sum, component, t),
+        Point::SpectralSum(sum) => eval_spectral_sum_at(sum, component, at.t),
         Point::Written { body, refs } => eval_written_at(
             body,
             component,
-            t,
+            at.t,
             &Reads {
                 held,
                 planned: refs,
+                at,
             },
         ),
         Point::Operation { name, args, widths } => {
-            operation(held, name, args, widths, component, t)
+            operation(held, name, args, widths, component, at)
         }
-        Point::Buffer(id) => read(held, *id, component, t),
+        Point::Buffer(id) => read(held, *id, component, at),
     }
 }
 
 /// What a written closed form's `Body::Node` reads: the plan this render made for that node, and
-/// the width its type states.
+/// the width its type states. A node read at the instant being swept is read at its sample.
 struct Reads<'a> {
     held: &'a Render,
     planned: &'a BTreeMap<NodeId, Point>,
+    at: Instant,
 }
 
 impl Refs for Reads<'_> {
     fn value(&self, id: NodeId, component: usize, t: f64) -> Result<C64, CollapseError> {
-        value(self.held, &self.planned[&id], component, t)
+        let n = self.at.n.filter(|_| t.to_bits() == self.at.t.to_bits());
+        value(self.held, &self.planned[&id], component, Instant { t, n })
     }
 
     fn width(&self, id: NodeId) -> usize {
@@ -143,18 +157,18 @@ impl Refs for Reads<'_> {
     }
 }
 
-/// A sampled operand between its lattice samples is the kernel's reading of them.
-fn read(held: &Render, id: NodeId, component: usize, t: f64) -> Result<C64, CollapseError> {
+/// A sampled operand has a value only at its own samples.
+fn read(held: &Render, id: NodeId, component: usize, at: Instant) -> Result<C64, CollapseError> {
+    let n = at.n.ok_or(CollapseError::NotEvaluable(
+        "a sampled operand between two of its samples",
+    ))?;
     let buffer = held.buffers.get(&id).expect("a read is materialized first");
     let window = Window::of(buffer, held.extents.support(id));
-    let at = sva_samples::machine::read_at(
-        window,
-        t * f64::from(buffer.rate),
-        sva_samples::plain().half_width(),
-        buffer.width,
-    )
-    .map_err(|_| CollapseError::NotEvaluable("a sample past what the render holds"))?;
-    Ok(C64::real(at[component.min(buffer.width.saturating_sub(1))]))
+    let c = component.min(buffer.width.saturating_sub(1));
+    let v = window.get(c, n).ok_or(CollapseError::NotEvaluable(
+        "a sample past what the render holds",
+    ))?;
+    Ok(C64::real(v))
 }
 
 fn operation(
@@ -163,25 +177,25 @@ fn operation(
     args: &[Point],
     widths: &[usize],
     component: usize,
-    t: f64,
+    at: Instant,
 ) -> Result<C64, CollapseError> {
     if name == "join" {
-        let (at, inner) = lane_of(widths, component)
+        let (lane, inner) = lane_of(widths, component)
             .ok_or(CollapseError::NotEvaluable("a component past the width"))?;
-        return value(held, &args[at], inner, t);
+        return value(held, &args[lane], inner, at);
     }
     if name == "ch" {
-        let k = value(held, &args[1], 0, t)?.re.round();
+        let k = value(held, &args[1], 0, at)?.re.round();
         let width = widths.first().copied().unwrap_or(1);
         let k = usize::try_from(k as i64).unwrap_or(usize::MAX);
         if k >= width {
             return Err(CollapseError::NotEvaluable("a component past the width"));
         }
-        return value(held, &args[0], k, t);
+        return value(held, &args[0], k, at);
     }
     let mut held_args = Vec::with_capacity(args.len());
     for arg in args {
-        held_args.push(value(held, arg, component, t)?);
+        held_args.push(value(held, arg, component, at)?);
     }
     let pair = || (held_args[0], held_args[1]);
     let first = || held_args[0];
@@ -197,7 +211,7 @@ fn operation(
         "crop" => {
             let shoulder = |at: usize| held_args.get(at).map_or(0.0, |s| s.re);
             let (a, b) = (held_args[1].re, held_args[2].re);
-            match crop_gain(t, a, b, shoulder(3), shoulder(4)) {
+            match crop_gain(at.t, a, b, shoulder(3), shoulder(4)) {
                 0.0 => C64::ZERO,
                 gain => first().scale(gain),
             }
@@ -227,7 +241,7 @@ pub(super) fn plan(held: &Render, id: NodeId) -> Result<Point, EngineError> {
     if !held.tys.ty(id).is_closed_form() {
         return Ok(Point::Buffer(id));
     }
-    let band = Audible::of(&held.config.profile, held.lattice());
+    let band = Audible::of(&held.config.profile, held.rate());
     let left = match refs::spectral_sum_of(&held.tys, id, Var::T) {
         Ok(sum) => {
             let held = truncate_spectral_sum(&sum, band).map_err(|e| refused(held, id, &e))?;

@@ -3,7 +3,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sva_ast::Graph;
-use sva_samples::PSYCHOACOUSTIC_V1;
 
 use crate::error::{BindingFault, EngineError};
 use crate::instantiate::Instances;
@@ -39,14 +38,15 @@ pub fn trace(graph: &Graph, roots: &[String], target: &str) -> Result<Traced, En
         held
     });
     let (inst, entries) = match &seeded {
-        None => crate::instantiate::from_roots(graph, roots, PSYCHOACOUSTIC_V1)?,
-        Some(held) => match crate::instantiate::from_roots(graph, held, PSYCHOACOUSTIC_V1) {
+        None => crate::instantiate::from_roots(graph, roots, crate::DEFAULT_SAMPLE_RATE)?,
+        Some(held) => match crate::instantiate::from_roots(graph, held, crate::DEFAULT_SAMPLE_RATE)
+        {
             Ok(found) => found,
             // Own terms a caller must complete are none: the call sites' are what is left.
             Err(EngineError::Binding {
                 fault: BindingFault::Unbound(..),
                 ..
-            }) => crate::instantiate::from_roots(graph, roots, PSYCHOACOUSTIC_V1)?,
+            }) => crate::instantiate::from_roots(graph, roots, crate::DEFAULT_SAMPLE_RATE)?,
             Err(other) => return Err(other),
         },
     };
@@ -127,8 +127,12 @@ fn sampled_leaf(
             .find_map(|op| sampled_leaf(typing, op, open))
     };
     match typing.value(id) {
-        crate::typing::Value::SelfAt { .. } => Some("self, a loop run on the lattice".to_string()),
-        crate::typing::Value::Noise(_) => Some("rand, noise drawn on the lattice".to_string()),
+        crate::typing::Value::SelfAt { .. } => {
+            Some("self, a loop stepped at the rate in use".to_string())
+        }
+        crate::typing::Value::Noise(_) => {
+            Some("rand, noise drawn per step of the rate in use".to_string())
+        }
         crate::typing::Value::Solver { .. } => Some("a finite-difference builtin".to_string()),
         crate::typing::Value::Cast(crate::cast::Cast::Sample, source) => {
             Some(format!("sample({})", typing.name(*source)))
@@ -144,7 +148,7 @@ fn sampled_leaf(
                     time.shift.to_f64()
                 ),
                 crate::typing::When::Moving(_) => "a read at a moving time".to_string(),
-                crate::typing::When::Index(_) => "a read by lattice index".to_string(),
+                crate::typing::When::Index(_) => "a read by sample index".to_string(),
             })
         }),
         crate::typing::Value::Op { args, .. } => under(args.clone(), open),

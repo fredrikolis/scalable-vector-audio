@@ -205,7 +205,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 84] = [
+pub static REGISTRY: [(&str, &str); 79] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -270,7 +270,7 @@ pub static REGISTRY: [(&str, &str); 84] = [
     ),
     (
         "cast.window_off_the_lattice",
-        "an stft window or hop that is no whole number of lattice steps",
+        "an stft window or hop that is no whole number of steps of the rate in use",
     ),
     (
         "collapse.empty_band",
@@ -427,35 +427,16 @@ pub static REGISTRY: [(&str, &str); 84] = [
     ),
     (
         "engine.unreadable_position",
-        "a moving reading at no finite position",
+        "an exactly computed time past what its integers hold",
     ),
     (
         "engine.unreadable_index",
         "an integer index that is more than one idx(...) of a line in t plus a count",
     ),
     (
-        "engine.loop_reads_ahead",
-        "a loop reading its own past between samples closer than the shortest kernel reaches",
-    ),
-    (
-        "engine.loop_error_unproven",
-        "a loop read between samples through an operation no error bound is known for",
-    ),
-    (
-        "engine.position_unbounded",
-        "a moving read whose computed position no rounding bound holds for over its extent",
-    ),
-    (
-        "engine.reading_past_precision",
-        "a moving read whose bound, its position's rounding counted, passes the precision",
-    ),
-    (
-        "engine.loop_error_past_precision",
-        "a loop read between samples whose proven error passes the profile's precision",
-    ),
-    (
-        "engine.loop_error_unbounded",
-        "a loop with no end whose readings between samples may grow an error each pass",
+        "render.off_grid_read",
+        "a node that holds state read between its samples, at a scaled time or at a time \
+         that moves",
     ),
     (
         "engine.per_lane_read_on_samples",

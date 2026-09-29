@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use sva_ast::{Arg, Expr};
-use sva_formula::NodeId;
+use sva_formula::{Held, NodeId, Var};
 
 use crate::cast::Cast;
 use crate::error::EngineError;
@@ -366,7 +366,10 @@ pub(crate) fn materialized_operands(typing: &Typing, id: NodeId) -> Vec<NodeId> 
         Value::Solver { varying, .. } => sampled(varying.iter().map(|(_, a)| *a).collect()),
         Value::Cast(Cast::Sample, source) => vec![*source],
         Value::Read { source, at, .. } => {
-            let mut out = vec![*source];
+            let mut out = match (at, anywhere(typing, *source)) {
+                (When::Moving(_), true) => Vec::new(),
+                _ => vec![*source],
+            };
             out.extend(sampled(moving(*at)));
             out
         }
@@ -375,6 +378,16 @@ pub(crate) fn materialized_operands(typing: &Typing, id: NodeId) -> Vec<NodeId> 
         Value::Filter {
             x, cutoff, q, gain, ..
         } => sampled(vec![*x, *cutoff, *q, *gain]),
+    }
+}
+
+/// Whether a read of `id` has a value at any instant, stored or not.
+pub(crate) fn anywhere(typing: &Typing, id: NodeId) -> bool {
+    match typing.value(id) {
+        Value::Noise(_) => true,
+        Value::Cast(Cast::Sample, of) => typing.ty(*of).held == Held::Form(Var::T),
+        Value::ClosedForm(form) => form.var == Var::T,
+        _ => false,
     }
 }
 

@@ -8,7 +8,6 @@ use std::collections::{BTreeMap, HashMap};
 use sva_ast::{Address, Arg, BinOp, ByteSpan, Expr, Literal};
 use sva_formula::filter::Shape;
 use sva_formula::note;
-use sva_samples::Profile;
 
 use crate::error::EngineError;
 use crate::vocabulary::is_builtin;
@@ -149,13 +148,13 @@ pub struct Instances<'g> {
     pub(crate) own_terms: BTreeMap<String, String>,
     pub(crate) root: String,
     pub(crate) time: Expr,
-    /// Its lattice counts `sp`.
-    pub(crate) profile: Profile,
+    /// The rate in use, whose step `sp` is.
+    pub(crate) rate: u32,
 }
 
 impl<'g> Instances<'g> {
-    pub(crate) fn lattice(&self) -> u32 {
-        self.profile.lattice_hz
+    pub(crate) fn rate(&self) -> u32 {
+        self.rate
     }
 
     pub fn origin(&self, instance: &str) -> Option<&str> {

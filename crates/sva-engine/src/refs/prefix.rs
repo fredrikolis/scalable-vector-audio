@@ -232,12 +232,11 @@ impl<'a> Walk<'a> {
     }
 }
 
-/// How far past its own sample a read at scale one reaches its source, taps and all, where
-/// every sample reaches it alike.
-fn lead(at: &When, lattice: u32) -> Option<i64> {
-    let map = at.map(lattice, lattice)?;
-    let alike = map.a == map.d && (!map.whole() || map.least() == map.lead(0));
-    alike.then(|| map.lead(sva_samples::plain().half_width()))
+/// How far past its own sample a read at scale one reaches its source, where every sample
+/// reaches it alike.
+fn lead(at: &When, rate: u32) -> Option<i64> {
+    let map = at.map(rate)?;
+    (map.a == map.d && map.least() == map.lead()).then(|| map.lead())
 }
 
 /// A crop's `[l, r)` and shoulders, as its evaluators read them.
@@ -380,9 +379,8 @@ fn constant_identity(v: f64, var: sva_formula::Var) -> Hash {
 #[cfg(test)]
 mod tests {
     use crate::render::{Render, RenderConfig, plan};
-    use sva_samples::LATTICE_8K;
 
-    const RATE: u32 = LATTICE_8K.lattice_hz;
+    const RATE: u32 = 8_000;
 
     const PAD: &str = "release = inf\nlowpass(sample(0.3*vel*saw(f0)*(crop(1, 0s, release) + crop(exp(-(t - \
         release)/0.3), release, 3600s))), cutoff=900, q=0.9)\n";
@@ -411,7 +409,7 @@ mod tests {
             )
             .insert("late", "@env(t - 100sp)\n");
         let g = sva_ast::load(&files).expect("a composition");
-        plan(&g, root, RenderConfig::seconds(RATE, 1.0).under(LATTICE_8K)).expect("a plan")
+        plan(&g, root, RenderConfig::seconds(RATE, 1.0)).expect("a plan")
     }
 
     fn asked<T>(root: &str, ask: impl FnOnce(&mut super::Walk, sva_formula::NodeId) -> T) -> T {

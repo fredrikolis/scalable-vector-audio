@@ -414,7 +414,7 @@ impl<'t> Parser<'t> {
     }
 
     /// `@f(t, cutoff=800)`: one positional argument, the time to sample at, then named
-    /// bindings; `@f[i, cutoff=800]` reads lattice index `i` instead. A second positional
+    /// bindings; `@f[i, cutoff=800]` reads sample index `i` instead. A second positional
     /// refuses — a file states no parameter ORDER, only which names it leaves free, so there
     /// is nothing for a second position to mean.
     fn parse_invocation(
@@ -499,7 +499,7 @@ impl<'t> Parser<'t> {
                     return Err(Diag::new(
                         DiagCode::NonIntegerIndex,
                         self.tokens[at].span,
-                        "an index must be an integer; use idx(…) to name the lattice index \
+                        "an index must be an integer; use idx(…) to name the sample index \
                          nearest a time, as in @x[idx(t - 0.5b)]",
                     ));
                 }
@@ -951,7 +951,7 @@ mod tests {
         assert_eq!(parse("self").unwrap_err().code, DiagCode::UnexpectedToken);
     }
 
-    /// `x[i]` reads a lattice index: the same ref, addressed by a count, printed back to itself.
+    /// `x[i]` reads a sample index: the same ref, addressed by a count, printed back to itself.
     /// A unit in the index is a time, which only `idx(...)` turns into a count.
     #[test]
     fn brackets_read_an_index_on_a_ref_or_self() {

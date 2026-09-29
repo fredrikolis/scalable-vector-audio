@@ -1,23 +1,18 @@
-// Concern: proves a discrete node renders on its lattice, accumulator and all, read out at any rate | Non-concern: any solver's own grid (sva-samples) | IO: (a composition, rate) -> a Buffer
+// Concern: proves a discrete node steps at the rate a render asks for, accumulator and all | Non-concern: any solver's own grid (sva-samples) | IO: (a composition, rate) -> a Buffer
 
 use crate::fixtures::graph_of;
 use sva_engine::{RenderConfig, render};
-use sva_samples::LATTICE_8K;
 
-/// The low-rate test lattice, read out on it; the filter and limiter tests keep 44.1 kHz.
-const RATE: u32 = LATTICE_8K.lattice_hz;
-
-fn low(rate: u32, secs: f64) -> RenderConfig {
-    RenderConfig::seconds(rate, secs).under(LATTICE_8K)
-}
+/// A low rate keeps these tests fast; the filter and limiter tests keep 44.1 kHz.
+const RATE: u32 = 8_000;
 
 /// A solver is a family indexed by the rate, each run as long as its own grid.
 #[test]
 fn an_fd_node_renders_at_the_observation_rate() {
     let g = graph_of("fd", &[("body", "chaigne_askenfelt(261.63)\n")]);
     for rate in [RATE, 11_025] {
-        let held =
-            render(&g, "body", low(rate, 0.02), None).unwrap_or_else(|e| panic!("{rate}: {e}"));
+        let held = render(&g, "body", RenderConfig::seconds(rate, 0.02), None)
+            .unwrap_or_else(|e| panic!("{rate}: {e}"));
         let root = held.id("body").expect("the root");
         let buffer = held.output(root).expect("a rendered solver");
         assert_eq!(buffer.rate, rate);
@@ -36,7 +31,13 @@ fn a_one_step_accumulator_renders() {
         "accumulator",
         &[("acc", "sample(0.25 + 0*t) + self(t - 1sp)\n")],
     );
-    let held = render(&g, "acc", low(RATE, 10.0 / f64::from(RATE)), None).expect("a recurrence");
+    let held = render(
+        &g,
+        "acc",
+        RenderConfig::seconds(RATE, 10.0 / f64::from(RATE)),
+        None,
+    )
+    .expect("a recurrence");
     let root = held.id("acc").expect("the root");
     let buffer = held.output(root).expect("a rendered loop");
     assert_eq!(buffer.len(), 10);
@@ -79,8 +80,8 @@ fn a_one_pole_smoother_written_with_sp_renders_at_two_rates() {
         )],
     );
     let level = |rate: u32| -> f64 {
-        let held =
-            render(&g, "smooth", low(rate, 0.02), None).unwrap_or_else(|e| panic!("{rate}: {e}"));
+        let held = render(&g, "smooth", RenderConfig::seconds(rate, 0.02), None)
+            .unwrap_or_else(|e| panic!("{rate}: {e}"));
         let root = held.id("smooth").expect("the root");
         held.output(root)
             .expect("a rendered loop")
@@ -140,7 +141,13 @@ fn a_self_read_is_founded_sample_by_sample_without_a_block() {
         "three-step",
         &[("acc", "sample(1 + 0*t) + 0.5*self(t - 3sp)\n")],
     );
-    let held = render(&g, "acc", low(RATE, 10.0 / f64::from(RATE)), None).expect("a recurrence");
+    let held = render(
+        &g,
+        "acc",
+        RenderConfig::seconds(RATE, 10.0 / f64::from(RATE)),
+        None,
+    )
+    .expect("a recurrence");
     let root = held.id("acc").expect("the root");
     let buffer = held.output(root).expect("a rendered loop");
     assert_eq!(buffer.len(), 10);
@@ -161,7 +168,8 @@ fn a_self_read_is_founded_sample_by_sample_without_a_block() {
 }
 
 fn plane(g: &sva_ast::Graph, node: &str) -> Vec<f64> {
-    let held = render(g, node, low(RATE, 0.05), None).unwrap_or_else(|e| panic!("{node}: {e}"));
+    let held = render(g, node, RenderConfig::seconds(RATE, 0.05), None)
+        .unwrap_or_else(|e| panic!("{node}: {e}"));
     let id = held.id(node).unwrap_or_else(|| panic!("{node} typed"));
     held.output(id).expect("a rendered node").plane(0).to_vec()
 }
@@ -213,7 +221,7 @@ fn a_sampled_crop_refuses_the_shoulders_a_closed_form_refuses() {
             "crop(sample(sin(2*pi*220*t)), 10ms, 20ms, rise=6ms, fall=6ms)\n",
         )],
     );
-    let Err(refused) = render(&g, "body", low(RATE, 0.05), None) else {
+    let Err(refused) = render(&g, "body", RenderConfig::seconds(RATE, 0.05), None) else {
         panic!("two shoulders longer than their window render nothing");
     };
     assert!(
@@ -223,10 +231,10 @@ fn a_sampled_crop_refuses_the_shoulders_a_closed_form_refuses() {
     );
 }
 
-/// A limiter written in `sp` recovers on the lattice whatever rate reads it out: where an
-/// instant is on both a 44.1 kHz and a 96 kHz output, the two hold the same bits.
+/// `sp` is one step of the rate in use: a limiter decaying per step lets go after the same
+/// count of samples at 44.1 kHz and at 96 kHz.
 #[test]
-fn an_sp_limiter_releases_alike_at_every_output_rate() {
+fn an_sp_limiter_releases_after_the_same_steps_at_every_rate() {
     let g = graph_of(
         "limiter",
         &[
@@ -239,23 +247,25 @@ fn an_sp_limiter_releases_alike_at_every_output_rate() {
             .unwrap_or_else(|e| panic!("{rate}: {e}"));
         held.output(held.root).expect("a gain").plane(0).to_vec()
     };
-    let (low, high) = (at(44_100), at(96_000));
-    let shared = (0..low.len() / 147).take_while(|k| 320 * k < high.len());
-    for k in shared {
-        assert_eq!(low[147 * k], high[320 * k], "instant {}", 147 * k);
+    for (rate, let_go) in [(44_100, 4_410), (96_000, 9_600)] {
+        let released = at(rate)
+            .iter()
+            .skip(let_go)
+            .position(|g| *g <= 0.5 / std::f64::consts::E);
+        assert_eq!(
+            released,
+            Some(3_999),
+            "{rate}: 3999 steps after the target lets go"
+        );
     }
-    let released = low
-        .iter()
-        .skip(4_410)
-        .position(|g| *g <= 0.5 / std::f64::consts::E);
-    assert_eq!(released, Some(3_999), "90.7 ms after the target lets go");
 }
 
-/// An output instant off the lattice reads kernel taps past a crop's edges.
+/// A render at a rate no test privileges steps each node there, noise read half a
+/// millisecond late included.
 #[test]
-fn an_output_off_the_lattice_reads_samples_past_every_edge() {
+fn a_render_at_any_rate_steps_its_nodes_at_that_rate() {
     let g = graph_of(
-        "off-lattice",
+        "any-rate",
         &[
             ("tone", "crop(sample(sin(2*pi*440*t)), 0s, 20ms)\n"),
             ("late", "crop(rand(t - 0.5ms, seed=1), 0s, 20ms)\n"),
@@ -263,7 +273,8 @@ fn an_output_off_the_lattice_reads_samples_past_every_edge() {
     );
     let rate = 11_025;
     let read = |node: &str| {
-        let held = render(&g, node, low(rate, 0.02), None).unwrap_or_else(|e| panic!("{e}"));
+        let held = render(&g, node, RenderConfig::seconds(rate, 0.02), None)
+            .unwrap_or_else(|e| panic!("{e}"));
         held.output(held.root)
             .unwrap_or_else(|e| panic!("{node}: {e}"))
     };
@@ -275,7 +286,7 @@ fn an_output_off_the_lattice_reads_samples_past_every_edge() {
     assert_eq!(read("late").len(), tone.len());
 }
 
-/// A read whose time wraps by an exact period lands on a lattice sample at every jump.
+/// A read whose time wraps by an exact period lands on a sample at every jump.
 #[test]
 fn a_time_wrapped_by_an_exact_period_reads_whole_samples() {
     let g = graph_of(
@@ -287,7 +298,8 @@ fn a_time_wrapped_by_an_exact_period_reads_whole_samples() {
         ],
     );
     let read = |node: &str| {
-        let held = render(&g, node, low(RATE, 0.1), None).unwrap_or_else(|e| panic!("{e}"));
+        let held = render(&g, node, RenderConfig::seconds(RATE, 0.1), None)
+            .unwrap_or_else(|e| panic!("{e}"));
         held.output(held.root).expect("a buffer").plane(0).to_vec()
     };
     let (noise, looped, held) = (read("noise"), read("looped"), read("held"));

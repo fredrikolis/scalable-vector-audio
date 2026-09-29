@@ -31,7 +31,7 @@ impl<'g> Lowering<'_, 'g> {
         if name == sva_ast::INDEX {
             return Err(self.refused_at(
                 "type.index_outside_read",
-                "idx(...) names a lattice index, which only an index read takes".to_string(),
+                "idx(...) names a sample index, which only an index read takes".to_string(),
                 "read by index, as @x[idx(t - 0.5b)], or write the time itself",
                 Some(span),
             ));
@@ -80,8 +80,8 @@ impl<'g> Lowering<'_, 'g> {
         if let Some(cast) = Cast::from_name(name) {
             let cast = match cast {
                 Cast::Stft { .. } => Cast::Stft {
-                    window: self.lattice_count(args, "window", span, cx)?,
-                    hop: self.lattice_count(args, "hop", span, cx)?,
+                    window: self.step_count(args, "window", span, cx)?,
+                    hop: self.step_count(args, "hop", span, cx)?,
                 },
                 other => other,
             };
@@ -525,9 +525,9 @@ impl<'g> Lowering<'_, 'g> {
         crate::loops::plain(crate::loops::amount(self.inst, e, cx)?)
     }
 
-    /// A duration a cast counts in lattice steps, which has to be a whole number of them;
-    /// zero where it is not written.
-    fn lattice_count(
+    /// A duration a cast counts in steps of the rate in use, which has to be a whole number of
+    /// them; zero where it is not written.
+    fn step_count(
         &self,
         args: &[Arg],
         key: &str,
@@ -540,17 +540,17 @@ impl<'g> Lowering<'_, 'g> {
         }) else {
             return Ok(0);
         };
-        let lattice = crate::time::Q::int(i64::from(self.inst.lattice()));
+        let rate = crate::time::Q::int(i64::from(self.inst.rate()));
         let count = crate::loops::time_of(self.inst, written, cx)
             .filter(|at| at.scale.is_zero())
-            .and_then(|at| at.shift.mul(lattice))
+            .and_then(|at| at.shift.mul(rate))
             .filter(|n| n.is_integer() && n.num() > 0);
         match count {
             Some(n) => Ok(n.num() as usize),
             None => Err(self.refused_at(
                 "cast.window_off_the_lattice",
                 format!(
-                    "`stft`'s `{key}` is no whole number of lattice steps: {}",
+                    "`stft`'s `{key}` is no whole number of steps at this rate: {}",
                     sva_ast::render_expr(written)
                 ),
                 "write it in sp, as window=2048sp",
@@ -559,8 +559,9 @@ impl<'g> Lowering<'_, 'g> {
         }
     }
 
-    /// `rand(key, seed=)` is white noise on the lattice read at `key`: a constant key is
-    /// one number, `t` the noise itself, and any other time a read of it.
+    /// `rand(key, seed=)` is white noise, a draw at each instant keyed by its count of steps
+    /// of the rate in use: a constant key is one number, `t` the noise itself, and any other
+    /// time a read of it.
     fn drawn(
         &mut self,
         args: &[Arg],
@@ -572,14 +573,8 @@ impl<'g> Lowering<'_, 'g> {
         let (key, seed) = rand_arguments(args, |x| self.named_value(x, cx)).ok_or_else(bad)?;
         let at = match crate::loops::time_of(self.inst, key, cx) {
             Some(at) if at.scale.is_zero() => {
-                if !crate::loops::on_lattice(at.shift, self.inst.lattice()) {
-                    self.typing.note_between(self.node);
-                }
-                return Ok(Piece::ClosedForm(Body::Const(C64::real(noise_at(
-                    seed,
-                    at.shift,
-                    self.inst.profile,
-                )))));
+                let drawn = noise_at(seed, at.shift, self.inst.rate());
+                return Ok(Piece::ClosedForm(Body::Const(C64::real(drawn))));
             }
             Some(at) => When::Time(at),
             None => When::Moving(self.time(key, cx)?),
@@ -616,24 +611,12 @@ pub(crate) fn rand_arguments<'a>(
     Some((key, seed as u64))
 }
 
-/// The lattice noise at an instant: its draw where the instant is a lattice sample, the
-/// kernel's reading of its draws between two.
-pub(crate) fn noise_at(seed: u64, at: crate::time::Q, profile: sva_samples::Profile) -> f64 {
-    let lattice = crate::time::Q::int(i64::from(profile.lattice_hz));
-    let draw = |n: i64| hash::draw(seed, n as f64);
-    let Some(p) = at.mul(lattice) else {
-        return f64::NAN;
-    };
-    let floor = p.num().div_euclid(p.den()) as i64;
-    let rem = p.num().rem_euclid(p.den());
-    if rem == 0 {
-        return draw(floor);
+/// The noise's draw at an instant, keyed by its count of steps of `rate`.
+pub(crate) fn noise_at(seed: u64, at: crate::time::Q, rate: u32) -> f64 {
+    match at.mul(crate::time::Q::int(i64::from(rate))) {
+        Some(steps) => hash::draw(seed, steps.to_f64()),
+        None => f64::NAN,
     }
-    let mut weights = Vec::new();
-    sva_samples::plain().weights(rem as f64 / p.den() as f64, &mut weights);
-    let taps = sva_samples::reconstruct::taps(floor, sva_samples::plain().half_width());
-    taps.zip(&weights)
-        .fold(0.0, |acc, (n, w)| acc + w * draw(n))
 }
 
 /// FORMAT 3.3's arithmetic row: a closed form of its operands alone, so one image serves a

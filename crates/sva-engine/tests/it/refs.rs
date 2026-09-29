@@ -4,7 +4,7 @@ use crate::fixtures::graph_of;
 use sva_engine::instantiate::{instantiate, resolve_ref_path};
 use sva_engine::schedule_from;
 use sva_engine::{Ask, EngineError, Held, RenderConfig, Representation, Var, render, types};
-use sva_engine::{PSYCHOACOUSTIC_V1, Read, resolve, symbolic_hash};
+use sva_engine::{DEFAULT_SAMPLE_RATE, Read, resolve, symbolic_hash};
 
 #[test]
 fn dependencies_precede_dependents() {
@@ -15,7 +15,8 @@ fn dependencies_precede_dependents() {
             ("lead", "@kick*0.5 + @kick(t - 0.01s)*0.3\n"),
         ],
     );
-    let instances = instantiate(&g, "lead", PSYCHOACOUSTIC_V1).expect("a graph that instantiates");
+    let instances =
+        instantiate(&g, "lead", DEFAULT_SAMPLE_RATE).expect("a graph that instantiates");
     let order = schedule_from(&instances, &["lead".to_string()])
         .expect("a schedule")
         .groups
@@ -58,7 +59,7 @@ fn a_fractional_shift_hashes_as_a_new_expression() {
     );
 }
 
-/// An `sp` offset on a sampled ref moves the reading by whole lattice samples.
+/// An `sp` offset on a sampled ref moves the reading by whole samples.
 #[test]
 fn an_sp_offset_read_is_an_integer_index() {
     let rendered = |name: &str, body: &str| {
@@ -145,8 +146,8 @@ fn a_law_ref_substitutes_and_allocates_no_buffer() {
     );
 }
 
-/// `sp` is one step of the lattice in seconds, so a closed form read `2sp` back is that closed
-/// form moved, exact at any rate.
+/// `sp` is one step of the rate in use in seconds, so a closed form read `2sp` back is that
+/// closed form moved two samples, exact at any rate.
 #[test]
 fn a_law_read_at_a_grid_offset_renders() {
     let g = graph_of(
@@ -162,7 +163,7 @@ fn a_law_read_at_a_grid_offset_renders() {
     let buffer = held.output(id).expect("a rendered read");
     assert_eq!(buffer.len(), 80);
     for i in 0..buffer.len() {
-        let at = i as f64 / 8_000.0 - 2.0 / 44_100.0;
+        let at = i as f64 / 8_000.0 - 2.0 / 8_000.0;
         let want = 0.5 * (std::f64::consts::TAU * 220.0 * at).sin();
         assert!(
             (buffer.at(0, i) - want).abs() < 1e-9,
@@ -519,15 +520,15 @@ fn a_reflected_read_counts_down_on_a_form_and_on_samples() {
         ("form-rev", "@form(0.11s - t)"),
         ("held-rev", "@held(0.11s - t)"),
         ("held-neg", "@held(-1*(t - 0.11s))"),
-        ("held-sp", "@held(4851sp - t)"),
+        ("held-sp", "@held(11sp - t)"),
     ] {
         let got = first(name, body, 3).expect("a reflected read renders");
         assert!(near(&got, &[0.11, 0.10, 0.09]), "{body}: {got:?}");
     }
 }
 
-/// Samples read at any multiple of `t` land where that multiple says: on lattice samples
-/// where it is whole there, between them otherwise, read there by the kernel.
+/// Samples of a closed form read at any multiple of `t` land where that multiple says: on
+/// samples where it is whole there, the closed form itself between them.
 #[test]
 fn a_scaled_read_of_samples_lands_on_or_between_samples() {
     let got = first("held-2t", "@held(2*t - 0.02s)", 3).expect("a whole scale renders");
@@ -540,10 +541,10 @@ fn a_scaled_read_of_samples_lands_on_or_between_samples() {
     );
 }
 
-/// Seconds and lattice steps add in one offset.
+/// Seconds and steps of the rate in use add in one offset.
 #[test]
 fn an_offset_in_seconds_and_steps_reads_their_sum() {
     let got = first("mixed", "@held(t - 0.02s - 1sp)", 3).expect("a mixed offset renders");
-    let step = 1.0 / 44_100.0;
+    let step = 1.0 / 100.0;
     assert!(near(&got, &[-0.02 - step, -0.01 - step, -step]), "{got:?}");
 }

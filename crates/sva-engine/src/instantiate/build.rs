@@ -3,7 +3,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use sva_ast::{Arg, ByteSpan, Expr, Graph};
-use sva_samples::Profile;
 
 use crate::error::{BindingFault, EngineError};
 use crate::instantiate::{
@@ -15,16 +14,16 @@ use crate::vocabulary::{SERIES, is_builtin};
 pub fn instantiate<'g>(
     graph: &'g Graph,
     root: &str,
-    profile: Profile,
+    rate: u32,
 ) -> Result<Instances<'g>, EngineError> {
-    Ok(from_roots(graph, &[root.to_string()], profile)?.0)
+    Ok(from_roots(graph, &[root.to_string()], rate)?.0)
 }
 
 /// One table over several roots, so a node two roots reach is one instance and one buffer.
 pub fn from_roots<'g>(
     graph: &'g Graph,
     roots: &[String],
-    profile: Profile,
+    rate: u32,
 ) -> Result<(Instances<'g>, Vec<String>), EngineError> {
     let mut b = Builder {
         graph,
@@ -36,7 +35,7 @@ pub fn from_roots<'g>(
             own_terms: BTreeMap::new(),
             root: String::new(),
             time: Expr::Var("t".to_string()),
-            profile,
+            rate,
         },
         site: BTreeMap::new(),
         indices: Vec::new(),

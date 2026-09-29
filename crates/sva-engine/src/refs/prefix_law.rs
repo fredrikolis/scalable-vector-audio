@@ -1,11 +1,10 @@
 // Concern: proves a node is its prefix form, bit for bit, before each switch the machine places, whole and streamed | Non-concern: storing runs under it | IO: (N, before-form, r) -> samples
 
 use sva_ast::Graph;
-use sva_samples::LATTICE_8K;
 
 use crate::render::{Range, RenderConfig, Stream, StreamConfig, plan, render};
 
-const RATE: u32 = LATTICE_8K.lattice_hz;
+const RATE: u32 = 8_000;
 const SECS: f64 = 1.0;
 
 /// A node written with a switch at `r`, and the form it has before that switch; a solver
@@ -83,7 +82,7 @@ fn graph(switched: &str, before: &str) -> Graph {
 }
 
 fn config() -> RenderConfig {
-    RenderConfig::seconds(RATE, SECS).under(LATTICE_8K)
+    RenderConfig::seconds(RATE, SECS)
 }
 
 fn whole(g: &Graph, root: &str) -> Vec<f64> {

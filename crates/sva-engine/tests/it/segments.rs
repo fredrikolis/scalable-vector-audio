@@ -5,9 +5,8 @@ use sva_ast::Graph;
 use sva_engine::{
     Cache, CacheStats, Outcome, PayloadKind, Range, RenderConfig, Stream, StreamConfig, render,
 };
-use sva_samples::LATTICE_8K;
 
-const RATE: u32 = LATTICE_8K.lattice_hz;
+const RATE: u32 = 8_000;
 const LEN: i64 = RATE as i64;
 const EVERY: usize = 1_024;
 
@@ -37,7 +36,7 @@ fn outcomes(stats: &CacheStats) -> Vec<Outcome> {
 fn whole(g: &Graph, target: &str, cache: Option<&Cache>) -> (Vec<f64>, Vec<Outcome>) {
     let mut g = g.clone();
     assert!(g.define("target", sva_ast::parse_expr(target).expect("a target")));
-    let config = RenderConfig::seconds(RATE, LEN as f64 / f64::from(RATE)).under(LATTICE_8K);
+    let config = RenderConfig::seconds(RATE, LEN as f64 / f64::from(RATE));
     let held = render(&g, "target", config, cache).unwrap_or_else(|e| panic!("{e}"));
     let samples = held.output(held.root).expect("a buffer").plane(0).to_vec();
     (
@@ -54,7 +53,7 @@ fn streamed(g: &Graph, target: &str, cache: Option<&Cache>) -> (Vec<f64>, u128, 
                 start: Some(0),
                 end: Some(LEN),
             },
-            ..RenderConfig::at(RATE).under(LATTICE_8K)
+            ..RenderConfig::at(RATE)
         },
     };
     let target = sva_ast::parse_expr(target).expect("a target");
@@ -68,7 +67,7 @@ fn streamed(g: &Graph, target: &str, cache: Option<&Cache>) -> (Vec<f64>, u128, 
 
 /// Before its release a note is the held one, so after one held render each release reads the
 /// held run up to it, resumes from a state at most `EVERY` samples back, and computes the
-/// rest; asked again, it is whole in the store. One release is on a lattice sample, one between.
+/// rest; asked again, it is whole in the store. One release is on a sample, one between.
 #[test]
 fn each_release_reads_the_held_run_and_computes_only_its_tail() {
     let g = composition();

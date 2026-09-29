@@ -3,9 +3,8 @@
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
 use sva_engine::{Cache, Outcome, PayloadKind, Range, RenderConfig, Stream, StreamConfig, render};
-use sva_samples::LATTICE_8K;
 
-const RATE: u32 = LATTICE_8K.lattice_hz;
+const RATE: u32 = 8_000;
 const BLOCK: usize = 256;
 
 /// piano3 with its damper wired to `release`: lifted until then, ramped in over 0.03 s.
@@ -73,7 +72,7 @@ fn config_at(rate: u32, end: Option<i64>) -> StreamConfig {
                 start: Some(0),
                 end,
             },
-            ..RenderConfig::at(rate).under(LATTICE_8K)
+            ..RenderConfig::at(rate)
         },
     }
 }
@@ -112,13 +111,8 @@ fn whole(g: &Graph, target: &str, samples: usize) -> Vec<f64> {
 
 fn whole_at(rate: u32, g: &Graph, target: &str, samples: usize) -> Vec<f64> {
     let secs = samples as f64 / f64::from(rate);
-    let held = render(
-        g,
-        target,
-        RenderConfig::seconds(rate, secs).under(LATTICE_8K),
-        None,
-    )
-    .unwrap_or_else(|e| panic!("{target}: {e}"));
+    let held = render(g, target, RenderConfig::seconds(rate, secs), None)
+        .unwrap_or_else(|e| panic!("{target}: {e}"));
     let id = held.id(target).expect("the root");
     held.output(id).expect("a buffer").plane(0).to_vec()
 }
@@ -129,7 +123,6 @@ fn released_at(target: &str, whole_target: &str, k: usize) {
     released_at_rate(RATE, target, whole_target, k);
 }
 
-/// Off the lattice's rate a block reads the lattice ahead of it, which an edit takes back.
 fn released_at_rate(rate: u32, target: &str, whole_target: &str, k: usize) {
     let release = k as f64 / f64::from(rate);
     let g = composition(release);
@@ -150,14 +143,11 @@ fn released_at_rate(rate: u32, target: &str, whole_target: &str, k: usize) {
         blocks(&mut held, 8)[2 * BLOCK..],
         "{target}: the damper did nothing"
     );
-    match rate == RATE {
-        true => assert_eq!(heard, want, "{target}"),
-        false => assert_eq!(heard[k..], want[k..], "{target}"),
-    }
+    assert_eq!(heard, want, "{target} at {rate}");
 }
 
 #[test]
-fn key_up_between_lattice_samples_is_the_whole_render_released_there() {
+fn key_up_at_another_rate_is_the_whole_render_released_there() {
     released_at_rate(11_025, "string", "struck", 3 * BLOCK);
 }
 
@@ -288,13 +278,7 @@ fn a_live_edit_starts_a_node_with_no_state_silent_and_names_it() {
     let g = composition(1.0);
     let cache = Cache::new();
     cache.set_mark_every(BLOCK);
-    render(
-        &g,
-        "string",
-        RenderConfig::seconds(RATE, 0.5).under(LATTICE_8K),
-        Some(&cache),
-    )
-    .expect("a render");
+    render(&g, "string", RenderConfig::seconds(RATE, 0.5), Some(&cache)).expect("a render");
     let held = "@echo(t, x=@pluck(t, f0=523.25))";
     let released = "@echo(t, x=@pluck(t, f0=523.25, release=0.1))";
     let (mut exact, mut live) = (
@@ -347,7 +331,7 @@ fn a_long_session_holds_no_more_than_its_first_seconds() {
                 start: Some(0),
                 end: Some(3_600 * i64::from(rate)),
             },
-            ..RenderConfig::at(rate).under(LATTICE_8K)
+            ..RenderConfig::at(rate)
         },
     };
     let mut stream = Stream::open(&g, &expr("@echo(t, x=0)"), config, None).expect("opens");
@@ -385,13 +369,7 @@ fn a_long_session_holds_no_more_than_its_first_seconds() {
 fn a_shifted_term_reads_and_extends_the_run_its_node_holds_in_the_store() {
     let g = composition(1.0);
     let cache = Cache::new();
-    render(
-        &g,
-        "string",
-        RenderConfig::seconds(RATE, 0.2).under(LATTICE_8K),
-        Some(&cache),
-    )
-    .expect("a render");
+    render(&g, "string", RenderConfig::seconds(RATE, 0.2), Some(&cache)).expect("a render");
     let runs = |stream: &Stream, outcome: Outcome| {
         let stats = stream.stats();
         let lookups = stats.lookups.iter();

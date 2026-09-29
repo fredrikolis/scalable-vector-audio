@@ -23,11 +23,8 @@ pub enum Value {
         name: String,
         args: Vec<NodeId>,
     },
-    /// One read of this node's own past at the time the call site wrote; `gain` bounds how
-    /// far the loop's output moves per unit its taps move, where it is linear in them.
     SelfAt {
         at: When,
-        gain: Option<Gain>,
     },
     Read {
         source: NodeId,
@@ -49,55 +46,7 @@ pub enum Value {
     },
 }
 
-/// A loop's gain via whole-sample taps and kernel reads, and whether it is LTI in them.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Gain {
-    pub whole: f64,
-    pub kernel: f64,
-    pub lti: bool,
-}
-
-impl Default for Gain {
-    fn default() -> Gain {
-        Gain {
-            whole: 0.0,
-            kernel: 0.0,
-            lti: true,
-        }
-    }
-}
-
-impl Gain {
-    pub fn total(self) -> f64 {
-        self.whole + self.kernel
-    }
-
-    pub fn plus(self, other: Gain) -> Gain {
-        Gain {
-            whole: self.whole + other.whole,
-            kernel: self.kernel + other.kernel,
-            lti: self.lti && other.lti,
-        }
-    }
-
-    pub fn widest(self, other: Gain) -> Gain {
-        Gain {
-            whole: self.whole.max(other.whole),
-            kernel: self.kernel.max(other.kernel),
-            lti: self.lti && other.lti,
-        }
-    }
-
-    pub fn scaled(self, by: f64, lti: bool) -> Gain {
-        Gain {
-            whole: self.whole * by,
-            kernel: self.kernel * by,
-            lti: self.lti && lti,
-        }
-    }
-}
-
-/// A read's instant: exact, a closed form of `t` held as a node, or a lattice index, `None`
+/// A read's instant: exact, a closed form of `t` held as a node, or a sample index, `None`
 /// where no one rounded line spells it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum When {
@@ -107,10 +56,11 @@ pub enum When {
 }
 
 impl When {
-    pub(crate) fn map(self, reader: u32, lattice: u32) -> Option<sva_samples::Map> {
+    /// `None` where a sample lands between two, or the instant moves.
+    pub(crate) fn map(self, rate: u32) -> Option<sva_samples::Map> {
         match self {
-            When::Time(time) => time.map(reader, lattice),
-            When::Index(index) => index?.map(reader, lattice),
+            When::Time(time) => time.map(rate),
+            When::Index(index) => index?.map(rate),
             When::Moving(_) => None,
         }
     }
@@ -134,7 +84,6 @@ pub struct Typing {
     pending: BTreeSet<NodeId>,
     indices: u32,
     sum: Option<(NodeId, Vec<SumSlot>)>,
-    between: Vec<String>,
 }
 
 /// One term of a stream's note sum: its node, or the identity it had before it ended.
@@ -155,16 +104,6 @@ impl Typing {
             .as_ref()
             .filter(|(held, _)| *held == node)
             .map(|(_, slots)| slots.as_slice())
-    }
-
-    pub(crate) fn note_between(&mut self, node: &str) {
-        if !self.between.iter().any(|held| held == node) {
-            self.between.push(node.to_string());
-        }
-    }
-
-    pub(crate) fn drawn_between(&self) -> &[String] {
-        &self.between
     }
 
     pub(crate) fn next_index(&mut self) -> sva_formula::IndexId {

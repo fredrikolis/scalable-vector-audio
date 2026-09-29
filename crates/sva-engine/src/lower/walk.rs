@@ -87,8 +87,8 @@ impl Lowering<'_, '_> {
     }
 
     /// Reading the node's own output: the zero a series expands around, or a read of its own
-    /// past on the lattice, which is what makes the whole node discrete. Two call sites at two
-    /// delays are two reads, never one.
+    /// past, which is what makes the whole node discrete. Two call sites at two delays are two
+    /// reads, never one.
     fn own(
         &mut self,
         (arg, address): (&Expr, Address),
@@ -96,11 +96,9 @@ impl Lowering<'_, '_> {
         cx: Cx,
         var: Var,
     ) -> Result<Piece, EngineError> {
-        let gain = match self.mode {
-            SelfMode::Zero => return Ok(Piece::ClosedForm(Body::Const(C64::ZERO))),
-            SelfMode::Sampled { gain } => gain,
-            SelfMode::Absent => None,
-        };
+        if self.mode == SelfMode::Zero {
+            return Ok(Piece::ClosedForm(Body::Const(C64::ZERO)));
+        }
         let tap = loops::tap_of(self.inst, arg, address, cx);
         let at = match tap {
             Tap::Back(delay) => {
@@ -113,14 +111,14 @@ impl Lowering<'_, '_> {
                 })
             }
             Tap::Moving => When::Moving(self.time(arg, cx)?),
-            Tap::Indexed => When::Index(self.lattice_index(arg, span, cx)?),
+            Tap::Indexed => When::Index(self.sample_index(arg, span, cx)?),
             refused => {
                 return Err(loops::tap_refusal(refused, self.here(Some(span)))
                     .expect("a tap that is not a delay names its reason"));
             }
         };
         let ty = Ty::discrete(Held::Sampled, sva_formula::Codomain::Real);
-        let id = self.register(Value::SelfAt { at, gain }, ty, var);
+        let id = self.register(Value::SelfAt { at }, ty, var);
         if let Tap::Back(delay) = tap {
             self.own.push((delay, id));
         }
@@ -144,8 +142,8 @@ impl Lowering<'_, '_> {
             Literal::Bars(_) => Err(EngineError::UnresolvedBars(self.here(None))),
             Literal::Samples(n) => {
                 let count = self.part(Body::Const(C64::real(*n)), None);
-                let lattice = self.part(Body::Const(C64::real(self.inst.lattice().into())), None);
-                Ok(Piece::ClosedForm(Body::Div(count, lattice)))
+                let rate = self.part(Body::Const(C64::real(self.inst.rate().into())), None);
+                Ok(Piece::ClosedForm(Body::Div(count, rate)))
             }
             Literal::Str(s) => match note::frequency(s) {
                 Some(hz) => Ok(Piece::ClosedForm(Body::Const(C64::real(hz)))),
@@ -294,7 +292,7 @@ impl Lowering<'_, '_> {
         let ty = match overload::resolve(name, &self.operands(&args, var)) {
             Err(m) if m.code == "type.samples_in_closed_form" => {
                 for (id, _) in &mut args {
-                    *id = self.on_lattice(*id);
+                    *id = self.sampled(*id);
                 }
                 overload::resolve(name, &self.operands(&args, var))
             }
@@ -326,9 +324,9 @@ impl Lowering<'_, '_> {
             .collect()
     }
 
-    /// A closed form in `t` meeting samples is its collapse onto the lattice, the one crossing
-    /// `sample(...)` writes; anything else stays as it is.
-    fn on_lattice(&mut self, id: NodeId) -> NodeId {
+    /// A closed form in `t` meeting samples is its collapse at the instants they are stepped at,
+    /// the one crossing `sample(...)` writes; anything else stays as it is.
+    fn sampled(&mut self, id: NodeId) -> NodeId {
         let ty = self.typing.ty(id);
         if ty.held != Held::Form(Var::T) || constant::number_of(self.typing, id).is_some() {
             return id;
@@ -374,8 +372,8 @@ impl Lowering<'_, '_> {
         Ok(Piece::Value(self.reading(id, at, span, var)))
     }
 
-    /// `x[i]` reads a stored lattice sample with no kernel; a closed form's lattice samples are
-    /// its collapse onto the lattice.
+    /// `x[i]` reads a stored sample; a closed form's samples are its collapse at the instants
+    /// its reader steps at.
     fn indexed(
         &mut self,
         path: &str,
@@ -388,7 +386,7 @@ impl Lowering<'_, '_> {
             .typing
             .id(path)
             .ok_or_else(|| EngineError::UnknownNode(path.to_string()))?;
-        let at = When::Index(self.lattice_index(arg, span, cx)?);
+        let at = When::Index(self.sample_index(arg, span, cx)?);
         let source = match self.typing.ty(id).is_closed_form() {
             true => {
                 let ty = Cast::Sample
@@ -403,7 +401,7 @@ impl Lowering<'_, '_> {
 
     /// An index is an integer, which typing refuses otherwise; `None` where no one rounded
     /// line spells it, which evaluation refuses.
-    fn lattice_index(
+    fn sample_index(
         &self,
         arg: &Expr,
         span: ByteSpan,

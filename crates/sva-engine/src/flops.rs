@@ -148,7 +148,7 @@ fn read_as(
         return None;
     };
     let extent = render.extent_of(base)?;
-    let (rate, len) = (render.lattice(), extent.len());
+    let (rate, len) = (render.rate(), extent.len());
     let profile = &render.config.profile;
     let body = refs::fold_constants(&render.tys, &along(render, &form.body, chain)?);
     let (carried, shared) = carried_already(&body, walked, chain);
@@ -279,7 +279,7 @@ fn closed_form_flops(
     paid: &mut Carried,
 ) -> (u128, &'static str) {
     let var = render.tys.var(id);
-    let (rate, len) = (render.lattice(), extent.len());
+    let (rate, len) = (render.rate(), extent.len());
     let profile = &render.config.profile;
     let sum = refs::spectral_sum_of(&render.tys, id, var)
         .ok()

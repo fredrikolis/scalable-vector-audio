@@ -13,7 +13,7 @@ pub enum Round {
     Ceil,
 }
 
-/// Lattice index `round(time * lattice) + plus`. A count rounds the zero line.
+/// Sample index `round(time * rate) + plus`. A count rounds the zero line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Index {
     pub time: Affine,
@@ -59,16 +59,16 @@ impl Index {
         })
     }
 
-    /// Reader sample `n` reads this index, rounded once from its exact position.
-    pub fn map(self, reader: u32, lattice: u32) -> Option<Map> {
-        let exact = self.time.map(reader, lattice)?;
+    /// Sample `n` stepped at `rate` reads this index, rounded once from its exact position.
+    pub fn map(self, rate: u32) -> Option<Map> {
+        let (a, b, d) = self.time.position(rate)?;
         let (b, between) = match self.round {
-            Round::Even => (exact.b, Between::Even),
-            Round::Floor => (exact.b, Between::Floor),
-            Round::Ceil => (exact.b.checked_add(exact.d - 1)?, Between::Floor),
+            Round::Even => (b, Between::Even),
+            Round::Floor => (b, Between::Floor),
+            Round::Ceil => (b.checked_add(d - 1)?, Between::Floor),
         };
-        let plus = i128::from(self.plus).checked_mul(exact.d)?;
-        Map::rounded(exact.a, b.checked_add(plus)?, exact.d, between)
+        let plus = i128::from(self.plus).checked_mul(d)?;
+        Map::rounded(a, b.checked_add(plus)?, d, between)
     }
 }
 

@@ -1,10 +1,10 @@
-// Concern: turns one sampled node into the renderer that writes its buffer, or refuses one no grid holds | Non-concern: collapsing a closed form (mod.rs), the op array | IO: (NodeId) -> a Buffer
+// Concern: turns one sampled node into the renderer that writes its buffer, or refuses a read no sample holds | Non-concern: collapsing a closed form (mod.rs), the op array | IO: (NodeId) -> a Buffer
 
-use sva_formula::NodeId;
+use sva_formula::{NodeId, Var};
 use sva_samples::machine::ops::Layout;
 use sva_samples::{
-    At, Binary, BufId, Buffer, Ctx, Extent, Label, Map, NodeRenderer, SampleError, Site, SiteId,
-    Slot, Unary, Window, stft,
+    Audible, Binary, BufId, Buffer, Ctx, Extent, Formula, Label, Map, NodeRenderer, SampleError,
+    Site, SiteId, Slot, Unary, Window, stft, truncate_spectral_sum, truncate_written,
 };
 
 use crate::cast::Cast;
@@ -14,7 +14,8 @@ use crate::render::extent::Supports;
 use crate::typing::{Typing, Value, When};
 
 /// A sampled node is the dearest kind this engine runs, so it is keyed as a collapse is: off
-/// the node's identity, its lattice and the extent it was stepped over. Its length rides along.
+/// the node's identity, the grid it was stepped on and the extent it was stepped over. Its
+/// length rides along.
 pub fn key(held: &Render, id: NodeId) -> Result<(sva_formula::Hash, usize), EngineError> {
     key_over(held, id, held.extents.of(id))
 }
@@ -26,7 +27,7 @@ pub(super) fn key_over(
 ) -> Result<(sva_formula::Hash, usize), EngineError> {
     let key = crate::cache::buffer_key(
         held.identity(id)?,
-        held.lattice(),
+        held.rate(),
         extent,
         held.tys.ty(id).width as usize,
         sva_samples::AliasScore::NotAsked,
@@ -63,7 +64,7 @@ fn stepped(held: &Render, id: NodeId) -> Result<(Buffer, Label), EngineError> {
     let buffer = program.writes(held, id, &program.renderer)?;
     Ok((
         buffer,
-        Label::measured(held.config.profile.name, held.lattice()),
+        Label::measured(held.config.profile.name, held.rate()),
     ))
 }
 
@@ -84,75 +85,10 @@ pub(super) fn program_reading(
     id: NodeId,
     width_of: &dyn Fn(NodeId) -> usize,
 ) -> Result<Program, EngineError> {
-    let extent = held.extents.decided.get(&id).copied();
-    program_over(held, id, width_of, extent.unwrap_or(Extent::EVERYWHERE))
-}
-
-/// Over `extent`, which a loop's kernel is chosen for, before the render holds it.
-pub(super) fn program_over(
-    held: &Render,
-    id: NodeId,
-    width_of: &dyn Fn(NodeId) -> usize,
-    extent: Extent,
-) -> Result<Program, EngineError> {
-    built(held, id, width_of, (extent, held.lattice(), false))
-}
-
-/// A node that holds no state and draws no noise, stepped at the output's own instants: each
-/// closed form in it read there, and only what it reads of other nodes read between their
-/// lattice samples.
-pub(super) fn at_output(
-    held: &Render,
-    id: NodeId,
-    width_of: &dyn Fn(NodeId) -> usize,
-) -> Result<Option<Program>, EngineError> {
-    match held.extents.decided.get(&id) {
-        Some(extent) => at_output_over(held, id, width_of, *extent),
-        None => Ok(None),
-    }
-}
-
-/// Before the render holds `extent`, so its reads can be demanded.
-pub(super) fn at_output_over(
-    held: &Render,
-    id: NodeId,
-    width_of: &dyn Fn(NodeId) -> usize,
-    extent: Extent,
-) -> Result<Option<Program>, EngineError> {
-    let stepped = held.tys.ty(id).held == sva_formula::Held::Sampled
-        && !matches!(held.tys.value(id), Value::Cast(Cast::Istft, _));
-    if !stepped || held.on_its_lattice() {
-        return Ok(None);
-    }
-    if !pointwise_safe(&program_over(held, id, width_of, extent)?.renderer) {
-        return Ok(None);
-    }
-    let program = built(held, id, width_of, (extent, held.config.rate, true))?;
-    Ok(Some(program))
-}
-
-/// Holds no state and draws no lattice noise, so any instant reads it.
-fn pointwise_safe(renderer: &NodeRenderer) -> bool {
-    let mut noise = false;
-    super::extent::leaves(renderer, &mut |leaf| {
-        noise |= matches!(leaf, NodeRenderer::Noise(_))
-    });
-    renderer.stateless() && !noise
-}
-
-fn built(
-    held: &Render,
-    id: NodeId,
-    width_of: &dyn Fn(NodeId) -> usize,
-    (extent, rate, inlines): (Extent, u32, bool),
-) -> Result<Program, EngineError> {
     let mut build = Build {
         held,
         supports: Supports::new(held),
         owner: id,
-        rate,
-        inlines,
-        extent,
         reads: Vec::new(),
         sites: Vec::new(),
     };
@@ -197,36 +133,13 @@ impl Program {
             })
             .collect();
         let ctx = Ctx {
-            rate: held.lattice(),
+            rate: held.rate(),
             start: extent.start,
             len: extent.len(),
             reads: &buffers,
         };
         renderer
             .run_live(&self.layout, &ctx, &live)
-            .map_err(|e| refused(held, id, &e))
-    }
-
-    /// A program `at_output` builds, run over the output samples `over`.
-    pub(super) fn at_output(
-        &self,
-        held: &Render,
-        id: NodeId,
-        over: Extent,
-    ) -> Result<Buffer, EngineError> {
-        let buffers: Vec<Window> = self
-            .reads
-            .iter()
-            .map(|r| Window::of(&held.buffers[r], held.extents.support(*r)))
-            .collect();
-        let ctx = Ctx {
-            rate: held.config.rate,
-            start: over.start,
-            len: over.len(),
-            reads: &buffers,
-        };
-        self.renderer
-            .run(&self.layout, &ctx)
             .map_err(|e| refused(held, id, &e))
     }
 
@@ -276,11 +189,6 @@ struct Build<'a> {
     held: &'a Render,
     supports: Supports<'a>,
     owner: NodeId,
-    /// The instants it steps at, a second.
-    rate: u32,
-    /// Whether a node it reads at its own instants is stepped here rather than read.
-    inlines: bool,
-    extent: Extent,
     reads: Vec<NodeId>,
     sites: Vec<Site>,
 }
@@ -291,20 +199,12 @@ impl Build<'_> {
             Value::ClosedForm(_) => {
                 closed_renderer(&self.held.tys, id).ok_or_else(|| uncollapsed(self.held, id))
             }
-            Value::Cast(Cast::Sample, source) => Ok(self.buffer(source, self.lattice_map())),
+            Value::Cast(Cast::Sample, source) => Ok(self.buffer(source, Map::shift(0))),
             Value::Cast(..) => Err(uncollapsed(self.held, id)),
-            Value::Read {
-                source,
-                at: When::Time(crate::time::Affine::NOW),
-                ..
-            } if self.inlines => self.inlined(source),
-            Value::Read { source, at, .. } => {
-                let at = self.at(at, self.held.lattice(), false)?;
-                Ok(self.buffer(source, at))
-            }
-            Value::SelfAt { at, .. } => self.own(id, at),
+            Value::Read { source, at, .. } => self.read(source, at),
+            Value::SelfAt { at } => self.own(at),
             Value::Noise(seed) => Ok(NodeRenderer::Noise(seed)),
-            Value::Solver { .. } if id != self.owner => Ok(self.buffer(id, self.lattice_map())),
+            Value::Solver { .. } if id != self.owner => Ok(self.buffer(id, Map::shift(0))),
             Value::Solver { params, varying } => {
                 let mut args = Vec::new();
                 for (key, _) in params.varying() {
@@ -340,100 +240,54 @@ impl Build<'_> {
         }
     }
 
-    /// Where one reading of a node on `source`'s lattice lands, from this program's.
-    /// A time whose rationals pass one map is read as the time it spells, each sample.
-    fn at(&mut self, at: When, source: u32, by_delay: bool) -> Result<At, EngineError> {
-        let reader = f64::from(self.rate);
-        let per_sec = f64::from(source);
-        match at {
-            When::Time(time) => Ok(match time.map(self.rate, source) {
-                Some(map) => At::Map(map),
-                None => {
-                    let line = match time.scale == crate::time::Q::ONE {
-                        true => NodeRenderer::Time,
-                        false => NodeRenderer::Mul(vec![
-                            NodeRenderer::Const(time.scale.to_f64()),
-                            NodeRenderer::Time,
-                        ]),
-                    };
-                    let time =
-                        NodeRenderer::Add(vec![line, NodeRenderer::Const(time.shift.to_f64())]);
-                    At::moving(per_sec, reader, time, by_delay)
-                }
-            }),
-            When::Moving(time) => Ok(At::moving(per_sec, reader, self.of(time)?, by_delay)),
-            When::Index(index) => at.map(self.rate, source).map(At::Map).ok_or_else(|| {
-                let why = match index {
-                    Some(_) => "a lattice index this far out has no map a machine can read",
-                    None => {
-                        "this engine reads an index only as one idx(...) of a line in t, \
-                         negated or not, plus a count"
-                    }
-                };
-                collapse_refused(&self.held.tys, self.owner, why, "engine.unreadable_index")
-            }),
+    /// A stored sample where each of this program's instants reads one; a closed form exactly
+    /// at any instant; anything else refused, as no sample holds it.
+    fn read(&mut self, source: NodeId, at: When) -> Result<NodeRenderer, EngineError> {
+        if let Some(map) = at.map(self.held.rate()) {
+            return Ok(self.buffer(source, map));
         }
-    }
-
-    /// A node read where it stands, as its own program where that holds no state and draws no
-    /// noise, else its buffer.
-    fn inlined(&mut self, source: NodeId) -> Result<NodeRenderer, EngineError> {
-        let (reads, sites) = (self.reads.len(), self.sites.len());
-        if self.held.tys.ty(source).held == sva_formula::Held::Sampled
-            && let Ok(inline) = self.of(source)
-            && pointwise_safe(&inline)
-        {
-            return Ok(inline);
-        }
-        self.reads.truncate(reads);
-        self.sites.truncate(sites);
-        let at = self.at(
-            When::Time(crate::time::Affine::NOW),
-            self.held.lattice(),
-            false,
-        )?;
-        Ok(self.buffer(source, at))
-    }
-
-    /// A lattice sample at each of this program's instants.
-    fn lattice_map(&self) -> At {
-        let (rate, lattice) = (i128::from(self.rate), i128::from(self.held.lattice()));
-        At::Map(Map::new(lattice, 0, rate).expect("two rates make one map"))
-    }
-
-    /// A loop's own past through the kernel its bound chose, every tap before the sample
-    /// being written; off its lattice a loop is never stepped, holding state.
-    fn own(&mut self, id: NodeId, at: When) -> Result<NodeRenderer, EngineError> {
-        let at = self.at(at, self.held.lattice(), true)?;
-        let half_width = match &at {
-            At::Map(map) if map.whole() => 0,
-            _ if self.rate != self.held.lattice() => 0,
-            _ => {
-                self.held
-                    .loop_kernel(id, self.extent)?
-                    .expect("a loop reading between samples has a kernel")
-                    .half_width
+        let time = match at {
+            When::Time(time) => {
+                let line = NodeRenderer::Mul(vec![
+                    NodeRenderer::Const(time.scale.to_f64()),
+                    NodeRenderer::Time,
+                ]);
+                NodeRenderer::Add(vec![line, NodeRenderer::Const(time.shift.to_f64())])
             }
+            When::Moving(time) => self.of(time)?,
+            When::Index(index) => return Err(unreadable_index(self.held, self.owner, index)),
         };
-        Ok(NodeRenderer::Read {
-            slot: Slot::Own,
-            at,
-            half_width,
-        })
+        match formula(self.held, source)? {
+            Some(formula) => Ok(NodeRenderer::Formula {
+                formula,
+                width: self.held.tys.ty(source).width as usize,
+                time: Box::new(time),
+            }),
+            None => Err(off_grid(self.held, self.owner, source, at)),
+        }
+    }
+
+    /// A loop's own past, at a whole sample before the one being written.
+    fn own(&mut self, at: When) -> Result<NodeRenderer, EngineError> {
+        match at.map(self.held.rate()) {
+            Some(map) => Ok(NodeRenderer::Read {
+                slot: Slot::Own,
+                map,
+            }),
+            None => match at {
+                When::Index(index) => Err(unreadable_index(self.held, self.owner, index)),
+                _ => Err(off_grid(self.held, self.owner, self.owner, at)),
+            },
+        }
     }
 
     /// A sampled operand is already a buffer, so a renderer reads it rather than recomputing it.
-    fn buffer(&mut self, source: NodeId, at: At) -> NodeRenderer {
+    fn buffer(&mut self, source: NodeId, map: Map) -> NodeRenderer {
         let id = BufId(self.reads.len() as u32);
         self.reads.push(source);
-        let half_width = match &at {
-            At::Map(map) if map.whole() => 0,
-            _ => sva_samples::plain().half_width(),
-        };
         NodeRenderer::Read {
             slot: Slot::Read(id),
-            at,
-            half_width,
+            map,
         }
     }
 
@@ -537,6 +391,89 @@ pub(super) fn closed_renderer(tys: &Typing, id: NodeId) -> Option<NodeRenderer> 
             None => crate::lower::inline::renderer(tys, id),
         },
     }
+}
+
+/// What a read of `source` evaluates at any instant: the noise, `source` as a closed form in
+/// `t`, or what a `sample(...)` of one holds, truncated to the band once; `None` where it holds
+/// state.
+fn formula(held: &Render, source: NodeId) -> Result<Option<Formula>, EngineError> {
+    if !crate::schedule::anywhere(&held.tys, source) {
+        return Ok(None);
+    }
+    let form = match held.tys.value(source) {
+        Value::Noise(seed) => {
+            return Ok(Some(Formula::Drawn {
+                seed: *seed,
+                rate: held.rate(),
+            }));
+        }
+        Value::Cast(Cast::Sample, of) => *of,
+        _ => source,
+    };
+    let band = Audible::of(&held.config.profile, held.rate());
+    let truncated = |e: &sva_samples::CollapseError| super::pointwise::refused(held, form, e);
+    if let Ok(sum) = crate::refs::spectral_sum_of(&held.tys, form, Var::T) {
+        let sum = truncate_spectral_sum(&sum, band).map_err(|e| truncated(&e))?;
+        return Ok(Some(Formula::Sum(Box::new(sum))));
+    }
+    match crate::refs::substituted_closed_form(&held.tys, form) {
+        Some(written) if written.var == Var::T => {
+            let body = truncate_written(&written.body, band).map_err(|e| truncated(&e))?;
+            Ok(Some(Formula::Written(Box::new(body))))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// A node that holds state has a value only at the samples it steps through, at the rate the
+/// render asked for.
+fn off_grid(held: &Render, owner: NodeId, source: NodeId, at: When) -> EngineError {
+    let rate = held.rate();
+    let (what, help) = match at {
+        When::Time(time) if time.scale == crate::time::Q::ONE => (
+            format!(
+                "at {} samples from its own instant, between two of its samples at {rate} Hz",
+                time.shift.mul(crate::time::Q::int(i64::from(rate))).map_or(
+                    "a count past what this engine holds".to_string(),
+                    |n| format!("{}", n.to_f64())
+                )
+            ),
+            "read the nearest sample by index, as x[idx(t - d)], or shift by whole sp",
+        ),
+        When::Time(_) => (
+            "at a scaled time, which lands between its samples".to_string(),
+            "read it at t plus a whole number of sp, or by index, as x[idx(2*t)]",
+        ),
+        _ => (
+            "at a time that moves, which lands between its samples".to_string(),
+            "read it by index, as x[idx(...)], or write what it reads as a closed form",
+        ),
+    };
+    EngineError::refused(Diagnostic {
+        code: "render.off_grid_read".to_string(),
+        message: format!(
+            "`{}` has a value only at the samples it steps through, and `{}` reads it {what}",
+            held.tys.name(source),
+            held.tys.name(owner)
+        ),
+        location: Located::at(held.tys.name(owner), None),
+        help: help.to_string(),
+    })
+}
+
+fn unreadable_index(
+    held: &Render,
+    owner: NodeId,
+    index: Option<crate::index::Index>,
+) -> EngineError {
+    let why = match index {
+        Some(_) => "a sample index this far out has no map a machine can read",
+        None => {
+            "this engine reads an index only as one idx(...) of a line in t, negated or not, \
+             plus a count"
+        }
+    };
+    collapse_refused(&held.tys, owner, why, "engine.unreadable_index")
 }
 
 pub fn refused(held: &Render, id: NodeId, e: &SampleError) -> EngineError {

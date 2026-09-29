@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sva_formula::{Body, C64, Fold, Held, NodeId, Unary, exp_zero_at};
-use sva_samples::{At, Extent, NodeRenderer, Slot, plain};
+use sva_samples::{Extent, NodeRenderer, Slot};
 
 use super::Render;
 use super::pointwise::{self, Point};
@@ -25,7 +25,7 @@ impl<'a> Supports<'a> {
     pub(crate) fn new(held: &'a Render) -> Supports<'a> {
         Supports {
             tys: &held.tys,
-            rate: held.lattice(),
+            rate: held.rate(),
             held: RefCell::default(),
             open: RefCell::default(),
         }
@@ -55,8 +55,8 @@ impl<'a> Supports<'a> {
             Value::Op { name, args } => self.operation(name, args, &|arg| self.of(arg)),
             Value::SelfAt { .. } => Extent::NOWHERE,
             Value::Noise(_) => Extent::EVERYWHERE,
-            Value::Read { source, at, .. } => match at.map(self.rate, self.rate) {
-                Some(map) => map.preimage(self.of(*source), plain().half_width()),
+            Value::Read { source, at, .. } => match at.map(self.rate) {
+                Some(map) => map.preimage(self.of(*source)),
                 None => Extent::EVERYWHERE,
             },
             Value::Filter { x, .. } => stateful(self.of(*x)),
@@ -535,13 +535,11 @@ impl Extents {
 }
 
 /// `order` lists the held nodes dependencies first, so walking it backwards meets every
-/// reader of a node before the node. `demands` seeds the root and every node a reading asks,
-/// each also read at the instants of `output` where it is stepped there.
+/// reader of a node before the node. `demands` seeds the root and every node a reading asks.
 pub(crate) fn decide(
     held: &Render,
     order: &[NodeId],
     demands: &[(NodeId, Extent)],
-    output: Option<Extent>,
 ) -> Result<Extents, EngineError> {
     let supports = Supports::new(held);
     let mut demand: BTreeMap<NodeId, Extent> = BTreeMap::new();
@@ -558,15 +556,7 @@ pub(crate) fn decide(
         if extent.is_empty() {
             continue;
         }
-        let mut wanted = reads(held, &supports, id, extent)?;
-        let widths = |r: NodeId| held.buffers.get(&r).map_or(1, |b| b.width);
-        if let Some(output) = output
-            && demands.iter().any(|(seeded, _)| *seeded == id)
-            && let Some(program) = super::sampled::at_output_over(held, id, &widths, extent)?
-        {
-            wanted.extend(program_reads(&program, &supports, output, held.config.rate));
-        }
-        for (source, wants) in wanted {
+        for (source, wants) in reads(held, &supports, id, extent)? {
             debug_assert!(
                 !decided.contains_key(&source),
                 "a node is read after its extent was decided"
@@ -630,8 +620,8 @@ fn reads(
         }
         (Held::Sampled, _) => {
             let widths = |r: NodeId| held.buffers.get(&r).map_or(1, |b| b.width);
-            let program = super::sampled::program_over(held, id, &widths, extent)?;
-            Ok(program_reads(&program, supports, extent, held.lattice()))
+            let program = super::sampled::program_reading(held, id, &widths)?;
+            Ok(program_reads(&program, extent, held.rate()))
         }
         _ if schedule::materialized_operands(&held.tys, id).is_empty() => Ok(Vec::new()),
         _ => {
@@ -640,11 +630,11 @@ fn reads(
             };
             let mut found = Vec::new();
             point_reads(&tree, Some(0.0), &mut found);
-            let rate = f64::from(held.lattice());
+            let rate = f64::from(held.rate());
             Ok(found
                 .into_iter()
                 .map(|(source, by)| match by {
-                    Some(secs) => (source, kernel_reach(moved(extent, secs * rate))),
+                    Some(secs) => (source, moved(extent, secs * rate)),
                     None => (source, supports.of(source)),
                 })
                 .collect())
@@ -655,36 +645,19 @@ fn reads(
 /// Every buffer `program` reads while stepping `extent` at `rate`, and the samples of each.
 fn program_reads(
     program: &super::sampled::Program,
-    supports: &Supports,
     extent: Extent,
     rate: u32,
 ) -> Vec<(NodeId, Extent)> {
     let mut out = Vec::new();
-    windowed(
-        &program.renderer,
-        extent,
-        rate,
-        &mut |leaf, over| match leaf {
-            NodeRenderer::Read {
-                slot: Slot::Read(slot),
-                at: At::Map(at),
-                half_width,
-            } => {
-                let source = program.reads[slot.0 as usize];
-                out.push((source, at.image(over, *half_width)));
-            }
-            NodeRenderer::Read {
-                slot: Slot::Read(slot),
-                at: at @ At::Moving { .. },
-                half_width,
-            } => {
-                let source = program.reads[slot.0 as usize];
-                let reached = reached(at, *half_width, over, rate);
-                out.push((source, reached.unwrap_or_else(|| supports.of(source))));
-            }
-            _ => {}
-        },
-    );
+    windowed(&program.renderer, extent, rate, &mut |leaf, over| {
+        if let NodeRenderer::Read {
+            slot: Slot::Read(slot),
+            map,
+        } = leaf
+        {
+            out.push((program.reads[slot.0 as usize], map.image(over)));
+        }
+    });
     out
 }
 
@@ -714,63 +687,6 @@ fn body_reads(
         _ => sva_formula::closed_form::children(body)
             .iter()
             .for_each(|p| body_reads(&p.body, by, refs, out)),
-    }
-}
-
-/// The source samples a moving read touches over `extent`, found by computing its time at
-/// every instant; `None` where that time itself reads samples.
-fn reached(at: &At, half_width: usize, extent: Extent, lattice: u32) -> Option<Extent> {
-    let At::Moving {
-        per_sec,
-        line,
-        time,
-    } = at
-    else {
-        return None;
-    };
-    let mut reads = false;
-    leaves(time, &mut |leaf| {
-        reads |= matches!(leaf, NodeRenderer::Read { .. })
-    });
-    if reads || !extent.is_bounded() || extent.is_empty() {
-        return None;
-    }
-    let layout = sva_samples::machine::MachineLayout {
-        width: 1,
-        read_widths: Vec::new(),
-        sites: Vec::new(),
-    };
-    let ctx = sva_samples::Ctx {
-        rate: lattice,
-        start: extent.start,
-        len: extent.len(),
-        reads: &[],
-    };
-    let times = time.run(&layout, &ctx).ok()?;
-    let (lo, hi) = times.plane(0).iter().zip(extent.start..).fold(
-        (f64::INFINITY, f64::NEG_INFINITY),
-        |(lo, hi), (t, n)| {
-            let (whole, part) = At::position(*line, *per_sec, n, *t);
-            let p = whole as f64 + part;
-            (lo.min(p), hi.max(p))
-        },
-    );
-    if !(lo.is_finite() && hi.is_finite()) {
-        return None;
-    }
-    let reach = half_width as i64;
-    Some(Extent::new(
-        lo.floor() as i64 - reach - 1,
-        hi.floor() as i64 + reach + 2,
-    ))
-}
-
-/// A buffer read between its samples touches the kernel's taps either side.
-fn kernel_reach(e: Extent) -> Extent {
-    let reach = plain().half_width() as i64;
-    match e.is_empty() || e == Extent::EVERYWHERE {
-        true => e,
-        false => Extent::new(e.start.saturating_sub(reach), e.end.saturating_add(reach)),
     }
 }
 
@@ -835,10 +751,7 @@ pub(crate) fn leaves(renderer: &NodeRenderer, found: &mut dyn FnMut(&NodeRendere
             .into_iter()
             .for_each(|p| leaves(p, found)),
         NodeRenderer::Physics { args, .. } => args.iter().for_each(|p| leaves(p, found)),
-        NodeRenderer::Read {
-            at: At::Moving { time, .. },
-            ..
-        } => {
+        NodeRenderer::Formula { time, .. } => {
             leaves(time, found);
             found(renderer);
         }
@@ -846,7 +759,7 @@ pub(crate) fn leaves(renderer: &NodeRenderer, found: &mut dyn FnMut(&NodeRendere
     }
 }
 
-/// A short-time transform reads its input whole, and a moving read anywhere at all.
+/// A short-time transform reads its input whole.
 fn unbounded(held: &Render, id: NodeId) -> EngineError {
     EngineError::refused(Diagnostic {
         code: "engine.unbounded_extent".to_string(),
@@ -855,6 +768,6 @@ fn unbounded(held: &Render, id: NodeId) -> EngineError {
             held.tys.name(id)
         ),
         location: Located::at(held.tys.name(id), None),
-        help: "crop what a short-time transform or a moving read takes to a window".to_string(),
+        help: "crop what a short-time transform takes to a window".to_string(),
     })
 }

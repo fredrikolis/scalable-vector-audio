@@ -5,9 +5,8 @@ use sva_ast::Graph;
 use sva_engine::{
     Ask, Cache, Output, Range, Render, RenderConfig, Representation, answer, flops, render,
 };
-use sva_samples::LATTICE_8K;
 
-const RATE: u32 = LATTICE_8K.lattice_hz;
+const RATE: u32 = 8_000;
 
 fn notes() -> Graph {
     graph_of(
@@ -42,7 +41,7 @@ fn config(secs: f64) -> RenderConfig {
             start: Some(0),
             end: Some((secs * f64::from(RATE)) as i64),
         },
-        ..RenderConfig::at(RATE).under(LATTICE_8K)
+        ..RenderConfig::at(RATE)
     }
 }
 
@@ -131,8 +130,7 @@ fn a_ramp_and_a_decay_end_where_they_are_exactly_zero() {
         ],
     );
     let open = |target: &str| {
-        render(&g, target, RenderConfig::at(RATE).under(LATTICE_8K), None)
-            .unwrap_or_else(|e| panic!("{e}"))
+        render(&g, target, RenderConfig::at(RATE), None).unwrap_or_else(|e| panic!("{e}"))
     };
     let ramp = open("ramp");
     assert_eq!(ramp.range.expect("a range").end, 2 * i64::from(RATE));

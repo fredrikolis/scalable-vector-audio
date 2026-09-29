@@ -3,9 +3,8 @@
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
 use sva_engine::{Range, RenderConfig, Stream, StreamConfig, render};
-use sva_samples::LATTICE_8K;
 
-const RATE: u32 = LATTICE_8K.lattice_hz;
+const RATE: u32 = 8_000;
 
 const PIANO3: &str = "0.0014822 * chaigne_askenfelt(f0, vel=vel, b=max(1.4e-4, \
     4.1e-4*pow(f0/262, 1.9)), strike_pos=0.12, hammer_mass=0.009, hammer_k=2e10*max(1, \
@@ -89,7 +88,7 @@ fn config(block: usize, range: Range) -> StreamConfig {
         block,
         render: RenderConfig {
             range,
-            ..RenderConfig::at(RATE).under(LATTICE_8K)
+            ..RenderConfig::at(RATE)
         },
     }
 }
@@ -108,13 +107,8 @@ fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Vec<f64> {
 
 fn whole(g: &Graph, target: &str, samples: usize) -> Vec<f64> {
     let secs = samples as f64 / f64::from(RATE);
-    let held = render(
-        g,
-        target,
-        RenderConfig::seconds(RATE, secs).under(LATTICE_8K),
-        None,
-    )
-    .unwrap_or_else(|e| panic!("{target}: {e}"));
+    let held = render(g, target, RenderConfig::seconds(RATE, secs), None)
+        .unwrap_or_else(|e| panic!("{target}: {e}"));
     let id = held.id(target).expect("the root");
     held.output(id).expect("a buffer").plane(0).to_vec()
 }
@@ -213,7 +207,7 @@ fn an_open_stream_ends_where_its_support_does() {
             heard.extend_from_slice(block.plane(0));
         }
         assert_eq!(Some(heard.len() as i64), stream.end(), "{target}");
-        let want = read_through(&g, target, RenderConfig::at(RATE).under(LATTICE_8K));
+        let want = read_through(&g, target, RenderConfig::at(RATE));
         assert_eq!(heard, want, "{target}");
     }
 }
@@ -231,7 +225,7 @@ fn a_stream_from_a_later_start_is_the_whole_render_over_the_same_range() {
     for target in ["echoed", "chain", "low"] {
         let config = RenderConfig {
             range,
-            ..RenderConfig::at(RATE).under(LATTICE_8K)
+            ..RenderConfig::at(RATE)
         };
         let held = render(&g, target, config, None).unwrap_or_else(|e| panic!("{target}: {e}"));
         let want = held.output(held.root).expect("a buffer").plane(0).to_vec();
@@ -277,14 +271,9 @@ fn an_open_stream_whose_support_never_ends_streams_on_while_pulled() {
         assert_eq!(stream.end(), None, "{target}");
         sounds(&heard[heard.len() - block..]);
     }
-    let refused = render(
-        &g,
-        "at_damped",
-        RenderConfig::at(RATE).under(LATTICE_8K),
-        None,
-    )
-    .err()
-    .expect("an open render with no end");
+    let refused = render(&g, "at_damped", RenderConfig::at(RATE), None)
+        .err()
+        .expect("an open render with no end");
     assert_eq!(refused.code(), "render.no_end", "{refused}");
 }
 
@@ -313,10 +302,18 @@ fn reads() -> Graph {
                 "filtered",
                 "lowpass(sample(0.3*saw(220*t)), cutoff=900, q=0.8)\n",
             ),
-            ("shifted", "@filtered(t - 0.0123456s)\n"),
+            ("shifted", "@filtered(t - 3sp)\n"),
+            ("between", "@filtered(t - 0.0123456s)\n"),
             ("scaled", "@filtered(0.75*t)\n"),
             ("warped", "@filtered(t - t*t/4)\n"),
             ("reversed", "@filtered(1s - t)\n"),
+            ("tone", "crop(0.3*saw(220*t), 0s, 0.1s)\n"),
+            ("formula", "@tone(0.75*t - 0.0123456s) + @filtered\n"),
+            (
+                "looped",
+                "crop(sample(0.3*saw(220*t)), 0s, 0.05s) + 0.5*self[idx(t - 2ms) - 1]\n",
+            ),
+            ("held", "rand(t - t % 0.01s, seed=3)*@filtered\n"),
         ],
     )
 }
@@ -329,7 +326,7 @@ fn streamed_at(g: &Graph, target: &str, rate: u32, block: usize, samples: usize)
                 start: Some(0),
                 end: Some(4 * i64::from(rate)),
             },
-            ..RenderConfig::at(rate).under(LATTICE_8K)
+            ..RenderConfig::at(rate)
         },
     };
     let mut stream = Stream::open(g, &at(target), config, None).unwrap_or_else(|e| panic!("{e}"));
@@ -346,23 +343,19 @@ fn streamed_at(g: &Graph, target: &str, rate: u32, block: usize, samples: usize)
 
 fn whole_at(g: &Graph, target: &str, rate: u32, samples: usize) -> Vec<f64> {
     let secs = samples as f64 / f64::from(rate);
-    let held = render(
-        g,
-        target,
-        RenderConfig::seconds(rate, secs).under(LATTICE_8K),
-        None,
-    )
-    .unwrap_or_else(|e| panic!("{target}: {e}"));
+    let held = render(g, target, RenderConfig::seconds(rate, secs), None)
+        .unwrap_or_else(|e| panic!("{target}: {e}"));
     held.output(held.root).expect("a buffer").plane(0).to_vec()
 }
 
-/// A read between lattice samples, at a shift, a scale or a moving time, streams what the
-/// whole render writes, read out at the lattice's own rate or another.
+/// Every node steps at the rate asked for, so a stream writes what the whole render writes at
+/// any rate: a filter, a whole shift of it, a closed form at any instant, an indexed loop and
+/// noise held over a moving time.
 #[test]
-fn off_lattice_reads_stream_the_whole_render_bit_for_bit() {
+fn a_stream_is_the_whole_render_bit_for_bit_at_every_rate() {
     let g = reads();
-    for rate in [RATE, 11_025] {
-        for target in ["shifted", "scaled", "warped"] {
+    for rate in [8_000, 44_100, 48_000, 96_000] {
+        for target in ["filtered", "shifted", "formula", "looped", "held"] {
             let samples = rate as usize * 14 / 100;
             let want = whole_at(&g, target, rate, samples);
             sounds(&want);
@@ -374,6 +367,27 @@ fn off_lattice_reads_stream_the_whole_render_bit_for_bit() {
                 );
             }
         }
+    }
+}
+
+/// A filter has a value only at its own samples, so a read between them, at a scale or at a
+/// moving time refuses by code, whole or streamed.
+#[test]
+fn a_read_between_a_filters_samples_refuses_whole_and_streamed() {
+    let g = reads();
+    for target in ["between", "scaled", "warped"] {
+        let Err(whole) = render(&g, target, RenderConfig::seconds(RATE, 0.1), None) else {
+            panic!("{target} reads between samples");
+        };
+        assert_eq!(whole.code(), "render.off_grid_read", "{target}: {whole}");
+        let Err(streamed) = Stream::open(&g, &at(target), config(256, four()), None) else {
+            panic!("{target} streams between samples");
+        };
+        assert_eq!(
+            streamed.code(),
+            "render.off_grid_read",
+            "{target}: {streamed}"
+        );
     }
 }
 
@@ -389,13 +403,7 @@ fn a_streamed_read_backwards_in_time_refuses() {
         .expect("a backward read refuses");
     assert_eq!(refused.code(), "engine.reads_ahead", "{refused}");
     assert!(
-        render(
-            &g,
-            "reversed",
-            RenderConfig::seconds(RATE, 0.5).under(LATTICE_8K),
-            None
-        )
-        .is_ok(),
+        render(&g, "reversed", RenderConfig::seconds(RATE, 0.5), None).is_ok(),
         "a whole render reads it backwards"
     );
 }

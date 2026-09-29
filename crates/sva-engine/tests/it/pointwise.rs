@@ -166,7 +166,7 @@ fn a_neumann_series_under_a_product_renders() {
 }
 
 /// Noise read at quantized time holds one value per step: every sample of a step reads the
-/// lattice noise at the one instant that step names.
+/// noise at the one instant that step names.
 #[test]
 fn sample_and_hold_noise_renders_measured() {
     let g = graph_of(
@@ -178,7 +178,11 @@ fn sample_and_hold_noise_renders_measured() {
     let id = held.id("held").expect("the root");
     let buffer = held.output(id).expect("a rendered hold");
     let label = held.labels.get(&id).expect("a label");
-    assert_eq!(label.source, Source::Measured, "a lattice read is measured");
+    assert_eq!(
+        label.source,
+        Source::Measured,
+        "a read of noise is measured"
+    );
 
     let step = (0.0625 * 44_100.0) as usize;
     let first = buffer.at(0, 0);

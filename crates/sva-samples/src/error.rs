@@ -40,8 +40,12 @@ pub enum SampleError {
     ReadsAhead {
         at: i64,
     },
-    /// A moving reading named no finite position.
+    /// An exactly computed time passed what its integers hold.
     UnreadablePosition,
+    /// A closed form read at one of the machine's instants has no value there.
+    FormulaUnevaluable {
+        at: i64,
+    },
     /// A varying parameter outside the range its model holds, at one sample.
     ArgumentOutOfRange {
         model: &'static str,
@@ -164,6 +168,7 @@ impl SampleError {
             SampleError::ArgumentOutOfRange { .. } => "samples.argument_out_of_range",
             SampleError::ReadsAhead { .. } => "engine.reads_ahead",
             SampleError::UnreadablePosition => "engine.unreadable_position",
+            SampleError::FormulaUnevaluable { .. } => "collapse.not_evaluable",
         }
     }
 }
@@ -218,8 +223,12 @@ impl std::fmt::Display for SampleError {
                  stream reads no output ahead of where it stands"
             ),
             SampleError::UnreadablePosition => {
-                write!(f, "a moving reading named no finite position")
+                write!(f, "an exactly computed time passed what its integers hold")
             }
+            SampleError::FormulaUnevaluable { at } => write!(
+                f,
+                "a closed form read at sample {at}'s instant has no value there"
+            ),
             SampleError::ArgumentOutOfRange {
                 model,
                 name,

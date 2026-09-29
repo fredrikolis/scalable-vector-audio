@@ -8,7 +8,6 @@ use crate::arguments::Chosen;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Cx, Instances, Node};
 use crate::time::{Affine, Q};
-use crate::typing::Gain;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum SelfKind {
@@ -16,49 +15,29 @@ pub(crate) enum SelfKind {
         gain: C64,
         delay: f64,
     },
-    /// Run on the lattice; `gain` bounds how far the output moves per unit its taps move,
-    /// where the body is linear in them, and `taps` names each one where all are fixed.
-    Sampled {
-        gain: Option<Gain>,
-        taps: Option<Vec<(f64, Q)>>,
-    },
+    /// Stepped on the grid its reader induces.
+    Sampled,
     Refuse(Box<EngineError>),
 }
 
-/// Linear in one `self` a constant delay back with `abs(g) < 1` is a series. A loop written on
-/// the lattice, which `sp` in its body says, runs there; there a running sum is a value.
+/// Linear in one `self` a constant delay back with `abs(g) < 1` is a series. A loop written in
+/// steps, which `sp` in its body says, is stepped; there a running sum is a value.
 pub(crate) fn classify(inst: &Instances, e: &Expr, cx: Cx, at: &str, stepped: bool) -> SelfKind {
     match read(inst, e, cx, C64::ONE) {
         Reading::Refused(tap) => SelfKind::Refuse(Box::new(
             tap_refusal(tap, Located::at(at, None)).expect("a refused tap names its reason"),
         )),
-        Reading::Free | Reading::Nonlinear => SelfKind::Sampled {
-            gain: None,
-            taps: None,
-        },
-        Reading::Linear { taps, plain, norm } => {
-            let fixed = |taps: &[(C64, Tap)]| {
-                taps.iter()
-                    .map(|(g, tap)| match tap {
-                        Tap::Back(d) if g.im == 0.0 => Some((g.re, *d)),
-                        _ => None,
-                    })
-                    .collect::<Option<Vec<_>>>()
-            };
-            match (plain, taps.as_slice()) {
-                (true, [(g, Tap::Back(delay))]) if !stepped && g.abs() < 1.0 => SelfKind::Series {
-                    gain: *g,
-                    delay: delay.to_f64(),
-                },
-                (true, [(g, Tap::Back(_))]) if !stepped || g.abs() > 1.0 => {
-                    SelfKind::Refuse(Box::new(unbounded(*g, at)))
-                }
-                _ => SelfKind::Sampled {
-                    gain: Some(norm),
-                    taps: plain.then(|| fixed(&taps)).flatten(),
-                },
+        Reading::Free | Reading::Nonlinear => SelfKind::Sampled,
+        Reading::Linear { taps, plain } => match (plain, taps.as_slice()) {
+            (true, [(g, Tap::Back(delay))]) if !stepped && g.abs() < 1.0 => SelfKind::Series {
+                gain: *g,
+                delay: delay.to_f64(),
+            },
+            (true, [(g, Tap::Back(_))]) if !stepped || g.abs() > 1.0 => {
+                SelfKind::Refuse(Box::new(unbounded(*g, at)))
             }
-        }
+            _ => SelfKind::Sampled,
+        },
     }
 }
 
@@ -91,19 +70,19 @@ pub(crate) fn tap_of(inst: &Instances, arg: &Expr, address: Address, cx: Cx) -> 
     }
 }
 
-/// A loop steps on the lattice, so its index reads one delay back or a delay that moves. An
-/// index its lowering refuses reads as one that moves until the lowering says so.
+/// A loop steps at the rate in use, so its index reads one delay back or a delay that moves.
+/// An index its lowering refuses reads as one that moves until the lowering says so.
 fn indexed_tap(inst: &Instances, arg: &Expr, cx: Cx) -> Tap {
-    let lattice = inst.lattice();
-    let map = crate::index::read(inst, arg, cx).and_then(|ix| ix.map(lattice, lattice));
+    let rate = inst.rate();
+    let map = crate::index::read(inst, arg, cx).and_then(|ix| ix.map(rate));
     let Some(map) = map.filter(|m| m.a == m.d) else {
         return Tap::Indexed;
     };
-    match (map.least(), map.lead(0)) {
+    match (map.least(), map.lead()) {
         (_, most) if most > 0 => Tap::Forward,
         (_, 0) => Tap::Zero,
         (least, most) if least == most => {
-            Q::new(-i128::from(least), i128::from(lattice)).map_or(Tap::Indexed, Tap::Back)
+            Q::new(-i128::from(least), i128::from(rate)).map_or(Tap::Indexed, Tap::Back)
         }
         _ => Tap::Indexed,
     }
@@ -140,16 +119,11 @@ fn unbounded(gain: C64, at: &str) -> EngineError {
     })
 }
 
-/// What one subterm gives: nothing, scaled reads of `self`, or a shape no gain bounds. A
-/// component taken or joined keeps a gain but no longer spells one series.
+/// What one subterm gives: nothing, scaled reads of `self`, or a shape no one series spells.
+/// A component taken or joined keeps its taps but no longer spells one series.
 enum Reading {
     Free,
-    /// `norm` bounds the output's move per unit move of every tap, component by component.
-    Linear {
-        taps: Vec<(C64, Tap)>,
-        plain: bool,
-        norm: Gain,
-    },
+    Linear { taps: Vec<(C64, Tap)>, plain: bool },
     Refused(Tap),
     Nonlinear,
 }
@@ -163,7 +137,6 @@ fn read(inst: &Instances, e: &Expr, cx: Cx, gain: C64) -> Reading {
             tap @ (Tap::Back(_) | Tap::Moving | Tap::Indexed) => Reading::Linear {
                 taps: vec![(gain, tap)],
                 plain: true,
-                norm: tap_gain(tap, gain.abs(), inst.lattice()),
             },
             refused => Reading::Refused(refused),
         },
@@ -201,11 +174,7 @@ fn read(inst: &Instances, e: &Expr, cx: Cx, gain: C64) -> Reading {
                 Arg::Pos(x) => opaque(read(inst, x, cx, gain)),
                 Arg::Named(..) => Reading::Nonlinear,
             })
-            .fold(Reading::Free, beside),
-        other @ Node::Call { name, args, .. } => match holds_in(inst, &other, cx) {
-            true => called_on_self(inst, (name, args), cx, gain),
-            false => Reading::Free,
-        },
+            .fold(Reading::Free, join),
         other => match holds_in(inst, &other, cx) {
             true => Reading::Nonlinear,
             false => Reading::Free,
@@ -213,110 +182,9 @@ fn read(inst: &Instances, e: &Expr, cx: Cx, gain: C64) -> Reading {
     }
 }
 
-/// A call over the loop's own past, bounded by how far its output moves per unit its signal
-/// does: a fixed filter by its impulse response's sum, a crop by one, and the Lipschitz
-/// constant of each unary this knows one for. Any other stays unbounded.
-fn called_on_self(inst: &Instances, (name, args): (&str, &[Arg]), cx: Cx, gain: C64) -> Reading {
-    let positional: Vec<&Expr> = args
-        .iter()
-        .filter_map(|a| match a {
-            Arg::Pos(x) => Some(x),
-            Arg::Named(..) => None,
-        })
-        .collect();
-    let written = |slot: usize, key: &str| {
-        positional.get(slot).copied().or_else(|| {
-            args.iter().find_map(|a| match a {
-                Arg::Named(k, x) if k == key => Some(x),
-                _ => None,
-            })
-        })
-    };
-    let fixed = |x: Option<&Expr>, fallback: f64| match x {
-        Some(x) if !holds(inst, x, cx) => {
-            constant(inst, x, cx).filter(|c| c.im == 0.0).map(|c| c.re)
-        }
-        Some(_) => None,
-        None => Some(fallback),
-    };
-    let Some(&signal) = positional.first() else {
-        return Reading::Nonlinear;
-    };
-    let others_free = |from: usize| positional[from..].iter().all(|x| !holds(inst, x, cx));
-    let (by, lti) = match name {
-        _ if let Some(shape) = sva_formula::filter::Shape::from_name(name) => {
-            let parameters = (
-                fixed(written(1, "cutoff"), f64::NAN),
-                fixed(written(2, "q"), shape.default_q()),
-                fixed(written(3, "gain"), 0.0),
-            );
-            let (Some(cutoff), Some(q), Some(db)) = parameters else {
-                return Reading::Nonlinear;
-            };
-            let rate = f64::from(inst.lattice());
-            let (coeffs, _) = sva_samples::filters::coefficients(shape, cutoff, q, db, rate);
-            match cutoff
-                .is_finite()
-                .then(|| sva_samples::gain::l1(&coeffs))
-                .flatten()
-            {
-                Some(l1) => (l1, true),
-                None => return Reading::Nonlinear,
-            }
-        }
-        "crop" if others_free(1) => (1.0, false),
-        "tanh" | "sin" | "cos" | "abs" if positional.len() == 1 => (1.0, false),
-        "sat" if positional.len() == 1 => match fixed(written(1, "drive"), 1.0) {
-            Some(drive) => (drive.abs(), false),
-            None => return Reading::Nonlinear,
-        },
-        "max" | "min" => {
-            return positional
-                .iter()
-                .map(|x| scaled(opaque(read(inst, x, cx, gain)), 1.0, false))
-                .fold(Reading::Free, beside);
-        }
-        _ => return Reading::Nonlinear,
-    };
-    scaled(opaque(read(inst, signal, cx, gain)), by, lti)
-}
-
-/// Its gain times `by`, and no longer time-invariant unless `lti`.
-fn scaled(r: Reading, by: f64, lti: bool) -> Reading {
-    match r {
-        Reading::Linear { taps, plain, norm } => Reading::Linear {
-            taps,
-            plain,
-            norm: norm.scaled(by, lti),
-        },
-        other => other,
-    }
-}
-
 fn opaque(r: Reading) -> Reading {
     match r {
-        Reading::Linear { taps, norm, .. } => Reading::Linear {
-            taps,
-            plain: false,
-            norm,
-        },
-        other => other,
-    }
-}
-
-/// Two components side by side: each moves by its own taps alone.
-fn beside(a: Reading, b: Reading) -> Reading {
-    let norms = |r: &Reading| match r {
-        Reading::Linear { norm, .. } => *norm,
-        _ => Gain::default(),
-    };
-    let widest = norms(&a).widest(norms(&b));
-    match join(a, b) {
-        Reading::Linear { taps, plain, .. } => Reading::Linear {
-            taps,
-            plain,
-            norm: widest,
-        },
+        Reading::Linear { taps, .. } => Reading::Linear { taps, plain: false },
         other => other,
     }
 }
@@ -330,12 +198,10 @@ fn join(a: Reading, b: Reading) -> Reading {
             Reading::Linear {
                 taps: mut held,
                 plain: p1,
-                norm: n1,
             },
             Reading::Linear {
                 taps: more,
                 plain: p2,
-                norm: n2,
             },
         ) => {
             for (g, tap) in more {
@@ -350,7 +216,6 @@ fn join(a: Reading, b: Reading) -> Reading {
             Reading::Linear {
                 taps: held,
                 plain: p1 && p2,
-                norm: n1.plus(n2),
             }
         }
     }
@@ -375,54 +240,6 @@ fn holds_in(inst: &Instances, node: &Node, cx: Cx) -> bool {
 
 fn constant(inst: &Instances, e: &Expr, cx: Cx) -> Option<C64> {
     plain(amount(inst, e, cx)?).map(C64::real)
-}
-
-/// A linear loop whose fractional taps fall inside the kernel's reach, each such tap
-/// replaced by the loop's own equation one delay back until every tap on its own past clears
-/// it: the reads of the rest and of its past, each `(delay, coefficient)`.
-pub(crate) enum Expanded {
-    Needless,
-    Taps {
-        rest: Vec<(Q, f64)>,
-        own: Vec<(Q, f64)>,
-    },
-    Unreachable,
-}
-
-const EXPANSIONS: usize = 256;
-
-pub(crate) fn expanded(taps: &[(f64, Q)], half: usize, lattice: u32) -> Expanded {
-    let lattice = Q::int(i64::from(lattice));
-    let reach = Q::int(half as i64);
-    let short = |d: &Q| {
-        d.mul(lattice)
-            .is_some_and(|samples| !samples.is_integer() && samples <= reach)
-    };
-    if !taps.iter().any(|(_, d)| short(d)) {
-        return Expanded::Needless;
-    }
-    let mut rest = std::collections::BTreeMap::from([(Q::ZERO, 1.0)]);
-    let mut own: std::collections::BTreeMap<Q, f64> = std::collections::BTreeMap::new();
-    for (g, d) in taps {
-        *own.entry(*d).or_insert(0.0) += g;
-    }
-    for _ in 0..EXPANSIONS {
-        let Some((&d, &c)) = own.iter().find(|(d, _)| short(d)) else {
-            return Expanded::Taps {
-                rest: rest.into_iter().collect(),
-                own: own.into_iter().collect(),
-            };
-        };
-        own.remove(&d);
-        *rest.entry(d).or_insert(0.0) += c;
-        for (g, e) in taps {
-            match d.add(*e) {
-                Some(at) => *own.entry(at).or_insert(0.0) += c * g,
-                None => return Expanded::Unreachable,
-            }
-        }
-    }
-    Expanded::Unreachable
 }
 
 /// `sum(k, 0, inf, g^k * rest(t - k*d))`, with the shift written into the body and the
@@ -569,45 +386,10 @@ fn walk(inst: &Instances, e: &Expr, cx: Cx) -> Option<Term> {
         },
         Node::Lit(Literal::Num(n)) => Q::decimal(*n).map(Term::Number),
         Node::Lit(Literal::Samples(n)) => Some(Term::Number(
-            Q::decimal(*n)?.div(Q::int(i64::from(inst.lattice())))?,
+            Q::decimal(*n)?.div(Q::int(i64::from(inst.rate())))?,
         )),
         _ => Q::decimal(plain(amount(inst, e, cx)?)?).map(Term::Number),
     }
-}
-
-/// A tap's gain `g`, whole where it reads a lattice sample and through the kernel elsewhere.
-pub(crate) fn tap_gain(tap: Tap, g: f64, lattice: u32) -> Gain {
-    match tap {
-        Tap::Back(d) if on_lattice(d, lattice) => Gain {
-            whole: g,
-            kernel: 0.0,
-            lti: true,
-        },
-        Tap::Indexed => Gain {
-            whole: g,
-            kernel: 0.0,
-            lti: false,
-        },
-        _ => Gain {
-            whole: 0.0,
-            kernel: g,
-            lti: tap != Tap::Moving,
-        },
-    }
-}
-
-/// Fixed taps on a loop's own past, each `(delay, coefficient)`.
-pub(crate) fn own_gain(own: &[(Q, f64)], lattice: u32) -> Gain {
-    own.iter().fold(Gain::default(), |held, (d, c)| {
-        held.plus(tap_gain(Tap::Back(*d), c.abs(), lattice))
-    })
-}
-
-/// A delay of whole lattice steps, which a loop reads with no kernel.
-pub(crate) fn on_lattice(delay: Q, lattice: u32) -> bool {
-    delay
-        .mul(Q::int(i64::from(lattice)))
-        .is_some_and(|samples| samples.is_integer())
 }
 
 /// A written number over every operator FORMAT 3.3 folds. What this drops is defaulted, never
@@ -638,7 +420,7 @@ fn folded(
     }
     match inst.node(e, cx) {
         Node::Lit(Literal::Num(n)) => Some(*n),
-        Node::Lit(Literal::Samples(n)) => Some(n / f64::from(inst.lattice())),
+        Node::Lit(Literal::Samples(n)) => Some(n / f64::from(inst.rate())),
         Node::Name("pi") => Some(std::f64::consts::PI),
         Node::Name("inf") => Some(f64::INFINITY),
         Node::Name(other) => sva_formula::note::frequency(other),
@@ -702,7 +484,9 @@ fn called(
 fn drawn(inst: &Instances, args: &[Arg], cx: Cx) -> Option<f64> {
     let (key, seed) = crate::lower::rand_arguments(args, |x| amount(inst, x, cx))?;
     let at = time_of(inst, key, cx)?;
-    (at.scale.is_zero()).then(|| crate::lower::noise_at(seed, at.shift, inst.profile))
+    at.scale
+        .is_zero()
+        .then(|| crate::lower::noise_at(seed, at.shift, inst.rate()))
 }
 
 pub(crate) fn plain(amount: f64) -> Option<f64> {

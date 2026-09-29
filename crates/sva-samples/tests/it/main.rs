@@ -27,5 +27,4 @@ mod physics_darabundit_scavone;
 mod physics_hammer;
 mod physics_rhaouti_chaigne_joly;
 mod physics_willemsen_bilbao_serafin;
-mod reconstruct;
 mod stft;

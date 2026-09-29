@@ -113,7 +113,7 @@ pub(super) fn on_the_grid(
     if render.buffer(node).is_some() {
         return render.output(node);
     }
-    let extent = render.output.ok_or_else(|| {
+    let extent = render.range.ok_or_else(|| {
         render.unranged.clone().unwrap_or_else(|| {
             refused(
                 render,
@@ -124,15 +124,6 @@ pub(super) fn on_the_grid(
         })
     })?;
     collapsed_over(render, node, extent, render.config.rate)
-}
-
-/// A closed form the render did not hold, over its range on the render's own lattice.
-pub(super) fn on_the_lattice(
-    render: &Render,
-    node: sva_formula::NodeId,
-) -> Result<Buffer, EngineError> {
-    let range = render.range.expect("a render pulled to an end has a range");
-    collapsed_over(render, node, range, render.lattice())
 }
 
 fn collapsed_over(
@@ -651,7 +642,7 @@ fn own_samples(render: &Render, id: sva_formula::NodeId) -> Result<Buffer, Engin
         return Ok(render.aligned(id, range));
     }
     match render.tys.ty(id).is_closed_form() {
-        true => collapsed_over(render, id, range, render.lattice()),
+        true => collapsed_over(render, id, range, render.rate()),
         false => Err(unmaterialized(
             render,
             id,

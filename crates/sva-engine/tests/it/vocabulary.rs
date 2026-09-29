@@ -150,9 +150,9 @@ fn pow_two_to_n_over_twelve_transposes_exactly() {
     );
 }
 
-/// A key that quantizes `t` reads the lattice's noise at those instants, so it is samples.
+/// A key that quantizes `t` reads the noise at those instants, so it is samples.
 #[test]
-fn a_quantized_time_key_reads_the_lattice_noise() {
+fn a_quantized_time_key_reads_the_noise() {
     let quantized = ty_of("held", "rand(t - t % 0.0625, seed=17)\n");
     assert_eq!((quantized.held, quantized.dual), (Held::Sampled, false));
     assert!(

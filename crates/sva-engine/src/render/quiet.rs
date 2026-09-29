@@ -36,7 +36,7 @@ pub fn quiet_tails(
     target: &str,
     config: RenderConfig,
 ) -> Result<Vec<QuietTail>, EngineError> {
-    let held = prepared(graph, target, config.profile)?;
+    let held = prepared(graph, target, config.rate)?;
     let schedule = schedule::plan(&held.tys, &held.order, held.root, &[]);
     let audio = schedule.materialize.clone();
     let mut shell = Render::shell(held.tys.clone(), held.root, config, schedule);
@@ -78,7 +78,7 @@ const EVERYWHERE: Span = (f64::NEG_INFINITY, f64::INFINITY);
 /// support. A transform, a warp or a derivative asks its whole support.
 fn extents(shell: &Render) -> BTreeMap<NodeId, Span> {
     let tys = &shell.tys;
-    let rate = f64::from(shell.lattice());
+    let rate = f64::from(shell.rate());
     let supports = Supports::new(shell);
     let secs = |e: sva_samples::Extent| -> Span {
         let edge = |n: i64| match n {

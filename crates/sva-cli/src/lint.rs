@@ -110,7 +110,7 @@ fn lint_reaching(source: &dyn Source, target: &str) -> Result<LintReport, CliErr
         let render = sva_core::plan(&job)?;
         let rate = f64::from(render.config.rate);
         interval = render
-            .output
+            .range
             .map(|r| (r.start_secs(render.config.rate), r.end as f64 / rate));
         violations.extend(quiet_tail(sva_core::quiet_tails(&job)?));
     }

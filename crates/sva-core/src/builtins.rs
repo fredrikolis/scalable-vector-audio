@@ -84,12 +84,12 @@ pub const SPECIAL_FORMS: [(&str, &str); 7] = [
     ),
     (
         "x[i]",
-        "@x[i], self[i] -- the stored lattice sample at integer index i, read with no kernel; \
-         @x(e) reads the instant e",
+        "@x[i], self[i] -- the stored sample at integer index i, at the rate in use; @x(e) \
+         reads the instant e",
     ),
     (
         "idx",
-        "idx(time), idx(time, floor), idx(time, ceil) -- the lattice index nearest a time, \
+        "idx(time), idx(time, floor), idx(time, ceil) -- the sample index nearest a time, \
          ties to even, or the one below or above it; written only inside an index",
     ),
     (

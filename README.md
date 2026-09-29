@@ -78,16 +78,16 @@ a feedback term sits under a `sample` and comes last in that chain.
 `C4` is a note name, `440hz` a frequency, `0.25s` a duration. `4st` and `50ct` are a semitone
 and a cent as ratios, so `C4*4st` is `E4` and a chord written that way transposes with its
 root. `1b` is a bar against the composition's own bpm and meter, and `1sp` is one step of the
-lattice every filter, loop and solver runs on, 1/44100 s. The rest are `ms`, `m`, `h`, `khz`
-and `db`.
+rate a render samples at: 1/44100 s by default, 1/48000 s at `--rate 48000`. The rest are
+`ms`, `m`, `h`, `khz` and `db`.
 
 ## Reading a sample by index
 
 | Written | Reads |
 | ------- | ----- |
-| `@x(e)` | `x` at the instant `e`; at 128 bpm `@x(t - 0.5b)` reconstructs 41343.75 samples back |
-| `@x[i]` | `x`'s stored sample at lattice index `i`, with no kernel; `i` is a whole number, `idx(...)`, or `+`, `-` and `*` over those, so `@x[t - 0.5b]` refuses |
-| `idx(e)` | the lattice index nearest `e`, ties to even: `@x[idx(t - 0.5b)]` reads sample 41344, and `self[idx(t) - 1]` is `self(t - 1sp)` bit for bit; `idx(e, floor)` and `idx(e, ceil)` round down and up |
+| `@x(e)` | `x` at the instant `e`: exact anywhere where `x` is a closed form; where `x` is a filter, loop or solver, only on its samples, so at 128 bpm and 44.1 kHz `@x(t - 0.5b)`, 41343.75 samples back, refuses |
+| `@x[i]` | `x`'s stored sample at index `i`; `i` is a whole number, `idx(...)`, or `+`, `-` and `*` over those, so `@x[t - 0.5b]` refuses |
+| `idx(e)` | the sample index nearest `e`, ties to even: `@x[idx(t - 0.5b)]` reads sample 41344 at 44.1 kHz, and `self[idx(t) - 1]` is `self(t - 1sp)` bit for bit at any rate; `idx(e, floor)` and `idx(e, ceil)` round down and up |
 
 ## sva-cli
 
@@ -131,9 +131,9 @@ names an interval; with none, a render ends where `master`'s support does.
 `ledger` prints rms, peak and clipped per node.
 
 Every reading says whether it is `exact` or `measured`, under which profile and at which
-rate. `--rate` sets only the instants the output is read at: a filter, loop, solver or `rand`
-steps on the lattice whatever it is, and a read between two lattice samples is a windowed-sinc
-reading of them, as long as its bound needs, listed under `bounds` with the error it may carry.
+rate. `--rate` is the one rate a render samples at: the target is read at its instants, and
+each node at the instants its reader asks for. A closed form is exact at any instant; a filter,
+loop or solver steps at that rate, and a read between two of its samples refuses by code.
 `--rate` is legal with every representation.
 
 `sva-cli builtins` prints every builtin with its arity and named arguments, the unit suffixes

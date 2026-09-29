@@ -3,10 +3,6 @@
 mod live;
 pub mod ops;
 mod read;
-mod rounding;
-
-pub use read::{read_at, resample};
-pub use rounding::position_error;
 pub mod renderer;
 pub mod tape;
 
@@ -14,19 +10,21 @@ use crate::buffer::Buffer;
 use crate::error::SampleError;
 use crate::filters::FilterSite;
 use crate::physics::{Solver, site};
-use ops::{Layout, Op, lower};
-use renderer::{NodeRenderer, Site};
+use ops::{Layout, Op, lowered};
+use renderer::{Formula, NodeRenderer, Site};
 use tape::{Tape, Window};
 
 pub use live::Span;
 
 pub use ops::Layout as MachineLayout;
 
-/// The op array, one width per slot, and the call sites the run opens state for.
+/// The op array, one width per slot, the formulas its ops name and the call sites the run
+/// opens state for.
 #[derive(Clone)]
 struct Program {
     ops: Vec<Op>,
     widths: Vec<usize>,
+    formulas: Vec<Formula>,
     sites: Vec<Site>,
     pub width: usize,
 }
@@ -41,11 +39,11 @@ pub struct Ctx<'a> {
 
 impl NodeRenderer {
     fn compile(&self, layout: &Layout) -> Result<Program, SampleError> {
-        let (mut ops, mut widths) = (Vec::new(), Vec::new());
-        let width = lower(self, layout, &mut ops, &mut widths)?;
+        let (lowered, width) = lowered(self, layout)?;
         Ok(Program {
-            ops,
-            widths,
+            ops: lowered.ops,
+            widths: lowered.widths,
+            formulas: lowered.formulas,
             sites: layout.sites.clone(),
             width,
         })
@@ -106,7 +104,6 @@ fn open(p: &Program, rate: u32) -> Result<Vec<State>, SampleError> {
 struct Stack {
     values: Vec<Vec<f64>>,
     pending: Vec<usize>,
-    memo: Vec<read::Memo>,
 }
 
 impl Stack {
@@ -114,7 +111,6 @@ impl Stack {
         Stack {
             values: widths.iter().map(|&w| vec![0.0; w]).collect(),
             pending: Vec::with_capacity(widths.len()),
-            memo: vec![read::Memo::default(); widths.len()],
         }
     }
 }
@@ -138,15 +134,6 @@ pub struct Machine {
 #[derive(Clone)]
 pub struct MachineState {
     sites: Vec<Site>,
-    states: Vec<State>,
-}
-
-/// All a machine carries from one sample to the next: its span's program, the spans ahead
-/// and its call sites' state.
-#[derive(Clone)]
-pub struct Standing {
-    program: Program,
-    ahead: Vec<(i64, Program)>,
     states: Vec<State>,
 }
 
@@ -294,20 +281,6 @@ impl Machine {
         }
     }
 
-    pub fn standing(&self) -> Standing {
-        Standing {
-            program: self.program.clone(),
-            ahead: self.ahead.clone(),
-            states: self.states.clone(),
-        }
-    }
-
-    /// Back where `at` was taken, from the same machine.
-    pub fn stand(&mut self, at: Standing) {
-        self.stack = Stack::of(&at.program.widths);
-        (self.program, self.ahead, self.states) = (at.program, at.ahead, at.states);
-    }
-
     pub fn restart(&mut self) {
         self.states = open(&self.program, self.rate).expect("the sites opened once already");
     }
@@ -382,15 +355,13 @@ fn step(
         }
         let at = stack.pending.len() - arity_of(op);
         let (done, rest) = stack.values.split_at_mut(slot);
-        let memo = &mut stack.memo[slot];
         fill(
-            op,
+            (op, &p.formulas),
             done,
             &stack.pending[at..],
             &mut rest[0],
             here,
             states,
-            memo,
         )?;
         stack.pending.truncate(at);
         stack.pending.push(slot);
@@ -408,7 +379,7 @@ fn arity_of(op: &Op) -> usize {
         | Op::Read { .. }
         | Op::ReadScaled { .. } => 0,
         Op::Physics { arity, .. } => *arity,
-        Op::Map(_) | Op::Crop { .. } | Op::Channel(_) | Op::Moving { .. } => 1,
+        Op::Map(_) | Op::Crop { .. } | Op::Channel(_) | Op::Formula { .. } => 1,
         Op::Guard { .. } => 0,
         Op::Sub | Op::Div | Op::Pow | Op::Zip(_) => 2,
         Op::Add(n) | Op::Mul(n) | Op::Join(n) => *n,
@@ -417,13 +388,12 @@ fn arity_of(op: &Op) -> usize {
 }
 
 fn fill(
-    op: &Op,
+    (op, formulas): (&Op, &[Formula]),
     done: &[Vec<f64>],
     srcs: &[usize],
     result: &mut [f64],
     here: &Here,
     states: &mut [State],
-    memo: &mut read::Memo,
 ) -> Result<(), SampleError> {
     let (n, t, sr) = (here.n, here.t, here.sr);
     let arg = |k: usize| done[srcs[k]].as_slice();
@@ -436,33 +406,20 @@ fn fill(
                 .ok_or(SampleError::UnreadablePosition)?
         }
         Op::Noise(seed) => result[0] = sva_formula::draw(*seed, n as f64),
-        Op::Read {
-            slot,
-            at,
-            half_width,
-        } => here
-            .source(*slot)
-            .mapped((*at, *half_width), n, memo, result)?,
-        Op::ReadScaled {
-            slot,
-            at,
-            half_width,
-            by,
-        } => {
-            here.source(*slot)
-                .mapped((*at, *half_width), n, memo, result)?;
+        Op::Read { slot, at } => here.source(*slot).mapped(*at, n, result)?,
+        Op::ReadScaled { slot, at, by } => {
+            here.source(*slot).mapped(*at, n, result)?;
             for v in result.iter_mut() {
                 *v *= by;
             }
         }
-        Op::Moving {
-            slot,
-            per_sec,
-            line,
-            half_width,
-        } => {
-            let p = renderer::At::position(*line, *per_sec, n, arg(0)[0]);
-            here.source(*slot).at(p, *half_width, memo, result)?;
+        Op::Formula { at } => {
+            let when = arg(0)[0];
+            for (c, slot) in result.iter_mut().enumerate() {
+                *slot = formulas[*at]
+                    .at(c, when)
+                    .map_err(|_| SampleError::FormulaUnevaluable { at: n })?;
+            }
         }
         Op::Add(_) | Op::Mul(_) => {
             let product = matches!(op, Op::Mul(_));

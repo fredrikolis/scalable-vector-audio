@@ -7,13 +7,11 @@ pub mod error;
 pub mod fft;
 pub mod filters;
 pub mod frames;
-pub mod gain;
 pub mod label;
 pub mod machine;
 pub mod measure;
 pub mod physics;
 pub mod profile;
-pub mod reconstruct;
 pub mod stft;
 
 pub use biquad::Coeffs;
@@ -28,10 +26,10 @@ pub use filters::{Automation, AutomationFrame, FilterSite, FilterTrace};
 pub use frames::Frames;
 pub use label::{Cost, Detail, Dropped, Label, Rule, Source};
 pub use machine::renderer::{
-    At, Between, Binary, BufId, Map, NodeRenderer, Site, SiteId, Slot, Unary, Wrap,
+    Between, Binary, BufId, Formula, Map, NodeRenderer, Site, SiteId, Slot, Unary, Wrap,
 };
 pub use machine::tape::{Tape, Window};
-pub use machine::{Ctx, Machine, MachineState, Standing};
+pub use machine::{Ctx, Machine, MachineState};
 pub use measure::Consumes;
 pub use measure::alias::{
     AUDIBLE_NMR_DB, Alias, AliasBand, PLAYBACK_DB_SPL, measure_alias, worst as worst_alias,
@@ -48,6 +46,5 @@ pub use measure::spectrum::{
 };
 pub use measure::stereo::{StereoFrame, StereoImage};
 pub use physics::{Params, Solver, site};
-pub use profile::{LATTICE_8K, PSYCHOACOUSTIC_V1, Profile};
-pub use reconstruct::{Bound, Kernel, KernelFamily, kernel, plain, shortest};
+pub use profile::{PSYCHOACOUSTIC_V1, Profile};
 pub use sva_formula::Shape;

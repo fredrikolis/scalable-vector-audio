@@ -60,7 +60,7 @@ pub enum Arg {
     Named(String, Expr),
 }
 
-/// `x(e)` reads an instant, `x[i]` a lattice index.
+/// `x(e)` reads an instant, `x[i]` a sample index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Address {
     Time,

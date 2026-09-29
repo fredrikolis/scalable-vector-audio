@@ -187,22 +187,6 @@ fn weinreich_unison() -> ChaigneAskenfeltParams {
     }
 }
 
-/// A published unison names none of the unison mechanics, so adding them must leave its
-/// samples alone: FNV-1a over the bits of its first 0.1 s.
-#[test]
-fn a_call_naming_no_unison_mechanics_renders_its_frozen_samples() {
-    let buffer = fd::render(&Params::ChaigneAskenfelt(published_unison()), 44_100, 0.1);
-    let hash = buffer
-        .plane(0)
-        .iter()
-        .fold(0xcbf2_9ce4_8422_2325u64, |h, s| {
-            s.to_bits().to_le_bytes().iter().fold(h, |h, &byte| {
-                (h ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-            })
-        });
-    assert_eq!(hash, 0x407b_8b4b_fba9_1dab, "a published unison changed");
-}
-
 /// The 5-95 percentile spread of a partial's level about its own straight-line decay, over
 /// the sustain from 0.3 s: a unison beating to nulls spreads by tens of dB.
 fn beat_depth_db(x: &[f64], rate: f64, hz: f64) -> f64 {

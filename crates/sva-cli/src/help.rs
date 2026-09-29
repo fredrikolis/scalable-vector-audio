@@ -10,7 +10,6 @@ use sva_engine::{
 pub fn help_text() -> String {
     let budget = PSYCHOACOUSTIC_V1.flop_budget;
     let bits = PSYCHOACOUSTIC_V1.precision_bits;
-    let lattice = PSYCHOACOUSTIC_V1.lattice_hz;
     let quiet = 20.0 * QUIET_LEVEL.log10();
     format!(
         r#"USAGE:
@@ -81,27 +80,16 @@ RENDER:
 
   `--bits <n>` is the precision every sample is written to, from 2 to 52: the
   point where a series is truncated, and the encoding of a `.wav`, integer PCM
-  at n bits up to 16 and 32-bit float above. `--rate <hz>` is the output's
-  sample rate and sets only the instants it is read at: filters, loops,
-  solvers and `rand` step on the profile's {lattice} Hz lattice, where `1sp` is
-  one step, and a read between two lattice samples is a windowed-sinc reading
-  of them, the shortest of the profile's family whose bound meets its
-  precision. Off the lattice's rate, what holds no state, a crop or a sum
-  over the nodes that do, is evaluated at each output instant itself, and only
-  those nodes are read between their samples. An edit to a stream plays from
-  the next output sample on, what was computed ahead of it computed again.
-  `data.bounds` lists each such reading with its `taps`, the error it may
-  carry per source component below and above the band edge, `position`,
-  the samples a moving read's computed position may stray, and `lebesgue`, the
-  most it amplifies an error already in the samples. A loop read that way
-  carries `looped`, the proven error of its own output relative to its full
-  scale over its extent: per component where it is linear and time-invariant,
-  per pass through its readings where its delay moves or a crop, tanh, sat,
-  sin, cos, abs, min or max is in it. A longer kernel is taken where a loop
-  needs one; a loop refuses where no kernel its delay leaves room for meets
-  the precision, where it has no end and no bound holds, or where it reads its
-  past through anything else. `--flop-budget <n>` is the operation count paid
-  before a render refuses.
+  at n bits up to 16 and 32-bit float above. `--rate <hz>` (default
+  {DEFAULT_SAMPLE_RATE}) is the one rate a render samples at: the target is read
+  at its instants, and every node at the instants its reader asks for. A
+  closed form is exact at any instant. A filter, a loop, a solver and `rand`
+  step at the rate asked for, where `1sp` is one step, so an `sp` count or
+  `self[idx(t) - 1]` means one sample at whatever rate is asked. A read of a
+  node that holds state between two of its samples, at a scaled time or at a
+  time that moves refuses as `render.off_grid_read`; `@x[idx(...)]` reads the
+  nearest sample instead. An edit to a stream plays from the next sample on.
+  `--flop-budget <n>` is the operation count paid before a render refuses.
 
   `ledger` prints one row per node under the target. A row's `share` is the
   part of its reader's own energy that row accounts for, so one reader's refs
@@ -216,8 +204,8 @@ EXAMPLES:
 
 OUTPUT:
   {{"status": "success", "data": {{"target": "@master([0, 8b])", "sample_rate":
-  {DEFAULT_SAMPLE_RATE}, "bits": {bits}, "bounds": {{"items": [...]}}, "profile":
-  "psychoacoustic-v1", "interval": {{"start_secs":
+  {DEFAULT_SAMPLE_RATE}, "bits": {bits}, "profile": "psychoacoustic-v1",
+  "interval": {{"start_secs":
   0, "end_secs": 16}}, "label": {{...}}, "written": {{"items": [...]}},
   "representations": {{"ledger": {{...}}}}, "diagnostics": {{"items": []}}}},
   "meta": {{"request_id": "req_...", "timestamp": 1700000000}}}}
@@ -236,7 +224,7 @@ OUTPUT:
   envelope of its own, at "data": {{"help"}}.
 
 DEFAULTS:
-  --rate <hz>          the sample rate a render lays its seconds on.
+  --rate <hz>          the one rate a render samples at, and `1sp`.
                        Default {DEFAULT_SAMPLE_RATE}.
   --bits <n>           the precision every sample is written to. Default {bits},
                        the `psychoacoustic-v1` profile's own.

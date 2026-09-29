@@ -1,11 +1,10 @@
-// Concern: proves an index read reads the lattice sample its integer names, whole or streamed, or refuses | Non-concern: a read at an instant (refs.rs) | IO: (a composition) -> samples or a refusal
+// Concern: proves an index read reads the sample its integer names, whole or streamed, or refuses | Non-concern: a read at an instant (refs.rs) | IO: (a composition) -> samples or a refusal
 
 use crate::fixtures::graph_of;
 use sva_ast::{Graph, PerBar};
 use sva_engine::{Range, RenderConfig, Stream, StreamConfig, render};
-use sva_samples::LATTICE_8K;
 
-const RATE: u32 = LATTICE_8K.lattice_hz;
+const RATE: u32 = 8_000;
 
 fn bits(samples: &[f64]) -> Vec<u64> {
     assert!(samples.iter().any(|v| *v != 0.0), "silence tests nothing");
@@ -26,7 +25,7 @@ fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Vec<f64> {
                 start: Some(0),
                 end: Some(samples as i64),
             },
-            ..RenderConfig::at(RATE).under(LATTICE_8K)
+            ..RenderConfig::at(RATE)
         },
     };
     let at = sva_ast::parse_expr(&format!("@{target}")).expect("a ref");
@@ -62,7 +61,7 @@ fn a_loop_one_index_back_is_the_loop_one_step_back_bit_for_bit() {
             ("stepped", &format!("{ONSET} + 0.5*self(t - 1sp)\n")),
         ],
     );
-    let config = RenderConfig::seconds(RATE, 0.1).under(LATTICE_8K);
+    let config = RenderConfig::seconds(RATE, 0.1);
     assert_eq!(
         bits(&whole(&g, "indexed", &config)),
         bits(&whole(&g, "stepped", &config))
@@ -70,9 +69,9 @@ fn a_loop_one_index_back_is_the_loop_one_step_back_bit_for_bit() {
 }
 
 /// Half a bar at 128 bpm is 41343.75 samples of 44.1 kHz: the index rounds it to 41344 and
-/// reads that sample, where the instant itself is read through the kernel.
+/// reads that sample, where the instant itself lies between two samples and refuses.
 #[test]
-fn an_index_half_a_bar_back_reads_the_nearest_sample_with_no_kernel() {
+fn an_index_half_a_bar_back_reads_the_nearest_sample_where_the_instant_refuses() {
     let g = at_128_bpm(
         "index-bar",
         &[
@@ -90,15 +89,10 @@ fn an_index_half_a_bar_back_reads_the_nearest_sample_with_no_kernel() {
         bits(&whole(&g, "indexed", &config)),
         bits(&whole(&g, "nearest", &config))
     );
-    let rows = |target: &str| {
-        let held = render(&g, target, config.clone(), None).expect("a render");
-        held.reconstructions()
-            .into_iter()
-            .filter(|r| r.node == target)
-            .count()
+    let Err(refused) = render(&g, "between", config, None) else {
+        panic!("a filter has no value between two of its samples");
     };
-    assert_eq!(rows("indexed"), 0, "an index read takes no kernel");
-    assert_eq!(rows("between"), 1, "the instant between samples does");
+    assert_eq!(refused.code(), "render.off_grid_read", "{refused}");
 }
 
 #[test]
@@ -140,7 +134,7 @@ fn an_integer_no_rounded_line_spells_types_and_refuses_to_render() {
         ],
     );
     assert!(sva_engine::types(&g, "node").is_ok());
-    let config = RenderConfig::seconds(RATE, 0.1).under(LATTICE_8K);
+    let config = RenderConfig::seconds(RATE, 0.1);
     let Err(refused) = render(&g, "node", config, None) else {
         panic!("two rounded lines are no one map");
     };
@@ -165,7 +159,7 @@ fn floor_ceil_and_a_negated_index_read_the_samples_either_side() {
             ("two", "@x(t - 2sp)\n"),
         ],
     );
-    let config = RenderConfig::seconds(RATE, 0.1).under(LATTICE_8K);
+    let config = RenderConfig::seconds(RATE, 0.1);
     let read = |target: &str| bits(&whole(&g, target, &config));
     assert_eq!(read("floored"), read("three"));
     assert_eq!(read("ceiled"), read("two"));
@@ -193,7 +187,7 @@ fn index_reads_stream_the_samples_a_whole_render_writes_bit_for_bit() {
         ],
     );
     let samples = 800;
-    let config = RenderConfig::seconds(RATE, samples as f64 / f64::from(RATE)).under(LATTICE_8K);
+    let config = RenderConfig::seconds(RATE, samples as f64 / f64::from(RATE));
     for target in ["shifted", "tied", "looped", "alternating"] {
         let want = bits(&whole(&g, target, &config));
         for block in [1, 64, 333] {

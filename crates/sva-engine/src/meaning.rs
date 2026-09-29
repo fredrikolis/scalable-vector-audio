@@ -52,8 +52,14 @@ pub fn meaning(builtin: &str, key: &str) -> Option<Meaning> {
         ("crop", "fall") => plain("raised-cosine fade-out into the window's end", "s"),
         ("rand", "seed") => plain("which hash the key is drawn through", "none"),
         ("delta", "k") => plain("derivative order of the impulse", "none"),
-        ("stft", "window") => plain("frame length, a whole number of lattice steps", "s"),
-        ("stft", "hop") => plain("frame advance, a whole number of lattice steps", "s"),
+        ("stft", "window") => plain(
+            "frame length, a whole number of steps of the rate in use",
+            "s",
+        ),
+        ("stft", "hop") => plain(
+            "frame advance, a whole number of steps of the rate in use",
+            "s",
+        ),
         ("noise", "period") => plain("repeat time; the lines fall every 1/period Hz", "s"),
         ("noise", "color") => plain("spectral tilt of the lines", "dB/octave"),
         _ => return None,

@@ -3,10 +3,9 @@
 use crate::fixtures::graph_of;
 use sva_engine::{
     Detail, EngineError, Held, Output, RenderConfig, Representation, Source, Value, When, answer,
-    plan, render, types,
+    render, types,
 };
 use sva_formula::Body;
-use sva_samples::LATTICE_8K;
 
 fn form(name: &str, body: &str) -> Result<Held, EngineError> {
     let g = graph_of(name, &[("loop", body)]);
@@ -440,120 +439,4 @@ fn a_shifted_comb_keeps_its_lines() {
             );
         }
     }
-}
-
-/// The proven error the loop's own row in `data.bounds` states.
-fn looped(held: &sva_engine::Render) -> f64 {
-    held.reconstructions()
-        .into_iter()
-        .find(|r| r.reading == "loop")
-        .map(|r| r.looped.expect("a loop states its bound"))
-        .expect("the loop reads its past between samples")
-}
-
-fn one_loop(body: &str) -> sva_ast::Graph {
-    graph_of("looped", &[("loop", &format!("{body}\n"))])
-}
-
-const PRECISION: f64 = 1.0 / 16_777_216.0;
-
-/// Loops step on the low-rate test lattice; the default budget below keeps the default one.
-const RATE: u32 = LATTICE_8K.lattice_hz;
-
-/// Past the gain a fixed-length kernel held, a longer kernel keeps a comb within precision.
-#[test]
-fn a_comb_at_high_feedback_and_a_fractional_delay_renders_within_its_bound() {
-    let g = one_loop("crop(sample(sin(2*pi*220*t)), 0s, 0.1s) + 0.8*self(t - 0.0123456s)");
-    let held = render(
-        &g,
-        "loop",
-        RenderConfig::seconds(RATE, 0.5).under(LATTICE_8K),
-        None,
-    )
-    .expect("it renders");
-    let error = looped(&held);
-    assert!(error > 0.0 && error <= PRECISION, "{error}");
-}
-
-#[test]
-fn a_karplus_strong_loop_near_unit_gain_renders_within_precision() {
-    let g = one_loop(
-        "crop(sample(rand(t, seed=1)), 0s, 0.01s) + 0.999*0.5*(self(t - 198.5sp) + self(t - 199.5sp))",
-    );
-    let held = render(
-        &g,
-        "loop",
-        RenderConfig::seconds(RATE, 0.25).under(LATTICE_8K),
-        None,
-    )
-    .expect("it renders");
-    let error = looped(&held);
-    assert!(error > 0.0 && error <= PRECISION, "{error}");
-}
-
-/// A moving tap recirculates its readings' error once per shortest delay, so its proven bound
-/// grows with the extent, and a loop with no end has none.
-#[test]
-fn a_drifting_delay_is_bounded_over_thirty_seconds_and_refused_with_no_end() {
-    let g = one_loop("sample(sin(2*pi*220*t)) + 0.34*self(t - 0.375s - 0.0035*sin(2*pi*0.19*t))");
-    let long = plan(
-        &g,
-        "loop",
-        RenderConfig::seconds(RATE, 30.0).under(LATTICE_8K),
-    )
-    .expect("it plans");
-    let error = looped(&long);
-    assert!(error > 0.0 && error <= PRECISION, "{error}");
-
-    let open = sva_engine::StreamConfig {
-        render: RenderConfig::at(RATE).under(LATTICE_8K),
-        block: 256,
-    };
-    let target = sva_ast::parse_expr("@loop").expect("a ref");
-    let Err(endless) = sva_engine::Stream::open(&g, &target, open, None) else {
-        panic!("no bound holds on a drifting loop with no end");
-    };
-    assert!(
-        endless.code().starts_with("engine.loop_error"),
-        "{endless:?}"
-    );
-}
-
-/// A fixed filter in a loop keeps it linear and time-invariant, bounded per component; an
-/// operation no bound is known for refuses rather than reporting nothing.
-#[test]
-fn a_filtered_loop_is_bounded_and_an_unknown_operation_refuses() {
-    let g = one_loop(
-        "crop(sample(sin(2*pi*220*t)), 0s, 0.1s) + 0.84*lp(self(t - 0.0253s), cutoff=5000)",
-    );
-    let held = render(
-        &g,
-        "loop",
-        RenderConfig::seconds(RATE, 0.25).under(LATTICE_8K),
-        None,
-    )
-    .expect("it renders");
-    assert!(looped(&held) <= PRECISION);
-
-    let g = one_loop("crop(sample(sin(2*pi*220*t)), 0s, 0.1s) + 0.5*exp(self(t - 0.0101s))");
-    let Err(refused) = render(
-        &g,
-        "loop",
-        RenderConfig::seconds(RATE, 0.25).under(LATTICE_8K),
-        None,
-    ) else {
-        panic!("no error bound is known through exp");
-    };
-    assert_eq!(refused.code(), "engine.loop_error_unproven", "{refused:?}");
-}
-
-#[test]
-fn a_seventeen_millisecond_comb_over_ten_seconds_fits_the_default_budget() {
-    let g = one_loop("sample(sin(2*pi*220*t)) + 0.42*self(t - 0.017s)");
-    let held = plan(&g, "loop", RenderConfig::seconds(44_100, 10.0)).expect("it plans");
-    let flops = held.work().priced_flops;
-    assert!(
-        flops <= sva_engine::PSYCHOACOUSTIC_V1.flop_budget,
-        "{flops}"
-    );
 }

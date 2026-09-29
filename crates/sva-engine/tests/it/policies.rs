@@ -9,10 +9,9 @@ use sva_engine::{
     render,
 };
 use sva_samples::AliasScore;
-use sva_samples::LATTICE_8K;
 
 const SECONDS: f64 = 0.05;
-const RATE: u32 = LATTICE_8K.lattice_hz;
+const RATE: u32 = 8_000;
 
 /// `x` and `y` are each read by `a` and `b`, so they are the forks; `master` is the target.
 fn forked(master: &str) -> Graph {
@@ -29,7 +28,7 @@ fn forked(master: &str) -> Graph {
 }
 
 fn rendered(graph: &Graph, cache: Option<&Cache>, policy: Option<CachePolicy>) -> Render {
-    let mut config = RenderConfig::seconds(RATE, SECONDS).under(LATTICE_8K);
+    let mut config = RenderConfig::seconds(RATE, SECONDS);
     config.cache_policy = policy;
     render(graph, "master", config, cache).expect("a render")
 }
@@ -44,7 +43,7 @@ fn own(render: &Render, node: &str) -> Hash {
         render.tys.ty(id).width as usize,
         AliasScore::NotAsked,
     );
-    profiled_key(buffer, &LATTICE_8K)
+    profiled_key(buffer, &sva_samples::PSYCHOACOUSTIC_V1)
 }
 
 fn stored(render: &Render) -> BTreeSet<Hash> {
