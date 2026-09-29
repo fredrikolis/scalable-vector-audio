@@ -6,8 +6,8 @@ use sva_samples::{Binary, NodeRenderer, Wrap};
 use crate::time::{Affine, Q};
 use crate::typing::Typing;
 
-/// Numbers, `t`, arithmetic, unaries, `min`/`max`/`%`, crops, joins and components, refs
-/// inlined; else `None`.
+/// Numbers, `t`, arithmetic, unaries, `min`/`max`/`%`, finite sums written out, crops, joins
+/// and components, refs inlined; else `None`.
 pub(crate) fn renderer(tys: &Typing, id: NodeId) -> Option<NodeRenderer> {
     let form = crate::refs::substituted_closed_form(tys, id)?;
     (form.var == Var::T).then(|| of(&form.body)).flatten()
@@ -53,6 +53,7 @@ fn of(f: &Body) -> Option<NodeRenderer> {
             x: one(x)?,
             k: usize::from(*k),
         },
+        Body::Series(_) => return of(&sva_formula::series::written_out(f)?),
         Body::Crop {
             of: x,
             l,
@@ -68,6 +69,11 @@ fn of(f: &Body) -> Option<NodeRenderer> {
         },
         _ => return None,
     })
+}
+
+/// Whether the machine computes `f` as one exact `Wrap`, rounded once.
+pub(crate) fn wraps(f: &Body) -> bool {
+    wrapped(f).is_some()
 }
 
 /// A line in `t` plus a multiple of one line modulo a positive number, each exact as

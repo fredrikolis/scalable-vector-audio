@@ -7,7 +7,8 @@ use sva_samples::collapse::run::{bound, reach};
 
 /// A written form compiled once, so every instant reads it without normalizing again.
 pub(super) enum Range {
-    Atoms(Vec<SpectralAtom>),
+    /// Atoms, and their written form for where one is unbounded.
+    Atoms(Vec<SpectralAtom>, Option<Box<Range>>),
     /// The most a run's lines reach, and its own rounding bound.
     Run(f64, f64),
     Real(f64),
@@ -20,6 +21,8 @@ pub(super) enum Range {
     Map(Unary, Box<Range>),
     Max(Vec<Range>),
     Min(Vec<Range>),
+    /// `x mod p`, and whether it is an exact `Wrap`.
+    Mod(Box<Range>, Box<Range>, bool),
     Crop(Box<Range>, f64, f64),
     Shift(Box<Range>, f64),
     Wide(Vec<Range>),
@@ -84,10 +87,16 @@ impl Range {
             match atoms.as_slice() {
                 [] => return Ok(Range::Real(0.0)),
                 [atom] if atom.is_bare() && atom.c.im == 0.0 => return Ok(Range::Real(atom.c.re)),
-                _ if atoms.iter().any(|a| !polynomial(a)) => return Ok(Range::Atoms(atoms)),
+                _ if atoms.iter().any(|a| !polynomial(a)) => {
+                    return Ok(Range::Atoms(atoms, Range::written(f).ok().map(Box::new)));
+                }
                 _ => {}
             }
         }
+        Range::written(f)
+    }
+
+    fn written(f: &Body) -> Result<Range, &'static str> {
         let each = |parts: &[sva_formula::Part]| {
             parts
                 .iter()
@@ -108,6 +117,10 @@ impl Range {
             Body::Apply(op, arg) => Range::Map(*op, one(arg)?),
             Body::Fold(Fold::Max, parts) => Range::Max(each(parts)?),
             Body::Fold(Fold::Min, parts) => Range::Min(each(parts)?),
+            Body::Fold(Fold::Mod, parts) => match parts.as_slice() {
+                [x, p] => Range::Mod(one(x)?, one(p)?, crate::lower::inline::wraps(f)),
+                _ => return Err("a modulo of other than two operands"),
+            },
             Body::Crop { of, l, r, .. } => Range::Crop(one(of)?, l.value(), r.value()),
             Body::Shift { by, of } => Range::Shift(one(of)?, *by),
             Body::Join(parts) => Range::Wide(each(parts)?),
@@ -124,14 +137,15 @@ impl Range {
             | Range::Max(parts)
             | Range::Min(parts)
             | Range::Wide(parts) => parts.iter().for_each(|p| p.nodes(out)),
-            Range::Div(a, b) => {
+            Range::Div(a, b) | Range::Mod(a, b, _) => {
                 a.nodes(out);
                 b.nodes(out);
             }
             Range::Pow(a, _) | Range::Map(_, a) | Range::Crop(a, ..) | Range::Shift(a, _) => {
                 a.nodes(out)
             }
-            Range::Atoms(_) | Range::Run(..) | Range::Real(_) | Range::Line => {}
+            Range::Atoms(_, written) => written.iter().for_each(|w| w.nodes(out)),
+            Range::Run(..) | Range::Real(_) | Range::Line => {}
         }
     }
 
@@ -145,10 +159,13 @@ impl Range {
     fn span(&self, t: f64, node: &dyn Fn(NodeId, f64) -> f64) -> Option<Span> {
         let magnitude = |m: f64| Some(Span::new(-m, m, 0.0));
         match self {
-            Range::Atoms(atoms) => {
+            Range::Atoms(atoms, written) => {
                 let mut sum = 0.0;
                 for atom in atoms {
-                    sum += sup_from(atom, t)?;
+                    match sup_from(atom, t) {
+                        Some(sup) if sup.is_finite() => sum += sup,
+                        _ => return written.as_ref()?.span(t, node),
+                    }
                 }
                 let terms = atoms.len() as f64 + TRANSFORM_OPS;
                 Some(Span::new(-sum, sum, OP * terms * sum))
@@ -166,7 +183,7 @@ impl Range {
                 Some(match (held.constant(), s.constant()) {
                     (Some((c, rho)), _) => scaled(s, c, rho),
                     (_, Some((c, rho))) => scaled(held, c, rho),
-                    _ => times(held.absolute(), s.absolute()),
+                    _ => times(held, s),
                 })
             }),
             Range::Div(num, den) => {
@@ -198,6 +215,10 @@ impl Range {
             Range::Map(op, arg) => mapped(*op, arg.from(t, node)?),
             Range::Max(parts) => fold(parts, t, node, f64::max),
             Range::Min(parts) => fold(parts, t, node, f64::min),
+            Range::Mod(x, p, exact) => {
+                x.from(t, node)?;
+                modulo(p.from(t, node)?, *exact)
+            }
             Range::Crop(of, l, r) => match t >= *r {
                 true => Some(Span::new(0.0, 0.0, 0.0)),
                 false => {
@@ -266,10 +287,16 @@ fn scaled(s: Span, c: f64, rho: f64) -> Span {
     }
 }
 
-/// Error at most `g(x) = exp(x + d) (d + OP)`, `d = err + rel |x|`, which rises on `x >= 0`
-/// and on `x <= 0` until `(err + OP) / rel - 1 / (1 - rel)`.
+/// Relative with `|d| <= err` alone; else at most `g(x) = exp(x + d) (d + OP)`,
+/// `d = err + rel |x|`, rising on `x >= 0`, and on `x <= 0` to `(err + OP) / rel - 1 / (1 - rel)`.
 fn exp(s: Span) -> Span {
     let (err, rel) = (s.err, s.rel);
+    if rel == 0.0 && err.is_finite() {
+        return Span {
+            rel: err.exp_m1() * (1.0 + OP) + OP,
+            ..Span::new(s.lo.exp(), s.hi.exp(), 0.0)
+        };
+    }
     if rel >= 0.5 || (rel > 0.0 && !s.hi.is_finite()) {
         return mapped(Unary::Exp, s.absolute()).expect("exp maps every span");
     }
@@ -358,6 +385,19 @@ fn picked(a: Span, b: Span, pick: fn(f64, f64) -> f64) -> Span {
     }
 }
 
+/// Exact and `rem_euclid` both lie in `[0, c(1 + rho)]`; a `Wrap` rounds once.
+fn modulo(p: Span, exact: bool) -> Option<Span> {
+    let (c, rho) = p.constant()?;
+    if c <= 0.0 {
+        return None;
+    }
+    let err = match exact && rho == 0.0 {
+        true => OP * c,
+        false => c * (1.0 + rho),
+    };
+    Some(Span::new(0.0, c, err))
+}
+
 /// A zero factor is zero whatever the other spans, infinite ones included.
 fn product(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
     if a == (0.0, 0.0) || b == (0.0, 0.0) {
@@ -376,13 +416,21 @@ fn product(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
     (lo, hi)
 }
 
-/// `|a'b' - ab| <= e_a |b'| + |a| e_b`, and the product's own rounding beside it.
+/// `|a'b' - ab| <= e_a |b'| + |a| e_b` plus one rounding.
 fn times(a: Span, b: Span) -> Span {
     let (lo, hi) = product((a.lo, a.hi), (b.lo, b.hi));
     if (lo, hi) == (0.0, 0.0) && (a.err == 0.0 || b.err == 0.0) {
         return Span::new(0.0, 0.0, 0.0);
     }
-    let err = a.err * (b.reach() + b.err) + a.reach() * b.err;
+    if a.err == 0.0 && b.err == 0.0 {
+        return Span {
+            rel: (1.0 + a.rel) * (1.0 + b.rel) * (1.0 + OP) - 1.0,
+            ..Span::new(lo, hi, 0.0)
+        };
+    }
+    let (a, b) = (a.absolute(), b.absolute());
+    let by = |e: f64, m: f64| if e == 0.0 { 0.0 } else { e * m };
+    let err = by(a.err, b.reach() + b.err) + by(b.err, a.reach());
     let reach = lo.abs().max(hi.abs());
     Span::new(lo, hi, err + OP * (reach + err))
 }

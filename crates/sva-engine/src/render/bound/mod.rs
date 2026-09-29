@@ -99,16 +99,10 @@ impl Tail {
 /// Every offset from the sample being written that `nearest` lands at on `grid`: the delay
 /// `t - time` bounded over every instant, where `time` is `t` plus a closed form. The margin
 /// of one step each side holds the rounding of the time the machine computes.
-pub(crate) fn reach(
-    tys: &Typing,
-    config: &RenderConfig,
-    nearest: Nearest,
-    grid: sva_samples::Grid,
-) -> Option<(i64, i64)> {
+pub(crate) fn reach(tys: &Typing, nearest: Nearest, grid: sva_samples::Grid) -> Option<(i64, i64)> {
     let form = crate::refs::substituted_closed_form(tys, nearest.time)?;
-    let band = Audible::of(&config.profile, config.rate);
     let mut parts = Vec::new();
-    addends(&truncate_written(&form.body, band).ok()?, &mut parts);
+    addends(&sva_formula::series::written_out(&form.body)?, &mut parts);
     let line = parts
         .iter()
         .position(|p| matches!(p, sva_formula::Body::Line))?;

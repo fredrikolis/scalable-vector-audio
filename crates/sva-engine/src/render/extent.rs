@@ -17,7 +17,6 @@ use crate::typing::{Typing, Value, When};
 /// exactly zero.
 pub(crate) struct Supports<'a> {
     tys: &'a Typing,
-    config: &'a super::RenderConfig,
     held: RefCell<BTreeMap<NodeId, Extent>>,
     open: RefCell<BTreeSet<NodeId>>,
 }
@@ -26,7 +25,6 @@ impl<'a> Supports<'a> {
     pub(crate) fn new(held: &'a Render) -> Supports<'a> {
         Supports {
             tys: &held.tys,
-            config: &held.config,
             held: RefCell::default(),
             open: RefCell::default(),
         }
@@ -116,7 +114,7 @@ impl<'a> Supports<'a> {
     }
 
     pub(crate) fn reach(&self, nearest: crate::typing::Nearest, grid: Grid) -> Option<(i64, i64)> {
-        super::bound::reach(self.tys, self.config, nearest, grid)
+        super::bound::reach(self.tys, nearest, grid)
     }
 
     fn operation(

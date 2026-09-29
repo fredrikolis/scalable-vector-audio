@@ -388,3 +388,45 @@ pub fn substitute(f: &Body, k: IndexId, value: f64) -> Body {
         }),
     }
 }
+
+const MAX_WRITTEN_TERMS: i64 = 1 << 13;
+
+/// `f`, each finite series summed term by term; `None` where one is infinite or too long.
+pub fn written_out(f: &Body) -> Option<Body> {
+    let mut left = MAX_WRITTEN_TERMS;
+    within(f, &mut left)
+}
+
+/// `left` counts the terms every series written out so far may still add, nesting included.
+fn within(f: &Body, left: &mut i64) -> Option<Body> {
+    if let Body::Series(s) = f {
+        let Bound::Finite(hi) = s.hi else {
+            return None;
+        };
+        *left = left.checked_sub(hi.checked_sub(s.lo)?.checked_add(1)?.max(0))?;
+        if *left < 0 {
+            return None;
+        }
+        let terms = (s.lo..=hi)
+            .map(|k| {
+                Some(Part::new(
+                    s.term.origin,
+                    within(&substitute(&s.term.body, s.index, k as f64), left)?,
+                ))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        return Some(match terms.len() {
+            0 => Body::Const(C64::ZERO),
+            _ => Body::Add(terms),
+        });
+    }
+    let mut whole = true;
+    let out = map_children(f, |p| match within(&p.body, left) {
+        Some(body) => Part::new(p.origin, body),
+        None => {
+            whole = false;
+            p.clone()
+        }
+    });
+    whole.then_some(out)
+}

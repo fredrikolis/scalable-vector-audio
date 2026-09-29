@@ -89,11 +89,17 @@ fn an_index_of_a_moving_time_reads_the_step_nearest_it() {
     );
     let config = RenderConfig::seconds(RATE, 0.1);
     let (x, wobbled) = (whole(&g, "x", &config), whole(&g, "wobbled", &config));
+    reads_nearest(&x, &wobbled, |t| {
+        t - 0.005 - 0.002 * (2.0 * std::f64::consts::PI * 5.0 * t).sin()
+    });
+}
+
+/// Each sample of `read` is the step of `x` nearest the time `at` names, either one at a tie.
+fn reads_nearest(x: &[f64], read: &[f64], at: impl Fn(f64) -> f64) {
     let rate = f64::from(RATE);
-    bits(&wobbled);
-    for (n, v) in wobbled.iter().enumerate() {
-        let t = n as f64 / rate;
-        let at = (t - 0.005 - 0.002 * (2.0 * std::f64::consts::PI * 5.0 * t).sin()) * rate;
+    bits(read);
+    for (n, v) in read.iter().enumerate() {
+        let at = at(n as f64 / rate) * rate;
         let step = |k: f64| match k < 0.0 {
             true => 0.0,
             false => x.get(k as usize).copied().unwrap_or(0.0),
@@ -104,6 +110,56 @@ fn an_index_of_a_moving_time_reads_the_step_nearest_it() {
             false => assert_eq!(v.to_bits(), step(at.round()).to_bits(), "sample {n}"),
         }
     }
+}
+
+/// A finite sum, a remainder, and a `min`, `max` or `sin` around an unbounded form are all
+/// bounded offsets: each reads the step nearest the time it names. An infinite sum is written
+/// out nowhere, so it refuses.
+#[test]
+fn an_index_of_t_plus_any_bounded_closed_form_reads_the_step_nearest_it() {
+    let reads: [(&str, fn(f64) -> f64); 5] = [
+        ("t - sum(k, 1, 2, 0.01s)", |t| t - 0.02),
+        ("t - sum(k, 1, 2, 0.01s*step(t - k*0.01s))", |t| {
+            t - 0.01 * [0.01, 0.02].iter().filter(|d| t >= **d).count() as f64
+        }),
+        // Four steps of 8 kHz, whole on the grid; under 0.1s, `t % 0.3s` is `t`.
+        ("t - t % 0.5ms", |t| {
+            ((t * f64::from(RATE)).round() as i64 / 4 * 4) as f64 / f64::from(RATE)
+        }),
+        ("t - 0.002s*sin(t % 0.3s)", |t| t - 0.002 * t.sin()),
+        ("t - max(min(exp(t), 0.003), 0)", |t| t - 0.003),
+    ];
+    let mut files = vec![(
+        "x".to_string(),
+        "lowpass(crop(sample(sin(2*pi*220*t)), 0s, 0.05s), cutoff=900)\n".to_string(),
+    )];
+    for (k, (time, _)) in reads.iter().enumerate() {
+        files.push((format!("read{k}"), format!("@x[idx({time})]\n")));
+    }
+    let files: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    let g = graph_of("index-bounded", &files);
+    let config = RenderConfig::seconds(RATE, 0.1);
+    let x = whole(&g, "x", &config);
+    for (k, (time, at)) in reads.iter().enumerate() {
+        let read = render(&g, &format!("read{k}"), config.clone(), None)
+            .unwrap_or_else(|e| panic!("idx({time}): {e}"));
+        let id = read.id(&format!("read{k}")).expect("the root");
+        reads_nearest(&x, read.output(id).expect("a buffer").plane(0), at);
+    }
+    let g = graph_of(
+        "index-infinite",
+        &[
+            ("x", "sample(sin(2*pi*220*t))\n"),
+            ("read", "@x[idx(t - sum(k, 1, inf, 0.001s*exp(-k)))]\n"),
+        ],
+    );
+    let Err(refused) = render(&g, "read", config, None) else {
+        panic!("an infinite sum has no written-out terms");
+    };
+    assert_eq!(refused.code(), "engine.unreadable_index", "{refused}");
 }
 
 #[test]

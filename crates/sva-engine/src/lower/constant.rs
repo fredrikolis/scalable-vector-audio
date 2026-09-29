@@ -18,13 +18,16 @@ pub fn constant_value(body: &Body, var: Var) -> Option<f64> {
     }
     let form = ClosedForm {
         var,
-        body: body.clone(),
+        body: sva_formula::series::written_out(body)?,
         origin: Origin::UNKNOWN,
     };
     let sum = normalize_closed_form(&form).ok()?;
     let [lane] = sum.lanes.as_slice() else {
         return None;
     };
+    if !lane.series.is_empty() || !lane.modal.is_empty() {
+        return None;
+    }
     match lane.atoms.as_slice() {
         [] => Some(0.0),
         [atom] => atom.is_bare().then_some(atom.c.re),
