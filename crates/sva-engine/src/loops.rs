@@ -218,6 +218,9 @@ fn read(inst: &Instances, e: &Expr, cx: Cx, gain: C64) -> Reading {
             (true, Node::Read { path, .. }) => {
                 Reading::Nonlinear(format!("`@{path}` read at a time `self` moves"))
             }
+            (true, Node::Signal { name, .. }) => {
+                Reading::Nonlinear(format!("`{name}` read at an index `self` moves"))
+            }
             (true, _) => Reading::Nonlinear("`%` over `self`".to_string()),
         },
     }
@@ -281,7 +284,7 @@ fn holds(inst: &Instances, e: &Expr, cx: Cx) -> bool {
 fn holds_in(inst: &Instances, node: &Node, cx: Cx) -> bool {
     match node {
         Node::Own { .. } => true,
-        Node::Read { arg, .. } => inst.holds_self(arg, cx),
+        Node::Read { arg, .. } | Node::Signal { arg, .. } => inst.holds_self(arg, cx),
         Node::Call { args, .. } => args.iter().any(|a| {
             let (sva_ast::Arg::Pos(x) | sva_ast::Arg::Named(_, x)) = a;
             inst.holds_self(x, cx)

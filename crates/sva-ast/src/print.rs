@@ -74,6 +74,7 @@ fn write(e: &Expr, outer: u8, time: bool) -> String {
             address: Address::Index,
             ..
         } => format!("self[{}]", write(arg, 0, false)),
+        Expr::Indexed { name, arg, .. } => format!("{name}[{}]", write(arg, 0, false)),
     }
 }
 

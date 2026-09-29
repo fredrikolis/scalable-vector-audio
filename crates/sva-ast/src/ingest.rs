@@ -95,6 +95,11 @@ fn relocate(e: &Expr, by: usize) -> Expr {
             address: *address,
             span: moved(span),
         },
+        Expr::Indexed { name, arg, span } => Expr::Indexed {
+            name: name.clone(),
+            arg: Box::new(relocate(arg, by)),
+            span: moved(span),
+        },
         Expr::Ref {
             path,
             arg,
@@ -150,7 +155,9 @@ pub fn occurs_free(e: &Expr, name: &str) -> bool {
                 .any(|c| occurs_free(c, name)),
         },
         Expr::Var(n) => n == name,
-        Expr::Call { name: called, .. } if called == name => true,
+        Expr::Call { name: called, .. } | Expr::Indexed { name: called, .. } if called == name => {
+            true
+        }
         _ => children(e, Binds::Substitute)
             .into_iter()
             .any(|c| occurs_free(c, name)),

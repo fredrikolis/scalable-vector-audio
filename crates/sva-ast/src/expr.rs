@@ -92,6 +92,12 @@ pub enum Expr {
         address: Address,
         span: ByteSpan,
     },
+    /// `x[i]`: a parameter's signal at sample index `i`.
+    Indexed {
+        name: String,
+        arg: Box<Expr>,
+        span: ByteSpan,
+    },
 }
 
 impl PartialEq for Expr {
@@ -136,6 +142,14 @@ impl PartialEq for Expr {
                     ..
                 },
             ) => a1 == a2 && x1 == x2,
+            (
+                Expr::Indexed {
+                    name: n1, arg: a1, ..
+                },
+                Expr::Indexed {
+                    name: n2, arg: a2, ..
+                },
+            ) => n1 == n2 && a1 == a2,
             _ => false,
         }
     }
@@ -154,7 +168,7 @@ pub fn children(e: &Expr, binds: Binds) -> Vec<&Expr> {
     match e {
         Expr::Lit(_) | Expr::Var(_) => Vec::new(),
         Expr::Bin(_, l, r) => vec![l, r],
-        Expr::SelfRef { arg, .. } => vec![arg],
+        Expr::SelfRef { arg, .. } | Expr::Indexed { arg, .. } => vec![arg],
         Expr::Ref { arg, binds: bs, .. } => {
             let mut out = vec![arg.as_ref()];
             if binds == Binds::Substitute {
@@ -184,6 +198,11 @@ pub fn map_children<E>(
         Expr::SelfRef { arg, address, span } => Expr::SelfRef {
             arg: Box::new(f(arg)?),
             address: *address,
+            span: *span,
+        },
+        Expr::Indexed { name, arg, span } => Expr::Indexed {
+            name: name.clone(),
+            arg: Box::new(f(arg)?),
             span: *span,
         },
         Expr::Ref {

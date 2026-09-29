@@ -158,6 +158,7 @@ fn crosses(inst: &Instances, typing: &Typing, e: &Expr, cx: Cx) -> Option<String
             address: Address::Index,
             ..
         } => Some(format!("the index read `@{path}[...]`")),
+        Node::Signal { name, .. } => Some(format!("the index read `{name}[...]`")),
         Node::Read { path, .. } => typing
             .id(path)
             .is_some_and(|id| !typing.ty(id).is_closed_form())
@@ -217,7 +218,7 @@ fn scan_axis(inst: &Instances, typing: &Typing, e: &Expr, cx: Cx, seen: &mut (bo
             scan_axis(inst, typing, l, cx, seen);
             scan_axis(inst, typing, r, cx, seen);
         }
-        Node::Own { arg, .. } => scan_axis(inst, typing, arg, cx, seen),
+        Node::Own { arg, .. } | Node::Signal { arg, .. } => scan_axis(inst, typing, arg, cx, seen),
         Node::Read { path, .. } => match typing.id(path).map(|id| typing.ty(id)) {
             Some(ty) if ty.has_dual() => {}
             Some(ty) if ty.held == Held::Form(Var::T) => seen.0 = true,
@@ -380,5 +381,67 @@ mod tests {
             .filter(|id| typing.name(*id) == "env")
             .count();
         assert_eq!(forms, 1, "env is lowered once, not once per shift");
+    }
+
+    /// A signal passed in as `x` reads by index as a ref does: an allpass reads its stateful
+    /// input's nearest step at a delay between two samples, the input lowered once on the
+    /// render's grid, where `x(t - d)` lowers it again on a grid shifted by `d`.
+    #[test]
+    fn a_parameter_read_by_index_lowers_its_signal_once() {
+        const RATE: u32 = 8_000;
+        let mut files = sva_ast::Composition::new();
+        files
+            .insert(
+                "src",
+                "lowpass(crop(sample(sin(2*pi*220*t)), 0s, 0.02s), cutoff=900)\n",
+            )
+            .insert(
+                "allpass",
+                "-g*x + x[idx(t - 0.00510204s)] + g*self[idx(t - 0.00510204s)]\n",
+            )
+            .insert(
+                "timed",
+                "-g*x + x(t - 0.00510204s) + g*self[idx(t - 0.00510204s)]\n",
+            )
+            .insert("passed", "@allpass(t, x=@src, g=0.5)\n")
+            .insert("shifted", "@timed(t, x=@src, g=0.5)\n")
+            .insert(
+                "written",
+                "-0.5*@src + @src[idx(t - 0.00510204s)] + 0.5*self[idx(t - 0.00510204s)]\n",
+            );
+        let g = sva_ast::load(&files).expect("a composition");
+        let filters = |root: &str| {
+            let typing = crate::types_at(&g, root, RATE).unwrap_or_else(|e| panic!("{root}: {e}"));
+            (0..typing.len())
+                .map(|n| NodeId(n as u32))
+                .filter(|id| typing.name(*id) == "src")
+                .filter(|id| matches!(typing.value(*id), crate::Value::Filter { .. }))
+                .count()
+        };
+        assert_eq!(
+            filters("passed"),
+            1,
+            "src is lowered once, on the render's grid"
+        );
+        assert_eq!(
+            filters("shifted"),
+            2,
+            "a read at t - d lowers src again, shifted"
+        );
+
+        let config = crate::RenderConfig::seconds(RATE, 0.05);
+        let out = |root: &str| -> Vec<u64> {
+            let held = crate::render(&g, root, config.clone(), None)
+                .unwrap_or_else(|e| panic!("{root}: {e}"));
+            let id = held.id(root).expect("the root");
+            let plane = held.output(id).expect("a buffer").plane(0).to_vec();
+            assert!(plane.iter().any(|v| *v != 0.0), "silence tests nothing");
+            plane.iter().map(|v| v.to_bits()).collect()
+        };
+        assert_eq!(
+            out("passed"),
+            out("written"),
+            "x[i] reads what @src[i] reads, bit for bit"
+        );
     }
 }

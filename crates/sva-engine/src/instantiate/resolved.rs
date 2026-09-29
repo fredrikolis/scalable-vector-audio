@@ -72,6 +72,35 @@ impl<'g> Instances<'g> {
                 address,
                 span,
             },
+            // One node read at its own `t` is that node indexed; any other keeps its name.
+            Node::Signal {
+                name,
+                of,
+                arg,
+                span,
+            } => {
+                let arg = Box::new(self.copy(arg, cx));
+                match self.copy(of.expr, self.signal(of, cx)) {
+                    Expr::Ref {
+                        path,
+                        arg: now,
+                        binds,
+                        address: sva_ast::Address::Time,
+                        ..
+                    } if binds.is_empty() && *now == Expr::Var("t".to_string()) => Expr::Ref {
+                        path,
+                        arg,
+                        binds,
+                        address: sva_ast::Address::Index,
+                        span,
+                    },
+                    _ => Expr::Indexed {
+                        name: name.to_string(),
+                        arg,
+                        span,
+                    },
+                }
+            }
         }
     }
 }

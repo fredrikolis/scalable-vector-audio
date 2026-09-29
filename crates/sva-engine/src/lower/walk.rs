@@ -5,7 +5,7 @@ use sva_formula::{Body, C64, Held, IndexId, NodeId, Ty, Var, note};
 
 use crate::cast::Cast;
 use crate::error::{EngineError, Located};
-use crate::instantiate::{Cx, Node};
+use crate::instantiate::{Cx, Node, Thunk};
 use crate::loops::{self, Tap};
 use crate::lower::{Lowering, Piece, SelfMode, constant, on};
 use crate::overload;
@@ -35,6 +35,7 @@ impl Lowering<'_, '_> {
                 span,
             } => self.indexed(path, arg, span, cx, var),
             Node::Own { arg, address, span } => self.own((arg, address), span, cx, var),
+            Node::Signal { of, arg, span, .. } => self.signal(of, arg, span, cx, var),
             Node::Call { name, args, span } => self.call(name, args, span, cx, var),
         }
     }
@@ -427,6 +428,18 @@ impl Lowering<'_, '_> {
     ) -> Result<Piece, EngineError> {
         let id = self.source(path)?;
         let at = self.sample_index(arg, span, cx)?;
+        self.stepped(id, at, span, var)
+    }
+
+    /// One read of `id`'s samples at an index; a closed form's samples are its collapse at
+    /// the instants its reader steps at.
+    fn stepped(
+        &mut self,
+        id: NodeId,
+        at: When,
+        span: ByteSpan,
+        var: Var,
+    ) -> Result<Piece, EngineError> {
         let source = match self.typing.ty(id).is_closed_form() {
             true => {
                 let ty = Cast::Sample
@@ -437,6 +450,31 @@ impl Lowering<'_, '_> {
             false => id,
         };
         Ok(Piece::Value(self.reading(source, at, span, var)))
+    }
+
+    /// `x[i]` reads the signal `x` stands for as a ref's index read does: lowered once, at
+    /// its own `t`, and read at step `i`. A signal that is one node read at its own `t` is that
+    /// node.
+    fn signal(
+        &mut self,
+        of: Thunk,
+        arg: &Expr,
+        span: ByteSpan,
+        cx: Cx,
+        var: Var,
+    ) -> Result<Piece, EngineError> {
+        let at = self.sample_index(arg, span, cx)?;
+        let piece = self.walk(of.expr, self.inst.signal(of, cx), Var::T)?;
+        let id = self.seal(piece, Var::T, None)?;
+        let id = match self.typing.value(id) {
+            Value::Read {
+                source,
+                at: When::Time(Affine::NOW),
+                ..
+            } if self.typing.grid(*source) == self.typing.grid(id) => *source,
+            _ => id,
+        };
+        self.stepped(id, at, span, var)
     }
 
     /// An index is an integer, which typing refuses otherwise: one rounded line plus a count,
@@ -543,6 +581,7 @@ impl Lowering<'_, '_> {
                     span,
                     ..
                 } => (format!("`@{read}[…]`"), span),
+                Node::Signal { name, span, .. } => (format!("`{name}[…]`"), span),
                 Node::Read { path: read, .. }
                     if depth < 32
                         && self.typing.id(read).is_some_and(|id| self.holds_state(id)) =>
@@ -575,7 +614,9 @@ impl Lowering<'_, '_> {
         match node {
             Node::Lit(_) | Node::Name(_) => false,
             Node::Bin(_, l, r) => self.visit(l, cx, stop) || self.visit(r, cx, stop),
-            Node::Own { arg, .. } | Node::Read { arg, .. } => self.visit(arg, cx, stop),
+            Node::Own { arg, .. } | Node::Read { arg, .. } | Node::Signal { arg, .. } => {
+                self.visit(arg, cx, stop)
+            }
             Node::Call { args, .. } => args.iter().any(|a| {
                 let (Arg::Pos(x) | Arg::Named(_, x)) = a;
                 self.visit(x, cx, stop)

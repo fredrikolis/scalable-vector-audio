@@ -248,6 +248,7 @@ impl<'g> Builder<'g> {
             }
             Expr::Ref { .. } => return Ok(()),
             Expr::SelfRef { span, .. } => ("self".to_string(), *span),
+            Expr::Indexed { name, span, .. } => (format!("{name}[...]"), *span),
             Expr::Call { name, args, .. } if is_builtin(name) => {
                 for a in args {
                     let (Arg::Pos(x) | Arg::Named(_, x)) = a;
@@ -348,6 +349,17 @@ impl<'g> Builder<'g> {
                 self.scan(r, place, used, children)
             }
             Expr::SelfRef { arg, span, .. } => self.scan(arg, place.spanned(*span), used, children),
+            Expr::Indexed { name, arg, span } => {
+                if self.out.binds(scope, name).is_none() {
+                    return Err(fault(
+                        file,
+                        Some(*span),
+                        BindingFault::Unbound(file.to_string(), name.clone()),
+                    ));
+                }
+                used.insert(name.clone());
+                self.scan(arg, place.spanned(*span), used, children)
+            }
             Expr::Call { name, args, span } => {
                 if self.out.binds(scope, name).is_some() {
                     return self.read_parameter(name, args, place.spanned(*span), used, children);

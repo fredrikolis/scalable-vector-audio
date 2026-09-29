@@ -85,7 +85,7 @@ rate a render samples at: 1/44100 s by default, 1/48000 s at `--rate 48000`. The
 | Written | Reads |
 | ------- | ----- |
 | `@x(e)` | `x` at the instant `e`: exact anywhere where `x` is a closed form. A filter, loop or solver steps on the grid `e` asks for, every input with it: at 128 bpm and 44.1 kHz `@x(t - 0.5b)`, 41343.75 samples back, steps `x` a quarter sample off the render's own samples, and `@x(0.5*t)` runs it at half the step. At a time that moves, as `@x(t - @lfo)`, it refuses before rendering |
-| `@x[i]` | `x`'s stored sample at index `i`; `i` is a whole number, `idx(...)`, or `+`, `-` and `*` over those, so `@x[t - 0.5b]` refuses |
+| `@x[i]`, `p[i]` | `x`'s stored sample at index `i`, or that of the signal passed in as parameter `p`; `i` is a whole number, `idx(...)`, or `+`, `-` and `*` over those, so `@x[t - 0.5b]` refuses |
 | `idx(e)` | the sample index nearest `e`, ties to even: `@x[idx(t - 0.5b)]` reads sample 41344 at 44.1 kHz, and `self[idx(t) - 1]` is a loop's sample before this one at any rate; `idx(e, floor)` and `idx(e, ceil)` round down and up. `e` may move where it is `t` plus a bounded closed form: `self[idx(t - 5ms - 2ms*sin(2*pi*t))]` reads the nearest past sample at each sample |
 | `self(t - d)`, `self[i]` | a loop's own past. A continuous loop, one constant delay at a gain under 1 over a closed form as in `x + 0.5*self(t - 17ms)`, reads `self(t - d)` and is its exact series at any rate. A `sample`, filter, nonlinearity, `sp` step, second delay or moving delay in a loop makes it discrete, and it reads only `self[i]`; `self(t - d)` there refuses before rendering, naming what made it discrete and the index read to write |
 

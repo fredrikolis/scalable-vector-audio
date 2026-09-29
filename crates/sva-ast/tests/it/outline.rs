@@ -45,6 +45,11 @@ fn expr_of(o: &Outline) -> Expr {
             address: *address,
             span: at,
         },
+        Form::Indexed { name, arg, .. } => Expr::Indexed {
+            name: name.clone(),
+            arg: Box::new(expr_of(arg)),
+            span: at,
+        },
     }
 }
 
@@ -69,7 +74,7 @@ fn children(o: &Outline) -> Vec<&Outline> {
         Form::Ref { arg, binds, .. } => std::iter::once(arg.as_ref())
             .chain(binds.iter().map(value))
             .collect(),
-        Form::SelfRef { arg, .. } => vec![arg.as_ref()],
+        Form::SelfRef { arg, .. } | Form::Indexed { arg, .. } => vec![arg.as_ref()],
     }
 }
 
@@ -89,7 +94,7 @@ fn nested(o: &Outline, src: &str) {
     }
 }
 
-const WRITTEN: [&str; 9] = [
+const WRITTEN: [&str; 10] = [
     "0.0014822 * chaigne_askenfelt(f0, vel=vel, b=max(1.4e-4, 4.1e-4*pow(f0/262, 1.9)), strike_pos=0.12)",
     "crop(@sva25(t, f0=261.6256, vel=4.5433) + @sva25(t, f0=329.6276, vel=4.5433), 0s, 6s)",
     "-t + -3db * (1 - exp(-t/0.25))",
@@ -99,6 +104,7 @@ const WRITTEN: [&str; 9] = [
     "sum(k, 1, inf, sin(2*pi*110*k*t)/k)",
     "@voice(t - 0.25b)",
     "+(2)",
+    "x[idx(t - 5ms)] - 0.5*x",
 ];
 
 #[test]

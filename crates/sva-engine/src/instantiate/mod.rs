@@ -21,7 +21,7 @@ pub(crate) type ScopeId = u32;
 pub(crate) const NO_PARAMS: ScopeId = 0;
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Thunk<'g> {
+pub struct Thunk<'g> {
     pub(crate) expr: &'g Expr,
     pub(crate) scope: ScopeId,
 }
@@ -134,6 +134,13 @@ pub enum Node<'a> {
     Own {
         arg: &'a Expr,
         address: Address,
+        span: ByteSpan,
+    },
+    /// `x[i]`: `of`, what `x` is bound to, read at index `arg`.
+    Signal {
+        name: &'a str,
+        of: Thunk<'a>,
+        arg: &'a Expr,
         span: ByteSpan,
     },
 }
@@ -322,6 +329,15 @@ impl<'g> Instances<'g> {
                 address: *address,
                 span: *span,
             },
+            Expr::Indexed { name, arg, span } => match self.binds(cx.scope, name) {
+                Some(of) => Node::Signal {
+                    name,
+                    of,
+                    arg,
+                    span: *span,
+                },
+                None => Node::Name(name),
+            },
             Expr::Call { name, args, span } if is_builtin(name) => Node::Call {
                 name,
                 args,
@@ -340,6 +356,15 @@ impl<'g> Instances<'g> {
         match self.sites.get(&(std::ptr::from_ref(e) as usize, scope)) {
             Some(child) => child,
             None => written,
+        }
+    }
+
+    /// A parameter's signal at the reader's own `t`: no shift the reader is under moves it.
+    pub(crate) fn signal<'a>(&self, of: Thunk<'a>, cx: Cx<'a>) -> Cx<'a> {
+        Cx {
+            scope: of.scope,
+            time: None,
+            grid: cx.grid,
         }
     }
 
@@ -362,7 +387,7 @@ impl<'g> Instances<'g> {
             Node::Lit(_) | Node::Name(_) => false,
             Node::Own { .. } => true,
             Node::Bin(_, l, r) => self.holds_self(l, cx) || self.holds_self(r, cx),
-            Node::Read { arg, .. } => self.holds_self(arg, cx),
+            Node::Read { arg, .. } | Node::Signal { arg, .. } => self.holds_self(arg, cx),
             Node::Call { args, .. } => args.iter().any(|a| {
                 let (Arg::Pos(x) | Arg::Named(_, x)) = a;
                 self.holds_self(x, cx)
@@ -381,7 +406,7 @@ impl<'g> Instances<'g> {
             Node::Bin(_, l, r) => self
                 .position_dependent(l, cx)
                 .or_else(|| self.position_dependent(r, cx)),
-            Node::Read { arg, .. } => self.position_dependent(arg, cx),
+            Node::Read { arg, .. } | Node::Signal { arg, .. } => self.position_dependent(arg, cx),
             Node::Call { name, args, .. } => {
                 if Shape::from_name(name).is_some() || name == "crop" || implicit_time(name) {
                     return Some(name.to_string());
@@ -460,6 +485,10 @@ impl<'g> Instances<'g> {
                     ..
                 },
             ) => p == q && i == j && self.same(x, ax, y, by),
+            (Node::Signal { of: f, arg: x, .. }, Node::Signal { of: g, arg: y, .. }) => {
+                self.same(f.expr, self.signal(f, ax), g.expr, self.signal(g, by))
+                    && self.same(x, ax, y, by)
+            }
             (
                 Node::Call {
                     name: n1, args: a1, ..

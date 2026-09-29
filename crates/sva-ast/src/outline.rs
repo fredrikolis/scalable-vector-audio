@@ -41,6 +41,11 @@ pub enum Form {
         arg: Box<Outline>,
         address: Address,
     },
+    Indexed {
+        name: String,
+        at: ByteSpan,
+        arg: Box<Outline>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -105,6 +110,14 @@ fn walk(e: &Expr, marks: &mut impl Iterator<Item = Mark>) -> Outline {
                 at,
                 arg: Box::new(arg),
                 address: *address,
+            });
+        }
+        Expr::Indexed { name, arg, .. } => {
+            let arg = walk(arg, marks);
+            return node(marks, |at| Form::Indexed {
+                name: name.clone(),
+                at,
+                arg: Box::new(arg),
             });
         }
     };

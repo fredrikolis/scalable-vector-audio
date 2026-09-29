@@ -240,6 +240,23 @@ impl Reach<'_, '_> {
                 address,
                 span,
             },
+            // The signal written out in place of its name: two bindings, two slots.
+            Node::Signal {
+                name,
+                of,
+                arg,
+                span,
+            } => Expr::Indexed {
+                name: match self.declared(name) {
+                    true => format!("?{name}"),
+                    false => format!(
+                        "({})",
+                        sva_ast::render_expr(&self.copy(of.expr, inst.signal(of, cx)))
+                    ),
+                },
+                arg: Box::new(self.copy(arg, cx)),
+                span,
+            },
         }
     }
 }

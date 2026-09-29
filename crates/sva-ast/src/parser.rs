@@ -325,6 +325,33 @@ impl<'t> Parser<'t> {
                     span,
                 })
             }
+            TokenKind::Ident(name) if self.address() == Some(Address::Index) => {
+                let mut args = self.parse_call_args()?;
+                let placed = match args.len() {
+                    1 => args.remove(0),
+                    n => {
+                        return Err(Diag::new(
+                            DiagCode::BadArity,
+                            span,
+                            format!("`{name}[...]` takes exactly 1 index, got {n}"),
+                        ));
+                    }
+                };
+                self.refuse_timed_index(placed.from, placed.to)?;
+                let Arg::Pos(arg) = placed.arg else {
+                    return Err(Diag::new(
+                        DiagCode::BadArity,
+                        span,
+                        format!("`{name}[...]` takes an index, never a named argument"),
+                    ));
+                };
+                self.mark(from, Some(span));
+                Ok(Expr::Indexed {
+                    name: name.clone(),
+                    arg: Box::new(arg),
+                    span,
+                })
+            }
             TokenKind::Ident(name) => {
                 if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::LParen)) {
                     let args = self.parse_call_args()?;

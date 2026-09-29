@@ -76,6 +76,16 @@ fn node(o: &Outline) -> String {
                 node(arg)
             ),
         ),
+        Form::Indexed { name, at, arg } => (
+            "parameter",
+            format!(
+                "\"name\": \"{}\", \"at\": {}, \"read\": \"{}\", \"arg\": {}",
+                escape(name),
+                span(*at),
+                read(Address::Index),
+                node(arg)
+            ),
+        ),
     };
     format!(
         "{{ \"kind\": \"{kind}\", \"span\": {}, \"written\": {}, {fields} }}",

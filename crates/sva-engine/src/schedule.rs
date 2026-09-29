@@ -36,6 +36,10 @@ fn direct_refs(inst: &Instances, e: &Expr, cx: Cx, out: &mut Vec<String>) {
             direct_refs(inst, arg, cx, out);
         }
         Node::Own { arg, .. } => direct_refs(inst, arg, cx, out),
+        Node::Signal { of, arg, .. } => {
+            direct_refs(inst, of.expr, inst.signal(of, cx), out);
+            direct_refs(inst, arg, cx, out);
+        }
     }
 }
 
