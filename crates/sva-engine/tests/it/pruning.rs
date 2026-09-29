@@ -112,10 +112,48 @@ fn a_sampled_sum_reads_each_operand_only_where_it_is_nonzero() {
         let added = 0.0 + at(n) + at(n - gap) + at(n - 2 * gap);
         assert_eq!(sample.to_bits(), added.to_bits(), "sample {n}");
     }
-    // `(a + b) + c`: a read and two adds, a read and one add for `c`, a zero while none sounds.
+    // One sum: a read and an add while each note sounds, a zero while none does.
     let note = u128::from(RATE / 2);
     let silent = song.len() as u128 - 3 * note;
-    assert_eq!(flops::tree(&held).rows[0].own, (3 + 3 + 2) * note + silent);
+    assert_eq!(flops::tree(&held).rows[0].own, 3 * 2 * note + silent);
+}
+
+/// Index reads of a closed form read its one value, as time reads do, and a long sum of them
+/// pays for each term only while it sounds: the cost is linear in the terms.
+#[test]
+fn a_long_sum_of_index_reads_shares_one_value_and_pays_each_term_only_where_it_sounds() {
+    let terms = 12;
+    let song: Vec<String> = (0..terms)
+        .map(|k| format!("@note[idx(t - {}s)]", 2 * k))
+        .collect();
+    let g = graph_of(
+        "pruning-indexed",
+        &[
+            ("note", "crop(sin(2*pi*440*t)*exp(-t/0.2), 0s, 0.5s)\n"),
+            ("song", &format!("{}\n", song.join(" + "))),
+        ],
+    );
+    let held = over(&g, "song", 2.0 * (terms - 1) as f64 + 0.5, None);
+    let note = held.id("note").expect("the note");
+    assert_eq!(
+        held.evaluated(note),
+        vec![Extent::new(0, i64::from(RATE / 2))]
+    );
+    let stats = held.cache_stats.as_ref().expect("stats");
+    let reads = stats.lookups.iter().filter(|l| l.node == "note").count();
+    assert_eq!(
+        reads, terms,
+        "each read looks up the note's one value: {stats:?}"
+    );
+    assert_eq!(stats.hits(), terms - 1, "{stats:?}");
+
+    let len = held.output(held.root).expect("the song").plane(0).len() as u128;
+    let note = u128::from(RATE / 2);
+    let sounding = terms as u128 * note;
+    assert_eq!(
+        flops::tree(&held).rows[0].own,
+        2 * sounding + (len - sounding)
+    );
 }
 
 /// A term scaled by constants is as zero as its read where that read is, so a sum of scaled

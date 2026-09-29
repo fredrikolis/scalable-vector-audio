@@ -434,7 +434,7 @@ impl Lowering<'_, '_> {
     }
 
     /// One read of `id`'s samples at an index; a closed form's samples are its collapse at
-    /// the instants its reader steps at.
+    /// the instants its reader steps at, the one value every read of it shares.
     fn stepped(
         &mut self,
         id: NodeId,
@@ -442,16 +442,13 @@ impl Lowering<'_, '_> {
         span: ByteSpan,
         var: Var,
     ) -> Result<Piece, EngineError> {
-        let source = match self.typing.ty(id).is_closed_form() {
-            true => {
-                let ty = Cast::Sample
-                    .resolve(&[self.typing.ty(id)])
-                    .map_err(|m| self.refuse(Cast::Sample.name(), &m, Some(span)))?;
-                self.register(Value::Cast(Cast::Sample, id), ty, var)
-            }
-            false => id,
-        };
-        Ok(Piece::Value(self.reading(source, at, span, var)))
+        let ty = self.typing.ty(id);
+        if ty.is_closed_form() {
+            Cast::Sample
+                .resolve(&[ty])
+                .map_err(|m| self.refuse(Cast::Sample.name(), &m, Some(span)))?;
+        }
+        Ok(Piece::Value(self.reading(id, at, span, var)))
     }
 
     /// `x[i]` reads the signal `x` stands for as a ref's index read does: lowered once, at

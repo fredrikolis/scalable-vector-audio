@@ -436,8 +436,12 @@ impl Build<'_> {
         name: &str,
         args: &[NodeId],
     ) -> Result<NodeRenderer, EngineError> {
+        let args = match name {
+            "+" => addends(self.tys, args),
+            _ => args.to_vec(),
+        };
         let mut lowered = Vec::with_capacity(args.len());
-        for arg in args {
+        for arg in &args {
             lowered.push(self.of(*arg)?);
         }
         let pair = |mut set: Vec<NodeRenderer>| {
@@ -535,6 +539,23 @@ fn inlined(tys: &Typing, body: &Body) -> Option<Body> {
             held.then_some(out)
         }
     }
+}
+
+/// `a + b + c` nests to the left; as one sum, the same fold from `+0` in the same order, a
+/// span prunes a dead addend outright rather than leaving the sum around it.
+fn addends(tys: &Typing, args: &[NodeId]) -> Vec<NodeId> {
+    let (mut head, mut tails) = (args, Vec::new());
+    while let Value::Op { name, args: inner } = tys.value(head[0])
+        && name == "+"
+    {
+        tails.push(&head[1..]);
+        head = inner;
+    }
+    let mut out = head.to_vec();
+    for tail in tails.iter().rev() {
+        out.extend_from_slice(tail);
+    }
+    out
 }
 
 fn binary(op: Fold) -> Binary {
