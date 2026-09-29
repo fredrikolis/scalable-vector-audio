@@ -71,11 +71,6 @@ fn of(f: &Body) -> Option<NodeRenderer> {
     })
 }
 
-/// Whether the machine computes `f` as one exact `Wrap`, rounded once.
-pub(crate) fn wraps(f: &Body) -> bool {
-    wrapped(f).is_some()
-}
-
 /// A line in `t` plus a multiple of one line modulo a positive number, each exact as
 /// `loops::time_of` reads a time; `None` where no modulo is in it, or it is no such sum.
 fn wrapped(f: &Body) -> Option<Wrap> {

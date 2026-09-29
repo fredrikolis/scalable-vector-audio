@@ -10,7 +10,7 @@ use crate::loops::{self, Tap};
 use crate::lower::{Lowering, Piece, SelfMode, constant, on};
 use crate::overload;
 use crate::time::{Affine, Lattice, Q};
-use crate::typing::{Nearest, Value, When};
+use crate::typing::{Step, Value, When};
 
 impl Lowering<'_, '_> {
     pub(super) fn walk(&mut self, e: &Expr, cx: Cx, var: Var) -> Result<Piece, EngineError> {
@@ -478,7 +478,7 @@ impl Lowering<'_, '_> {
     }
 
     /// An index is an integer, which typing refuses otherwise: one rounded line plus a count,
-    /// the nearest step to a time that moves, or `None` for any other, which evaluation refuses.
+    /// or any other integer, evaluated each sample.
     fn sample_index(&mut self, arg: &Expr, span: ByteSpan, cx: Cx) -> Result<When, EngineError> {
         if !crate::index::integer(self.inst, arg, cx) {
             return Err(self.refused_at(
@@ -491,53 +491,41 @@ impl Lowering<'_, '_> {
                 Some(span),
             ));
         }
-        if let Some(index) = crate::index::read(self.inst, arg, cx) {
-            return Ok(When::Index(Some(index)));
-        }
-        Ok(match self.nearest(arg, cx)? {
-            Some(nearest) => When::Nearest(nearest),
-            None => When::Index(None),
+        Ok(match crate::index::read(self.inst, arg, cx) {
+            Some(index) => When::Index(index),
+            None => When::Step(self.step(arg, cx)?),
         })
     }
 
-    /// `idx(w) + k`, `w` a time that moves.
-    fn nearest(&mut self, e: &Expr, cx: Cx) -> Result<Option<Nearest>, EngineError> {
+    /// The integer `e` names, over what `index::integer` admits.
+    fn step(&mut self, e: &Expr, cx: Cx) -> Result<Step, EngineError> {
         let inst = self.inst;
-        if let Some(r) = inst.follow(e, cx, |e2, cx2| self.nearest(e2, cx2)) {
+        if let Some(index) = crate::index::read(inst, e, cx) {
+            return Ok(Step::Index(index));
+        }
+        if let Some(r) = inst.follow(e, cx, |e2, cx2| self.step(e2, cx2)) {
             return r;
         }
-        let count = |x: &Expr| crate::index::read(inst, x, cx).and_then(|ix| ix.as_count());
-        let (inner, by) = match inst.node(e, cx) {
+        match inst.node(e, cx) {
             Node::Call { name, args, .. } if name == sva_ast::INDEX => {
                 let (Some(Arg::Pos(time)), Some(round)) =
                     (args.first(), crate::index::rounding(args.get(1)))
                 else {
-                    return Ok(None);
+                    unreachable!("typing admits idx(time) and idx(time, floor or ceil) only")
                 };
-                let time = self.time(time, cx)?;
-                return Ok(Some(Nearest {
-                    time,
-                    round,
-                    plus: 0,
-                }));
+                Ok(Step::Nearest(self.time(time, cx)?, round))
             }
-            Node::Bin(BinOp::Add, l, r) => match (count(l), count(r)) {
-                (Some(k), None) => (r, k),
-                (None, Some(k)) => (l, k),
-                _ => return Ok(None),
-            },
-            Node::Bin(BinOp::Sub, l, r) => match count(r).and_then(i64::checked_neg) {
-                Some(k) => (l, k),
-                None => return Ok(None),
-            },
-            _ => return Ok(None),
-        };
-        Ok(self.nearest(inner, cx)?.and_then(|n| {
-            Some(Nearest {
-                plus: n.plus.checked_add(by)?,
-                ..n
-            })
-        }))
+            Node::Bin(op, l, r) => {
+                let (l, r) = (self.step(l, cx)?, self.step(r, cx)?);
+                Ok(match op {
+                    BinOp::Add => Step::Add(vec![l, r]),
+                    BinOp::Sub => Step::Add(vec![l, Step::Neg(Box::new(r))]),
+                    BinOp::Mul => Step::Mul(vec![l, r]),
+                    BinOp::Div | BinOp::Mod => unreachable!("an integer holds no / or %"),
+                })
+            }
+            _ => unreachable!("an integer is a whole literal, idx(...), or +, - and * of them"),
+        }
     }
 
     /// A stateful node has a value only at the steps it takes, which a time that moves

@@ -4,7 +4,8 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sva_formula::{Body, C64, Fold, Held, NodeId, Unary, exp_zero_at};
-use sva_samples::{Extent, Grid, NodeRenderer, Round, Slot};
+use sva_samples::machine::ops::Layout;
+use sva_samples::{Ctx, Extent, Grid, Index, NodeRenderer, Round, Slot};
 
 use crate::time::Q;
 
@@ -13,7 +14,7 @@ use super::pointwise::{self, Point};
 use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::schedule;
-use crate::typing::{Typing, Value, When};
+use crate::typing::{Step, Typing, Value, When};
 
 /// Where each node can be nonzero, in samples of its own grid: outside its support a node is
 /// exactly zero.
@@ -69,9 +70,9 @@ impl<'a> Supports<'a> {
             Value::Noise(_) => Extent::EVERYWHERE,
             Value::Read {
                 source,
-                at: When::Nearest(nearest),
+                at: When::Step(step),
                 ..
-            } => match self.reach(*nearest, grid) {
+            } => match reach(self.tys, step, grid) {
                 Some(reach) => reached(self.of(*source), reach),
                 None => Extent::EVERYWHERE,
             },
@@ -113,10 +114,6 @@ impl<'a> Supports<'a> {
             Value::Filter { x, .. } => stateful(self.with_past(*x, past)),
             _ => self.of(id),
         }
-    }
-
-    pub(crate) fn reach(&self, nearest: crate::typing::Nearest, grid: Grid) -> Option<(i64, i64)> {
-        super::bound::reach(self.tys, nearest, grid)
     }
 
     fn operation(
@@ -535,6 +532,125 @@ fn first_at(grid: Grid, edge: f64) -> i64 {
     i64::try_from(at).unwrap_or(beyond)
 }
 
+/// Every offset from the sample being written that `step` lands at, where constants, maps
+/// and clamps by constants bound it; the machine checks each read lands inside it.
+pub(crate) fn reach(tys: &Typing, step: &Step, grid: Grid) -> Option<(i64, i64)> {
+    match lines(tys, step, grid)? {
+        (1, least, most) => Some((least, most)),
+        _ => None,
+    }
+}
+
+/// `(slope, least, most)`: `k - slope*n` lies in `[least, most]`.
+fn lines(tys: &Typing, step: &Step, grid: Grid) -> Option<(i64, i64, i64)> {
+    let each = |parts: &[Step]| {
+        parts
+            .iter()
+            .map(|p| lines(tys, p, grid))
+            .collect::<Option<Vec<_>>>()
+    };
+    match step {
+        Step::Index(index) => {
+            let map = index.map(grid)?;
+            let slope = i64::try_from(map.a / map.d).ok()?;
+            (map.a % map.d == 0).then(|| (slope, map.least(), map.lead()))
+        }
+        Step::Nearest(time, round) => {
+            let (lo, hi) = offset(tys, *time)?;
+            let sr = grid.sr();
+            let whole = |v: f64| (v.abs() < 2f64.powi(62)).then_some(v as i64);
+            // A step each side holds the time's rounding; a non-positive offset reads no later step.
+            let most = whole((hi * sr).ceil() + 1.0)?;
+            let most = match hi <= 0.0 && *round != Round::Ceil {
+                true => most.min(0),
+                false => most,
+            };
+            Some((1, whole((lo * sr).floor() - 1.0)?, most))
+        }
+        Step::Add(parts) => {
+            each(parts)?
+                .into_iter()
+                .try_fold((0i64, 0i64, 0i64), |(s, l, m), (s2, l2, m2)| {
+                    Some((s.checked_add(s2)?, l.checked_add(l2)?, m.checked_add(m2)?))
+                })
+        }
+        Step::Neg(part) => {
+            let (s, l, m) = lines(tys, part, grid)?;
+            Some((s.checked_neg()?, m.checked_neg()?, l.checked_neg()?))
+        }
+        Step::Mul(parts) => each(parts)?
+            .into_iter()
+            .try_fold((0i64, 1i64, 1i64), |held, next| {
+                let (c, (s, l, m)) = match (held, next) {
+                    ((0, c, d), other) | (other, (0, c, d)) if c == d => (c, other),
+                    _ => return None,
+                };
+                let (a, b) = (l.checked_mul(c)?, m.checked_mul(c)?);
+                Some((s.checked_mul(c)?, a.min(b), a.max(b)))
+            }),
+    }
+}
+
+/// `[lo, hi]` holding `time - t` at every instant, where the machine computes it as written.
+fn offset(tys: &Typing, time: NodeId) -> Option<(f64, f64)> {
+    crate::lower::inline::renderer(tys, time)?;
+    let form = crate::refs::substituted_closed_form(tys, time)?;
+    let mut parts = Vec::new();
+    addends(&form.body, &mut parts);
+    let line = parts.iter().position(|b| matches!(b, Body::Line))?;
+    let (lo, hi) = parts.iter().enumerate().filter(|(k, _)| *k != line).fold(
+        (0.0, 0.0),
+        |(lo, hi), (_, b)| {
+            let (l, h) = span(b);
+            (lo + l, hi + h)
+        },
+    );
+    (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
+}
+
+fn addends<'a>(body: &'a Body, out: &mut Vec<&'a Body>) {
+    match body {
+        Body::Add(parts) => parts.iter().for_each(|p| addends(&p.body, out)),
+        other => out.push(other),
+    }
+}
+
+fn span(body: &Body) -> (f64, f64) {
+    let each =
+        |parts: &[sva_formula::Part]| parts.iter().map(|p| span(&p.body)).collect::<Vec<_>>();
+    match body {
+        Body::Const(c) if c.im == 0.0 => (c.re, c.re),
+        Body::Add(parts) => each(parts)
+            .into_iter()
+            .fold((0.0, 0.0), |(lo, hi), (l, h)| (lo + l, hi + h)),
+        Body::Mul(parts) => each(parts)
+            .into_iter()
+            .fold((1.0, 1.0), |(lo, hi), (l, h)| match (lo == hi, l == h) {
+                (true, _) => scale((l, h), lo),
+                (_, true) => scale((lo, hi), l),
+                _ => (f64::NEG_INFINITY, f64::INFINITY),
+            }),
+        Body::Fold(Fold::Min, parts) => each(parts)
+            .into_iter()
+            .fold((f64::INFINITY, f64::INFINITY), |(lo, hi), (l, h)| {
+                (lo.min(l), hi.min(h))
+            }),
+        Body::Fold(Fold::Max, parts) => each(parts).into_iter().fold(
+            (f64::NEG_INFINITY, f64::NEG_INFINITY),
+            |(lo, hi), (l, h)| (lo.max(l), hi.max(h)),
+        ),
+        _ => (f64::NEG_INFINITY, f64::INFINITY),
+    }
+}
+
+fn scale((lo, hi): (f64, f64), c: f64) -> (f64, f64) {
+    match c {
+        0.0 => (0.0, 0.0),
+        c if c > 0.0 => (lo * c, hi * c),
+        c => (hi * c, lo * c),
+    }
+}
+
 /// Every sample whose offsets in `reach` land inside `support`. A form on a moved grid is
 /// read by rows of the form moved, whose edges round a step either way.
 fn reached(support: Extent, (least, most): (i64, i64)) -> Extent {
@@ -710,21 +826,70 @@ fn program_reads(
                 slot: Slot::Read(slot),
                 map,
             } => out.push((program.reads[slot.0 as usize], map.image(over))),
-            NodeRenderer::Nearest {
+            NodeRenderer::Indexed {
                 slot: Slot::Read(slot),
-                reach: (least, most),
-                ..
+                index,
+                reach,
             } if !over.is_empty() => {
-                let near = Extent::new(
-                    over.start.saturating_add(*least),
-                    over.end.saturating_add(*most),
-                );
+                let near = match reach {
+                    Some((least, most)) => Extent::new(
+                        over.start.saturating_add(*least),
+                        over.end.saturating_add(*most),
+                    ),
+                    None => landed(index, over, grid).unwrap_or(Extent::new(i64::MIN, over.end)),
+                };
                 out.push((program.reads[slot.0 as usize], near));
             }
             _ => {}
         },
     );
     out
+}
+
+/// Every sample `index` lands at over `over`, evaluated there where its instants read nothing
+/// stored.
+fn landed(index: &Index, over: Extent, grid: Grid) -> Option<Extent> {
+    let times = index.times();
+    let free = |t: &NodeRenderer| {
+        let mut reads = false;
+        leaves(t, &mut |leaf| {
+            reads |= matches!(
+                leaf,
+                NodeRenderer::Read { .. } | NodeRenderer::Indexed { .. }
+            )
+        });
+        t.stateless() && !reads
+    };
+    if !over.is_bounded() || !times.iter().all(|t| free(t)) {
+        return None;
+    }
+    let layout = Layout {
+        width: 1,
+        read_widths: Vec::new(),
+        sites: Vec::new(),
+    };
+    let ctx = Ctx {
+        grid,
+        start: over.start,
+        len: over.len(),
+        reads: &[],
+    };
+    let runs = times
+        .iter()
+        .map(|t| t.run(&layout, &ctx).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let mut at = 0;
+    let program = index.mapped(&mut |_| {
+        at += 1;
+        Ok::<usize, ()>(at - 1)
+    });
+    let program = program.ok()?;
+    let (mut least, mut most) = (i64::MAX, i64::MIN);
+    for (i, n) in (over.start..over.end).enumerate() {
+        let k = program.at(n, grid, &|j| runs[*j].planes[0][i])?;
+        (least, most) = (least.min(k), most.max(k));
+    }
+    Some(Extent::new(least, most.checked_add(1)?))
 }
 
 /// Each buffer a pointwise tree reads and how far from the instant it reads it, in seconds;
@@ -817,8 +982,12 @@ pub(crate) fn leaves(renderer: &NodeRenderer, found: &mut dyn FnMut(&NodeRendere
             .into_iter()
             .for_each(|p| leaves(p, found)),
         NodeRenderer::Physics { args, .. } => args.iter().for_each(|p| leaves(p, found)),
-        NodeRenderer::Formula { time, .. } | NodeRenderer::Nearest { time, .. } => {
+        NodeRenderer::Formula { time, .. } => {
             leaves(time, found);
+            found(renderer);
+        }
+        NodeRenderer::Indexed { index, .. } | NodeRenderer::Instant(index) => {
+            index.times().into_iter().for_each(|t| leaves(t, found));
             found(renderer);
         }
         leaf => found(leaf),

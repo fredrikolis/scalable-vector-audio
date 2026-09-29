@@ -1,17 +1,17 @@
-// Concern: turns one sampled node into the renderer that writes its buffer, or refuses a read no map spells | Non-concern: collapsing a closed form (mod.rs), the op array | IO: (NodeId) -> a Buffer
+// Concern: turns one sampled node into the renderer that writes its buffer | Non-concern: collapsing a closed form (mod.rs), the op array | IO: (NodeId) -> a Buffer
 
 use sva_formula::{NodeId, Var};
 use sva_samples::machine::ops::Layout;
 use sva_samples::{
-    Audible, Binary, BufId, Buffer, Ctx, Extent, Formula, Label, Map, NodeRenderer, SampleError,
-    Site, SiteId, Slot, Unary, Window, stft, truncate_spectral_sum, truncate_written,
+    Audible, Binary, BufId, Buffer, Ctx, Extent, Formula, Index, Label, Map, NodeRenderer,
+    SampleError, Site, SiteId, Slot, Unary, Window, stft, truncate_spectral_sum, truncate_written,
 };
 
 use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::render::Render;
 use crate::render::extent::Supports;
-use crate::typing::{Nearest, Typing, Value, When};
+use crate::typing::{Step, Typing, Value, When};
 
 /// A sampled node is the dearest kind this engine runs, so it is keyed as a collapse is: off
 /// the node's identity, the grid it was stepped on and the extent it was stepped over. Its
@@ -240,8 +240,9 @@ impl Build<'_> {
         }
     }
 
-    /// A stored sample where each of this program's instants reads one, or the one nearest a
-    /// time that moves; a closed form exactly at any instant.
+    /// A stored sample where each of this program's instants reads one; a closed form exactly
+    /// at any instant, the instant of a sample an index names included; else the stored
+    /// sample at that index.
     fn read(&mut self, id: NodeId, source: NodeId, at: When) -> Result<NodeRenderer, EngineError> {
         let tys = &self.held.tys;
         if let Some(map) = at.map(tys.grid(id), tys.grid(source)) {
@@ -256,11 +257,14 @@ impl Build<'_> {
                 NodeRenderer::Add(vec![line, NodeRenderer::Const(time.shift.to_f64())])
             }
             When::Moving(time) => self.of(time)?,
-            When::Index(index) => return Err(unreadable_index(self.held, self.owner, index)),
-            When::Nearest(nearest) => {
+            When::Index(_) => return Err(unplaced(self.held, self.owner)),
+            When::Step(step) if crate::schedule::anywhere(tys, source) => {
+                NodeRenderer::Instant(self.index(&step)?)
+            }
+            When::Step(step) => {
                 let slot = BufId(self.reads.len() as u32);
                 self.reads.push(source);
-                return self.nearest(id, Slot::Read(slot), nearest);
+                return self.indexed(id, Slot::Read(slot), &step);
             }
         };
         match formula(self.held, source)? {
@@ -281,34 +285,59 @@ impl Build<'_> {
                 slot: Slot::Own,
                 map,
             }),
-            (None, When::Nearest(nearest)) => self.nearest(id, Slot::Own, nearest),
-            (None, When::Index(index)) => Err(unreadable_index(self.held, self.owner, index)),
+            (None, When::Step(step)) => self.indexed(id, Slot::Own, &step),
+            (None, When::Index(_)) => Err(unplaced(self.held, self.owner)),
             (None, _) => unreachable!("typing reads a loop's past by index only"),
         }
     }
 
-    /// The step nearest a time that moves, where a bound on how far it lands holds.
-    fn nearest(
+    /// The stored sample at an integer each sample evaluates, and how far from the sample
+    /// being written it lands where that is cheap to bound.
+    fn indexed(
         &mut self,
         id: NodeId,
         slot: Slot,
-        nearest: Nearest,
+        step: &Step,
     ) -> Result<NodeRenderer, EngineError> {
-        let Some(reach) = self.supports.reach(nearest, self.held.grid(id)) else {
-            return Err(collapse_refused(
-                &self.held.tys,
-                self.owner,
-                "no bound holds how far this idx(...) lands from the step being written",
-                "engine.unreadable_index",
-            ));
-        };
-        Ok(NodeRenderer::Nearest {
+        Ok(NodeRenderer::Indexed {
             slot,
-            time: Box::new(self.of(nearest.time)?),
-            round: nearest.round,
-            plus: nearest.plus,
-            reach,
+            index: self.index(step)?,
+            reach: super::extent::reach(&self.held.tys, step, self.held.grid(id)),
         })
+    }
+
+    /// An exact index is its map on this program's grid; a time that moves is evaluated as
+    /// any operand is, and a written form no operand spells at its formula.
+    fn index(&mut self, step: &Step) -> Result<Index, EngineError> {
+        let grid = self.held.grid(self.owner);
+        Ok(match step {
+            Step::Index(index) => Index::At(
+                index
+                    .map(grid)
+                    .ok_or_else(|| unplaced(self.held, self.owner))?,
+            ),
+            Step::Nearest(time, round) => Index::Step(Box::new(self.time(*time)?), *round),
+            Step::Add(parts) => Index::Add(self.indices(parts)?),
+            Step::Mul(parts) => Index::Mul(self.indices(parts)?),
+            Step::Neg(part) => Index::Neg(Box::new(self.index(part)?)),
+        })
+    }
+
+    fn indices(&mut self, parts: &[Step]) -> Result<Vec<Index>, EngineError> {
+        parts.iter().map(|p| self.index(p)).collect()
+    }
+
+    fn time(&mut self, id: NodeId) -> Result<NodeRenderer, EngineError> {
+        if closed_renderer(&self.held.tys, id).is_none()
+            && let Some(formula) = formula(self.held, id)?
+        {
+            return Ok(NodeRenderer::Formula {
+                formula,
+                width: 1,
+                time: Box::new(NodeRenderer::Time),
+            });
+        }
+        self.of(id)
     }
 
     /// A sampled operand is already a buffer, so a renderer reads it rather than recomputing it.
@@ -468,21 +497,6 @@ fn unplaced(held: &Render, owner: NodeId) -> EngineError {
         "a read's time lands past what exact integers place",
         "engine.unreadable_position",
     )
-}
-
-fn unreadable_index(
-    held: &Render,
-    owner: NodeId,
-    index: Option<crate::index::Index>,
-) -> EngineError {
-    let why = match index {
-        Some(_) => "a sample index this far out has no map a machine can read",
-        None => {
-            "this engine reads an index only as one idx(...) of a line in t, negated or not, \
-             or of t plus a closed form, plus a count"
-        }
-    };
-    collapse_refused(&held.tys, owner, why, "engine.unreadable_index")
 }
 
 pub fn refused(held: &Render, id: NodeId, e: &SampleError) -> EngineError {

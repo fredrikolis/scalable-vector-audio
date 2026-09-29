@@ -359,6 +359,60 @@ pub enum Round {
     Ceil,
 }
 
+/// An integer every sample evaluates exactly, `None` past `i64`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Index<T = Box<NodeRenderer>> {
+    At(Map),
+    Step(T, Round),
+    Add(Vec<Index<T>>),
+    Neg(Box<Index<T>>),
+    Mul(Vec<Index<T>>),
+}
+
+impl<T> Index<T> {
+    pub fn times(&self) -> Vec<&T> {
+        let mut out = Vec::new();
+        self.each(&mut |t| out.push(t));
+        out
+    }
+
+    fn each<'a>(&'a self, f: &mut impl FnMut(&'a T)) {
+        match self {
+            Index::At(_) => {}
+            Index::Step(t, _) => f(t),
+            Index::Add(parts) | Index::Mul(parts) => parts.iter().for_each(|p| p.each(f)),
+            Index::Neg(p) => p.each(f),
+        }
+    }
+
+    pub fn mapped<U, E>(&self, f: &mut impl FnMut(&T) -> Result<U, E>) -> Result<Index<U>, E> {
+        let mut each = |parts: &[Index<T>]| -> Result<Vec<Index<U>>, E> {
+            parts.iter().map(|p| p.mapped(f)).collect()
+        };
+        Ok(match self {
+            Index::At(map) => Index::At(*map),
+            Index::Step(t, round) => Index::Step(f(t)?, *round),
+            Index::Add(parts) => Index::Add(each(parts)?),
+            Index::Mul(parts) => Index::Mul(each(parts)?),
+            Index::Neg(p) => Index::Neg(Box::new(p.mapped(f)?)),
+        })
+    }
+
+    pub fn at(&self, n: i64, grid: Grid, time: &impl Fn(&T) -> f64) -> Option<i64> {
+        match self {
+            Index::At(map) => i64::try_from(map.index_at(i128::from(n))).ok(),
+            Index::Step(t, round) => grid.step_at(time(t), *round),
+            Index::Add(parts) => parts
+                .iter()
+                .try_fold(0i64, |held, p| held.checked_add(p.at(n, grid, time)?)),
+            Index::Mul(parts) => parts
+                .iter()
+                .try_fold(1i64, |held, p| held.checked_mul(p.at(n, grid, time)?)),
+            Index::Neg(p) => p.at(n, grid, time)?.checked_neg(),
+        }
+    }
+}
+
 /// Another node's samples, or this node's own past.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Slot {
@@ -443,15 +497,15 @@ pub enum NodeRenderer {
         time: Box<NodeRenderer>,
     },
     Noise(u64),
-    /// The stored sample nearest the instant `time` names, moved by `plus`; `reach` holds
-    /// every offset from the sample being written it lands at.
-    Nearest {
+    /// The stored sample at the integer `index` names, within `reach` of the sample being
+    /// written where that is known.
+    Indexed {
         slot: Slot,
-        time: Box<NodeRenderer>,
-        round: Round,
-        plus: i64,
-        reach: (i64, i64),
+        index: Index,
+        reach: Option<(i64, i64)>,
     },
+    /// The instant of the sample `index` names.
+    Instant(Index),
     Add(Vec<NodeRenderer>),
     Mul(Vec<NodeRenderer>),
     Sub(Box<NodeRenderer>, Box<NodeRenderer>),
@@ -498,10 +552,12 @@ impl NodeRenderer {
                 slot: Slot::Own, ..
             } => false,
             NodeRenderer::Formula { time, .. } => time.stateless(),
-            NodeRenderer::Nearest {
+            NodeRenderer::Indexed {
                 slot: Slot::Own, ..
             } => false,
-            NodeRenderer::Nearest { time, .. } => time.stateless(),
+            NodeRenderer::Indexed { index, .. } | NodeRenderer::Instant(index) => {
+                index.times().iter().all(|t| t.stateless())
+            }
             NodeRenderer::Add(set) | NodeRenderer::Mul(set) | NodeRenderer::Join(set) => {
                 set.iter().all(NodeRenderer::stateless)
             }

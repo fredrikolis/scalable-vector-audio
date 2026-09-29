@@ -148,7 +148,7 @@ fn sampled_leaf(
                     time.shift.to_f64()
                 ),
                 crate::typing::When::Moving(_) => "a read at a moving time".to_string(),
-                crate::typing::When::Index(_) | crate::typing::When::Nearest(_) => {
+                crate::typing::When::Index(_) | crate::typing::When::Step(_) => {
                     "a read by sample index".to_string()
                 }
             })

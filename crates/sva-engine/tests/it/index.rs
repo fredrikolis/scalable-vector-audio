@@ -1,4 +1,4 @@
-// Concern: proves an index read reads the sample its integer names, whole or streamed, or refuses | Non-concern: a read at an instant (refs.rs) | IO: (a composition) -> samples or a refusal
+// Concern: proves an index read reads the sample its integer names, whole or streamed | Non-concern: a read at an instant (refs.rs) | IO: (a composition) -> samples or a refusal
 
 use crate::fixtures::graph_of;
 use sva_ast::{Graph, PerBar};
@@ -112,22 +112,24 @@ fn reads_nearest(x: &[f64], read: &[f64], at: impl Fn(f64) -> f64) {
     }
 }
 
-/// A finite sum, a remainder, and a `min`, `max` or `sin` around an unbounded form are all
-/// bounded offsets: each reads the step nearest the time it names. An infinite sum is written
-/// out nowhere, so it refuses.
+/// `idx` of any time reads the step nearest it: a finite or infinite sum, a remainder, and a
+/// `min`, `max` or `sin` around an unbounded form.
 #[test]
-fn an_index_of_t_plus_any_bounded_closed_form_reads_the_step_nearest_it() {
-    let reads: [(&str, fn(f64) -> f64); 5] = [
-        ("t - sum(k, 1, 2, 0.01s)", |t| t - 0.02),
-        ("t - sum(k, 1, 2, 0.01s*step(t - k*0.01s))", |t| {
+fn an_index_of_any_time_reads_the_step_nearest_it() {
+    let tail = 0.001 / (std::f64::consts::E - 1.0);
+    let reads: [(&str, &dyn Fn(f64) -> f64); 7] = [
+        ("t - sum(k, 1, 2, 0.01s)", &|t| t - 0.02),
+        ("t - sum(k, 1, 2, 0.01s*step(t - k*0.01s))", &|t| {
             t - 0.01 * [0.01, 0.02].iter().filter(|d| t >= **d).count() as f64
         }),
+        ("t - sum(k, 1, inf, 0.001s*exp(0 - k))", &|t| t - tail),
         // Four steps of 8 kHz, whole on the grid; under 0.1s, `t % 0.3s` is `t`.
-        ("t - t % 0.5ms", |t| {
+        ("t - t % 0.5ms", &|t| {
             ((t * f64::from(RATE)).round() as i64 / 4 * 4) as f64 / f64::from(RATE)
         }),
-        ("t - 0.002s*sin(t % 0.3s)", |t| t - 0.002 * t.sin()),
-        ("t - max(min(exp(t), 0.003), 0)", |t| t - 0.003),
+        ("t - t % 0.06ms", &|t| t - t % 0.000_06),
+        ("t - 0.1s*sin(t % 0.3s)", &|t| t - 0.1 * t.sin()),
+        ("t - max(min(exp(t), 0.003), 0)", &|t| t - 0.003),
     ];
     let mut files = vec![(
         "x".to_string(),
@@ -140,7 +142,7 @@ fn an_index_of_t_plus_any_bounded_closed_form_reads_the_step_nearest_it() {
         .iter()
         .map(|(a, b)| (a.as_str(), b.as_str()))
         .collect();
-    let g = graph_of("index-bounded", &files);
+    let g = graph_of("index-any", &files);
     let config = RenderConfig::seconds(RATE, 0.1);
     let x = whole(&g, "x", &config);
     for (k, (time, at)) in reads.iter().enumerate() {
@@ -148,18 +150,13 @@ fn an_index_of_t_plus_any_bounded_closed_form_reads_the_step_nearest_it() {
             .unwrap_or_else(|e| panic!("idx({time}): {e}"));
         let id = read.id(&format!("read{k}")).expect("the root");
         reads_nearest(&x, read.output(id).expect("a buffer").plane(0), at);
+        let samples = x.len();
+        assert_eq!(
+            bits(&streamed(&g, &format!("read{k}"), 64, samples)),
+            bits(&whole(&g, &format!("read{k}"), &config)),
+            "idx({time}) streamed"
+        );
     }
-    let g = graph_of(
-        "index-infinite",
-        &[
-            ("x", "sample(sin(2*pi*220*t))\n"),
-            ("read", "@x[idx(t - sum(k, 1, inf, 0.001s*exp(-k)))]\n"),
-        ],
-    );
-    let Err(refused) = render(&g, "read", config, None) else {
-        panic!("an infinite sum has no written-out terms");
-    };
-    assert_eq!(refused.code(), "engine.unreadable_index", "{refused}");
 }
 
 #[test]
@@ -190,22 +187,94 @@ fn a_time_or_a_fraction_in_an_index_refuses_at_typing_naming_idx() {
     }
 }
 
-/// An integer the engine reads no one map for types, and its render refuses.
+/// A whole render holds what an index no bound holds reads ahead, as it does behind.
 #[test]
-fn an_integer_no_rounded_line_spells_types_and_refuses_to_render() {
+fn a_whole_render_reads_ahead_where_no_bound_holds_the_index() {
     let g = graph_of(
-        "index-unread",
+        "index-ahead",
+        &[
+            (
+                "x",
+                "lowpass(crop(sample(sin(2*pi*220*t)), 0s, 0.05s), cutoff=900)\n",
+            ),
+            ("ahead", "@x[idx(t + 0.001s*sin(2*pi*50*t))]\n"),
+        ],
+    );
+    let x = whole(&g, "x", &RenderConfig::seconds(RATE, 0.2));
+    let read = whole(&g, "ahead", &RenderConfig::seconds(RATE, 0.1));
+    reads_nearest(&x, &read, |t| {
+        t + 0.001 * (2.0 * std::f64::consts::PI * 50.0 * t).sin()
+    });
+}
+
+/// Any integer is an index: two rounded lines summed read the sample they sum to.
+#[test]
+fn a_sum_of_two_indices_reads_the_sample_it_names() {
+    let g = graph_of(
+        "index-summed",
         &[
             ("x", "sample(sin(2*pi*220*t))\n"),
             ("node", "@x[idx(t) + idx(t - 1s)]\n"),
         ],
     );
-    assert!(sva_engine::types(&g, "node").is_ok());
     let config = RenderConfig::seconds(RATE, 0.1);
-    let Err(refused) = render(&g, "node", config, None) else {
-        panic!("two rounded lines are no one map");
+    let rate = f64::from(RATE);
+    for (n, v) in whole(&g, "node", &config).iter().enumerate() {
+        let at = (2.0 * n as f64 - rate) / rate;
+        let want = (2.0 * std::f64::consts::PI * 220.0 * at).sin();
+        assert!((v - want).abs() < 1e-9, "sample {n}: {v} against {want}");
+    }
+}
+
+/// A read whose reach a constant or a clamp by constants bounds holds only that much of its
+/// source; one no bound holds keeps all of it, and still plays.
+#[test]
+fn an_index_prunes_its_source_only_where_its_reach_is_bounded() {
+    let g = graph_of(
+        "index-held",
+        &[
+            (
+                "x",
+                "lowpass(crop(sample(sin(2*pi*220*t)), 0s, 2s), cutoff=900)\n",
+            ),
+            ("shifted", "@x[idx(t - 1ms) - 3]\n"),
+            (
+                "clamped",
+                "@x[idx(t - min(max(0.002s*sin(2*pi*t), 0s), 0.002s))]\n",
+            ),
+            ("unbounded", "@x[idx(t - 0.1s*sin(t % 0.3s))]\n"),
+        ],
+    );
+    let samples = 2 * RATE as usize;
+    let held = |target: &str| {
+        let config = StreamConfig {
+            block: 64,
+            render: RenderConfig {
+                range: Range {
+                    start: Some(0),
+                    end: Some(samples as i64),
+                },
+                ..RenderConfig::at(RATE)
+            },
+        };
+        let at = sva_ast::parse_expr(&format!("@{target}")).expect("a ref");
+        let mut stream = Stream::open(&g, &at, config, None).unwrap_or_else(|e| panic!("{e}"));
+        while stream
+            .next_block()
+            .unwrap_or_else(|e| panic!("{e}"))
+            .is_some()
+        {}
+        stream.held_bytes()
     };
-    assert_eq!(refused.code(), "engine.unreadable_index", "{refused}");
+    let whole_source = samples * size_of::<f64>();
+    for target in ["shifted", "clamped"] {
+        assert!(
+            held(target) < whole_source / 4,
+            "{target} holds {}",
+            held(target)
+        );
+    }
+    assert!(held("unbounded") >= whole_source, "{}", held("unbounded"));
 }
 
 /// `floor` and `ceil` pick the samples either side of an index that ties; a negated index

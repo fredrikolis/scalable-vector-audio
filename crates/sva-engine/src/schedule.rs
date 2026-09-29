@@ -366,15 +366,15 @@ pub(crate) fn materialized_operands(typing: &Typing, id: NodeId) -> Vec<NodeId> 
     };
     match typing.value(id) {
         Value::ClosedForm(_) | Value::Noise(_) => Vec::new(),
-        Value::SelfAt { at, .. } => sampled(moving(*at)),
+        Value::SelfAt { at, .. } => sampled(at.moving()),
         Value::Solver { varying, .. } => sampled(varying.iter().map(|(_, a)| *a).collect()),
         Value::Cast(Cast::Sample, source) => vec![*source],
         Value::Read { source, at, .. } => {
             let mut out = match (at, anywhere(typing, *source)) {
-                (When::Moving(_), true) => Vec::new(),
+                (When::Moving(_) | When::Step(_), true) => Vec::new(),
                 _ => vec![*source],
             };
-            out.extend(sampled(moving(*at)));
+            out.extend(sampled(at.moving()));
             out
         }
         Value::Cast(_, source) => sampled(vec![*source]),
@@ -393,10 +393,6 @@ pub(crate) fn anywhere(typing: &Typing, id: NodeId) -> bool {
         Value::ClosedForm(form) => form.var == Var::T,
         _ => false,
     }
-}
-
-fn moving(at: When) -> Vec<NodeId> {
-    at.moving().into_iter().collect()
 }
 
 /// The held nodes two or more held nodes read: a value one reader alone needs is covered by

@@ -71,6 +71,23 @@ impl NodeRenderer {
         Ok(out)
     }
 
+    /// Each index read no reach bounds held to the samples up to the one being written, all a
+    /// machine stepping beside its sources has.
+    pub fn stepwise(&self) -> NodeRenderer {
+        match self {
+            NodeRenderer::Indexed {
+                slot,
+                index,
+                reach: None,
+            } => NodeRenderer::Indexed {
+                slot: *slot,
+                index: index.clone(),
+                reach: Some((i64::MIN, 0)),
+            },
+            other => rebuilt(other, &mut |p| Ok(p.stepwise())).expect("a rewrite that cannot fail"),
+        }
+    }
+
     /// One per op, and a formula's own.
     pub fn ops(&self, layout: &Layout) -> Result<usize, SampleError> {
         let (lowered, _) = lowered(self, layout)?;
@@ -156,7 +173,10 @@ fn operands(r: &NodeRenderer) -> Vec<&NodeRenderer> {
             x, cutoff, q, gain, ..
         } => vec![x, cutoff, q, gain],
         NodeRenderer::Physics { args, .. } => args.iter().collect(),
-        NodeRenderer::Formula { time, .. } | NodeRenderer::Nearest { time, .. } => vec![time],
+        NodeRenderer::Formula { time, .. } => vec![time],
+        NodeRenderer::Indexed { index, .. } | NodeRenderer::Instant(index) => {
+            index.times().into_iter().map(|t| &**t).collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -223,19 +243,12 @@ fn rebuilt(r: &NodeRenderer, each: &mut Each) -> Result<NodeRenderer, SampleErro
             width: *width,
             time: one(time)?,
         },
-        NodeRenderer::Nearest {
-            slot,
-            time,
-            round,
-            plus,
-            reach,
-        } => NodeRenderer::Nearest {
+        NodeRenderer::Indexed { slot, index, reach } => NodeRenderer::Indexed {
             slot: *slot,
-            time: one(time)?,
-            round: *round,
-            plus: *plus,
+            index: index.mapped(&mut |t| one(t))?,
             reach: *reach,
         },
+        NodeRenderer::Instant(index) => NodeRenderer::Instant(index.mapped(&mut |t| one(t))?),
         leaf => leaf.clone(),
     })
 }

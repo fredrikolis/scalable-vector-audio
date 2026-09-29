@@ -2,7 +2,7 @@
 
 use crate::error::SampleError;
 use crate::machine::renderer::{
-    Binary, Formula, Map, NodeRenderer, Round, Site, SiteId, Slot, Unary, Wrap,
+    Binary, Formula, Index, Map, NodeRenderer, Site, SiteId, Slot, Unary, Wrap,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -21,11 +21,16 @@ pub(crate) enum Op {
         at: Map,
         by: f64,
     },
-    /// The sample nearest the instant the operand below it names.
-    Nearest {
+    /// The sample at the program's index `at`, over the `arity` step instants below it.
+    Indexed {
         slot: Slot,
-        round: Round,
-        plus: i64,
+        at: usize,
+        arity: usize,
+        reach: Option<(i64, i64)>,
+    },
+    Instant {
+        at: usize,
+        arity: usize,
     },
     /// The program's formula `at`, at the instant the operand below it names.
     Formula {
@@ -91,6 +96,7 @@ pub(crate) struct Lowered {
     pub(crate) ops: Vec<Op>,
     pub(crate) widths: Vec<usize>,
     pub(crate) formulas: Vec<Formula>,
+    pub(crate) indices: Vec<Index<usize>>,
 }
 
 /// Postfix, so the runner needs no recursion and every operand's width is already settled
@@ -110,6 +116,21 @@ impl Lowered {
         self.widths.push(width);
         width
     }
+}
+
+fn indexed(
+    index: &Index,
+    layout: &Layout,
+    out: &mut Lowered,
+) -> Result<(usize, usize), SampleError> {
+    let mut arity = 0;
+    let program = index.mapped(&mut |time| {
+        meet(1, lower(time, layout, out)?)?;
+        arity += 1;
+        Ok::<usize, SampleError>(arity - 1)
+    })?;
+    out.indices.push(program);
+    Ok((out.indices.len() - 1, arity))
 }
 
 fn lower(r: &NodeRenderer, layout: &Layout, out: &mut Lowered) -> Result<usize, SampleError> {
@@ -135,20 +156,19 @@ fn lower(r: &NodeRenderer, layout: &Layout, out: &mut Lowered) -> Result<usize, 
             let at = out.formulas.len() - 1;
             out.push(Op::Formula { at }, *width)
         }
-        NodeRenderer::Nearest {
-            slot,
-            time,
-            round,
-            plus,
-            ..
-        } => {
-            meet(1, lower(time, layout, out)?)?;
-            let op = Op::Nearest {
+        NodeRenderer::Indexed { slot, index, reach } => {
+            let (at, arity) = indexed(index, layout, out)?;
+            let op = Op::Indexed {
                 slot: *slot,
-                round: *round,
-                plus: *plus,
+                at,
+                arity,
+                reach: *reach,
             };
             out.push(op, slot_width(*slot, layout))
+        }
+        NodeRenderer::Instant(index) => {
+            let (at, arity) = indexed(index, layout, out)?;
+            out.push(Op::Instant { at, arity }, 1)
         }
         NodeRenderer::Mul(parts) if let Some((slot, at, by)) = scaled_read(parts) => {
             out.push(Op::ReadScaled { slot, at, by }, slot_width(slot, layout))

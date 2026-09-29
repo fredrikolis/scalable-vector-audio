@@ -316,7 +316,7 @@ pub(in crate::render) fn runnable(shell: &Render, order: &[NodeId]) -> BTreeSet<
 pub(in crate::render) fn reads_ahead(leaf: &NodeRenderer) -> bool {
     match leaf {
         NodeRenderer::Read { map, .. } => map.ahead(),
-        NodeRenderer::Nearest { reach, .. } => reach.1 > 0,
+        NodeRenderer::Indexed { reach, .. } => reach.is_none_or(|(_, most)| most > 0),
         _ => false,
     }
 }
@@ -499,7 +499,8 @@ struct Built {
     width: usize,
     reads: Vec<(usize, i64)>,
     pub(super) own: usize,
-    /// The nodes it reads at scales or times that move, which it may read anywhere back.
+    /// The nodes it reads at scales, times that move or indices with no bound, which it may
+    /// read anywhere back.
     held: Vec<usize>,
 }
 
@@ -568,20 +569,33 @@ fn machine(
         NodeRenderer::Read {
             slot: Slot::Own, ..
         } => own = WHOLE,
-        NodeRenderer::Nearest {
+        NodeRenderer::Indexed {
             slot: Slot::Read(id),
-            reach: (least, most),
+            reach: Some((least, most)),
             ..
         } => {
             ahead |= *most > 0;
             reads.push((slots[id.0 as usize], *most));
             reads.push((slots[id.0 as usize], *least));
         }
-        NodeRenderer::Nearest {
+        NodeRenderer::Indexed {
+            slot: Slot::Read(id),
+            reach: None,
+            ..
+        } => {
+            reads.push((slots[id.0 as usize], 0));
+            held.push(slots[id.0 as usize]);
+        }
+        NodeRenderer::Indexed {
             slot: Slot::Own,
-            reach: (least, _),
+            reach: Some((least, _)),
             ..
         } => own = own.max((-least).max(0) as usize),
+        NodeRenderer::Indexed {
+            slot: Slot::Own,
+            reach: None,
+            ..
+        } => own = WHOLE,
         _ => {}
     });
     if ahead {
@@ -603,8 +617,14 @@ fn machine(
         .collect();
     let span = (extent.start, extent.end);
     let grid = shell.grid(id);
-    let machine = Machine::live(&program.renderer, &program.layout, grid, span, &live)
-        .map_err(|e| sampled::refused(shell, id, &e))?;
+    let machine = Machine::live(
+        &program.renderer.stepwise(),
+        &program.layout,
+        grid,
+        span,
+        &live,
+    )
+    .map_err(|e| sampled::refused(shell, id, &e))?;
     Ok(Built {
         width: machine.width(),
         kind: Kind::Machine {

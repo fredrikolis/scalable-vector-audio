@@ -9,7 +9,7 @@ use sva_formula::{
 use crate::error::{Diagnostic, EngineError};
 use crate::index::Round;
 use crate::time::Lattice;
-use crate::typing::{SumSlot, Typing, Value, When};
+use crate::typing::{Step, SumSlot, Typing, Value, When};
 
 use super::{cyclic, nodes_in, spectral_sum_of, substituted_closed_form};
 
@@ -132,11 +132,11 @@ fn built(
         Value::Read { source, at, .. } => {
             sink.text("read");
             sink.hash(identity_of(typing, *source, open, named)?);
-            when(&mut sink, typing, *at);
+            when(&mut sink, typing, at);
         }
         Value::SelfAt { at, .. } => {
             sink.text("self");
-            when(&mut sink, typing, *at);
+            when(&mut sink, typing, at);
         }
         Value::Noise(seed) => {
             sink.text("noise");
@@ -177,30 +177,52 @@ fn built(
 }
 
 /// A moving time is named by its closed form, which holds no ref back to the reader.
-pub(super) fn when(sink: &mut Sink, typing: &Typing, at: When) {
+pub(super) fn when(sink: &mut Sink, typing: &Typing, at: &When) {
     sink.text("at");
     match at {
-        When::Time(time) => affine(sink, time),
-        When::Moving(id) => match identity(typing, id) {
-            Ok(held) => sink.hash(held),
-            Err(_) => sink.text(typing.name(id)),
-        },
-        When::Index(Some(index)) => {
-            round(sink, "index", index.round);
-            match index.time {
-                Some(time) => affine(sink, time),
-                None => sink.text("count"),
-            }
-            sink.word(index.plus as u64);
+        When::Time(time) => affine(sink, *time),
+        When::Moving(id) => moving(sink, typing, *id),
+        When::Index(index) => exact(sink, *index),
+        When::Step(step) => {
+            sink.text("step");
+            stepped(sink, typing, step);
         }
-        When::Index(None) => sink.text("index unread"),
-        When::Nearest(nearest) => {
-            round(sink, "nearest", nearest.round);
-            match identity(typing, nearest.time) {
-                Ok(held) => sink.hash(held),
-                Err(_) => sink.text(typing.name(nearest.time)),
-            }
-            sink.word(nearest.plus as u64);
+    }
+}
+
+fn moving(sink: &mut Sink, typing: &Typing, id: NodeId) {
+    match identity(typing, id) {
+        Ok(held) => sink.hash(held),
+        Err(_) => sink.text(typing.name(id)),
+    }
+}
+
+fn exact(sink: &mut Sink, index: crate::index::Index) {
+    round(sink, "index", index.round);
+    match index.time {
+        Some(time) => affine(sink, time),
+        None => sink.text("count"),
+    }
+    sink.word(index.plus as u64);
+}
+
+fn stepped(sink: &mut Sink, typing: &Typing, step: &Step) {
+    let each = |sink: &mut Sink, what: &str, parts: &[Step]| {
+        sink.text(what);
+        sink.word(parts.len() as u64);
+        parts.iter().for_each(|p| stepped(sink, typing, p));
+    };
+    match step {
+        Step::Index(index) => exact(sink, *index),
+        Step::Nearest(time, how) => {
+            round(sink, "nearest", *how);
+            moving(sink, typing, *time);
+        }
+        Step::Add(parts) => each(sink, "sum", parts),
+        Step::Mul(parts) => each(sink, "product", parts),
+        Step::Neg(part) => {
+            sink.text("negated");
+            stepped(sink, typing, part);
         }
     }
 }

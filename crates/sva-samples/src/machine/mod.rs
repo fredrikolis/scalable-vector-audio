@@ -11,7 +11,7 @@ use crate::error::SampleError;
 use crate::filters::FilterSite;
 use crate::physics::{Solver, site};
 use ops::{Layout, Op, lowered};
-use renderer::{Formula, Grid, NodeRenderer, Site};
+use renderer::{Formula, Grid, Index, NodeRenderer, Site};
 use tape::{Tape, Window};
 
 pub use live::Span;
@@ -25,6 +25,7 @@ struct Program {
     ops: Vec<Op>,
     widths: Vec<usize>,
     formulas: Vec<Formula>,
+    indices: Vec<Index<usize>>,
     sites: Vec<Site>,
     pub width: usize,
 }
@@ -44,6 +45,7 @@ impl NodeRenderer {
             ops: lowered.ops,
             widths: lowered.widths,
             formulas: lowered.formulas,
+            indices: lowered.indices,
             sites: layout.sites.clone(),
             width,
         })
@@ -358,7 +360,7 @@ fn step(
         let at = stack.pending.len() - arity_of(op);
         let (done, rest) = stack.values.split_at_mut(slot);
         fill(
-            (op, &p.formulas),
+            (op, p),
             done,
             &stack.pending[at..],
             &mut rest[0],
@@ -381,9 +383,8 @@ fn arity_of(op: &Op) -> usize {
         | Op::Read { .. }
         | Op::ReadScaled { .. } => 0,
         Op::Physics { arity, .. } => *arity,
-        Op::Map(_) | Op::Crop { .. } | Op::Channel(_) | Op::Formula { .. } | Op::Nearest { .. } => {
-            1
-        }
+        Op::Map(_) | Op::Crop { .. } | Op::Channel(_) | Op::Formula { .. } => 1,
+        Op::Indexed { arity, .. } | Op::Instant { arity, .. } => *arity,
         Op::Guard { .. } => 0,
         Op::Sub | Op::Div | Op::Pow | Op::Zip(_) => 2,
         Op::Add(n) | Op::Mul(n) | Op::Join(n) => *n,
@@ -392,7 +393,7 @@ fn arity_of(op: &Op) -> usize {
 }
 
 fn fill(
-    (op, formulas): (&Op, &[Formula]),
+    (op, p): (&Op, &Program),
     done: &[Vec<f64>],
     srcs: &[usize],
     result: &mut [f64],
@@ -410,13 +411,24 @@ fn fill(
                 .ok_or(SampleError::UnreadablePosition)?
         }
         Op::Noise(seed) => result[0] = sva_formula::draw(*seed, here.grid.position(n)),
-        Op::Nearest { slot, round, plus } => {
-            let k = here
-                .grid
-                .step_at(arg(0)[0], *round)
-                .and_then(|k| k.checked_add(*plus))
+        Op::Indexed {
+            slot, at, reach, ..
+        } => {
+            let k = p.indices[*at]
+                .at(n, here.grid, &|j| arg(*j)[0])
                 .ok_or(SampleError::UnreadablePosition)?;
+            if let Some((least, most)) = reach
+                && !(*least..=*most).contains(&k.saturating_sub(n))
+            {
+                return Err(SampleError::ReadsAhead { at: k });
+            }
             here.source(*slot).nearest(k, result)?;
+        }
+        Op::Instant { at, .. } => {
+            let k = p.indices[*at]
+                .at(n, here.grid, &|j| arg(*j)[0])
+                .ok_or(SampleError::UnreadablePosition)?;
+            result[0] = here.grid.instant(k);
         }
         Op::Read { slot, at } => here.source(*slot).mapped(*at, n, result)?,
         Op::ReadScaled { slot, at, by } => {
@@ -428,7 +440,7 @@ fn fill(
         Op::Formula { at } => {
             let when = arg(0)[0];
             for (c, slot) in result.iter_mut().enumerate() {
-                *slot = formulas[*at]
+                *slot = p.formulas[*at]
                     .at(c, when)
                     .map_err(|_| SampleError::FormulaUnevaluable { at: n })?;
             }

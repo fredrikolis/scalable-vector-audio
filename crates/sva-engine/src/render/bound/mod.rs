@@ -1,4 +1,4 @@
-// Concern: bounds a closed form's magnitude from an instant on, and a moving index's reach | Non-concern: solvers, filters, loops, gain to the output | IO: (NodeId) -> a bound, a reach, or none
+// Concern: bounds one closed form's magnitude from an instant on, off its atoms or formula | Non-concern: solvers, filters, loops, gain to the output | IO: (NodeId) -> a bound from each instant, or none
 
 mod range;
 
@@ -11,7 +11,7 @@ use sva_samples::collapse::plan::summed_bounds;
 use sva_samples::{Audible, truncate_spectral_sum, truncate_written};
 
 use crate::render::RenderConfig;
-use crate::typing::{Nearest, Typing, Value};
+use crate::typing::{Typing, Value};
 use range::{OP, Range, TRANSFORM_OPS};
 
 pub(crate) struct Tail(Form);
@@ -93,41 +93,5 @@ impl Tail {
                 .from(t, &|n, t| reads[&n].from(t))
                 .map_or(f64::INFINITY, |s| s.reach() + s.err),
         }
-    }
-}
-
-/// Every offset from the sample being written that `nearest` lands at on `grid`: the delay
-/// `t - time` bounded over every instant, where `time` is `t` plus a closed form. The margin
-/// of one step each side holds the rounding of the time the machine computes.
-pub(crate) fn reach(tys: &Typing, nearest: Nearest, grid: sva_samples::Grid) -> Option<(i64, i64)> {
-    let form = crate::refs::substituted_closed_form(tys, nearest.time)?;
-    let mut parts = Vec::new();
-    addends(&sva_formula::series::written_out(&form.body)?, &mut parts);
-    let line = parts
-        .iter()
-        .position(|p| matches!(p, sva_formula::Body::Line))?;
-    parts.remove(line);
-    let rest = parts
-        .iter()
-        .map(Range::of)
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-    let span = Range::Add(rest).from(f64::NEG_INFINITY, &|_, _| f64::INFINITY)?;
-    let sr = grid.sr();
-    let (least, most) = (
-        ((span.lo - span.err) * sr).floor() - 1.0,
-        ((span.hi + span.err) * sr).ceil() + 1.0,
-    );
-    let whole = |v: f64| (v.abs() < 2f64.powi(62)).then_some(v as i64);
-    Some((
-        whole(least)?.checked_add(nearest.plus)?,
-        whole(most)?.checked_add(nearest.plus)?,
-    ))
-}
-
-fn addends(body: &sva_formula::Body, out: &mut Vec<sva_formula::Body>) {
-    match body {
-        sva_formula::Body::Add(parts) => parts.iter().for_each(|p| addends(&p.body, out)),
-        other => out.push(other.clone()),
     }
 }

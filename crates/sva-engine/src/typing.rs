@@ -47,40 +47,59 @@ pub enum Value {
     },
 }
 
-/// A read's instant: exact, a closed form of `t` held as a node, a sample index, `None` where
-/// no one rounded line spells it, or the index nearest a time that moves.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// A read's instant: exact, a closed form of `t` held as a node, a sample index one rounded
+/// line plus a count spells, or any other integer, which each sample evaluates.
+#[derive(Clone, Debug, PartialEq)]
 pub enum When {
     Time(Affine),
     Moving(NodeId),
-    Index(Option<crate::index::Index>),
-    Nearest(Nearest),
+    Index(crate::index::Index),
+    Step(Step),
 }
 
-/// `idx(time, round) + plus`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Nearest {
-    pub time: NodeId,
-    pub round: crate::index::Round,
-    pub plus: i64,
+/// An integer no one map spells: exact indices, `idx(time, round)` of a time that moves, and
+/// sums, negations and products of them.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Step {
+    Index(crate::index::Index),
+    Nearest(NodeId, crate::index::Round),
+    Add(Vec<Step>),
+    Neg(Box<Step>),
+    Mul(Vec<Step>),
+}
+
+impl Step {
+    /// Every time that moves in it.
+    pub(crate) fn times(&self, out: &mut Vec<NodeId>) {
+        match self {
+            Step::Index(_) => {}
+            Step::Nearest(time, _) => out.push(*time),
+            Step::Add(parts) | Step::Mul(parts) => parts.iter().for_each(|p| p.times(out)),
+            Step::Neg(p) => p.times(out),
+        }
+    }
 }
 
 impl When {
     /// Which sample of `source` each sample of `reader` reads; `None` where one lands between
     /// two, or the instant moves.
-    pub(crate) fn map(self, reader: Grid, source: Grid) -> Option<sva_samples::Map> {
+    pub(crate) fn map(&self, reader: Grid, source: Grid) -> Option<sva_samples::Map> {
         match self {
-            When::Time(time) => reader.map(time, source),
-            When::Index(index) => index?.map(reader),
-            When::Moving(_) | When::Nearest(_) => None,
+            When::Time(time) => reader.map(*time, source),
+            When::Index(index) => index.map(reader),
+            When::Moving(_) | When::Step(_) => None,
         }
     }
 
-    pub(crate) fn moving(self) -> Option<NodeId> {
+    /// Every node it evaluates each sample.
+    pub(crate) fn moving(&self) -> Vec<NodeId> {
+        let mut out = Vec::new();
         match self {
-            When::Moving(id) | When::Nearest(Nearest { time: id, .. }) => Some(id),
-            When::Time(_) | When::Index(_) => None,
+            When::Moving(id) => out.push(*id),
+            When::Step(step) => step.times(&mut out),
+            When::Time(_) | When::Index(_) => {}
         }
+        out
     }
 }
 

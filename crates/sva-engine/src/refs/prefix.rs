@@ -152,7 +152,7 @@ impl<'a> Walk<'a> {
                     .expect("a read with switches is at scale one");
                 sink.text("read");
                 sink.hash(self.prefix_identity(*source, at.saturating_add(lead))?);
-                super::identity::when(&mut sink, typing, *when);
+                super::identity::when(&mut sink, typing, when);
             }
             Value::Filter {
                 shape,

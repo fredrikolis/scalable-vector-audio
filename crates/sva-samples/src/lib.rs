@@ -26,8 +26,8 @@ pub use filters::{Automation, AutomationFrame, FilterSite, FilterTrace};
 pub use frames::Frames;
 pub use label::{Cost, Detail, Dropped, Label, Rule, Source};
 pub use machine::renderer::{
-    Between, Binary, BufId, Formula, Grid, Map, NodeRenderer, Round, Site, SiteId, Slot, Unary,
-    Wrap,
+    Between, Binary, BufId, Formula, Grid, Index, Map, NodeRenderer, Round, Site, SiteId, Slot,
+    Unary, Wrap,
 };
 pub use machine::tape::{Tape, Window};
 pub use machine::{Ctx, Machine, MachineState};

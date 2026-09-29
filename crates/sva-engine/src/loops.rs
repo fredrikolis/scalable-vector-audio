@@ -99,7 +99,7 @@ pub(crate) fn tap_of(inst: &Instances, arg: &Expr, address: Address, cx: Cx) -> 
 }
 
 /// A loop steps at the rate in use, so its index reads one delay back or a delay that moves.
-/// An index its lowering refuses reads as one that moves until the lowering says so.
+/// An index no one map spells reads as one that moves.
 fn indexed_tap(inst: &Instances, arg: &Expr, cx: Cx) -> Tap {
     let map = crate::index::read(inst, arg, cx).and_then(|ix| ix.map(cx.grid));
     let Some(map) = map.filter(|m| m.a == m.d) else {

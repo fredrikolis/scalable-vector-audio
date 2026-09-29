@@ -186,7 +186,7 @@ fn reads_ahead(held: &Render, id: NodeId) -> bool {
             slot: Slot::Read(_),
             ..
         }
-        | NodeRenderer::Nearest {
+        | NodeRenderer::Indexed {
             slot: Slot::Read(_),
             ..
         } = leaf

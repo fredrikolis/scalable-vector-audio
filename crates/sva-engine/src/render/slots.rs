@@ -142,7 +142,7 @@ fn moves(r: &NodeRenderer) -> bool {
         NodeRenderer::Const(_) => false,
         NodeRenderer::Time
         | NodeRenderer::Read { .. }
-        | NodeRenderer::Nearest { .. }
+        | NodeRenderer::Indexed { .. }
         | NodeRenderer::Noise(_)
         | NodeRenderer::Physics { .. } => true,
         other => operands(other).iter().any(|p| moves(p)),
@@ -155,7 +155,7 @@ fn reads(r: &NodeRenderer, kept: &dyn Fn(BufId) -> bool) -> bool {
             slot: Slot::Read(id),
             ..
         }
-        | NodeRenderer::Nearest {
+        | NodeRenderer::Indexed {
             slot: Slot::Read(id),
             ..
         } if kept(*id) => true,
@@ -170,7 +170,7 @@ fn silenced(r: &NodeRenderer, kept: &dyn Fn(BufId) -> bool) -> NodeRenderer {
             slot: Slot::Read(id),
             ..
         }
-        | NodeRenderer::Nearest {
+        | NodeRenderer::Indexed {
             slot: Slot::Read(id),
             ..
         } if !kept(*id) => NodeRenderer::Const(0.0),

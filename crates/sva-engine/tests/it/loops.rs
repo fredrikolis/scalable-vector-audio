@@ -321,7 +321,7 @@ fn two_self_reads_at_two_delays_stay_apart() {
 
 fn collect_taps(typing: &sva_engine::Typing, id: sva_engine::NodeId, out: &mut Vec<When>) {
     match typing.value(id) {
-        Value::SelfAt { at, .. } => out.push(*at),
+        Value::SelfAt { at, .. } => out.push(at.clone()),
         Value::Op { args, .. } => args.iter().for_each(|a| collect_taps(typing, *a, out)),
         Value::Cast(_, source) | Value::Filter { x: source, .. } | Value::Read { source, .. } => {
             collect_taps(typing, *source, out)

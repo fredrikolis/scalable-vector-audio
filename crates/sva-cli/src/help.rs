@@ -95,9 +95,9 @@ RENDER:
   `idx` with it, and one grid is stepped once however many reads ask for it.
   Read at a time that moves it refuses as `type.stateful_warp`, naming what
   holds its state; `@x[idx(...)]` reads its nearest step instead, as `p[idx(...)]`
-  does a signal passed in as parameter `p`, and `idx` of
-  `t` plus a bounded closed form, as `idx(t - 5ms - 2ms*sin(2*pi*t))`, is
-  read sample by sample. An edit to a stream plays from the next sample on.
+  does a signal passed in as parameter `p`, and any `idx`, as
+  `idx(t - 5ms - 2ms*sin(2*pi*t))`, is read sample by sample. An edit to a
+  stream plays from the next sample on.
   `--flop-budget <n>` is the operation count paid before a render refuses.
 
   `ledger` prints one row per node under the target. A row's `share` is the
