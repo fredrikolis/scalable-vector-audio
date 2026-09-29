@@ -229,6 +229,14 @@ pub fn plan(job: &Job) -> Result<sva_engine::Render, CliError> {
     sva_engine::plan(&graph, PROBE, config).map_err(|e| CliError::Engine(as_written(e, job.target)))
 }
 
+/// Every refusal typing the target reaches, and no render's.
+pub fn types(job: &Job) -> Result<(), CliError> {
+    let (graph, config) = settle(job)?;
+    sva_engine::types_at(&graph, PROBE, config.rate)
+        .map(|_| ())
+        .map_err(|e| CliError::Engine(as_written(e, job.target)))
+}
+
 /// The target is no file to crop, so it is not among them.
 pub fn quiet_tails(job: &Job) -> Result<Vec<QuietTail>, CliError> {
     let (graph, config) = settle(job)?;

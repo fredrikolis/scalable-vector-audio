@@ -38,8 +38,9 @@ pub struct LintReport {
     pub interval: Option<(f64, f64)>,
 }
 
-/// With no target, every file's own rules and the tails under every entry point; with one,
-/// those of each file it reaches, the interval a render of it reads and the tails under it.
+/// With no target, every file's own rules, and every entry point's types and the tails under
+/// it; with one, those of each file it reaches, the interval a render of it reads and the tails
+/// under it.
 pub fn lint(dir: &Path, target: Option<&str>) -> Result<LintReport, CliError> {
     let source = sva_ast::Dir::at(dir);
     match target {
@@ -48,14 +49,19 @@ pub fn lint(dir: &Path, target: Option<&str>) -> Result<LintReport, CliError> {
     }
 }
 
-/// An entry point that no render can take whole is left to the render that refuses it.
+/// Every entry point is typed, which types every file it reaches; one that no render can take
+/// whole is left to the render that refuses it. A lint violation refuses before a type does.
 fn lint_files(source: &dyn Source, graph: Graph) -> Result<LintReport, CliError> {
     refuse_unresolved_bars(&graph)?;
     let mut violations = lint_violations(source, &graph);
     let mut tails = Vec::new();
     for root in crate::trace::entry_points(&graph) {
         let target = format!("@{root}");
-        if let Ok(found) = sva_core::quiet_tails(&Job::over(source, &target)) {
+        let job = Job::over(source, &target);
+        if violations.is_empty() {
+            sva_core::types(&job)?;
+        }
+        if let Ok(found) = sva_core::quiet_tails(&job) {
             tails.extend(found);
         }
     }
@@ -505,6 +511,24 @@ mod tests {
             lint(&dir, None).is_ok(),
             "a schedulable loop is not a finding"
         );
+    }
+
+    /// Plain lint types every entry point, so it refuses what a lint of that target does.
+    #[test]
+    fn plain_lint_refuses_the_type_refusal_a_targeted_lint_does() {
+        let body = "crop(self(t - 1sp) + sample(sin(2*pi*100*t))*1sp, 0s, 1s)\n";
+        let dir = dir_of("typed", &[("master", &(doc("a discrete loop") + body))]);
+        for target in [None, Some("@master")] {
+            let Err(err) = lint(&dir, target) else {
+                panic!("{target:?}: `self(t - d)` in a discrete loop must refuse");
+            };
+            let codes: Vec<String> = err.diagnostics().into_iter().map(|d| d.code).collect();
+            assert!(
+                codes.iter().any(|c| c == "type.discrete_self_at_time"),
+                "{target:?}: {codes:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The dogfooding bug: a trailing blank row makes 33, and 33/4 is not a whole subdivision —

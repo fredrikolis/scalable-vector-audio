@@ -130,9 +130,11 @@ LINT:
   sva-cli lint ['<expression>'] [--format <json|text>]
 
   Checks the current directory without rendering a sample. With no target it
-  checks every file under its own rules, and the tails under every entry point
-  a render can take. With a target, in render's grammar, it checks the files
-  that target reaches, and prints the interval a render of it reads.
+  checks every file under its own rules, types every entry point, which types
+  every file it reaches, and checks the tails under every entry point a render
+  can take. With a target, in render's grammar, it checks the files that target
+  reaches, and prints the interval a render of it reads. Either refuses a type
+  error as `render` does.
 
   `quiet-tail` names a file some instance of which is proven under {quiet:.1}
   dBFS, half a 24-bit step, from a second T on, while its extent runs on more
