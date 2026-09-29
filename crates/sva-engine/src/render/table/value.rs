@@ -196,27 +196,29 @@ impl Value {
         }
     }
 
+    /// A segment continuing the one before it grows that one in place, amortised O(1) a
+    /// sample, as a value computed block by block is; any other overlap is laid anew.
     pub(crate) fn hold(&mut self, buffer: Buffer) {
         let Held::Segments(parts) = &mut self.held else {
             unreachable!("only a value with no state holds segments");
         };
         let at = buffer.extent();
-        let (touching, apart): (Vec<Buffer>, Vec<Buffer>) = parts
-            .drain(..)
-            .partition(|b| b.extent().end >= at.start && b.extent().start <= at.end);
-        let mut merged = touching;
-        merged.push(buffer);
-        let joined = match merged.len() {
-            1 => merged.pop().expect("one segment"),
-            _ => laid(
-                &merged.iter().collect::<Vec<_>>(),
-                self.width,
-                self.grid.rate,
-            ),
-        };
-        *parts = apart;
-        let slot = parts.partition_point(|b| b.start < joined.start);
-        parts.insert(slot, joined);
+        let first = parts.partition_point(|b| b.extent().end < at.start);
+        let last = parts.partition_point(|b| b.extent().start <= at.end);
+        match &mut parts[first..last] {
+            [] => parts.insert(first, buffer),
+            [held] if held.extent().end == at.start && held.width == buffer.width => {
+                for (plane, more) in held.planes.iter_mut().zip(&buffer.planes) {
+                    plane.extend_from_slice(more);
+                }
+            }
+            touching => {
+                let mut merged: Vec<&Buffer> = touching.iter().collect();
+                merged.push(&buffer);
+                let joined = laid(&merged, self.width, self.grid.rate);
+                parts.splice(first..last, [joined]);
+            }
+        }
     }
 }
 
@@ -249,5 +251,69 @@ pub(crate) fn finite<'a>(
             location: Located::at(name, None),
             help: "crop a decay at its onset, so it is read only where it falls".to_string(),
         })),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn segments(width: usize) -> Value {
+        Value {
+            key: Key {
+                identity: Hash(0, 0),
+                step: (1, 1),
+            },
+            node: None,
+            name: "stream".to_string(),
+            grid: Grid::of(8_000),
+            width,
+            support: Extent::EVERYWHERE,
+            period: None,
+            kind: Kind::Istft,
+            reads: Vec::new(),
+            held: Held::Segments(Vec::new()),
+            evaluated: Vec::new(),
+            label: None,
+            switches: Vec::new(),
+            pure: true,
+        }
+    }
+
+    fn block(start: i64, len: usize, width: usize) -> Buffer {
+        let mut b = Buffer::of_planes(8_000, vec![vec![start as f64; len]; width]);
+        b.start = start;
+        b
+    }
+
+    /// `hold`'s cost contract, which a render streamed as its own target lives on: held block
+    /// by block, the samples already held move a logarithmic number of times, so each sample
+    /// costs amortised O(1). Where they move is the one observable of a copy; any geometric
+    /// growth passes, and relaying the segment each block fails.
+    #[test]
+    fn a_value_held_block_by_block_grows_in_place() {
+        let (blocks, len) = (1024usize, 64usize);
+        let mut value = segments(2);
+        let mut moves = 0;
+        let mut last = std::ptr::null();
+        for k in 0..blocks {
+            value.hold(block((k * len) as i64, len, 2));
+            let Held::Segments(parts) = &value.held else {
+                unreachable!("a value of segments");
+            };
+            assert_eq!(parts.len(), 1, "one run of contiguous samples");
+            let at = parts[0].plane(0).as_ptr();
+            moves += usize::from(at != last);
+            last = at;
+        }
+        assert!(
+            moves <= 2 * blocks.ilog2() as usize,
+            "{moves} moves over {blocks} blocks"
+        );
+        let Held::Segments(parts) = &value.held else {
+            unreachable!("a value of segments");
+        };
+        assert_eq!(parts[0].extent(), Extent::new(0, (blocks * len) as i64));
+        assert_eq!(parts[0].plane(1)[len * 5], (len * 5) as f64);
     }
 }
