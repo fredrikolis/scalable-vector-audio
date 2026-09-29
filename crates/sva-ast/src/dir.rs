@@ -41,7 +41,14 @@ impl Source for Dir {
         }
         match fs::read_to_string(&full) {
             Ok(text) => Ok(Some(Cow::Owned(text))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidFilename
+                ) =>
+            {
+                Ok(None)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => Err(format!(
                 "{path} is not text, so it cannot be a node; a composition directory holds only \
                  node files, and a rendering written into one is read as a node"

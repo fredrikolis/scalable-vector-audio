@@ -142,6 +142,32 @@ fn the_roots_of_a_target_are_what_its_math_reads() {
     );
 }
 
+/// Math is never looked up as a file, so no length of expression reads as a path too long.
+#[test]
+fn an_expression_of_any_length_is_math_and_never_a_path() {
+    let dir = std::env::temp_dir().join(format!("sva-core-long-expr-{:x}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let long = (0..20)
+        .map(|k| {
+            format!(
+                "crop(saw(2*pi*55*(t-{}s)),{}s,{}s)",
+                4 * k,
+                4 * k,
+                4 * k + 1
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let path_shaped = vec!["t"; 200].join("-");
+    let roots: Vec<_> = [long, path_shaped]
+        .iter()
+        .inspect(|long| assert!(long.len() > 255, "longer than any file name"))
+        .map(|long| roots_of(&sva_ast::Dir::at(&dir), long))
+        .collect();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(roots.iter().all(Result::is_ok), "{roots:?}");
+}
+
 /// `bpm` and `meter` come as a pair: only a pair turns a bar into seconds.
 #[test]
 fn a_bar_span_is_settled_by_a_whole_tempo_pair_and_by_nothing_less() {

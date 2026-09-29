@@ -418,18 +418,22 @@ pub fn settled(loaded: Result<Graph, Vec<Refusal>>) -> Result<Graph, CliError> {
 /// Read by name rather than through a ref.
 pub const RESERVED_VARIABLES: [&str; 3] = ["bpm", "meter", "key"];
 
-/// A path the source answers for is a node; anything else is math, and its reads are roots.
+/// A node path the source answers for is a node; anything else is math, and its reads are
+/// roots. Only a node path is asked of the source: math is never looked up as a file.
 pub fn roots_of(source: &dyn Source, target: &str) -> Result<Vec<String>, CliError> {
     let mut roots: Vec<String> = RESERVED_VARIABLES
         .iter()
         .flat_map(|n| [(*n).to_string(), format!("{}/{n}", sva_ast::VARIABLES)])
         .collect();
+    let held = |path: &str| -> Result<bool, CliError> {
+        Ok(sva_ast::whole_ref_path(path) && source.get(path).map_err(CliError::Io)?.is_some())
+    };
     match target {
-        target if source.get(target).map_err(CliError::Io)?.is_some() => {
+        target if held(target)? => {
             roots.push(target.to_string());
         }
         text => match instance_call(text).map(|(path, _)| path) {
-            Some(path) if source.get(path).map_err(CliError::Io)?.is_some() => {
+            Some(path) if held(path)? => {
                 roots.push(path.to_string());
             }
             _ => {

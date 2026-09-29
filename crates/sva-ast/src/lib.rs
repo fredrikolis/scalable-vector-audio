@@ -28,7 +28,9 @@ pub use graph::{
     Graph, PerBar, VARIABLES, load, load_reaching, names_a_node, reads_of, resolve_ref_path,
 };
 pub use ingest::{Parsed, occurs_free, parse_file};
-pub use lexer::{LogUnit, Token, TokenKind, ref_spans, strip_line_comment, tokenize};
+pub use lexer::{
+    LogUnit, Token, TokenKind, ref_spans, strip_line_comment, tokenize, whole_ref_path,
+};
 pub use outline::{Outline, outline};
 pub use parser::parse as parse_expr;
 pub use print::render as render_expr;
