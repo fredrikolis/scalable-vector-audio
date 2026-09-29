@@ -229,7 +229,8 @@ impl Lowering<'_, '_> {
     }
 
     /// A call whose operands did not all stay inside one closed form is a sampled operation: the
-    /// signal operands decide its type, and a folded constant is neutral by FORMAT 3.3.
+    /// signal operands decide its representation, a folded constant is neutral in it by FORMAT
+    /// 3.3, and every operand counts toward its width.
     pub(super) fn operation(
         &mut self,
         name: &str,
@@ -239,7 +240,6 @@ impl Lowering<'_, '_> {
     ) -> Result<Piece, EngineError> {
         let params = overload::signature(name).map(|s| s.params).unwrap_or(&[]);
         let mut args = Vec::with_capacity(pieces.len());
-        let mut signals = Vec::new();
         for (at, piece) in pieces.into_iter().enumerate() {
             let constant = matches!(&piece, Piece::ClosedForm(f) if constant::is_constant(f));
             if matches!(&piece, Piece::ClosedForm(f) if constant::holds_infinite(f))
@@ -263,13 +263,11 @@ impl Lowering<'_, '_> {
                 ));
             }
             let id = self.seal(piece, var, None)?;
-            if !constant {
-                signals.push(self.typing.ty(id).read_on(var));
-            }
             args.push((id, constant));
         }
         if name == crate::vocabulary::CHANNEL
-            && let ([x], [(of, false), (k, true)]) = (signals.as_slice(), args.as_slice())
+            && let [(of, false), (k, true)] = args.as_slice()
+            && let x = self.typing.ty(*of)
             && let Some(k) = constant::number_of(self.typing, *k)
             && k >= f64::from(x.width)
             && !crate::schedule::holds_self(self.typing, *of, &mut Default::default())
@@ -281,16 +279,12 @@ impl Lowering<'_, '_> {
                 span,
             ));
         }
-        let ty = match overload::resolve(name, &signals) {
+        let ty = match overload::resolve(name, &self.operands(&args, var)) {
             Err(m) if m.code == "type.samples_in_closed_form" => {
-                signals.clear();
-                for (id, constant) in &mut args {
+                for (id, _) in &mut args {
                     *id = self.on_lattice(*id);
-                    if !*constant {
-                        signals.push(self.typing.ty(*id).read_on(var));
-                    }
                 }
-                overload::resolve(name, &signals)
+                overload::resolve(name, &self.operands(&args, var))
             }
             held => held,
         }
@@ -302,6 +296,22 @@ impl Lowering<'_, '_> {
             args,
         };
         Ok(Piece::Value(self.register(value, ty, var)))
+    }
+
+    /// Each operand's type as the call reads it: a constant takes the first signal's
+    /// representation and keeps its own width.
+    fn operands(&self, args: &[(NodeId, bool)], var: Var) -> Vec<Ty> {
+        let ty = |id: NodeId| self.typing.ty(id).read_on(var);
+        let signal = args.iter().find(|(_, c)| !c).map(|&(id, _)| ty(id));
+        args.iter()
+            .map(|&(id, constant)| match (constant, signal) {
+                (true, Some(s)) => Ty {
+                    width: ty(id).width,
+                    ..s
+                },
+                _ => ty(id),
+            })
+            .collect()
     }
 
     /// A closed form in `t` meeting samples is its collapse onto the lattice, the one crossing

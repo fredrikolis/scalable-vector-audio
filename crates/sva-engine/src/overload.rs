@@ -313,8 +313,9 @@ pub fn signature(name: &str) -> Option<&'static Signature> {
     SIGNATURES.iter().find(|s| s.name == name)
 }
 
-/// The signal operands only: a scalar is neutral by FORMAT 3.3's `Sc, S -> S` row, and `Ty`
-/// has no scalar of its own to tell one from a constant closed form.
+/// Every operand in the order written. `Ty` has no scalar of its own, so a constant arrives
+/// as the representation of the signal it meets, neutral by FORMAT 3.3's `Sc, S -> S` row,
+/// under its own width.
 pub fn resolve(name: &str, args: &[Ty]) -> Result<Ty, Mismatch> {
     let Some(sig) = signature(name) else {
         return Err(Mismatch::new(

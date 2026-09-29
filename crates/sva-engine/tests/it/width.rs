@@ -72,3 +72,28 @@ fn a_component_past_a_sampled_width_refuses_at_typing() {
     };
     assert_eq!(refused.code(), "type.width_mismatch", "{refused:?}");
 }
+
+/// A constant beside a stream is one lane of a `join` and a pair's width under a product,
+/// so the stream's second component is read, not refused.
+#[test]
+fn a_constant_counts_toward_the_width_it_meets_a_stream_in() {
+    let lane = |name: &str, master: &str| {
+        let g = graph_of(name, &[("master", master)]);
+        let held = render(&g, "master", RenderConfig::seconds(8_000, 1.0), None)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let buffer = held
+            .output(held.id("master").expect("the root"))
+            .expect("a master");
+        buffer.plane(0).to_vec()
+    };
+    let x = "crop(sample(sin(2*pi*100*t)), 0s, 1s)";
+    let bare = lane("bare", &format!("{x}\n"));
+    let joined = lane("joined", &format!("ch(join(0, {x}), 1)\n"));
+    let scaled = lane("scaled", &format!("ch({x}*join(1, 0.3), 1)\n"));
+    assert_eq!(joined, bare, "`join(0, x)` holds x in its second component");
+    let expected: Vec<f64> = bare.iter().map(|v| v * 0.3).collect();
+    assert_eq!(
+        scaled, expected,
+        "`x*join(1, 0.3)` holds 0.3x in its second component"
+    );
+}
