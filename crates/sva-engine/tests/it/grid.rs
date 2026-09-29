@@ -42,6 +42,21 @@ fn every_node_is_held_at_the_rate_asked_for() {
     }
 }
 
+/// A crop's end is exact at every rate: `[0, 0.8s)` holds `0.8*rate` samples, however
+/// `0.8*48000` rounds in floating point.
+#[test]
+fn an_open_range_ends_at_the_crops_exact_sample_count() {
+    let g = graph_of(
+        "grid-crop-end",
+        &[("cut", "crop(sample(sin(2*pi*100*t)), 0s, 0.8s)\n")],
+    );
+    for rate in RATES {
+        let held = render(&g, "cut", RenderConfig::at(rate), None)
+            .unwrap_or_else(|e| panic!("{rate}: {e}"));
+        assert_eq!(plane(&held, "cut").len(), rate as usize * 4 / 5, "{rate}");
+    }
+}
+
 /// `self[idx(t) - 1]` is the sample before, whatever the rate: an impulse halves each step.
 #[test]
 fn an_indexed_loop_steps_at_the_render_rate() {

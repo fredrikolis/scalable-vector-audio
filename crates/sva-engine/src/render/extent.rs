@@ -4,7 +4,9 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sva_formula::{Body, C64, Fold, Held, NodeId, Unary, exp_zero_at};
-use sva_samples::{Extent, Grid, NodeRenderer, Slot};
+use sva_samples::{Extent, Grid, NodeRenderer, Round, Slot};
+
+use crate::time::Q;
 
 use super::Render;
 use super::pointwise::{self, Point};
@@ -490,41 +492,47 @@ fn keeps_zero(op: Unary) -> bool {
     )
 }
 
-/// The samples a crop's `[l, r)` can be nonzero over: every one some evaluator reads as
-/// inside it, whether it takes the grid's instant or its stepped position.
+/// The samples whose exact instants `(a n + b) / (d rate)` lie in a crop's `[l, r)`, each edge
+/// the decimal it was written as.
 pub(crate) fn window(grid: Grid, l: f64, r: f64) -> Extent {
     if l.is_nan() || r.is_nan() {
         return Extent::EVERYWHERE;
     }
-    let reached = |n: i64, edge: f64| (grid.instant(n) >= edge, grid.stepped(n) >= edge);
-    let first = |edge: f64, any: bool| {
-        let mut n = grid.count(edge).ceil() as i64;
-        let past = |n: i64| {
-            let (a, b) = reached(n, edge);
-            if any { a || b } else { a && b }
-        };
-        while past(n - 1) {
-            n -= 1;
-        }
-        while !past(n) {
-            n += 1;
-        }
-        n
-    };
-    let start = match l {
-        l if l == f64::NEG_INFINITY => i64::MIN,
-        l if l == f64::INFINITY => return Extent::NOWHERE,
-        l => first(l, true),
-    };
-    let end = match r {
-        r if r == f64::INFINITY => i64::MAX,
-        r if r == f64::NEG_INFINITY => return Extent::NOWHERE,
-        r => first(r, false),
-    };
+    let (start, end) = (first_at(grid, l), first_at(grid, r));
     match start < end {
         true => Extent::new(start, end),
         false => Extent::NOWHERE,
     }
+}
+
+/// The first sample whose exact instant is at or past `edge`: past the integers, the end the
+/// edge's sign names. An edge no decimal of 120 bits spells is read at its binary value, and
+/// one under 2^-74 moves only a sample standing exactly at zero.
+fn first_at(grid: Grid, edge: f64) -> i64 {
+    let beyond = if edge < 0.0 { i64::MIN } else { i64::MAX };
+    if edge.is_infinite() {
+        return beyond;
+    }
+    let decimal = || {
+        let steps = Q::decimal(edge)?
+            .mul(Q::new(grid.d.checked_mul(i128::from(grid.rate))?, 1)?)?
+            .sub(Q::new(grid.b, 1)?)?
+            .div(Q::new(grid.a, 1)?)?;
+        let (num, den) = (steps.num(), steps.den());
+        Some(num.div_euclid(den) + i128::from(num.rem_euclid(den) != 0))
+    };
+    if let Some(n) = decimal() {
+        return i64::try_from(n).unwrap_or(beyond);
+    }
+    if let Some(n) = grid.step_at(edge, Round::Ceil) {
+        return n;
+    }
+    if edge.abs() >= 1.0 {
+        return beyond;
+    }
+    let (b, a) = (-grid.b, grid.a);
+    let at = b.div_euclid(a) + i128::from(b.rem_euclid(a) != 0 || edge > 0.0);
+    i64::try_from(at).unwrap_or(beyond)
 }
 
 /// Every sample whose offsets in `reach` land inside `support`. A form on a moved grid is
