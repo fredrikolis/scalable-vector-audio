@@ -774,7 +774,7 @@ fn places(values: &[Value], root: usize, profile: &Profile) -> Vec<store::Place>
                 fork: readers[at] >= 2,
                 target: at == root,
                 slot: None,
-                unread: leaf_reads(value),
+                unread: leaf_reads(values, value),
                 reached: 0,
                 looked: false,
                 prefixed: false,
@@ -805,19 +805,23 @@ fn segments(switches: &[(i64, Hash)], whole: Hash, key: impl Fn(Hash) -> Hash) -
 }
 
 /// Each distinct read a value's program makes, however many leaves share a slot; a value of no
-/// program reads each of its reads once, whole.
-fn leaf_reads(value: &Value) -> Vec<store::Unread> {
+/// program reads each of its reads once, whole. A read through an alias reads the value it
+/// moves, and an alias reads nothing of its own.
+fn leaf_reads(values: &[Value], value: &Value) -> Vec<store::Unread> {
     let Kind::Program(program) = &value.kind else {
         return value
             .reads
             .iter()
             .map(|at| store::Unread {
                 leaf: None,
-                read: *at,
+                read: aliased(values, *at),
                 count: 1,
             })
             .collect();
     };
+    if program.alias.is_some() {
+        return Vec::new();
+    }
     let mut out: Vec<store::Unread> = Vec::new();
     program::leaves(&program.renderer, &mut |leaf| {
         let (NodeRenderer::Read {
@@ -835,7 +839,7 @@ fn leaf_reads(value: &Value) -> Vec<store::Unread> {
             Some(held) => held.count += 1,
             None => out.push(store::Unread {
                 leaf: Some(leaf.clone()),
-                read: value.reads[at.0 as usize],
+                read: aliased(values, value.reads[at.0 as usize]),
                 count: 1,
             }),
         }

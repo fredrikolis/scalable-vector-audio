@@ -109,3 +109,34 @@ fn a_reuse_is_noted_where_its_read_first_sounds() {
         );
     }
 }
+
+/// A node that only moves another is that node read: two reads of it are two lookups of the
+/// node it moves, the second a reuse.
+#[test]
+fn a_read_through_a_moved_node_is_a_lookup_of_the_node_it_moves() {
+    let graph = graph_of(
+        "reuse-moved",
+        &[
+            ("a", "crop(sin(2*pi*440*t)*exp(-t/0.1), 0s, 0.5s)\n"),
+            ("b", "@a(t - 1s)\n"),
+            ("song", "@b(t) + @b(t - 2s)\n"),
+        ],
+    );
+    let held = render(&graph, "song", RenderConfig::seconds(RATE, 4.0), None).expect("a render");
+    let stats = held
+        .cache_stats
+        .expect("every render reports what it asked");
+    let of = |node: &str| {
+        stats
+            .lookups
+            .iter()
+            .filter(|l| l.node == node)
+            .map(|l| l.outcome)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        of("a"),
+        [Outcome::ComputedNotStored, Outcome::Hit],
+        "{stats:?}"
+    );
+}
