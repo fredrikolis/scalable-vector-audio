@@ -189,6 +189,55 @@ fn extent(lo: Option<i128>, hi: Option<i128>) -> Extent {
     }
 }
 
+/// `scale*t + shift + gain*((inner_scale*t + inner_shift) mod period)` at the instant
+/// `n/rate`, each a rational `(num, den)` with `den > 0` and `period > 0`. The remainder and
+/// the sum are integers over one denominator, so which side of a jump an instant falls on is
+/// decided exactly and only the quotient that states the sum rounds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Wrap {
+    pub scale: (i128, i128),
+    pub shift: (i128, i128),
+    pub gain: (i128, i128),
+    pub inner: [(i128, i128); 2],
+    pub period: (i128, i128),
+}
+
+impl Wrap {
+    /// `None` where the integers it is computed in would overflow.
+    pub fn at(self, n: i64, rate: u32) -> Option<f64> {
+        let (n, rate) = (i128::from(n), i128::from(rate));
+        let [(s, sd), (o, od)] = self.inner;
+        let over = sd.checked_mul(rate)?;
+        let den = lcm(lcm(over, od)?, self.period.1)?;
+        let x = s
+            .checked_mul(n)?
+            .checked_mul(den / over)?
+            .checked_add(o.checked_mul(den / od)?)?;
+        let rem = x.rem_euclid(self.period.0.checked_mul(den / self.period.1)?);
+        let line = self.scale.1.checked_mul(rate)?;
+        let wrapped = self.gain.1.checked_mul(den)?;
+        let whole = lcm(lcm(line, self.shift.1)?, wrapped)?;
+        let sum = self
+            .scale
+            .0
+            .checked_mul(n)?
+            .checked_mul(whole / line)?
+            .checked_add(self.shift.0.checked_mul(whole / self.shift.1)?)?
+            .checked_add(self.gain.0.checked_mul(rem)?.checked_mul(whole / wrapped)?)?;
+        Some(sum as f64 / whole as f64)
+    }
+
+    /// The largest magnitude it takes over instants no later than `t`.
+    pub fn most(self, t: f64) -> f64 {
+        let q = |(num, den): (i128, i128)| num as f64 / den as f64;
+        q(self.scale).abs() * t.abs() + q(self.shift).abs() + q(self.gain).abs() * q(self.period)
+    }
+}
+
+fn lcm(a: i128, b: i128) -> Option<i128> {
+    (a / gcd(a, b)).checked_mul(b)
+}
+
 /// Another node's samples, or this node's own past.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Slot {
@@ -259,6 +308,7 @@ pub enum Binary {
 pub enum NodeRenderer {
     Const(f64),
     Time,
+    Wrap(Wrap),
     Read {
         slot: Slot,
         at: At,
@@ -339,6 +389,7 @@ impl NodeRenderer {
             | NodeRenderer::Channel { x, .. } => x.stateless(),
             NodeRenderer::Const(_)
             | NodeRenderer::Time
+            | NodeRenderer::Wrap(_)
             | NodeRenderer::Noise(_)
             | NodeRenderer::Read { .. } => true,
         }

@@ -276,3 +276,26 @@ fn an_output_off_the_lattice_reads_samples_past_every_edge() {
     }
     assert_eq!(read("late").len(), tone.len());
 }
+
+/// A read whose time wraps by an exact period lands on a lattice sample at every jump.
+#[test]
+fn a_time_wrapped_by_an_exact_period_reads_whole_samples() {
+    let g = graph_of(
+        "wrapped",
+        &[
+            ("noise", "crop(rand(t, seed=1), 0s, 1s)\n"),
+            ("looped", "crop(rand(t % 0.03s, seed=1), 0s, 0.1s)\n"),
+            ("held", "crop(rand(t - t % 1sp, seed=1), 0s, 0.1s)\n"),
+        ],
+    );
+    let read = |node: &str| {
+        let held = render(&g, node, low(RATE, 0.1), None).unwrap_or_else(|e| panic!("{e}"));
+        held.output(held.root).expect("a buffer").plane(0).to_vec()
+    };
+    let (noise, looped, held) = (read("noise"), read("looped"), read("held"));
+    let period = (0.03 * f64::from(RATE)) as usize;
+    for (n, (l, h)) in looped.iter().zip(&held).enumerate() {
+        assert!((l - noise[n % period]).abs() < 1e-9, "sample {n}: {l}");
+        assert!((h - noise[n]).abs() < 1e-9, "sample {n}: {h}");
+    }
+}

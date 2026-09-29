@@ -60,6 +60,18 @@ pub fn position_error(at: &At, (from, to): (i64, i64), rate: u32) -> Option<f64>
 fn held(r: &NodeRenderer, span: &Span) -> Option<Held> {
     Some(match r {
         NodeRenderer::Const(c) => Held::padded(*c, *c, 0.0),
+        NodeRenderer::Wrap(wrap) => {
+            let most =
+                wrap.most(span.from.unsigned_abs().max(span.to.unsigned_abs()) as f64 / span.rate);
+            let (lo, hi) = match span.to - span.from {
+                1 => {
+                    let at = wrap.at(span.from, span.rate as u32)?;
+                    (at, at)
+                }
+                _ => (-most, most),
+            };
+            Held::padded(lo, hi, 2.0 * ULP * most)
+        }
         NodeRenderer::Time => {
             let (lo, hi) = (
                 span.from as f64 / span.rate,

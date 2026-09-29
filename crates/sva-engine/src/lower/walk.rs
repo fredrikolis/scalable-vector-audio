@@ -130,9 +130,11 @@ impl Lowering<'_, '_> {
                 "write the duration in seconds, or move it into the closed form in t",
             )),
             Literal::Bars(_) => Err(EngineError::UnresolvedBars(self.here(None))),
-            Literal::Samples(n) => Ok(Piece::ClosedForm(Body::Const(C64::real(
-                n / f64::from(self.inst.lattice()),
-            )))),
+            Literal::Samples(n) => {
+                let count = self.part(Body::Const(C64::real(*n)), None);
+                let lattice = self.part(Body::Const(C64::real(self.inst.lattice().into())), None);
+                Ok(Piece::ClosedForm(Body::Div(count, lattice)))
+            }
             Literal::Str(s) => match note::frequency(s) {
                 Some(hz) => Ok(Piece::ClosedForm(Body::Const(C64::real(hz)))),
                 None => Err(self.refused(

@@ -1,12 +1,13 @@
 // Concern: the postfix op array one node renderer lowers to, and the width each slot holds | Non-concern: lowering into it or running it (mod.rs) | IO: (&NodeRenderer, &Layout) -> Vec<Op> + Vec<usize>
 
 use crate::error::SampleError;
-use crate::machine::renderer::{At, Binary, Map, NodeRenderer, Site, SiteId, Slot, Unary};
+use crate::machine::renderer::{At, Binary, Map, NodeRenderer, Site, SiteId, Slot, Unary, Wrap};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Op {
     Const(f64),
     Time,
+    Wrap(Wrap),
     Noise(u64),
     Read {
         slot: Slot,
@@ -97,6 +98,7 @@ pub(crate) fn lower(
     let w = match renderer {
         NodeRenderer::Const(v) => push(Op::Const(*v), 1, ops, widths),
         NodeRenderer::Time => push(Op::Time, 1, ops, widths),
+        NodeRenderer::Wrap(wrap) => push(Op::Wrap(*wrap), 1, ops, widths),
         NodeRenderer::Noise(seed) => push(Op::Noise(*seed), 1, ops, widths),
         NodeRenderer::Read {
             slot,

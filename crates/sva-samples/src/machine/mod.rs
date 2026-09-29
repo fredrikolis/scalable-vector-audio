@@ -401,7 +401,12 @@ fn step(
 
 fn arity_of(op: &Op) -> usize {
     match op {
-        Op::Const(_) | Op::Time | Op::Noise(_) | Op::Read { .. } | Op::ReadScaled { .. } => 0,
+        Op::Const(_)
+        | Op::Time
+        | Op::Wrap(_)
+        | Op::Noise(_)
+        | Op::Read { .. }
+        | Op::ReadScaled { .. } => 0,
         Op::Physics { arity, .. } => *arity,
         Op::Map(_) | Op::Crop { .. } | Op::Channel(_) | Op::Moving { .. } => 1,
         Op::Guard { .. } => 0,
@@ -425,6 +430,11 @@ fn fill(
     match op {
         Op::Const(v) => result[0] = *v,
         Op::Time => result[0] = t,
+        Op::Wrap(wrap) => {
+            result[0] = wrap
+                .at(n, sr as u32)
+                .ok_or(SampleError::UnreadablePosition)?
+        }
         Op::Noise(seed) => result[0] = sva_formula::draw(*seed, n as f64),
         Op::Read {
             slot,
