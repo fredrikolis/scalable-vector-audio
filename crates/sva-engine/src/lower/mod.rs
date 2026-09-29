@@ -368,7 +368,7 @@ mod tests {
         files
             .insert("env", "exp(-t/0.01)*sin(2*pi*440*t)\n")
             .insert("hit", "lowpass(sample(@env), cutoff=900)\n")
-            .insert("song", &format!("{}\n", reads.join(" + ")));
+            .insert("song", format!("{}\n", reads.join(" + ")));
         let g = sva_ast::load(&files).expect("a composition");
         let typing = crate::types(&g, "song").unwrap_or_else(|e| panic!("song: {e}"));
         let forms = (0..typing.len())

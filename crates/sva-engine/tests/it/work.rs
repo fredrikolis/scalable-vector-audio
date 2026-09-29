@@ -108,8 +108,8 @@ fn a_render_holds_what_its_readers_still_reach_and_its_output() {
             ],
         );
         let held = render(&g, "line", RenderConfig::at(RATE), None).expect("a render");
-        let output = held.output(held.root).expect("the root").plane(0).len();
-        held.held_bytes - output * size_of::<f64>()
+        let output = held.output(held.root).expect("the root");
+        held.held_bytes - size_of_val(output.plane(0))
     };
     let note = RATE as usize * size_of::<f64>();
     let (two, sixteen) = (beyond(2), beyond(16));

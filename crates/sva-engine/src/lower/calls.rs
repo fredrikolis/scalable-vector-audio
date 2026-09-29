@@ -599,10 +599,10 @@ impl<'g> Lowering<'_, 'g> {
 }
 
 /// The key and the seed of `rand(key, seed)` or `rand(key, seed=)`.
-pub(crate) fn rand_arguments<'a>(
-    args: &'a [Arg],
+pub(crate) fn rand_arguments(
+    args: &[Arg],
     number: impl Fn(&Expr) -> Option<f64>,
-) -> Option<(&'a Expr, u64)> {
+) -> Option<(&Expr, u64)> {
     let mut positional = args.iter().filter_map(|a| match a {
         Arg::Pos(x) => Some(x),
         Arg::Named(..) => None,
