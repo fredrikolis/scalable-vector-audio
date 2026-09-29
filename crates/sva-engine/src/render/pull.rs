@@ -258,6 +258,8 @@ fn pulled(
         .filter(|at| pending.deferred.contains(&nodes[*at].id))
         .collect();
     let mut driver = Driver::new(nodes, root, pulled, BLOCK, until, held, kept.clone());
+    let reach = |at: i64| lenses.recording.map(|recording| recording.reach(at));
+    reach(driver.at);
     loop {
         let to = driver.next_to();
         let mut still = Vec::new();
@@ -275,6 +277,7 @@ fn pulled(
         if !driver.pull(held, lenses)? {
             break;
         }
+        reach(driver.at);
     }
     held.held_bytes = driver.most_bytes();
     let stop = recalled.or(driver.stop().filter(|stop| *stop < range.end));

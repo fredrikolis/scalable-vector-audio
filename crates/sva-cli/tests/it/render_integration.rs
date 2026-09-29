@@ -643,3 +643,29 @@ fn a_render_reports_the_interval_its_support_ended() {
         (end * 44_100.0).round() as usize
     );
 }
+
+/// The cache log goes to stderr alone: stdout stays the envelope it is without it.
+#[test]
+fn a_debug_log_writes_to_stderr_and_leaves_stdout_the_envelope() {
+    let dir = scratch("cache-log");
+    put(&dir, "x", "crop(sin(2*pi*220*t), 0s, 0.05s)\n");
+    let run = |log: Option<&str>| {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_sva-cli"));
+        command
+            .current_dir(&dir)
+            .args(["render", "@x", "--representation", "loudness"])
+            .env_remove("SVA_LOG");
+        if let Some(level) = log {
+            command.env("SVA_LOG", level);
+        }
+        command.output().expect("the binary runs")
+    };
+    let data = |out: &std::process::Output| {
+        let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+        printed[..printed.find("\"meta\"").expect("an envelope")].to_string()
+    };
+    let (plain, logged) = (run(None), run(Some("debug")));
+    assert!(!logged.stderr.is_empty(), "a debug log writes to stderr");
+    assert!(data(&plain).contains("\"status\": \"success\""));
+    assert_eq!(data(&plain), data(&logged));
+}

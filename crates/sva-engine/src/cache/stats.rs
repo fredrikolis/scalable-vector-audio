@@ -1,4 +1,4 @@
-// Concern: what one render asked the store, what each lookup came to, and the store after it | Non-concern: what the store evicts (store.rs) | IO: (loads, stores) -> CacheStats
+// Concern: what one render asked the store, how far its output got, what each lookup came to, and the store after it | Non-concern: what the store evicts (store.rs) | IO: (loads, stores) -> CacheStats
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -41,6 +41,8 @@ pub struct CacheStats {
     pub entries: usize,
     /// Entries this render's stores evicted.
     pub evictions: u64,
+    /// Each output sample a pull reached, and how many lookups had been made by then.
+    pub reached: Vec<(i64, usize)>,
 }
 
 impl CacheStats {
@@ -84,6 +86,7 @@ pub(crate) struct Recording {
     tree: u64,
     evictions: u64,
     lookups: Mutex<Vec<Lookup>>,
+    reached: Mutex<Vec<(i64, usize)>>,
 }
 
 impl Recording {
@@ -95,7 +98,16 @@ impl Recording {
             tree: cache.begin_tree(),
             evictions: cache.evictions(),
             lookups: Mutex::new(Vec::new()),
+            reached: Mutex::new(Vec::new()),
         }
+    }
+
+    pub(crate) fn reach(&self, at: i64) {
+        let made = self.held().len();
+        self.reached
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((at, made));
     }
 
     pub(crate) fn finish(self) -> CacheStats {
@@ -109,6 +121,11 @@ impl Recording {
             max_bytes: self.cache.max_bytes(),
             entries: self.cache.entries(),
             evictions: self.cache.evictions() - self.evictions,
+            reached: self
+                .reached
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
         }
     }
 

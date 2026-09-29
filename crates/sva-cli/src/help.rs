@@ -259,6 +259,20 @@ DEFAULTS:
                        it a path already taken refuses as `conflict` and nothing
                        is written.
 
+ENVIRONMENT:
+  SVA_LOG=debug        `render` goes through a fresh in-memory store and, once it
+                       ends, logs that store's lookups to stderr; stdout and the
+                       samples are unchanged. Any other value, or none, logs
+                       nothing. One line per second of output, then one per node
+                       and a total:
+                         sva-cache pass hit=0 miss=190 prefix=0 new=180 cum-hit=0.0%
+                         sva-cache t=1.022s hit=1 miss=2 prefix=0 new=2 cum-hit=0.5%
+                         sva-cache node hit=0 miss=2 prefix=0 new=1 <node>
+                         sva-cache total hit=1 miss=198 prefix=0 new=... hit-rate=0.5% ...
+                       `pass` is what was looked up before the first block;
+                       `hit` found the whole entry, `prefix` a run up to a
+                       switch, `miss` computed it, `new` wrote an entry.
+
 EXIT CODES:
   0  success (error.code absent)
   1  internal_error (a destination could not be written)

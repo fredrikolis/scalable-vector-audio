@@ -1,5 +1,6 @@
 // Concern: declares what a store holds under a content hash and how a key is built | Non-concern: what the store keeps and evicts (store.rs) | IO: (Hash) -> a payload
 
+pub(crate) mod log;
 mod stats;
 mod store;
 

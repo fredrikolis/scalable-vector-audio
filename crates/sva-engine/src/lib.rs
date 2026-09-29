@@ -23,6 +23,7 @@ mod vocabulary;
 
 pub use arguments::{Argument, Arguments, Called, Chosen};
 pub use bindings::Binding;
+pub use cache::log::cache_log;
 pub use cache::{
     Cache, CachePolicy, CacheStats, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY, Hash, Lookup, Outcome,
     PayloadKind, PrunePolicy, buffer_key, profiled_key, symbolic_key,
