@@ -118,3 +118,55 @@ fn a_render_holds_what_its_readers_still_reach_and_its_output() {
         "{sixteen} bytes beyond sixteen notes, {two} beyond two"
     );
 }
+
+/// A late window streams through the history its filter needs and drops it: it writes the
+/// samples a render from 0 writes there, and holds no more the later it starts.
+#[test]
+fn a_late_window_streams_its_history_and_holds_no_more_the_later_it_starts() {
+    let mut g = graph_of(
+        "held-late",
+        &[
+            (
+                "hit-0.25s",
+                "sample(rand(t, seed=3))*sample(exp(-t/0.05))\n",
+            ),
+            ("rest-0.25s", "sample(0*t)\n"),
+            (
+                "bar-1s",
+                "concat(@hit-0.25s, @rest-0.25s, @hit-0.25s, @hit-0.25s)\n",
+            ),
+            (
+                "track-6s",
+                "concat(@bar-1s, @bar-1s, @bar-1s, @bar-1s, @bar-1s, @bar-1s)\n",
+            ),
+            (
+                "dry",
+                "lowpass(sat(@track-6s*1.3 + @track-6s(t - 0.125s)*0.5), cutoff=900, q=0.7)\n",
+            ),
+        ],
+    );
+    g.desugar_arrangement().expect("concat expands");
+    let over = |from: f64, to: f64| {
+        let at = |secs: f64| (secs * f64::from(RATE)) as i64;
+        let config = RenderConfig {
+            range: Range {
+                start: Some(at(from)),
+                end: Some(at(to)),
+            },
+            ..RenderConfig::at(RATE)
+        };
+        let held = render(&g, "dry", config, None).expect("a render");
+        let output = held.output(held.root).expect("the root").plane(0).to_vec();
+        (held.held_bytes - output.len() * size_of::<f64>(), output)
+    };
+    let ((late, _), (later, samples)) = (over(2.0, 3.0), over(4.0, 5.0));
+    let (_, whole) = over(0.0, 5.0);
+    assert!(
+        samples == whole[whole.len() - samples.len()..],
+        "the late window's samples"
+    );
+    assert!(
+        later <= late,
+        "{later} bytes beyond a window at 4 s, {late} beyond one at 2 s: history is held"
+    );
+}

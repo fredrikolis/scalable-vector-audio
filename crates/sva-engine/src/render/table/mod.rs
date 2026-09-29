@@ -156,11 +156,14 @@ impl Table {
 
     /// What a window of the root, and of each wanted node, asks of every value.
     pub(crate) fn demand(&self, window: Extent) -> Vec<Need> {
-        let asked: Vec<(usize, Extent)> = std::iter::once(self.root)
+        demand::demand(&self.values, &self.asked(window))
+    }
+
+    fn asked(&self, window: Extent) -> Vec<(usize, Extent)> {
+        std::iter::once(self.root)
             .chain(self.wanted.iter().copied())
             .map(|v| (v, window))
-            .collect();
-        demand::demand(&self.values, &asked)
+            .collect()
     }
 
     /// Computes what `window` asks that is not held, each value once, after the store answers
@@ -170,7 +173,64 @@ impl Table {
         window: Extent,
         recording: &mut Recording,
     ) -> Result<Pulled, EngineError> {
-        let mut needs = self.demand(window);
+        self.pulled(&self.asked(window), recording)
+    }
+
+    /// The history each stateful value runs through before what `window` holds of it, pulled
+    /// `block` samples at a time, each block dropped once no later one reads it: the state a
+    /// late window starts from, streamed as a render from its start streams it.
+    pub(crate) fn history(
+        &mut self,
+        window: Extent,
+        block: i64,
+        recording: &mut Recording,
+    ) -> Result<Pulled, EngineError> {
+        let spans: Vec<(usize, Extent)> = self
+            .demand(window)
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| matches!(&self.values[*at].kind, Kind::Program(p) if p.stateful()))
+            .filter_map(|(at, need)| {
+                let span = Extent::new(need.compute.hull().start, need.hold.hull().start);
+                (!need.compute.is_empty() && !span.is_empty()).then_some((at, span))
+            })
+            .collect();
+        let over = spans
+            .iter()
+            .fold(Extent::NOWHERE, |held, (_, s)| held.hull(*s));
+        let within = |cut: Extent| -> Vec<(usize, Extent)> {
+            spans
+                .iter()
+                .map(|(at, span)| (*at, span.intersect(cut)))
+                .filter(|(_, span)| !span.is_empty())
+                .collect()
+        };
+        let mut pulled = Pulled::default();
+        let mut from = over.start;
+        while from < over.end {
+            let to = from.saturating_add(block).min(over.end);
+            let done = self.pulled(&within(Extent::new(from, to)), recording)?;
+            pulled.priced += done.priced;
+            pulled.waves += done.waves;
+            pulled.most_bytes = pulled.most_bytes.max(done.most_bytes);
+            let mut later = within(Extent::new(to, i64::MAX));
+            later.extend(self.asked(window));
+            self.released(
+                demand::demand(&self.values, &later),
+                Extent::NOWHERE,
+                window.start,
+            );
+            from = to;
+        }
+        Ok(pulled)
+    }
+
+    fn pulled(
+        &mut self,
+        asked: &[(usize, Extent)],
+        recording: &mut Recording,
+    ) -> Result<Pulled, EngineError> {
+        let mut needs = demand::demand(&self.values, asked);
         loop {
             let mut loaded = false;
             for (at, need) in needs.iter().enumerate() {
@@ -183,7 +243,7 @@ impl Table {
             if !loaded {
                 break;
             }
-            needs = self.demand(window);
+            needs = demand::demand(&self.values, asked);
         }
         let mut pulled = Pulled::default();
         for (at, need) in needs.iter().enumerate() {
@@ -214,27 +274,42 @@ impl Table {
             let computed: Vec<Extent> = need.compute.iter().collect();
             store::stored(value, place, &computed, recording);
         }
+        pulled.most_bytes = self.bytes();
         Ok(pulled)
     }
 
     /// Drops what no later window reads: `future` is the rest of the root's range, `keep` more
-    /// the root holds besides. A wanted value keeps everything.
-    pub(crate) fn release(&mut self, future: Option<Extent>, keep: Extent) {
+    /// the root holds besides, and `since` where the output is read from.
+    pub(crate) fn release(&mut self, future: Option<Extent>, keep: Extent, since: i64) {
         let needs = match future {
             Some(window) => self.demand(window),
             None => vec![Need::default(); self.values.len()],
         };
+        self.released(needs, keep, since);
+    }
+
+    /// A wanted value keeps everything, as a wanted reader's rerun reads it from its start;
+    /// the target's own value, which no wanted value reads, keeps only the output's samples.
+    fn released(&mut self, needs: Vec<Need>, keep: Extent, since: i64) {
         let (mut root, mut by) = (self.root, 0);
         while let Some((read, shift)) = self.values[root].alias() {
             (root, by) = (read, by + shift);
         }
+        let output = !self
+            .wanted
+            .iter()
+            .any(|w| *w != root && self.values[*w].reads.contains(&root));
         for (at, need) in needs.into_iter().enumerate() {
-            if self.values[at].alias().is_some() || self.whole(at) {
+            let whole = self.whole(at) && !(output && at == root);
+            if self.values[at].alias().is_some() || whole {
                 continue;
             }
             let mut kept = need.hold;
             if at == root {
                 kept.add(keep.shifted(by));
+                if self.whole(at) {
+                    kept.add(Extent::new(since, i64::MAX).shifted(by));
+                }
             }
             let value = &mut self.values[at];
             if let (Kind::Program(program), Some(end)) = (&value.kind, value.end()) {
@@ -311,6 +386,8 @@ impl Table {
 pub(crate) struct Pulled {
     pub(crate) priced: u128,
     pub(crate) waves: u128,
+    /// The most bytes the table held once a block was computed.
+    pub(crate) most_bytes: usize,
 }
 
 struct Building<'a> {

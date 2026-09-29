@@ -3,7 +3,7 @@
 use sva_samples::Extent;
 
 use super::RenderConfig;
-use super::table::Table;
+use super::table::{Pulled, Table};
 use super::until::{Known, Until};
 use crate::cache::Recording;
 use crate::error::EngineError;
@@ -135,19 +135,28 @@ impl Driver {
         }
         let to = self.next_to();
         self.recording.reach(from);
-        let pulled = self
-            .table
-            .pull(Extent::new(from, to), &mut self.recording)?;
-        self.work.priced_flops += pulled.priced;
-        self.work.waves = self.work.waves.map(|held| held + pulled.waves);
+        let window = Extent::new(from, to);
+        if from == self.start {
+            let history = self
+                .table
+                .history(window, self.block as i64, &mut self.recording)?;
+            self.priced(&history);
+        }
+        let pulled = self.table.pull(window, &mut self.recording)?;
+        self.priced(&pulled);
         self.work.samples += (to - from) as u64;
         self.at = to;
         self.settle(from, to);
-        self.most_bytes = self.most_bytes.max(self.table.bytes());
         let future = (to < self.last).then(|| Extent::new(to, self.last));
         let keep = Extent::new(from.min(to.saturating_sub(self.keep)), to);
-        self.table.release(future, keep);
+        self.table.release(future, keep, self.start);
         Ok(true)
+    }
+
+    fn priced(&mut self, pulled: &Pulled) {
+        self.work.priced_flops += pulled.priced;
+        self.work.waves = self.work.waves.map(|held| held + pulled.waves);
+        self.most_bytes = self.most_bytes.max(pulled.most_bytes);
     }
 
     pub(super) fn most_bytes(&self) -> usize {
