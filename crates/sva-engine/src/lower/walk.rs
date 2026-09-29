@@ -229,23 +229,25 @@ impl Lowering<'_, '_> {
     ) -> Result<Piece, EngineError> {
         let left = self.walk(l, cx, var)?;
         let right = self.walk(r, cx, var)?;
-        if let (Piece::ClosedForm(a), Piece::ClosedForm(b)) = (&left, &right) {
-            let (a, b) = (a.clone(), b.clone());
-            let a = self.part(a, None);
-            let b = self.part(b, None);
-            let body = match op {
-                BinOp::Add => Body::Add(vec![a, b]),
-                BinOp::Sub => {
-                    let minus = self.part(Body::Const(C64::real(-1.0)), None);
-                    let negated = self.part(Body::Mul(vec![minus, b]), None);
-                    Body::Add(vec![a, negated])
-                }
-                BinOp::Mul => Body::Mul(vec![a, b]),
-                BinOp::Div => Body::Div(a, b),
-                BinOp::Mod => Body::Fold(sva_formula::Fold::Mod, vec![a, b]),
-            };
-            return self.folded(body);
-        }
+        let (left, right) = match (left, right) {
+            (Piece::ClosedForm(a), Piece::ClosedForm(b)) => {
+                let a = self.part(a, None);
+                let b = self.part(b, None);
+                let body = match op {
+                    BinOp::Add => Body::Add(vec![a, b]),
+                    BinOp::Sub => {
+                        let minus = self.part(Body::Const(C64::real(-1.0)), None);
+                        let negated = self.part(Body::Mul(vec![minus, b]), None);
+                        Body::Add(vec![a, negated])
+                    }
+                    BinOp::Mul => Body::Mul(vec![a, b]),
+                    BinOp::Div => Body::Div(a, b),
+                    BinOp::Mod => Body::Fold(sva_formula::Fold::Mod, vec![a, b]),
+                };
+                return self.folded(body);
+            }
+            pieces => pieces,
+        };
         let name = match op {
             BinOp::Add => "+",
             BinOp::Sub => "-",
@@ -556,9 +558,8 @@ impl Lowering<'_, '_> {
         found
     }
 
-    /// A value only at the steps it takes: no closed form, and nothing a formula reads anywhere.
     fn holds_state(&self, id: NodeId) -> bool {
-        !self.typing.ty(id).is_closed_form() && !crate::schedule::anywhere(self.typing, id)
+        super::holds_state(self.typing, id)
     }
 
     /// Every node under `e`, first to last, until `stop` answers true.
@@ -585,7 +586,7 @@ impl Lowering<'_, '_> {
     /// One read of `source`'s samples at `at`.
     pub(super) fn reading(&mut self, source: NodeId, at: When, span: ByteSpan, var: Var) -> NodeId {
         let ty = self.typing.ty(source);
-        let site = self.typing.mark(self.here(Some(span)));
+        let site = self.typing.mark(self.node, Some(span));
         let read = Ty {
             held: Held::Sampled,
             dual: false,

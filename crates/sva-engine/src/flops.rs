@@ -153,7 +153,8 @@ fn read_as(
     let extent = render.extent_of(base)?;
     let (rate, len) = (render.rate(), extent.len());
     let profile = &render.config.profile;
-    let body = refs::fold_constants(&render.tys, &along(render, &form.body, chain)?);
+    let along = along(render, &form.body, chain)?;
+    let body = refs::fold_constants(&render.tys, &along);
     let (carried, shared) = carried_already(&body, walked, chain);
     let plan = match refs::spectral_sum_of_body(&render.tys, base, &body, form.var) {
         Ok(sum) => plan::of(&sum, rate, extent, profile, len).ok()?,

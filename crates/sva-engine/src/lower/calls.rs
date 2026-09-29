@@ -145,12 +145,11 @@ impl<'g> Lowering<'_, 'g> {
             }
         };
         if numeric(name) {
-            let origin = self.typing.mark(self.here(Some(span)));
-            return match arithmetic(name, &bodies, named, var, origin) {
+            let origin = self.typing.mark(self.node, Some(span));
+            let two = bodies.len() == 2;
+            return match arithmetic(name, bodies, named, var, origin) {
                 Some(body) => self.folded(body),
-                None if name == "pow" && bodies.len() == 2 => {
-                    Err(self.non_integer_power(written, span))
-                }
+                None if name == "pow" && two => Err(self.non_integer_power(written, span)),
                 None => Err(EngineError::BadArity(name.to_string())),
             };
         }
@@ -166,7 +165,7 @@ impl<'g> Lowering<'_, 'g> {
                     Edge::PosInf => 0.0,
                     _ => fall,
                 };
-                let of = self.part(bodies[0].clone(), Some(span));
+                let of = self.part(first(bodies), Some(span));
                 Ok(Piece::ClosedForm(Body::Crop {
                     of,
                     l,
@@ -177,7 +176,7 @@ impl<'g> Lowering<'_, 'g> {
             }
             "delta" => {
                 arity(1)?;
-                let at = self.part(bodies[0].clone(), Some(span));
+                let at = self.part(first(bodies), Some(span));
                 Ok(Piece::ClosedForm(Body::Delta {
                     at,
                     order: read("k", 0.0) as u16,
@@ -185,7 +184,7 @@ impl<'g> Lowering<'_, 'g> {
             }
             "pv" => {
                 arity(1)?;
-                let at = self.part(bodies[0].clone(), Some(span));
+                let at = self.part(first(bodies), Some(span));
                 Ok(Piece::ClosedForm(Body::Pv(at)))
             }
             "join" => {
@@ -197,7 +196,7 @@ impl<'g> Lowering<'_, 'g> {
                 let Some(index) = super::constant_value(&bodies[1], var) else {
                     return Err(EngineError::BadArity(name.to_string()));
                 };
-                let of = self.part(bodies[0].clone(), Some(span));
+                let of = self.part(first(bodies), Some(span));
                 Ok(Piece::ClosedForm(Body::Channel(of, index as u8)))
             }
             other => Err(EngineError::UnknownBuiltin(other.to_string())),
@@ -326,7 +325,7 @@ impl<'g> Lowering<'_, 'g> {
         span: ByteSpan,
     ) -> Result<Edge, EngineError> {
         let folded = crate::refs::fold_constants(self.typing, body);
-        let infinite = match folded {
+        let infinite = match *folded {
             Body::Const(c) if c.im == 0.0 && c.re.is_infinite() => Some(c.re),
             _ => None,
         };
@@ -628,25 +627,36 @@ pub(super) fn numeric(name: &str) -> bool {
 /// an argument folded before a call and the same argument lowered agree by construction.
 pub(super) fn arithmetic(
     name: &str,
-    bodies: &[Body],
+    bodies: Vec<Body>,
     named: &[(&str, f64)],
     var: Var,
     origin: Origin,
 ) -> Option<Body> {
+    let bodies = match <[Body; 1]>::try_from(bodies) {
+        Ok([x]) => return unary(name, x, named, origin),
+        Err(bodies) => bodies,
+    };
+    let [a, b] = <[Body; 2]>::try_from(bodies).ok()?;
+    let fold = |op: Fold, a: Body, b: Body| {
+        Body::Fold(op, vec![Part::new(origin, a), Part::new(origin, b)])
+    };
+    match name {
+        "max" => Some(fold(Fold::Max, a, b)),
+        "min" => Some(fold(Fold::Min, a, b)),
+        "pow" => power(a, b, var, origin),
+        _ => None,
+    }
+}
+
+fn unary(name: &str, x: Body, named: &[(&str, f64)], origin: Origin) -> Option<Body> {
     let part = |f: Body| Part::new(origin, f);
-    let unary = |op: Unary, x: &Body| Body::Apply(op, part(x.clone()));
-    let fold =
-        |op: Fold, a: &Body, b: &Body| Body::Fold(op, vec![part(a.clone()), part(b.clone())]);
     if name == "sat" {
-        let [x] = bodies else {
-            return None;
-        };
         let drive = Body::Const(C64::real(named_or(named, "drive", 1.0)));
-        let driven = Body::Mul(vec![part(x.clone()), part(drive)]);
+        let driven = Body::Mul(vec![part(x), part(drive)]);
         return Some(Body::Apply(Unary::Sat, part(driven)));
     }
-    if let ("step", [x]) = (name, bodies)
-        && let Some(at) = rising_zero(x)
+    if name == "step"
+        && let Some(at) = rising_zero(&x)
     {
         return Some(Body::Crop {
             of: part(Body::Const(C64::ONE)),
@@ -656,15 +666,15 @@ pub(super) fn arithmetic(
             fall: 0.0,
         });
     }
-    if let ([x], Some(op)) = (bodies, Unary::from_name(name)) {
-        return Some(unary(op, x));
-    }
-    Some(match (name, bodies) {
-        ("max", [a, b]) => fold(Fold::Max, a, b),
-        ("min", [a, b]) => fold(Fold::Min, a, b),
-        ("pow", [base, exponent]) => return power(base, exponent, var, origin),
-        _ => return None,
-    })
+    Unary::from_name(name).map(|op| Body::Apply(op, part(x)))
+}
+
+/// The one operand a call of one argument reads, moved out of the operands it was lowered in.
+fn first(bodies: Vec<Body>) -> Body {
+    bodies
+        .into_iter()
+        .next()
+        .expect("arity checked before the operand is read")
 }
 
 /// `min(x, inf)` is `x` and `min(x, -inf)` is `-inf`, `max` alike, whatever `x` holds.
@@ -700,18 +710,18 @@ fn rising_zero(x: &Body) -> Option<f64> {
 /// An integer exponent is a polynomial factor and stays one. A real exponent is
 /// `exp(x*ln(b))`, which only a positive base has: a constant one folds here, a signal one
 /// becomes that exponential, and anything else has no value to approximate.
-fn power(base: &Body, exponent: &Body, var: Var, origin: Origin) -> Option<Body> {
+fn power(base: Body, exponent: Body, var: Var, origin: Origin) -> Option<Body> {
     let part = |f: Body| Part::new(origin, f);
-    let n = super::constant_value(exponent, var);
+    let n = super::constant_value(&exponent, var);
     if let Some(n) = n.filter(|n| whole(*n)) {
-        return Some(Body::Pow(part(base.clone()), n as i32));
+        return Some(Body::Pow(part(base), n as i32));
     }
-    let b = super::constant_value(base, var).filter(|b| *b > 0.0)?;
+    let b = super::constant_value(&base, var).filter(|b| *b > 0.0)?;
     if let Some(n) = n {
         return Some(Body::Const(C64::real(b.powf(n))));
     }
     let rate = Body::Const(C64::real(b.ln()));
-    let scaled = Body::Mul(vec![part(exponent.clone()), part(rate)]);
+    let scaled = Body::Mul(vec![part(exponent), part(rate)]);
     Some(Body::Apply(Unary::Exp, part(scaled)))
 }
 

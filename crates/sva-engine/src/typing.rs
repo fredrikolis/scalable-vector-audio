@@ -1,9 +1,10 @@
 // Concern: gives every node one Ty and the value it lowered to | Non-concern: the per-term judgment (sva-formula), lowering (lower/) | IO: (Instances, Order) -> Ty per node
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sva_formula::filter::Shape;
-use sva_formula::{ClosedForm, Codomain, Env, Held, NodeId, Origin, ParamId, Ty, Var, infer};
+use sva_formula::{C64, ClosedForm, Codomain, Env, Held, NodeId, Origin, ParamId, Ty, Var, infer};
 use sva_samples::Params;
 
 use crate::arguments::{Arguments, Called, Chosen};
@@ -100,10 +101,23 @@ pub struct Typing {
     copies: BTreeMap<(String, Grid), NodeId>,
     lowering: BTreeSet<String>,
     files: BTreeMap<String, Vec<NodeId>>,
-    origins: Vec<Located>,
+    origins: Vec<(u32, Option<sva_ast::ByteSpan>)>,
+    sites: Vec<String>,
+    site_ids: BTreeMap<String, u32>,
     pending: BTreeSet<NodeId>,
     indices: u32,
     sum: Option<(NodeId, Vec<SumSlot>)>,
+    numbers: Numbers,
+}
+
+/// Each node's folded number, derived from the nodes alone; a settle evicts it all.
+#[derive(Clone, Debug, Default)]
+struct Numbers(RefCell<BTreeMap<NodeId, Option<C64>>>);
+
+impl PartialEq for Numbers {
+    fn eq(&self, _: &Numbers) -> bool {
+        true
+    }
 }
 
 /// One term of a stream's note sum: its node, or the identity it had before it ended.
@@ -226,12 +240,21 @@ impl Typing {
     pub fn locate(&self, origin: Origin) -> Located {
         self.origins
             .get(origin.token() as usize)
-            .cloned()
+            .map(|&(site, span)| Located::at(self.sites[site as usize].as_str(), span))
             .unwrap_or_default()
     }
 
-    pub(crate) fn mark(&mut self, at: Located) -> Origin {
-        self.origins.push(at);
+    pub(crate) fn mark(&mut self, node: &str, span: Option<sva_ast::ByteSpan>) -> Origin {
+        let site = match self.site_ids.get(node) {
+            Some(&site) => site,
+            None => {
+                let site = self.sites.len() as u32;
+                self.sites.push(node.to_string());
+                self.site_ids.insert(node.to_string(), site);
+                site
+            }
+        };
+        self.origins.push((site, span));
         Origin::new((self.origins.len() - 1) as u32)
     }
 
@@ -266,6 +289,15 @@ impl Typing {
     pub(crate) fn settle(&mut self, id: NodeId, node: Node) {
         self.nodes[id.0 as usize] = node;
         self.pending.remove(&id);
+        self.numbers.0.get_mut().clear();
+    }
+
+    pub(crate) fn folded_number(&self, id: NodeId) -> Option<Option<C64>> {
+        self.numbers.0.borrow().get(&id).copied()
+    }
+
+    pub(crate) fn fold_number(&self, id: NodeId, number: Option<C64>) {
+        self.numbers.0.borrow_mut().insert(id, number);
     }
 
     pub(crate) fn alias(&mut self, path: &str, id: NodeId) {

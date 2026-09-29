@@ -9,6 +9,8 @@ mod solvers;
 mod walk;
 mod waves;
 
+use std::borrow::Cow;
+
 use sva_ast::{Address, Arg, ByteSpan, Expr, Literal};
 use sva_formula::{Body, ClosedForm, Held, IndexId, NodeId, Part, Ty, Var};
 
@@ -60,7 +62,9 @@ pub fn node(path: &str, inst: &Instances, typing: &mut Typing) -> Result<NodeId,
 }
 
 /// `path` on `grid`: on the render's own, the node typing already holds; on any other, its
-/// copy there, every input it reads on that grid too, lowered once.
+/// copy there, every input it reads on that grid too, lowered once per grid. A node that
+/// holds no state has a value at any instant, so only its step, which `sp` counts in, can
+/// change what it lowers to: at the render's own step every reader shares the node itself.
 pub(crate) fn on(
     path: &str,
     grid: Grid,
@@ -70,6 +74,13 @@ pub(crate) fn on(
     let base = typing
         .id(path)
         .ok_or_else(|| EngineError::UnknownNode(path.to_string()))?;
+    let grid = match typing.pending(base) || holds_state(typing, base) {
+        true => grid,
+        false => Grid {
+            phase: crate::time::Q::ZERO,
+            ..grid
+        },
+    };
     if grid.is_rate() {
         return Ok(base);
     }
@@ -84,6 +95,11 @@ pub(crate) fn on(
     let id = found?;
     typing.copied(path, grid, id);
     Ok(id)
+}
+
+/// A value only at the steps it takes: no closed form, and nothing a formula reads anywhere.
+pub(crate) fn holds_state(typing: &Typing, id: NodeId) -> bool {
+    !typing.ty(id).is_closed_form() && !crate::schedule::anywhere(typing, id)
 }
 
 fn lowered(
@@ -229,7 +245,7 @@ impl<'g> Lowering<'_, 'g> {
     }
 
     fn part(&mut self, f: Body, span: Option<ByteSpan>) -> Part {
-        let origin = self.typing.mark(self.here(span));
+        let origin = self.typing.mark(self.node, span);
         Part::new(origin, f)
     }
 
@@ -270,7 +286,7 @@ impl<'g> Lowering<'_, 'g> {
                     .filter(|held| self.typing.pending(*held));
                 match settled {
                     Some(held) => {
-                        let site = self.typing.mark(self.here(None));
+                        let site = self.typing.mark(self.node, None);
                         let node = Typed {
                             name: self.node.to_string(),
                             ty: self.typing.ty(id),
@@ -294,9 +310,12 @@ impl<'g> Lowering<'_, 'g> {
                 }
             }
             Piece::ClosedForm(body) => {
-                let origin = self.typing.mark(self.here(None));
+                let origin = self.typing.mark(self.node, None);
                 // FORMAT 15.3: a ref naming one number is that number to the typing too.
-                let body = crate::refs::fold_constants(self.typing, &body);
+                let body = match crate::refs::fold_constants(self.typing, &body) {
+                    Cow::Owned(folded) => folded,
+                    Cow::Borrowed(_) => body,
+                };
                 if !matches!(body, Body::Const(_)) && holds_infinite(&body) {
                     return Err(
                         self.infinite("inf stands in a term that moves, which names no value")
@@ -340,5 +359,31 @@ impl<'g> Lowering<'_, 'g> {
             },
             None,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sva_formula::NodeId;
+
+    /// A closed form is exact at any instant, so a filter over it read at many shifts, each
+    /// landing between two samples, leaves the form lowered once.
+    #[test]
+    fn a_closed_form_read_at_many_fractional_shifts_is_lowered_once() {
+        let reads: Vec<String> = (1..=24)
+            .map(|k| format!("@hit(t - {}s)", 0.0123 + f64::from(k) * 0.0000137))
+            .collect();
+        let mut files = sva_ast::Composition::new();
+        files
+            .insert("env", "exp(-t/0.01)*sin(2*pi*440*t)\n")
+            .insert("hit", "lowpass(sample(@env), cutoff=900)\n")
+            .insert("song", &format!("{}\n", reads.join(" + ")));
+        let g = sva_ast::load(&files).expect("a composition");
+        let typing = crate::types(&g, "song").unwrap_or_else(|e| panic!("song: {e}"));
+        let forms = (0..typing.len())
+            .map(|n| NodeId(n as u32))
+            .filter(|id| typing.name(*id) == "env")
+            .count();
+        assert_eq!(forms, 1, "env is lowered once, not once per shift");
     }
 }

@@ -1,5 +1,7 @@
 // Concern: what reading another node yields, per the representation it holds | Non-concern: ordering the reads (schedule.rs), collapsing a closed form (sva-samples) | IO: (NodeId, Var) -> SpectralSum
 
+use std::borrow::Cow;
+
 use sva_formula::closed_form::children;
 use sva_formula::spectral_sum::atom::Indicator;
 use sva_formula::spectral_sum::build::{multiply_lanes, sole_constant};
@@ -158,25 +160,50 @@ fn no_closed_form(typing: &Typing, node: NodeId) -> EngineError {
 
 /// Every ref naming one number, replaced by that number. A constant is the same value on
 /// either axis and under every construct, so it folds where no form would substitute.
-pub(crate) fn fold_constants(typing: &Typing, f: &Body) -> Body {
-    folded(typing, f, &mut Vec::new())
+pub(crate) fn fold_constants<'a>(typing: &Typing, f: &'a Body) -> Cow<'a, Body> {
+    let fold = &mut Folding::default();
+    match names_number(typing, f, fold) {
+        true => Cow::Owned(folded(typing, f, fold)),
+        false => Cow::Borrowed(f),
+    }
 }
 
-fn folded(typing: &Typing, f: &Body, open: &mut Vec<NodeId>) -> Body {
+fn names_number(typing: &Typing, f: &Body, fold: &mut Folding) -> bool {
+    match f {
+        Body::Node(id) => number(typing, *id, fold).is_some(),
+        _ => children(f)
+            .into_iter()
+            .any(|p| names_number(typing, &p.body, fold)),
+    }
+}
+
+/// The chain of refs still being folded, and whether a fold met one of them again: a number
+/// that loop cut short is not the node's own, so it is not kept.
+#[derive(Default)]
+struct Folding {
+    open: Vec<NodeId>,
+    cut: bool,
+}
+
+fn folded(typing: &Typing, f: &Body, fold: &mut Folding) -> Body {
     let Body::Node(id) = f else {
         return sva_formula::closed_form::map_children(f, |p| {
-            Part::new(p.origin, folded(typing, &p.body, open))
+            Part::new(p.origin, folded(typing, &p.body, fold))
         });
     };
-    match number(typing, *id, open) {
+    match number(typing, *id, fold) {
         Some(c) => Body::Const(c),
         None => f.clone(),
     }
 }
 
 /// The one number a node holds, or `None` where it holds a form, samples or a ref loop.
-fn number(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Option<C64> {
-    if open.contains(&node) {
+fn number(typing: &Typing, node: NodeId, fold: &mut Folding) -> Option<C64> {
+    if let Some(held) = typing.folded_number(node) {
+        return held;
+    }
+    if fold.open.contains(&node) {
+        fold.cut = true;
         return None;
     }
     let Value::ClosedForm(form) = typing.value(node) else {
@@ -185,17 +212,21 @@ fn number(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Option<C64> 
     if let Body::Const(c) = form.body {
         return Some(c);
     }
-    open.push(node);
-    let body = folded(typing, &form.body, open);
-    open.pop();
-    sole_constant(
-        &normalize_closed_form(&ClosedForm {
-            var: form.var,
-            body,
-            origin: form.origin,
-        })
-        .ok()?,
-    )
+    let outer = std::mem::take(&mut fold.cut);
+    fold.open.push(node);
+    let folded = names_number(typing, &form.body, fold).then(|| ClosedForm {
+        body: folded(typing, &form.body, fold),
+        ..*form
+    });
+    fold.open.pop();
+    let number = normalize_closed_form(folded.as_ref().unwrap_or(form))
+        .ok()
+        .and_then(|sum| sole_constant(&sum));
+    if !fold.cut {
+        typing.fold_number(node, number);
+    }
+    fold.cut |= outer;
+    number
 }
 
 /// A node reference is not a `Body`, so a term holding one is normalized by composing

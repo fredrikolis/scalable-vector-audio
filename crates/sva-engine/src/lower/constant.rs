@@ -44,7 +44,7 @@ pub fn constant_call(name: &str, positional: &[f64], named: &[(&str, f64)]) -> O
         .collect();
     folded_number(&super::calls::arithmetic(
         name,
-        &bodies,
+        bodies,
         named,
         Var::T,
         Origin::UNKNOWN,
