@@ -546,33 +546,51 @@ impl NodeRenderer {
     /// Holds no call site and reads none of its own past, so skipping a sample of it changes
     /// no later one.
     pub fn stateless(&self) -> bool {
+        !self.holds_state() && self.operands().into_iter().all(NodeRenderer::stateless)
+    }
+
+    pub(crate) fn holds_state(&self) -> bool {
+        matches!(
+            self,
+            NodeRenderer::Filter { .. }
+                | NodeRenderer::Physics { .. }
+                | NodeRenderer::Read {
+                    slot: Slot::Own,
+                    ..
+                }
+                | NodeRenderer::Indexed {
+                    slot: Slot::Own,
+                    ..
+                }
+        )
+    }
+
+    /// Every operand in the order the op array lowers them.
+    pub(crate) fn operands(&self) -> Vec<&NodeRenderer> {
         match self {
-            NodeRenderer::Filter { .. } | NodeRenderer::Physics { .. } => false,
-            NodeRenderer::Read {
-                slot: Slot::Own, ..
-            } => false,
-            NodeRenderer::Formula { time, .. } => time.stateless(),
-            NodeRenderer::Indexed {
-                slot: Slot::Own, ..
-            } => false,
-            NodeRenderer::Indexed { index, .. } | NodeRenderer::Instant(index) => {
-                index.times().iter().all(|t| t.stateless())
-            }
             NodeRenderer::Add(set) | NodeRenderer::Mul(set) | NodeRenderer::Join(set) => {
-                set.iter().all(NodeRenderer::stateless)
+                set.iter().collect()
             }
             NodeRenderer::Sub(a, b)
             | NodeRenderer::Div(a, b)
             | NodeRenderer::Pow(a, b)
-            | NodeRenderer::Zip(_, a, b) => a.stateless() && b.stateless(),
+            | NodeRenderer::Zip(_, a, b) => vec![a, b],
             NodeRenderer::Map(_, x)
             | NodeRenderer::Crop { x, .. }
-            | NodeRenderer::Channel { x, .. } => x.stateless(),
+            | NodeRenderer::Channel { x, .. } => vec![x],
+            NodeRenderer::Filter {
+                x, cutoff, q, gain, ..
+            } => vec![x, cutoff, q, gain],
+            NodeRenderer::Physics { args, .. } => args.iter().collect(),
+            NodeRenderer::Formula { time, .. } => vec![time],
+            NodeRenderer::Indexed { index, .. } | NodeRenderer::Instant(index) => {
+                index.times().into_iter().map(|t| &**t).collect()
+            }
             NodeRenderer::Const(_)
             | NodeRenderer::Time
             | NodeRenderer::Wrap(_)
             | NodeRenderer::Noise(_)
-            | NodeRenderer::Read { .. } => true,
+            | NodeRenderer::Read { .. } => Vec::new(),
         }
     }
 }

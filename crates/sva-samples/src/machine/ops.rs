@@ -114,156 +114,142 @@ fn indexed(
     index: &Index,
     layout: &Layout,
     out: &mut Lowered,
-) -> Result<(usize, usize), SampleError> {
-    let mut arity = 0;
+) -> Result<(usize, Vec<usize>), SampleError> {
+    let mut widths = Vec::new();
     let program = index.mapped(&mut |time| {
-        meet(1, lower(time, layout, out)?)?;
-        arity += 1;
-        Ok::<usize, SampleError>(arity - 1)
+        widths.push(lower(time, layout, out)?);
+        Ok::<usize, SampleError>(widths.len() - 1)
     })?;
     out.indices.push(program);
-    Ok((out.indices.len() - 1, arity))
+    Ok((out.indices.len() - 1, widths))
 }
 
 fn lower(r: &NodeRenderer, layout: &Layout, out: &mut Lowered) -> Result<usize, SampleError> {
-    let w = match r {
-        NodeRenderer::Const(v) => out.push(Op::Const(*v), 1),
-        NodeRenderer::Time => out.push(Op::Time, 1),
-        NodeRenderer::Wrap(wrap) => out.push(Op::Wrap(*wrap), 1),
-        NodeRenderer::Noise(seed) => out.push(Op::Noise(*seed), 1),
-        NodeRenderer::Read { slot, map } => out.push(
-            Op::Read {
-                slot: *slot,
-                at: *map,
-            },
-            slot_width(*slot, layout),
-        ),
-        NodeRenderer::Formula {
-            formula,
-            width,
-            time,
-        } => {
-            let times = lower(time, layout, out)?;
-            if times != 1 && times != *width {
-                return Err(SampleError::WidthMismatch {
-                    left: times,
-                    right: *width,
-                });
-            }
+    if let NodeRenderer::Mul(parts) = r
+        && let Some((slot, at, by)) = scaled_read(parts)
+    {
+        return Ok(out.push(Op::ReadScaled { slot, at, by }, slot_width(slot, layout)));
+    }
+    let (op, operands) = match r {
+        NodeRenderer::Formula { formula, time, .. } => {
+            let operands = vec![lower(time, layout, out)?];
             out.formulas.push(formula.clone());
             let at = out.formulas.len() - 1;
-            out.push(Op::Formula { at }, *width)
+            (Op::Formula { at }, operands)
         }
         NodeRenderer::Indexed { slot, index, reach } => {
-            let (at, arity) = indexed(index, layout, out)?;
+            let (at, operands) = indexed(index, layout, out)?;
             let op = Op::Indexed {
                 slot: *slot,
                 at,
-                arity,
+                arity: operands.len(),
                 reach: *reach,
             };
-            out.push(op, slot_width(*slot, layout))
+            (op, operands)
         }
         NodeRenderer::Instant(index) => {
-            let (at, arity) = indexed(index, layout, out)?;
-            out.push(Op::Instant { at, arity }, 1)
+            let (at, operands) = indexed(index, layout, out)?;
+            let arity = operands.len();
+            (Op::Instant { at, arity }, operands)
         }
-        NodeRenderer::Mul(parts) if let Some((slot, at, by)) = scaled_read(parts) => {
-            out.push(Op::ReadScaled { slot, at, by }, slot_width(slot, layout))
+        other => {
+            let operands = other
+                .operands()
+                .into_iter()
+                .map(|p| lower(p, layout, out))
+                .collect::<Result<Vec<_>, _>>()?;
+            (op_of(other), operands)
         }
-        NodeRenderer::Add(parts) | NodeRenderer::Mul(parts) => {
-            let mut width = 1;
-            for p in parts {
-                width = meet(width, lower(p, layout, out)?)?;
-            }
-            let op = match r {
-                NodeRenderer::Add(_) => Op::Add(parts.len()),
-                _ => Op::Mul(parts.len()),
-            };
-            out.push(op, width)
-        }
-        NodeRenderer::Sub(a, b) | NodeRenderer::Div(a, b) | NodeRenderer::Pow(a, b) => {
-            let wa = lower(a, layout, out)?;
-            let wb = lower(b, layout, out)?;
-            let op = match r {
-                NodeRenderer::Sub(..) => Op::Sub,
-                NodeRenderer::Div(..) => Op::Div,
-                _ => Op::Pow,
-            };
-            out.push(op, meet(wa, wb)?)
-        }
-        NodeRenderer::Map(f, x) => {
-            let w = lower(x, layout, out)?;
-            out.push(Op::Map(*f), w)
-        }
-        NodeRenderer::Zip(f, a, b) => {
-            let wa = lower(a, layout, out)?;
-            let wb = lower(b, layout, out)?;
-            out.push(Op::Zip(*f), meet(wa, wb)?)
-        }
+    };
+    let w = width(r, &operands, layout)?;
+    Ok(out.push(op, w))
+}
+
+fn op_of(r: &NodeRenderer) -> Op {
+    match r {
+        NodeRenderer::Const(v) => Op::Const(*v),
+        NodeRenderer::Time => Op::Time,
+        NodeRenderer::Wrap(wrap) => Op::Wrap(*wrap),
+        NodeRenderer::Noise(seed) => Op::Noise(*seed),
+        NodeRenderer::Read { slot, map } => Op::Read {
+            slot: *slot,
+            at: *map,
+        },
+        NodeRenderer::Add(parts) => Op::Add(parts.len()),
+        NodeRenderer::Mul(parts) => Op::Mul(parts.len()),
+        NodeRenderer::Join(parts) => Op::Join(parts.len()),
+        NodeRenderer::Sub(..) => Op::Sub,
+        NodeRenderer::Div(..) => Op::Div,
+        NodeRenderer::Pow(..) => Op::Pow,
+        NodeRenderer::Map(f, _) => Op::Map(*f),
+        NodeRenderer::Zip(f, ..) => Op::Zip(*f),
         NodeRenderer::Crop {
-            x,
             window,
             a,
             b,
             rise,
             fall,
-        } => {
-            let w = lower(x, layout, out)?;
-            let crop = Op::Crop {
-                window: *window,
-                a: *a,
-                b: *b,
-                rise: *rise,
-                fall: *fall,
-            };
-            out.push(crop, w)
+            ..
+        } => Op::Crop {
+            window: *window,
+            a: *a,
+            b: *b,
+            rise: *rise,
+            fall: *fall,
+        },
+        NodeRenderer::Channel { k, .. } => Op::Channel(*k),
+        NodeRenderer::Filter { site, from, .. } => Op::Filter {
+            site: *site,
+            from: *from,
+        },
+        NodeRenderer::Physics { site, from, args } => Op::Physics {
+            site: *site,
+            from: *from,
+            arity: args.len(),
+        },
+        NodeRenderer::Formula { .. } | NodeRenderer::Indexed { .. } | NodeRenderer::Instant(_) => {
+            unreachable!("lowered with the program tables they name")
         }
-        NodeRenderer::Join(parts) => {
-            let mut width = 0;
-            for p in parts {
-                width += lower(p, layout, out)?;
+    }
+}
+
+/// The width `r` holds over operands `operands` wide, in `NodeRenderer::operands` order.
+pub(crate) fn width(
+    r: &NodeRenderer,
+    operands: &[usize],
+    layout: &Layout,
+) -> Result<usize, SampleError> {
+    let met = |from: usize| operands.iter().try_fold(from, |w, &o| meet(w, o));
+    Ok(match r {
+        NodeRenderer::Const(_)
+        | NodeRenderer::Time
+        | NodeRenderer::Wrap(_)
+        | NodeRenderer::Noise(_) => 1,
+        NodeRenderer::Read { slot, .. } => slot_width(*slot, layout),
+        NodeRenderer::Formula { width, .. } => match operands {
+            [times] if *times != 1 && times != width => {
+                return Err(SampleError::WidthMismatch {
+                    left: *times,
+                    right: *width,
+                });
             }
-            out.push(Op::Join(parts.len()), width)
-        }
-        NodeRenderer::Channel { x, k } => {
-            let w = lower(x, layout, out)?;
-            if *k >= w {
-                return Err(SampleError::ChannelOutOfRange { k: *k, width: w });
-            }
-            out.push(Op::Channel(*k), 1)
-        }
-        NodeRenderer::Filter {
-            site,
-            from,
-            x,
-            cutoff,
-            q,
-            gain,
-        } => {
-            let mut width = lower(x, layout, out)?;
-            for arg in [cutoff, q, gain] {
-                width = meet(width, lower(arg, layout, out)?)?;
-            }
-            let op = Op::Filter {
-                site: *site,
-                from: *from,
-            };
-            out.push(op, width)
-        }
-        NodeRenderer::Physics { site, from, args } => {
-            for arg in args {
-                meet(1, lower(arg, layout, out)?)?;
-            }
-            let op = Op::Physics {
-                site: *site,
-                from: *from,
-                arity: args.len(),
-            };
-            out.push(op, 1)
-        }
-    };
-    Ok(w)
+            _ => *width,
+        },
+        NodeRenderer::Indexed { slot, .. } => slot_width(*slot, layout),
+        NodeRenderer::Instant(_) | NodeRenderer::Physics { .. } => 1,
+        NodeRenderer::Add(_) | NodeRenderer::Mul(_) => met(1)?,
+        NodeRenderer::Sub(..)
+        | NodeRenderer::Div(..)
+        | NodeRenderer::Pow(..)
+        | NodeRenderer::Zip(..)
+        | NodeRenderer::Filter { .. } => met(operands[0])?,
+        NodeRenderer::Map(..) | NodeRenderer::Crop { .. } => operands[0],
+        NodeRenderer::Join(_) => operands.iter().sum(),
+        NodeRenderer::Channel { k, .. } => match operands[0] {
+            w if *k >= w => return Err(SampleError::ChannelOutOfRange { k: *k, width: w }),
+            _ => 1,
+        },
+    })
 }
 
 fn slot_width(slot: Slot, layout: &Layout) -> usize {
