@@ -149,6 +149,23 @@ pub fn eval_body(
         Body::Run(run) => super::run::at(run, t),
         other => return Err(CollapseError::NotEvaluable(sketch(other))),
     };
+    finite(value)
+}
+
+/// `eval_body`'s sum from +0 over only `live`: one left out is exact zero at `t`.
+pub(crate) fn eval_addends(
+    parts: &[&sva_formula::Part],
+    live: &[usize],
+    component: usize,
+    t: f64,
+) -> Result<C64, CollapseError> {
+    let sum = live.iter().try_fold(C64::ZERO, |held, &i| {
+        Ok(held + eval_body(&parts[i].body, component, t, &NoRefs)?)
+    })?;
+    finite(sum)
+}
+
+fn finite(value: C64) -> Result<C64, CollapseError> {
     match value.is_finite() {
         true => Ok(value),
         false => Err(CollapseError::NotEvaluable(

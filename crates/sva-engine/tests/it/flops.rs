@@ -294,8 +294,8 @@ fn a_pointwise_root_prices_at_least_its_children() {
     );
 }
 
-/// A crop's operand is walked only inside its window, so each cropped term of a sum is priced
-/// over its own support, not over the whole sum's.
+/// A sum visits each cropped term only inside its window, so each is priced over its own
+/// support, not over the whole sum's.
 #[test]
 fn a_cropped_term_is_priced_over_its_own_support() {
     let term = "tanh(3*sin(2*pi*55*t))";
@@ -313,8 +313,7 @@ fn a_cropped_term_is_priced_over_its_own_support() {
     let rate = u128::from(RATE);
     assert_eq!(
         apart,
-        4 * rate * 3 + 2 * (alone - rate),
-        "an add and two crops at each of 4 s of instants, and each term's own operand only \
-         over the second its crop holds"
+        4 * rate + 2 * alone,
+        "an add at each of 4 s of instants, and each term only over the second its crop holds"
     );
 }

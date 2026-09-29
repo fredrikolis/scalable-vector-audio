@@ -5,7 +5,7 @@ use sva_formula::{ClosedForm, SpectralSum, Var, normalize_closed_form};
 use super::active::{self, Window};
 use super::lines::{self, Direct};
 use super::truncate::{self, Audible};
-use super::{atoms, plan, point, reaches_no_atom, span, tail};
+use super::{atoms, plan, point, reaches_no_atom, reading, span, tail};
 use crate::error::CollapseError;
 use crate::label::{Detail, Label, Rule, Source};
 use crate::machine::tape::Tape;
@@ -28,11 +28,14 @@ enum Row {
         spans: Vec<Option<Vec<(i64, i64)>>>,
         windows: Vec<Vec<Window>>,
     },
+    /// A written sum's addends each read only inside its own window.
     Point {
         written: Box<ClosedForm>,
         width: usize,
+        windows: Vec<Window>,
     },
-    Added(Vec<(Row, usize)>),
+    /// Each addend's row, its width, and the window outside which it writes +0.
+    Added(Vec<(Row, usize, Window)>),
 }
 
 impl Rows {
@@ -136,17 +139,15 @@ fn worked(row: &Row, c: usize, from: i64, to: i64, step: f64) -> (u128, u128) {
             (evaluated, evaluated)
         }
         Row::Point { written, .. } => plan::point_work(&written.body, c, step, (from, to)),
-        Row::Added(parts) => {
-            parts
-                .iter()
-                .fold((0, 0), |held, (part, width)| match lane(*width, c) {
-                    Some(lane) => {
-                        let (priced, waves) = worked(part, lane, from, to, step);
-                        (held.0 + priced, held.1 + waves)
-                    }
-                    None => held,
-                })
-        }
+        Row::Added(parts) => parts.iter().fold((0, 0), |held, (part, width, reach)| {
+            match (lane(*width, c), active::meet((from, to), *reach)) {
+                (Some(lane), (a, b)) if a < b => {
+                    let (priced, waves) = worked(part, lane, a, b, step);
+                    (held.0 + priced, held.1 + waves)
+                }
+                _ => held,
+            }
+        }),
     }
 }
 
@@ -229,15 +230,15 @@ fn of_written(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelle
                 labels.extend(details.into_iter().map(|d| (source, d)));
             }
             (part, (source, detail)) => {
-                let held = width(&part);
-                parts.push((part, held));
+                let (held, reach) = (width(&part), reach(&part, rate));
+                parts.push((part, held, reach));
                 labels.push((source, detail));
             }
         }
     }
     if parts
         .iter()
-        .all(|(part, _)| matches!(part, Row::Point { .. }))
+        .all(|(part, ..)| matches!(part, Row::Point { .. }))
     {
         return point(form, rate, profile);
     }
@@ -268,9 +269,13 @@ fn point(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelled, Co
         ..form.clone()
     };
     let width = point::width_of(&written.body, &point::NoRefs).max(1);
+    let windows = plan::summed(&written.body).map_or_else(Vec::new, |parts| {
+        plan::addend_windows(&parts, 1.0 / f64::from(rate))
+    });
     let row = Row::Point {
         written: Box::new(written),
         width,
+        windows,
     };
     let detail = Detail::Point {
         rule: Rule::PointSampled,
@@ -284,7 +289,32 @@ fn width(row: &Row) -> usize {
         Row::Lines(lanes) => lanes.len(),
         Row::Sweep { sum, .. } => sum.lanes.len(),
         Row::Point { width, .. } => *width,
-        Row::Added(parts) => parts.iter().map(|(_, w)| *w).max().unwrap_or(1),
+        Row::Added(parts) => parts.iter().map(|(_, w, _)| *w).max().unwrap_or(1),
+    }
+}
+
+/// Outside it a row writes +0 at every sample: a line never ends, a sweep ends with its spans
+/// where every atom is windowed, a written form with its addends' crops.
+fn reach(row: &Row, rate: u32) -> Window {
+    let hull = |spans: &mut dyn Iterator<Item = Window>| {
+        spans
+            .filter(|(a, b)| a < b)
+            .reduce(|x, y| (x.0.min(y.0), x.1.max(y.1)))
+            .unwrap_or((0, 0))
+    };
+    match row {
+        Row::Lines(_) => active::OPEN,
+        Row::Sweep { spans, .. } if spans.iter().all(Option::is_some) => {
+            hull(&mut spans.iter().flatten().flatten().copied())
+        }
+        Row::Sweep { .. } => active::OPEN,
+        Row::Point {
+            written, windows, ..
+        } => match plan::summed(&written.body) {
+            Some(_) => hull(&mut windows.iter().copied()),
+            None => plan::live_window(&written.body, 1.0 / f64::from(rate)),
+        },
+        Row::Added(parts) => hull(&mut parts.iter().map(|(.., reach)| *reach)),
     }
 }
 
@@ -314,14 +344,17 @@ fn values(row: &Row, c: usize, (from, to): Window, rate: u32) -> Result<Vec<f64>
             }
             out
         }
-        Row::Point { written, .. } => (from..to)
-            .map(|i| Ok(point::eval_body(&written.body, c, i as f64 * step, &point::NoRefs)?.re))
-            .collect::<Result<_, CollapseError>>()?,
+        Row::Point {
+            written, windows, ..
+        } => reading::written(&written.body, windows, c, (from, to), step)?,
         Row::Added(parts) => {
             let mut sum = vec![0.0; n];
-            for (part, held) in parts {
-                if let Some(lane) = lane(*held, c) {
-                    for (out, v) in sum.iter_mut().zip(values(part, lane, (from, to), rate)?) {
+            for (part, held, reach) in parts {
+                if let (Some(lane), (a, b)) = (lane(*held, c), active::meet((from, to), *reach))
+                    && a < b
+                {
+                    let at = (a - from) as usize;
+                    for (out, v) in sum[at..].iter_mut().zip(values(part, lane, (a, b), rate)?) {
                         *out += v;
                     }
                 }

@@ -210,7 +210,62 @@ pub fn point_flops(f: &Body, step: f64, span: Window) -> u128 {
 /// `point::eval_body` walks them: a run is priced by its Horner steps and turns its lines,
 /// every other node is one, and a crop's operand counts only at the instants its window holds.
 pub fn point_work(f: &Body, component: usize, step: f64, span: Window) -> (u128, u128) {
-    walked(f, component, &Clock::grid(step), span)
+    let clock = Clock::grid(step);
+    let Some(parts) = summed(f) else {
+        return walked(f, component, &clock, span);
+    };
+    let n = (i128::from(span.1) - i128::from(span.0)).max(0) as u128;
+    parts
+        .iter()
+        .zip(addend_windows(&parts, step))
+        .fold((n, 0), |held, (part, live)| {
+            let (priced, waves) = walked(&part.body, component, &clock, active::meet(span, live));
+            (held.0 + priced, held.1 + waves)
+        })
+}
+
+/// A written sum's addends in order, a left-nested `a + b + c` as one list: `point::eval_body`
+/// folds either from +0 to the same bits, as no partial sum from +0 is -0.
+pub(super) fn summed(f: &Body) -> Option<Vec<&Part>> {
+    let Body::Add(parts) = f else {
+        return None;
+    };
+    let (mut head, mut tails) = (parts, Vec::new());
+    while let [first, rest @ ..] = head.as_slice()
+        && let Body::Add(inner) = &*first.body
+    {
+        tails.push(rest);
+        head = inner;
+    }
+    let mut out: Vec<&Part> = head.iter().collect();
+    for tail in tails.iter().rev() {
+        out.extend(tail.iter());
+    }
+    Some(out)
+}
+
+/// Outside its own window an addend is exact zero.
+pub(super) fn addend_windows(parts: &[&Part], step: f64) -> Vec<Window> {
+    parts
+        .iter()
+        .map(|part| live_window(&part.body, step))
+        .collect()
+}
+
+pub(super) fn live_window(f: &Body, step: f64) -> Window {
+    live(f, &Clock::grid(step), active::OPEN)
+}
+
+/// A crop's open window, met through products and shifts, as `point::eval_body` zeroes them.
+fn live(f: &Body, clock: &Clock, span: Window) -> Window {
+    match f {
+        Body::Crop { of, .. } => live(&of.body, clock, clock.cropped(span, f)),
+        Body::Mul(parts) => parts
+            .iter()
+            .fold(span, |held, part| live(&part.body, clock, held)),
+        Body::Shift { by, of } => live(&of.body, &clock.shifted(*by), span),
+        _ => span,
+    }
 }
 
 /// The instant a subterm is read at, from the grid's index: `None` once a warp moves it.

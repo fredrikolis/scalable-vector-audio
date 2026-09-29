@@ -125,9 +125,22 @@ pub(crate) fn windows(lane: &Lane, step: f64) -> Vec<Window> {
 pub(crate) fn sweep(
     lane: &Lane,
     windows: &[Window],
-    (from, to): Window,
+    span: Window,
     step: f64,
     out: &mut [f64],
+) -> Result<(), CollapseError> {
+    sweep_by(windows, span, out, |m, live| {
+        Ok(point::eval_among(lane, live, at(m, step))?.re)
+    })
+}
+
+/// Each sample `m` of `[from, to)` into `out` as `each(m, live)`, `live` the indices of the
+/// windows holding `m`, ascending: each index is visited only inside its own window.
+pub(crate) fn sweep_by(
+    windows: &[Window],
+    (from, to): Window,
+    out: &mut [f64],
+    mut each: impl FnMut(i64, &[usize]) -> Result<f64, CollapseError>,
 ) -> Result<(), CollapseError> {
     let mut order: Vec<usize> = (0..windows.len())
         .filter(|&i| windows[i].0 < windows[i].1 && windows[i].0 < to && windows[i].1 > from)
@@ -147,7 +160,7 @@ pub(crate) fn sweep(
             .chain(order.get(next).map(|&i| windows[i].0))
             .fold(to, i64::min);
         for m in n..stop {
-            out[(m - from) as usize] = point::eval_among(lane, &live, at(m, step))?.re;
+            out[(m - from) as usize] = each(m, &live)?;
         }
         n = stop;
     }

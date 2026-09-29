@@ -1,10 +1,11 @@
 // Concern: reads a lane or a written form onto the grid, one instant at a time | Non-concern: placing lines by transform (lines.rs), choosing this row (plan.rs) | IO: (a lane or a body, rate) -> a plane
 
-use sva_formula::{ClosedForm, SpectralSum};
+use sva_formula::{Body, ClosedForm, SpectralSum};
 
 use crate::error::CollapseError;
 
-use super::{Extent, active, lines, plan, point, span};
+use super::active::{self, Window};
+use super::{Extent, lines, plan, point, span};
 
 pub(super) fn sampled_spectral_sum(
     sum: &SpectralSum,
@@ -69,15 +70,36 @@ pub(super) fn sampled_body(
     scale: usize,
 ) -> Result<Vec<f64>, CollapseError> {
     let step = 1.0 / (f64::from(rate) * scale as f64);
-    (0..len)
-        .map(|i| {
-            point::eval_body(
-                &form.body,
-                component,
-                extent.instant(i, scale, step),
-                &point::NoRefs,
-            )
-            .map(|v| v.re)
-        })
-        .collect()
+    let from = extent.start * scale as i64;
+    let windows =
+        plan::summed(&form.body).map_or_else(Vec::new, |parts| plan::addend_windows(&parts, step));
+    written(
+        &form.body,
+        &windows,
+        component,
+        (from, from + len as i64),
+        step,
+    )
+}
+
+/// Samples `[from, to)` of a grid `step` apart of one component of a written form. A sum
+/// visits each addend only inside its window from `plan::addend_windows`.
+pub(super) fn written(
+    body: &Body,
+    windows: &[Window],
+    component: usize,
+    (from, to): Window,
+    step: f64,
+) -> Result<Vec<f64>, CollapseError> {
+    let at = |n: i64| n as f64 * step;
+    let Some(parts) = plan::summed(body) else {
+        return (from..to)
+            .map(|n| Ok(point::eval_body(body, component, at(n), &point::NoRefs)?.re))
+            .collect();
+    };
+    let mut out = vec![0.0; (to - from) as usize];
+    active::sweep_by(windows, (from, to), &mut out, |n, live| {
+        Ok(point::eval_addends(&parts, live, component, at(n))?.re)
+    })?;
+    Ok(out)
 }
