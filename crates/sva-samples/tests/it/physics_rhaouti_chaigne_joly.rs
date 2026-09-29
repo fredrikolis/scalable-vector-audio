@@ -117,14 +117,14 @@ fn a_fundamental_too_low_to_size_a_grid_refuses_before_it_allocates() {
 
     let asked = Params::RhaoutiChaigneJoly(RhaoutiChaigneJolyParams::at(5.0));
     assert!(asked.valid(), "the parameters themselves are well formed");
-    let Err(refused) = sva_samples::physics::site(&asked, 44_100) else {
+    let Err(refused) = sva_samples::physics::site(&asked, 44_100.0) else {
         panic!("a grid that large is refused, not opened")
     };
     assert_eq!(refused.code(), "samples.grid_too_large", "{refused:?}");
     assert!(
         sva_samples::physics::site(
             &Params::RhaoutiChaigneJoly(RhaoutiChaigneJolyParams::at(200.0)),
-            44_100,
+            44_100.0,
         )
         .is_ok(),
         "a drumhead at a musical fundamental still opens"

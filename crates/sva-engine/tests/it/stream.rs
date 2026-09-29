@@ -313,6 +313,15 @@ fn reads() -> Graph {
                 "looped",
                 "crop(sample(0.3*saw(220*t)), 0s, 0.05s) + 0.5*self[idx(t - 2ms) - 1]\n",
             ),
+            (
+                "wobbled",
+                "crop(sample(0.3*saw(220*t)), 0s, 0.05s) + \
+                 0.5*lp(self[idx(t - 0.005s - 0.002s*sin(2*pi*0.5*t))], cutoff=2000)\n",
+            ),
+            (
+                "nearest",
+                "@filtered[idx(t - 0.005s - 0.002s*sin(2*pi*0.5*t))]\n",
+            ),
             ("held", "rand(t - t % 0.01s, seed=3)*@filtered\n"),
         ],
     )
@@ -348,14 +357,18 @@ fn whole_at(g: &Graph, target: &str, rate: u32, samples: usize) -> Vec<f64> {
     held.output(held.root).expect("a buffer").plane(0).to_vec()
 }
 
-/// Every node steps at the rate asked for, so a stream writes what the whole render writes at
-/// any rate: a filter, a whole shift of it, a closed form at any instant, an indexed loop and
-/// noise held over a moving time.
+/// Every node steps on the grid its reader asks for, so a stream writes what the whole render
+/// writes at any rate: a filter, a whole shift of it, the filter between its steps and at a
+/// scaled time, a closed form at any instant, indexed loops at a fixed and a moving delay, the
+/// nearest steps of a filter under a moving delay, and noise held over a moving time.
 #[test]
 fn a_stream_is_the_whole_render_bit_for_bit_at_every_rate() {
     let g = reads();
     for rate in [8_000, 44_100, 48_000, 96_000] {
-        for target in ["filtered", "shifted", "formula", "looped", "held"] {
+        for target in [
+            "filtered", "shifted", "between", "scaled", "formula", "looped", "wobbled", "nearest",
+            "held",
+        ] {
             let samples = rate as usize * 14 / 100;
             let want = whole_at(&g, target, rate, samples);
             sounds(&want);
@@ -370,25 +383,19 @@ fn a_stream_is_the_whole_render_bit_for_bit_at_every_rate() {
     }
 }
 
-/// A filter has a value only at its own samples, so a read between them, at a scale or at a
-/// moving time refuses by code, whole or streamed.
+/// A filter has a value only at its own steps, so a read at a moving time refuses at typing,
+/// whole or streamed.
 #[test]
-fn a_read_between_a_filters_samples_refuses_whole_and_streamed() {
+fn a_filter_read_at_a_moving_time_refuses_whole_and_streamed() {
     let g = reads();
-    for target in ["between", "scaled", "warped"] {
-        let Err(whole) = render(&g, target, RenderConfig::seconds(RATE, 0.1), None) else {
-            panic!("{target} reads between samples");
-        };
-        assert_eq!(whole.code(), "render.off_grid_read", "{target}: {whole}");
-        let Err(streamed) = Stream::open(&g, &at(target), config(256, four()), None) else {
-            panic!("{target} streams between samples");
-        };
-        assert_eq!(
-            streamed.code(),
-            "render.off_grid_read",
-            "{target}: {streamed}"
-        );
-    }
+    let Err(whole) = render(&g, "warped", RenderConfig::seconds(RATE, 0.1), None) else {
+        panic!("a filter has no value at a time that moves");
+    };
+    assert_eq!(whole.code(), "type.stateful_warp", "{whole}");
+    let Err(streamed) = Stream::open(&g, &at("warped"), config(256, four()), None) else {
+        panic!("a filter streams no value at a time that moves");
+    };
+    assert_eq!(streamed.code(), "type.stateful_warp", "{streamed}");
 }
 
 /// A stream stands at one instant, so a read of output it has not computed refuses by code.

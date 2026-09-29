@@ -4,19 +4,20 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sva_formula::{Body, C64, Fold, Held, NodeId, Unary, exp_zero_at};
-use sva_samples::{Extent, NodeRenderer, Slot};
+use sva_samples::{Extent, Grid, NodeRenderer, Slot};
 
 use super::Render;
 use super::pointwise::{self, Point};
 use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::schedule;
-use crate::typing::{Typing, Value};
+use crate::typing::{Typing, Value, When};
 
-/// Where each node can be nonzero: outside its support a node is exactly zero.
+/// Where each node can be nonzero, in samples of its own grid: outside its support a node is
+/// exactly zero.
 pub(crate) struct Supports<'a> {
     tys: &'a Typing,
-    rate: u32,
+    config: &'a super::RenderConfig,
     held: RefCell<BTreeMap<NodeId, Extent>>,
     open: RefCell<BTreeSet<NodeId>>,
 }
@@ -25,10 +26,14 @@ impl<'a> Supports<'a> {
     pub(crate) fn new(held: &'a Render) -> Supports<'a> {
         Supports {
             tys: &held.tys,
-            rate: held.rate(),
+            config: &held.config,
             held: RefCell::default(),
             open: RefCell::default(),
         }
+    }
+
+    fn grid(&self, id: NodeId) -> Grid {
+        self.tys.grid(id).samples()
     }
 
     pub(crate) fn of(&self, id: NodeId) -> Extent {
@@ -48,17 +53,34 @@ impl<'a> Supports<'a> {
     }
 
     fn fresh(&self, id: NodeId) -> Extent {
+        let grid = self.grid(id);
         match self.tys.value(id) {
-            Value::ClosedForm(form) => self.body(&form.body, form.var == sva_formula::Var::T),
+            Value::ClosedForm(form) => {
+                let held = self.body(&form.body, form.var == sva_formula::Var::T, grid);
+                match grid.is_rate() {
+                    true => held,
+                    false => reached(held, (-1, 1)),
+                }
+            }
             Value::Cast(Cast::Fourier | Cast::IFourier, _) => Extent::EVERYWHERE,
             Value::Cast(_, source) => self.of(*source),
-            Value::Op { name, args } => self.operation(name, args, &|arg| self.of(arg)),
+            Value::Op { name, args } => self.operation(name, args, grid, &|arg| self.of(arg)),
             Value::SelfAt { .. } => Extent::NOWHERE,
             Value::Noise(_) => Extent::EVERYWHERE,
-            Value::Read { source, at, .. } => match at.map(self.rate) {
-                Some(map) => map.preimage(self.of(*source)),
+            Value::Read {
+                source,
+                at: When::Nearest(nearest),
+                ..
+            } => match self.reach(*nearest, grid) {
+                Some(reach) => reached(self.of(*source), reach),
                 None => Extent::EVERYWHERE,
             },
+            Value::Read { source, at, .. } => {
+                match at.map(self.tys.grid(id), self.tys.grid(*source)) {
+                    Some(map) => map.preimage(self.of(*source)),
+                    None => Extent::EVERYWHERE,
+                }
+            }
             Value::Filter { x, .. } => stateful(self.of(*x)),
             Value::Solver { .. } => Extent::from(0),
         }
@@ -77,20 +99,33 @@ impl<'a> Supports<'a> {
     fn with_past(&self, id: NodeId, past: Extent) -> Extent {
         match self.tys.value(id) {
             Value::SelfAt { .. } => past,
-            Value::Op { name, args } => self.operation(
-                name,
-                args,
-                &|arg| match schedule::holds_self(self.tys, arg, &mut BTreeSet::new()) {
-                    true => self.with_past(arg, past),
-                    false => self.of(arg),
-                },
-            ),
+            Value::Op { name, args } => {
+                self.operation(
+                    name,
+                    args,
+                    self.grid(id),
+                    &|arg| match schedule::holds_self(self.tys, arg, &mut BTreeSet::new()) {
+                        true => self.with_past(arg, past),
+                        false => self.of(arg),
+                    },
+                )
+            }
             Value::Filter { x, .. } => stateful(self.with_past(*x, past)),
             _ => self.of(id),
         }
     }
 
-    fn operation(&self, name: &str, args: &[NodeId], of: &dyn Fn(NodeId) -> Extent) -> Extent {
+    pub(crate) fn reach(&self, nearest: crate::typing::Nearest, grid: Grid) -> Option<(i64, i64)> {
+        super::bound::reach(self.tys, self.config, nearest, grid)
+    }
+
+    fn operation(
+        &self,
+        name: &str,
+        args: &[NodeId],
+        grid: Grid,
+        of: &dyn Fn(NodeId) -> Extent,
+    ) -> Extent {
         let number = |at: usize| {
             args.get(at)
                 .and_then(|a| crate::lower::number_of(self.tys, *a))
@@ -105,7 +140,7 @@ impl<'a> Supports<'a> {
             "/" if number(1).is_some_and(|d| d != 0.0) => of(args[0]),
             "pow" if number(1).is_some_and(|n| n > 0.0) => of(args[0]),
             "crop" => match (number(1), number(2)) {
-                (Some(l), Some(r)) => of(args[0]).intersect(window(self.rate, l, r)),
+                (Some(l), Some(r)) => of(args[0]).intersect(window(grid, l, r)),
                 _ => of(args[0]),
             },
             "ch" => of(args[0]),
@@ -117,9 +152,12 @@ impl<'a> Supports<'a> {
     }
 
     /// `timed` where the form is in `t`: only there is a factor's zero a zero in time.
-    fn body(&self, body: &Body, timed: bool) -> Extent {
+    fn body(&self, body: &Body, timed: bool, grid: Grid) -> Extent {
         let each = |parts: &[sva_formula::Part]| -> Vec<Extent> {
-            parts.iter().map(|p| self.body(&p.body, timed)).collect()
+            parts
+                .iter()
+                .map(|p| self.body(&p.body, timed, grid))
+                .collect()
         };
         match body {
             Body::Const(c) if *c == C64::ZERO => Extent::NOWHERE,
@@ -132,23 +170,23 @@ impl<'a> Supports<'a> {
                     .into_iter()
                     .fold(Extent::EVERYWHERE, Extent::intersect);
                 match timed {
-                    true => held.intersect(self.underflows(&factors(body))),
+                    true => held.intersect(self.underflows(&factors(body), grid)),
                     false => held,
                 }
             }
-            Body::Apply(Unary::Exp, _) if timed => self.underflows(&[body]),
-            Body::Fold(Fold::Max, parts) if timed => ramp(self.rate, parts),
+            Body::Apply(Unary::Exp, _) if timed => self.underflows(&[body], grid),
+            Body::Fold(Fold::Max, parts) if timed => ramp(grid, parts),
             Body::Div(num, den) if matches!(*den.body, Body::Const(c) if c != C64::ZERO) => {
-                self.body(&num.body, timed)
+                self.body(&num.body, timed, grid)
             }
-            Body::Pow(base, n) if *n > 0 => self.body(&base.body, timed),
-            Body::Apply(op, arg) if keeps_zero(*op) => self.body(&arg.body, timed),
-            Body::Shift { by, of } => moved(self.body(&of.body, timed), by * f64::from(self.rate)),
+            Body::Pow(base, n) if *n > 0 => self.body(&base.body, timed, grid),
+            Body::Apply(op, arg) if keeps_zero(*op) => self.body(&arg.body, timed, grid),
+            Body::Shift { by, of } => moved(self.body(&of.body, timed, grid), by * grid.sr()),
             Body::Crop { of, l, r, .. } => {
-                self.body(&of.body, timed)
-                    .intersect(window(self.rate, l.value(), r.value()))
+                self.body(&of.body, timed, grid)
+                    .intersect(window(grid, l.value(), r.value()))
             }
-            Body::Channel(of, _) => self.body(&of.body, timed),
+            Body::Channel(of, _) => self.body(&of.body, timed, grid),
             _ => Extent::EVERYWHERE,
         }
     }
@@ -183,7 +221,7 @@ impl Supports<'_> {
     /// factor's `exp` or the product of them underflows past the engine's own zero. Every
     /// other factor is bounded there, so zero times it stays zero; the margin covers each
     /// evaluator's own rounding of the exponent, the subnormals included.
-    fn underflows(&self, factors: &[&Body]) -> Extent {
+    fn underflows(&self, factors: &[&Body], grid: Grid) -> Extent {
         let (mut exponent, mut sizes) = ([0.0f64; 3], [0.0f64; 3]);
         let (mut exps, mut others) = (Vec::new(), Vec::new());
         for factor in factors {
@@ -202,7 +240,7 @@ impl Supports<'_> {
         if count == 0.0 || !exponent.iter().all(|c| c.is_finite()) {
             return Extent::EVERYWHERE;
         }
-        let farthest = i64::MAX as f64 / f64::from(self.rate);
+        let farthest = i64::MAX as f64 / grid.sr();
         let at = |t: f64| exponent[0] + exponent[1] * t + exponent[2] * t * t;
         let margin =
             |t: f64| 8.0 + 2.0 * count + 1e-9 * (sizes[0] + sizes[1] * t.abs() + sizes[2] * t * t);
@@ -223,18 +261,17 @@ impl Supports<'_> {
             let product = reach.try_fold(1.0f64, |held, b| Some(held * b?))?;
             (product < 1e300).then_some(edge)
         };
-        let samples = f64::from(self.rate);
         let vertex = match exponent[2] {
             a if a < 0.0 => -exponent[1] / (2.0 * a),
             _ if exponent[1] < 0.0 => -farthest,
             _ => return Extent::EVERYWHERE,
         };
         let end = side(vertex, farthest).map_or(i64::MAX, |t| {
-            ((t * samples).ceil() as i64).saturating_add(1)
+            (grid.count(t).ceil() as i64).saturating_add(1)
         });
         let start = match exponent[2] < 0.0 {
             true => side(vertex, -farthest).map_or(i64::MIN, |t| {
-                ((t * samples).floor() as i64).saturating_sub(1)
+                (grid.count(t).floor() as i64).saturating_sub(1)
             }),
             false => i64::MIN,
         };
@@ -360,7 +397,7 @@ fn crossing(from: f64, to: f64, holds: impl Fn(f64) -> bool) -> Option<f64> {
 
 /// `max(0, v)` with `v` falling in `t` is exactly zero from the first sample every
 /// evaluator reads `v` at or below zero.
-fn ramp(rate: u32, parts: &[sva_formula::Part]) -> Extent {
+fn ramp(grid: Grid, parts: &[sva_formula::Part]) -> Extent {
     let v = match parts {
         [a, b] if matches!(*a.body, Body::Const(c) if c.re.to_bits() == 0 && c.im == 0.0) => {
             &*b.body
@@ -375,10 +412,9 @@ fn ramp(rate: u32, parts: &[sva_formula::Part]) -> Extent {
     if !falls || !slope.is_some_and(|a| a < 0.0) {
         return Extent::EVERYWHERE;
     }
-    let sr = f64::from(rate);
     let at = |t: f64| sva_samples::eval_written_at(v, 0, t, &Unread).map(|x| x.re);
     let zero = |n: i64| {
-        let both = [at(n as f64 / sr), at(n as f64 * (1.0 / sr))];
+        let both = [at(grid.instant(n)), at(grid.stepped(n))];
         both.iter().all(|x| x.as_ref().is_ok_and(|x| *x <= 0.0))
     };
     let reach = 1i64 << 62;
@@ -457,16 +493,14 @@ fn keeps_zero(op: Unary) -> bool {
 }
 
 /// The samples a crop's `[l, r)` can be nonzero over: every one some evaluator reads as
-/// inside it, whether it takes the instant as `n / rate` or as `n * (1 / rate)`.
-pub(crate) fn window(rate: u32, l: f64, r: f64) -> Extent {
+/// inside it, whether it takes the grid's instant or its stepped position.
+pub(crate) fn window(grid: Grid, l: f64, r: f64) -> Extent {
     if l.is_nan() || r.is_nan() {
         return Extent::EVERYWHERE;
     }
-    let sr = f64::from(rate);
-    let step = 1.0 / sr;
-    let reached = |n: i64, edge: f64| (n as f64 / sr >= edge, n as f64 * step >= edge);
+    let reached = |n: i64, edge: f64| (grid.instant(n) >= edge, grid.stepped(n) >= edge);
     let first = |edge: f64, any: bool| {
-        let mut n = (edge * sr).ceil() as i64;
+        let mut n = grid.count(edge).ceil() as i64;
         let past = |n: i64| {
             let (a, b) = reached(n, edge);
             if any { a || b } else { a && b }
@@ -493,6 +527,18 @@ pub(crate) fn window(rate: u32, l: f64, r: f64) -> Extent {
         true => Extent::new(start, end),
         false => Extent::NOWHERE,
     }
+}
+
+/// Every sample whose offsets in `reach` land inside `support`. A form on a moved grid is
+/// read by rows of the form moved, whose edges round a step either way.
+fn reached(support: Extent, (least, most): (i64, i64)) -> Extent {
+    if support.is_empty() || support == Extent::EVERYWHERE {
+        return support;
+    }
+    Extent::new(
+        support.start.saturating_sub(most),
+        support.end.saturating_sub(least),
+    )
 }
 
 /// Moved by a count of samples that need not be whole, widened to the samples either side.
@@ -621,7 +667,7 @@ fn reads(
         (Held::Sampled, _) => {
             let widths = |r: NodeId| held.buffers.get(&r).map_or(1, |b| b.width);
             let program = super::sampled::program_reading(held, id, &widths)?;
-            Ok(program_reads(&program, extent, held.rate()))
+            Ok(program_reads(&program, extent, held.grid(id)))
         }
         _ if schedule::materialized_operands(&held.tys, id).is_empty() => Ok(Vec::new()),
         _ => {
@@ -630,7 +676,7 @@ fn reads(
             };
             let mut found = Vec::new();
             point_reads(&tree, Some(0.0), &mut found);
-            let rate = f64::from(held.rate());
+            let rate = held.grid(id).sr();
             Ok(found
                 .into_iter()
                 .map(|(source, by)| match by {
@@ -642,22 +688,36 @@ fn reads(
     }
 }
 
-/// Every buffer `program` reads while stepping `extent` at `rate`, and the samples of each.
+/// Every buffer `program` reads while stepping `extent` on `grid`, and the samples of each.
 fn program_reads(
     program: &super::sampled::Program,
     extent: Extent,
-    rate: u32,
+    grid: Grid,
 ) -> Vec<(NodeId, Extent)> {
     let mut out = Vec::new();
-    windowed(&program.renderer, extent, rate, &mut |leaf, over| {
-        if let NodeRenderer::Read {
-            slot: Slot::Read(slot),
-            map,
-        } = leaf
-        {
-            out.push((program.reads[slot.0 as usize], map.image(over)));
-        }
-    });
+    windowed(
+        &program.renderer,
+        extent,
+        grid,
+        &mut |leaf, over| match leaf {
+            NodeRenderer::Read {
+                slot: Slot::Read(slot),
+                map,
+            } => out.push((program.reads[slot.0 as usize], map.image(over))),
+            NodeRenderer::Nearest {
+                slot: Slot::Read(slot),
+                reach: (least, most),
+                ..
+            } if !over.is_empty() => {
+                let near = Extent::new(
+                    over.start.saturating_add(*least),
+                    over.end.saturating_add(*most),
+                );
+                out.push((program.reads[slot.0 as usize], near));
+            }
+            _ => {}
+        },
+    );
     out
 }
 
@@ -695,35 +755,35 @@ fn body_reads(
 fn windowed(
     renderer: &NodeRenderer,
     over: Extent,
-    rate: u32,
+    grid: Grid,
     found: &mut dyn FnMut(&NodeRenderer, Extent),
 ) {
     match renderer {
         NodeRenderer::Crop { x, a, b, .. } if x.stateless() => {
-            let inside = over.intersect(window(rate, *a, *b));
-            windowed(x, inside, rate, found);
+            let inside = over.intersect(window(grid, *a, *b));
+            windowed(x, inside, grid, found);
         }
         NodeRenderer::Crop { .. } => leaves(renderer, &mut |leaf| found(leaf, over)),
         NodeRenderer::Filter {
             x, cutoff, q, gain, ..
         } => [x, cutoff, q, gain]
             .into_iter()
-            .for_each(|p| windowed(p, over, rate, found)),
+            .for_each(|p| windowed(p, over, grid, found)),
         NodeRenderer::Add(parts)
         | NodeRenderer::Mul(parts)
         | NodeRenderer::Join(parts)
         | NodeRenderer::Physics { args: parts, .. } => {
-            parts.iter().for_each(|p| windowed(p, over, rate, found));
+            parts.iter().for_each(|p| windowed(p, over, grid, found));
         }
         NodeRenderer::Sub(a, b)
         | NodeRenderer::Div(a, b)
         | NodeRenderer::Pow(a, b)
         | NodeRenderer::Zip(_, a, b) => {
-            windowed(a, over, rate, found);
-            windowed(b, over, rate, found);
+            windowed(a, over, grid, found);
+            windowed(b, over, grid, found);
         }
         NodeRenderer::Map(_, x) | NodeRenderer::Channel { x, .. } => {
-            windowed(x, over, rate, found);
+            windowed(x, over, grid, found);
         }
         leaf => leaves(leaf, &mut |inner| found(inner, over)),
     }
@@ -751,7 +811,7 @@ pub(crate) fn leaves(renderer: &NodeRenderer, found: &mut dyn FnMut(&NodeRendere
             .into_iter()
             .for_each(|p| leaves(p, found)),
         NodeRenderer::Physics { args, .. } => args.iter().for_each(|p| leaves(p, found)),
-        NodeRenderer::Formula { time, .. } => {
+        NodeRenderer::Formula { time, .. } | NodeRenderer::Nearest { time, .. } => {
             leaves(time, found);
             found(renderer);
         }

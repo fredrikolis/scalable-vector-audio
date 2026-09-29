@@ -19,7 +19,7 @@ pub(in crate::render) enum Kind {
     Rows(Rows),
     Point(Box<Point>),
     Machine {
-        machine: Machine,
+        machine: Box<Machine>,
         /// Each slot's node, as an index into the driver's nodes.
         reads: Vec<usize>,
     },
@@ -295,9 +295,7 @@ pub(in crate::render) fn runnable(shell: &Render, order: &[NodeId]) -> BTreeSet<
         };
         let mut ahead = false;
         crate::render::extent::leaves(&program.renderer, &mut |leaf| {
-            if let NodeRenderer::Read { map, .. } = leaf {
-                ahead |= map.ahead();
-            }
+            ahead |= reads_ahead(leaf);
         });
         let reads = program.reads.iter().all(|r| out.contains(r));
         if !ahead && reads && (program.layout.sites.is_empty() || program.reads.is_empty()) {
@@ -305,6 +303,15 @@ pub(in crate::render) fn runnable(shell: &Render, order: &[NodeId]) -> BTreeSet<
         }
     }
     out
+}
+
+/// Whether a leaf may read a sample past the one being written.
+pub(in crate::render) fn reads_ahead(leaf: &NodeRenderer) -> bool {
+    match leaf {
+        NodeRenderer::Read { map, .. } => map.ahead(),
+        NodeRenderer::Nearest { reach, .. } => reach.1 > 0,
+        _ => false,
+    }
 }
 
 /// What the store answers a node with: its samples from where its state starts, and the
@@ -554,6 +561,20 @@ fn machine(
         NodeRenderer::Read {
             slot: Slot::Own, ..
         } => own = WHOLE,
+        NodeRenderer::Nearest {
+            slot: Slot::Read(id),
+            reach: (least, most),
+            ..
+        } => {
+            ahead |= *most > 0;
+            reads.push((slots[id.0 as usize], *most));
+            reads.push((slots[id.0 as usize], *least));
+        }
+        NodeRenderer::Nearest {
+            slot: Slot::Own,
+            reach: (least, _),
+            ..
+        } => own = own.max((-least).max(0) as usize),
         _ => {}
     });
     if ahead {
@@ -573,14 +594,14 @@ fn machine(
             _ => nodes[r].support,
         })
         .collect();
-    let rate = shell.rate();
     let span = (extent.start, extent.end);
-    let machine = Machine::live(&program.renderer, &program.layout, rate, span, &live)
+    let grid = shell.grid(id);
+    let machine = Machine::live(&program.renderer, &program.layout, grid, span, &live)
         .map_err(|e| sampled::refused(shell, id, &e))?;
     Ok(Built {
         width: machine.width(),
         kind: Kind::Machine {
-            machine,
+            machine: Box::new(machine),
             reads: slots,
         },
         reads,
@@ -591,6 +612,18 @@ fn machine(
 
 /// `collapse_closed_form`'s choice between the rows and the point sampler.
 fn closed_form(shell: &Render, id: NodeId) -> Result<(Kind, usize), EngineError> {
+    if !shell.grid(id).is_rate() {
+        let profile = &shell.config.profile;
+        let rows = super::super::moved_rows(&shell.tys, id)
+            .and_then(|(rate, sum)| Rows::of_spectral_sum_or_point(&sum, None, rate, profile).ok());
+        return match rows {
+            Some(rows) => {
+                let width = rows.width();
+                Ok((Kind::Rows(rows), width))
+            }
+            None => point(shell, id),
+        };
+    }
     let written = match refs::resolve(&shell.tys, id, shell.tys.ty(id).held) {
         Ok(refs::Read::Substitute(form)) => Some(*form),
         _ => None,
@@ -676,11 +709,11 @@ impl Driven {
                 super::super::finite(shell, id, planes.flatten())?;
             }
             Kind::Point(tree) => {
-                let step = 1.0 / f64::from(shell.rate());
+                let grid = shell.grid(id);
                 for n in self.tape.end()..to {
                     for c in 0..self.width {
                         let at = pointwise::Instant {
-                            t: n as f64 * step,
+                            t: grid.stepped(n),
                             n: Some(n),
                         };
                         let v = pointwise::value(shell, tree, c, at)

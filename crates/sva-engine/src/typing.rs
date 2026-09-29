@@ -12,7 +12,7 @@ use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::Instances;
 use crate::lower;
 use crate::schedule::Order;
-use crate::time::Affine;
+use crate::time::{Affine, Grid};
 
 /// A closed form is cast-free on one axis; every crossing is its own node.
 #[derive(Clone, Debug, PartialEq)]
@@ -46,22 +46,39 @@ pub enum Value {
     },
 }
 
-/// A read's instant: exact, a closed form of `t` held as a node, or a sample index, `None`
-/// where no one rounded line spells it.
+/// A read's instant: exact, a closed form of `t` held as a node, a sample index, `None` where
+/// no one rounded line spells it, or the index nearest a time that moves.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum When {
     Time(Affine),
     Moving(NodeId),
     Index(Option<crate::index::Index>),
+    Nearest(Nearest),
+}
+
+/// `idx(time, round) + plus`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Nearest {
+    pub time: NodeId,
+    pub round: crate::index::Round,
+    pub plus: i64,
 }
 
 impl When {
-    /// `None` where a sample lands between two, or the instant moves.
-    pub(crate) fn map(self, rate: u32) -> Option<sva_samples::Map> {
+    /// Which sample of `source` each sample of `reader` reads; `None` where one lands between
+    /// two, or the instant moves.
+    pub(crate) fn map(self, reader: Grid, source: Grid) -> Option<sva_samples::Map> {
         match self {
-            When::Time(time) => time.map(rate),
-            When::Index(index) => index?.map(rate),
-            When::Moving(_) => None,
+            When::Time(time) => reader.map(time, source),
+            When::Index(index) => index?.map(reader),
+            When::Moving(_) | When::Nearest(_) => None,
+        }
+    }
+
+    pub(crate) fn moving(self) -> Option<NodeId> {
+        match self {
+            When::Moving(id) | When::Nearest(Nearest { time: id, .. }) => Some(id),
+            When::Time(_) | When::Index(_) => None,
         }
     }
 }
@@ -72,6 +89,7 @@ pub struct Node {
     pub ty: Ty,
     pub var: Var,
     pub value: Value,
+    pub grid: Grid,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -79,6 +97,8 @@ pub struct Typing {
     nodes: Vec<Node>,
     arguments: BTreeMap<String, Arguments>,
     by_path: BTreeMap<String, NodeId>,
+    copies: BTreeMap<(String, Grid), NodeId>,
+    lowering: BTreeSet<String>,
     files: BTreeMap<String, Vec<NodeId>>,
     origins: Vec<Located>,
     pending: BTreeSet<NodeId>,
@@ -151,6 +171,27 @@ impl Typing {
         &self.at(n).name
     }
 
+    pub fn grid(&self, n: NodeId) -> Grid {
+        self.at(n).grid
+    }
+
+    pub(crate) fn copy(&self, path: &str, grid: Grid) -> Option<NodeId> {
+        self.copies.get(&(path.to_string(), grid)).copied()
+    }
+
+    pub(crate) fn copied(&mut self, path: &str, grid: Grid, id: NodeId) {
+        self.copies.insert((path.to_string(), grid), id);
+    }
+
+    /// `false` where a copy of `path` is already being lowered: a loop of refs.
+    pub(crate) fn opened(&mut self, path: &str) -> bool {
+        self.lowering.insert(path.to_string())
+    }
+
+    pub(crate) fn closed(&mut self, path: &str) {
+        self.lowering.remove(path);
+    }
+
     pub fn at(&self, n: NodeId) -> &Node {
         &self.nodes[n.0 as usize]
     }
@@ -194,7 +235,7 @@ impl Typing {
         Origin::new((self.origins.len() - 1) as u32)
     }
 
-    pub(crate) fn seed(&mut self, path: &str, held: Held) -> NodeId {
+    pub(crate) fn seed(&mut self, path: &str, held: Held, grid: Grid) -> NodeId {
         if let Some(id) = self.id(path) {
             return id;
         }
@@ -210,6 +251,7 @@ impl Typing {
                     name: "loop".to_string(),
                     args: Vec::new(),
                 },
+                grid,
             },
             Some(path),
         );
@@ -290,7 +332,7 @@ fn settle_loop(typing: &mut Typing, inst: &Instances, group: &[String]) -> Resul
     for _ in 0..=SEEDS.len() {
         let mut attempt = typing.clone();
         for path in group {
-            attempt.seed(path, seed);
+            attempt.seed(path, seed, inst.grid());
         }
         let walked = group
             .iter()

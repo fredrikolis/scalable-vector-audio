@@ -90,10 +90,14 @@ fn sweep(
     oversample: usize,
 ) -> Result<Vec<f64>, EngineError> {
     let step = 1.0 / (f64::from(held.rate()) * oversample as f64);
+    let grid = held.grid(id);
     (0..extent.len() * oversample)
         .map(|i| {
             let at = Instant {
-                t: extent.instant(i, oversample, step),
+                t: match oversample {
+                    1 => grid.stepped(extent.start + i as i64),
+                    _ => extent.instant(i, oversample, step),
+                },
                 n: (oversample == 1).then(|| extent.start + i as i64),
             };
             value(held, tree, component, at)
@@ -241,12 +245,13 @@ pub(super) fn plan(held: &Render, id: NodeId) -> Result<Point, EngineError> {
     if !held.tys.ty(id).is_closed_form() {
         return Ok(Point::Buffer(id));
     }
-    let band = Audible::of(&held.config.profile, held.rate());
+    let band = Audible::on(&held.config.profile, held.grid(id));
     let left = match refs::spectral_sum_of(&held.tys, id, Var::T) {
-        Ok(sum) => {
-            let held = truncate_spectral_sum(&sum, band).map_err(|e| refused(held, id, &e))?;
-            return Ok(Point::SpectralSum(Box::new(held)));
-        }
+        Ok(sum) => match truncate_spectral_sum(&sum, band) {
+            Ok(held) => return Ok(Point::SpectralSum(Box::new(held))),
+            // A series no line enumeration reads is expanded term by term in the written form.
+            Err(e) => refused(held, id, &e),
+        },
         Err(left) => left,
     };
     match held.tys.value(id) {

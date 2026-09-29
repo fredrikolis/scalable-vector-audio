@@ -113,7 +113,7 @@ fn a_parameter_out_of_range_is_refused() {
 #[test]
 fn a_string_whose_second_partial_passes_nyquist_refuses() {
     let p = Params::ChaigneAskenfelt(ChaigneAskenfeltParams::at(12_000.0));
-    let Err(refused) = site(&p, 44_100) else {
+    let Err(refused) = site(&p, 44_100.0) else {
         panic!("a 12 kHz string rang at 44.1 kHz");
     };
     assert_eq!(refused.code(), "samples.string_past_rate", "{refused:?}");
@@ -130,17 +130,17 @@ fn a_unison_its_bridge_leaves_unstable_refuses() {
         bridge_mass: 0.0,
         ..ChaigneAskenfeltParams::at(55.0)
     };
-    assert!(site(&Params::ChaigneAskenfelt(strings.clone()), 44_100).is_ok());
+    assert!(site(&Params::ChaigneAskenfelt(strings.clone()), 44_100.0).is_ok());
     let unison = ChaigneAskenfeltParams {
         unison_count: 3.0,
         ..strings
     };
-    let Err(refused) = site(&Params::ChaigneAskenfelt(unison), 44_100) else {
+    let Err(refused) = site(&Params::ChaigneAskenfelt(unison), 44_100.0) else {
         panic!("an unstable unison stepped");
     };
     assert_eq!(refused.code(), "samples.bridge_unstable", "{refused:?}");
     for stable in [published_unison(), weinreich_unison()] {
-        assert!(site(&Params::ChaigneAskenfelt(stable), 44_100).is_ok());
+        assert!(site(&Params::ChaigneAskenfelt(stable), 44_100.0).is_ok());
     }
 }
 

@@ -13,7 +13,7 @@ impl<'g> Instances<'g> {
         }
         let args: Vec<String> = binds
             .iter()
-            .map(|(k, v)| format!("{k}={}", self.render(v.expr, Cx::root(v.scope))))
+            .map(|(k, v)| format!("{k}={}", self.render(v.expr, self.cx(v.scope))))
             .collect();
         format!("{file}({})", args.join(", "))
     }

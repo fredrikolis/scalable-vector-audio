@@ -391,12 +391,8 @@ pub(crate) fn anywhere(typing: &Typing, id: NodeId) -> bool {
     }
 }
 
-/// The node a moving time is held in.
 fn moving(at: When) -> Vec<NodeId> {
-    match at {
-        When::Moving(id) => vec![id],
-        When::Time(_) | When::Index(_) => Vec::new(),
-    }
+    at.moving().into_iter().collect()
 }
 
 /// The held nodes two or more held nodes read: a value one reader alone needs is covered by

@@ -11,7 +11,7 @@ use crate::error::SampleError;
 use crate::filters::FilterSite;
 use crate::physics::{Solver, site};
 use ops::{Layout, Op, lowered};
-use renderer::{Formula, NodeRenderer, Site};
+use renderer::{Formula, Grid, NodeRenderer, Site};
 use tape::{Tape, Window};
 
 pub use live::Span;
@@ -31,7 +31,7 @@ struct Program {
 
 /// A whole run writes `len` samples from grid sample `start`, reading each slot's window.
 pub struct Ctx<'a> {
-    pub rate: u32,
+    pub grid: Grid,
     pub start: i64,
     pub len: usize,
     pub reads: &'a [Window<'a>],
@@ -51,10 +51,10 @@ impl NodeRenderer {
 
     /// A loop reads what this run wrote, silent before `start`.
     pub fn run(&self, layout: &Layout, ctx: &Ctx) -> Result<Buffer, SampleError> {
-        let mut machine = Machine::open(self, layout, ctx.rate)?;
+        let mut machine = Machine::open(self, layout, ctx.grid)?;
         let mut own = Tape::new(machine.width(), ctx.len, ctx.start);
         machine.steps(ctx.start + ctx.len as i64, ctx.reads, &mut own)?;
-        let mut out = Buffer::of_planes(ctx.rate, own.into_planes());
+        let mut out = Buffer::of_planes(ctx.grid.rate, own.into_planes());
         out.start = ctx.start;
         Ok(out)
     }
@@ -74,7 +74,7 @@ impl Clone for Box<dyn Solver> {
 
 /// A filter site carries one lane per component of its widest argument, which the compiled
 /// slot width already states.
-fn open(p: &Program, rate: u32) -> Result<Vec<State>, SampleError> {
+fn open(p: &Program, grid: Grid) -> Result<Vec<State>, SampleError> {
     let mut lanes = vec![1usize; p.sites.len()];
     for (slot, op) in p.ops.iter().enumerate() {
         if let Op::Filter { site, .. } = op {
@@ -92,9 +92,9 @@ fn open(p: &Program, rate: u32) -> Result<Vec<State>, SampleError> {
                     &[0.0],
                     &[0.0],
                     &[0.0],
-                    f64::from(rate),
+                    grid.sr(),
                 )),
-                Site::Physics(params) => State::Physics(site(params, rate)?),
+                Site::Physics(params) => State::Physics(site(params, grid.sr())?),
             })
         })
         .collect()
@@ -126,7 +126,7 @@ pub struct Machine {
     program: Program,
     states: Vec<State>,
     stack: Stack,
-    rate: u32,
+    grid: Grid,
     /// Each later span's first sample and the program it runs, the next one last.
     ahead: Vec<(i64, Program)>,
 }
@@ -158,16 +158,16 @@ impl Machine {
     pub fn open(
         renderer: &NodeRenderer,
         layout: &Layout,
-        rate: u32,
+        grid: Grid,
     ) -> Result<Machine, SampleError> {
         let program = renderer.compile(layout)?;
-        let states = open(&program, rate)?;
+        let states = open(&program, grid)?;
         let stack = Stack::of(&program.widths);
         Ok(Machine {
             program,
             states,
             stack,
-            rate,
+            grid,
             ahead: Vec::new(),
         })
     }
@@ -176,11 +176,11 @@ impl Machine {
     pub fn live(
         renderer: &NodeRenderer,
         layout: &Layout,
-        rate: u32,
+        grid: Grid,
         (from, to): (i64, i64),
         live: &[crate::collapse::Extent],
     ) -> Result<Machine, SampleError> {
-        let mut machine = Machine::open(renderer, layout, rate)?;
+        let mut machine = Machine::open(renderer, layout, grid)?;
         machine.ahead = renderer
             .spans(layout, (from, to), live)?
             .into_iter()
@@ -236,15 +236,16 @@ impl Machine {
     }
 
     fn stepped(&mut self, to: i64, reads: &[Window], own: &mut Tape) -> Result<(), SampleError> {
-        let sr = f64::from(self.rate);
+        let (grid, sr) = (self.grid, self.grid.sr());
         let p = &self.program;
         for n in own.end()..to {
             let here = Here {
                 reads,
                 own,
                 n,
-                t: n as f64 / sr,
+                t: grid.instant(n),
                 sr,
+                grid,
             };
             step(p, &here, &mut self.states, &mut self.stack)?;
             let top = &self.stack.values[*self
@@ -282,7 +283,7 @@ impl Machine {
     }
 
     pub fn restart(&mut self) {
-        self.states = open(&self.program, self.rate).expect("the sites opened once already");
+        self.states = open(&self.program, self.grid).expect("the sites opened once already");
     }
 
     /// Whether `carry` takes `held`: the same sites, a varying parameter's values aside.
@@ -306,6 +307,7 @@ struct Here<'a> {
     n: i64,
     t: f64,
     sr: f64,
+    grid: Grid,
 }
 
 impl Here<'_> {
@@ -379,7 +381,9 @@ fn arity_of(op: &Op) -> usize {
         | Op::Read { .. }
         | Op::ReadScaled { .. } => 0,
         Op::Physics { arity, .. } => *arity,
-        Op::Map(_) | Op::Crop { .. } | Op::Channel(_) | Op::Formula { .. } => 1,
+        Op::Map(_) | Op::Crop { .. } | Op::Channel(_) | Op::Formula { .. } | Op::Nearest { .. } => {
+            1
+        }
         Op::Guard { .. } => 0,
         Op::Sub | Op::Div | Op::Pow | Op::Zip(_) => 2,
         Op::Add(n) | Op::Mul(n) | Op::Join(n) => *n,
@@ -402,10 +406,18 @@ fn fill(
         Op::Time => result[0] = t,
         Op::Wrap(wrap) => {
             result[0] = wrap
-                .at(n, sr as u32)
+                .at(n, here.grid)
                 .ok_or(SampleError::UnreadablePosition)?
         }
-        Op::Noise(seed) => result[0] = sva_formula::draw(*seed, n as f64),
+        Op::Noise(seed) => result[0] = sva_formula::draw(*seed, here.grid.position(n)),
+        Op::Nearest { slot, round, plus } => {
+            let k = here
+                .grid
+                .step_at(arg(0)[0], *round)
+                .and_then(|k| k.checked_add(*plus))
+                .ok_or(SampleError::UnreadablePosition)?;
+            here.source(*slot).nearest(k, result)?;
+        }
         Op::Read { slot, at } => here.source(*slot).mapped(*at, n, result)?,
         Op::ReadScaled { slot, at, by } => {
             here.source(*slot).mapped(*at, n, result)?;

@@ -4,8 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sva_formula::closed_form::map_children;
 use sva_formula::{Body, C64, ClosedForm, Edge, Hash, NodeId, Part, normalize_closed_form};
+use sva_samples::Grid;
 
-use super::identity::{Sink, closed_form_identity, identity_in};
+use super::identity::{Sink, closed_form_identity, gridded, identity_in};
 use super::substituted_closed_form;
 use crate::error::EngineError;
 use crate::lower::field;
@@ -18,10 +19,9 @@ pub(crate) struct Prefixes {
     prefixed: BTreeMap<(NodeId, i64), Hash>,
 }
 
-/// One walk over one typing at one rate, a node's plain identity read from `named`.
+/// One walk over one typing, a node's plain identity read from `named`.
 pub(crate) struct Walk<'a> {
     pub(crate) typing: &'a Typing,
-    pub(crate) rate: u32,
     pub(crate) held: &'a mut Prefixes,
     pub(crate) named: &'a mut BTreeMap<NodeId, Hash>,
     open: Vec<NodeId>,
@@ -30,13 +30,11 @@ pub(crate) struct Walk<'a> {
 impl<'a> Walk<'a> {
     pub(crate) fn new(
         typing: &'a Typing,
-        rate: u32,
         held: &'a mut Prefixes,
         named: &'a mut BTreeMap<NodeId, Hash>,
     ) -> Walk<'a> {
         Walk {
             typing,
-            rate,
             held,
             named,
             open: Vec::new(),
@@ -54,10 +52,11 @@ impl<'a> Walk<'a> {
         if self.typing.sum_slots(id).is_some() {
             return out;
         }
+        let grid = self.grid(id);
         match self.typing.value(id) {
             Value::Read { source, at, .. } => {
                 // A scaled or moving read switches nowhere: its prefix is its whole identity.
-                if let Some(lead) = lead(at, self.rate) {
+                if let Some(lead) = self.lead(id, *source, at) {
                     let moved = self.change_points(*source);
                     out.extend(moved.into_iter().map(|c| c.saturating_sub(lead)));
                 }
@@ -79,7 +78,7 @@ impl<'a> Walk<'a> {
                     out.extend(self.change_points(arg));
                 }
                 if let Some(window) = self.sampled_window(name, args) {
-                    out.extend(window.switches(self.rate));
+                    out.extend(window.switches(grid));
                 }
             }
             Value::ClosedForm(_) | Value::Cast(..) | Value::SelfAt { .. } | Value::Noise(_) => {}
@@ -93,7 +92,7 @@ impl<'a> Walk<'a> {
     fn argument_points(&mut self, arg: NodeId) -> BTreeSet<i64> {
         let mut out = BTreeSet::new();
         match self.pointwise(arg) {
-            Some(form) => body_points(&form.body, self.rate, &mut out),
+            Some(form) => body_points(&form.body, self.grid(arg), &mut out),
             None => out = self.change_points(arg),
         }
         out
@@ -109,12 +108,12 @@ impl<'a> Walk<'a> {
         let Some(form) = self.pointwise(arg) else {
             return self.prefix_identity(arg, at).map(Argued::Node);
         };
-        let mut points = BTreeSet::new();
-        body_points(&form.body, self.rate, &mut points);
+        let (mut points, grid) = (BTreeSet::new(), self.grid(arg));
+        body_points(&form.body, grid, &mut points);
         if !points.iter().any(|c| *c >= at) {
             return identity_in(self.typing, arg, self.named).map(Argued::Node);
         }
-        let body = before(&form.body, at, self.rate);
+        let body = before(&form.body, at, grid);
         Ok(match crate::lower::constant_value(&body, form.var) {
             Some(v) => Argued::Number(v + 0.0),
             None => Argued::Node(form_identity(ClosedForm { body, ..form })),
@@ -148,7 +147,9 @@ impl<'a> Walk<'a> {
             Value::Read {
                 source, at: when, ..
             } => {
-                let lead = lead(when, self.rate).expect("a read with switches is at scale one");
+                let lead = self
+                    .lead(id, *source, when)
+                    .expect("a read with switches is at scale one");
                 sink.text("read");
                 sink.hash(self.prefix_identity(*source, at.saturating_add(lead))?);
                 super::identity::when(&mut sink, typing, *when);
@@ -190,7 +191,7 @@ impl<'a> Walk<'a> {
             Value::Op { name, args } => {
                 let window = self.sampled_window(name, args);
                 let var = typing.var(id);
-                match window.map(|w| w.before(at, self.rate)) {
+                match window.map(|w| w.before(at, self.grid(id))) {
                     Some(Before::Zero) => return Ok(constant_identity(0.0, var)),
                     Some(Before::Open(window)) => {
                         sink.text(name);
@@ -211,7 +212,18 @@ impl<'a> Walk<'a> {
                 return identity_in(typing, id, self.named);
             }
         }
-        Ok(sink.finish())
+        Ok(gridded(typing, id, sink.finish()))
+    }
+
+    fn grid(&self, id: NodeId) -> sva_samples::Grid {
+        self.typing.grid(id).samples()
+    }
+
+    /// How far past its own sample a read at scale one reaches its source, where every sample
+    /// reaches it alike.
+    fn lead(&self, id: NodeId, source: NodeId, at: &When) -> Option<i64> {
+        let map = at.map(self.typing.grid(id), self.typing.grid(source))?;
+        (map.a == map.d && map.least() == map.lead()).then(|| map.lead())
     }
 
     /// A sampled crop's window, its edges and shoulders each a number.
@@ -230,13 +242,6 @@ impl<'a> Walk<'a> {
             fall: number(4)?,
         })
     }
-}
-
-/// How far past its own sample a read at scale one reaches its source, where every sample
-/// reaches it alike.
-fn lead(at: &When, rate: u32) -> Option<i64> {
-    let map = at.map(rate)?;
-    (map.a == map.d && map.least() == map.lead()).then(|| map.lead())
 }
 
 /// A crop's `[l, r)` and shoulders, as its evaluators read them.
@@ -263,17 +268,17 @@ enum Before {
 }
 
 impl Window {
-    fn switches(self, rate: u32) -> impl Iterator<Item = i64> {
-        [opens(rate, self.l), closes(rate, self.r, self.fall)]
+    fn switches(self, grid: Grid) -> impl Iterator<Item = i64> {
+        [opens(grid, self.l), closes(grid, self.r, self.fall)]
             .into_iter()
             .flatten()
     }
 
-    fn before(self, at: i64, rate: u32) -> Before {
-        if opens(rate, self.l).is_some_and(|c| c >= at) {
+    fn before(self, at: i64, grid: Grid) -> Before {
+        if opens(grid, self.l).is_some_and(|c| c >= at) {
             return Before::Zero;
         }
-        match closes(rate, self.r, self.fall) {
+        match closes(grid, self.r, self.fall) {
             Some(c) if c >= at => Before::Open(Window {
                 r: f64::INFINITY,
                 fall: 0.0,
@@ -293,42 +298,42 @@ impl Window {
 }
 
 /// The first index any evaluator reads at or past `l`: before it a crop is zero.
-fn opens(rate: u32, l: f64) -> Option<i64> {
+fn opens(grid: Grid, l: f64) -> Option<i64> {
     l.is_finite()
-        .then(|| crate::render::extent::window(rate, l, f64::INFINITY).start)
+        .then(|| crate::render::extent::window(grid, l, f64::INFINITY).start)
 }
 
 /// Before the first index any evaluator reads at or past `r - fall` a crop's gain is the
 /// one it has with no end; a fall's own rounding moves that one sample earlier.
-fn closes(rate: u32, r: f64, fall: f64) -> Option<i64> {
+fn closes(grid: Grid, r: f64, fall: f64) -> Option<i64> {
     let edge = r - fall;
     let first = edge
         .is_finite()
-        .then(|| crate::render::extent::window(rate, edge, f64::INFINITY).start)?;
+        .then(|| crate::render::extent::window(grid, edge, f64::INFINITY).start)?;
     Some(match fall > 0.0 {
         true => first - 1,
         false => first,
     })
 }
 
-fn body_points(f: &Body, rate: u32, out: &mut BTreeSet<i64>) {
+fn body_points(f: &Body, grid: Grid, out: &mut BTreeSet<i64>) {
     match f {
         // A time moved or warped reads its switches at instants this does not place.
         Body::Shift { .. } | Body::Warp { .. } => {}
         Body::Crop { of, l, r, fall, .. } => {
-            out.extend(opens(rate, l.value()));
-            out.extend(closes(rate, r.value(), *fall));
-            body_points(&of.body, rate, out);
+            out.extend(opens(grid, l.value()));
+            out.extend(closes(grid, r.value(), *fall));
+            body_points(&of.body, grid, out);
         }
         other => {
             for p in sva_formula::closed_form::children(other) {
-                body_points(&p.body, rate, out);
+                body_points(&p.body, grid, out);
             }
         }
     }
 }
 
-fn before(f: &Body, at: i64, rate: u32) -> Body {
+fn before(f: &Body, at: i64, grid: Grid) -> Body {
     match f {
         Body::Shift { .. } | Body::Warp { .. } => f.clone(),
         Body::Crop {
@@ -338,11 +343,11 @@ fn before(f: &Body, at: i64, rate: u32) -> Body {
             rise,
             fall,
         } => {
-            if opens(rate, l.value()).is_some_and(|c| c >= at) {
+            if opens(grid, l.value()).is_some_and(|c| c >= at) {
                 return Body::Const(C64::ZERO);
             }
-            let inner = Part::new(of.origin, before(&of.body, at, rate));
-            match closes(rate, r.value(), *fall) {
+            let inner = Part::new(of.origin, before(&of.body, at, grid));
+            match closes(grid, r.value(), *fall) {
                 Some(c) if c >= at => Body::Crop {
                     of: inner,
                     l: *l,
@@ -359,7 +364,7 @@ fn before(f: &Body, at: i64, rate: u32) -> Body {
                 },
             }
         }
-        other => map_children(other, |p| Part::new(p.origin, before(&p.body, at, rate))),
+        other => map_children(other, |p| Part::new(p.origin, before(&p.body, at, grid))),
     }
 }
 

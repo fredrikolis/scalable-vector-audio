@@ -10,7 +10,7 @@ pub fn render(params: &Params, rate: u32, secs: f64) -> Buffer {
         params.name()
     );
     let len = (secs * f64::from(rate)).round() as usize;
-    let mut solver = site(params, rate).expect("a grid this rate can hold");
+    let mut solver = site(params, f64::from(rate)).expect("a grid this rate can hold");
     let samples = (0..len)
         .map(|_| solver.step(&[]))
         .collect::<Result<Vec<f64>, _>>();

@@ -152,6 +152,11 @@ impl Render {
         self.config.rate
     }
 
+    /// The instants `id` steps through: the render's own, or the ones a reader asked for.
+    pub(crate) fn grid(&self, id: NodeId) -> sva_samples::Grid {
+        self.tys.grid(id).samples()
+    }
+
     pub(crate) fn identity(&self, id: NodeId) -> Result<sva_formula::Hash, EngineError> {
         refs::identity_in(&self.tys, id, &mut self.identities.borrow_mut())
     }
@@ -159,12 +164,7 @@ impl Render {
     /// The node's switches and its identity before each, asked once however often.
     pub(crate) fn prefixes<T>(&self, ask: impl FnOnce(&mut refs::Walk) -> T) -> T {
         let (mut held, mut named) = (self.prefixes.borrow_mut(), self.identities.borrow_mut());
-        ask(&mut refs::Walk::new(
-            &self.tys,
-            self.config.rate,
-            &mut held,
-            &mut named,
-        ))
+        ask(&mut refs::Walk::new(&self.tys, &mut held, &mut named))
     }
 
     /// `key` with what a node's samples read beyond its content: its profile.
@@ -578,6 +578,9 @@ fn collapse_closed_form(
     id: NodeId,
     cache: Option<&Lens>,
 ) -> Result<(), EngineError> {
+    if !held.grid(id).is_rate() {
+        return gridded(held, id, cache);
+    }
     let var = held.tys.var(id);
     let written = match refs::resolve(&held.tys, id, held.tys.ty(id).held) {
         Ok(refs::Read::Substitute(form)) => Some(*form),
@@ -642,6 +645,76 @@ fn collapse_closed_form(
             .run(rate, over, profile, score)
             .map_err(|e| collapse_refused(held, id, &e))?,
     };
+    finite(held, id, buffer.planes.iter().flatten())?;
+    if let Some(key) = key {
+        store(key, &buffer, &label, cache);
+    }
+    held.buffers.insert(id, padded(buffer, asked));
+    held.labels.insert(id, label);
+    Ok(())
+}
+
+/// A form on a grid `step*m + phase` samples of the rate is the form moved by the phase, on
+/// the rows of the rate that step makes where that rate is whole: sample `m` either way.
+pub(crate) fn moved_rows(tys: &Typing, id: NodeId) -> Option<(u32, SpectralSum)> {
+    let grid = tys.grid(id);
+    let Value::ClosedForm(form) = tys.value(id) else {
+        return None;
+    };
+    let base = crate::time::Q::int(i64::from(grid.rate));
+    let rate = base.div(grid.step)?;
+    let rate = u32::try_from(rate.num())
+        .ok()
+        .filter(|_| rate.is_integer())?;
+    if grid.phase.is_zero() {
+        return Some((rate, refs::spectral_sum_of(tys, id, form.var).ok()?));
+    }
+    let moved = sva_formula::Body::Shift {
+        by: grid.phase.div(base)?.neg().to_f64(),
+        of: sva_formula::Part::bare(form.body.clone()),
+    };
+    Some((
+        rate,
+        refs::spectral_sum_of_body(tys, id, &moved, form.var).ok()?,
+    ))
+}
+
+/// Rows where `moved_rows` places the form and a row takes it, point samples elsewhere.
+fn gridded(held: &mut Render, id: NodeId, cache: Option<&Lens>) -> Result<(), EngineError> {
+    let (asked, width) = (held.extents.of(id), held.tys.ty(id).width as usize);
+    let rows = moved_rows(&held.tys, id).and_then(|(rate, sum)| {
+        let planned = sva_samples::planned(Some(&sum), None, rate, asked, &held.config.profile);
+        Some((rate, planned.ok()?))
+    });
+    let (over, route) = match &rows {
+        Some((rate, planned)) => (planned.nonzero(*rate, asked), planned.route()),
+        None => (asked, Vec::new()),
+    };
+    let key = match cache {
+        Some(_) => Some(held.keyed(crate::cache::mixed(
+            crate::cache::buffer_key(
+                held.identity(id)?,
+                held.rate(),
+                over,
+                width,
+                AliasScore::NotAsked,
+            ),
+            &route,
+        ))),
+        None => None,
+    };
+    if let Some((hit, label)) = key.and_then(|key| warm(held, id, key, over.len(), cache)) {
+        held.buffers.insert(id, padded(hit, asked));
+        held.labels.insert(id, label);
+        return Ok(());
+    }
+    let (mut buffer, label) = match rows {
+        Some((rate, planned)) => planned
+            .run(rate, over, &held.config.profile, AliasScore::NotAsked)
+            .map_err(|e| collapse_refused(held, id, &e))?,
+        None => pointwise::point_sample(held, id, AliasScore::NotAsked)?,
+    };
+    buffer.rate = held.rate();
     finite(held, id, buffer.planes.iter().flatten())?;
     if let Some(key) = key {
         store(key, &buffer, &label, cache);

@@ -414,7 +414,7 @@ impl<'g> Lowering<'_, 'g> {
         arguments: Vec<Argument>,
         chosen: Vec<Chosen>,
     ) {
-        if arguments.is_empty() && chosen.is_empty() {
+        if arguments.is_empty() && chosen.is_empty() || !self.grid.is_rate() {
             return;
         }
         let call = (!arguments.is_empty()).then(|| Called {
@@ -540,10 +540,9 @@ impl<'g> Lowering<'_, 'g> {
         }) else {
             return Ok(0);
         };
-        let rate = crate::time::Q::int(i64::from(self.inst.rate()));
         let count = crate::loops::time_of(self.inst, written, cx)
             .filter(|at| at.scale.is_zero())
-            .and_then(|at| at.shift.mul(rate))
+            .and_then(|at| at.shift.div(self.grid.steps(crate::time::Q::ONE)?))
             .filter(|n| n.is_integer() && n.num() > 0);
         match count {
             Some(n) => Ok(n.num() as usize),

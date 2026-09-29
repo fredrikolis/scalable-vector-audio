@@ -1,22 +1,16 @@
 // Concern: what an index expression denotes: an integer, and the rounded line plus count it sums to | Non-concern: reading a buffer there (render/sampled.rs) | IO: (&Expr, Cx) -> bool, Index
 
 use sva_ast::{Arg, BinOp, CEIL, Expr, FLOOR, INDEX, Literal};
+pub use sva_samples::Round;
 use sva_samples::{Between, Map};
 
 use crate::instantiate::{Cx, Instances, Node};
-use crate::time::{Affine, Q};
+use crate::time::{Affine, Grid};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Round {
-    Even,
-    Floor,
-    Ceil,
-}
-
-/// Sample index `round(time * rate) + plus`. A count rounds the zero line.
+/// Sample index `round(time) + plus` on the reader's grid; a count has no time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Index {
-    pub time: Affine,
+    pub time: Option<Affine>,
     pub round: Round,
     pub plus: i64,
 }
@@ -24,25 +18,22 @@ pub struct Index {
 impl Index {
     fn count(plus: i64) -> Index {
         Index {
-            time: Affine {
-                scale: Q::ZERO,
-                shift: Q::ZERO,
-            },
+            time: None,
             round: Round::Even,
             plus,
         }
     }
 
-    fn as_count(self) -> Option<i64> {
-        (self.time.scale.is_zero() && self.time.shift.is_zero()).then_some(self.plus)
+    pub(crate) fn as_count(self) -> Option<i64> {
+        self.time.is_none().then_some(self.plus)
     }
 
     fn negated(self) -> Option<Index> {
         Some(Index {
-            time: Affine {
-                scale: self.time.scale.neg(),
-                shift: self.time.shift.neg(),
-            },
+            time: self.time.map(|time| Affine {
+                scale: time.scale.neg(),
+                shift: time.shift.neg(),
+            }),
             round: match self.round {
                 Round::Even => Round::Even,
                 Round::Floor => Round::Ceil,
@@ -59,9 +50,12 @@ impl Index {
         })
     }
 
-    /// Sample `n` stepped at `rate` reads this index, rounded once from its exact position.
-    pub fn map(self, rate: u32) -> Option<Map> {
-        let (a, b, d) = self.time.position(rate)?;
+    /// Sample `n` of `grid` reads this index of it, rounded once from its exact position.
+    pub fn map(self, grid: Grid) -> Option<Map> {
+        let Some(time) = self.time else {
+            return Map::new(0, i128::from(self.plus), 1);
+        };
+        let (a, b, d) = grid.position(time, grid)?;
         let (b, between) = match self.round {
             Round::Even => (b, Between::Even),
             Round::Floor => (b, Between::Floor),
@@ -113,17 +107,21 @@ fn cast(inst: &Instances, args: &[Arg], cx: Cx) -> Option<Index> {
     let Some(Arg::Pos(time)) = args.first() else {
         return None;
     };
-    let round = match args.get(1) {
-        None => Round::Even,
-        Some(Arg::Pos(Expr::Var(word))) if word == FLOOR => Round::Floor,
-        Some(Arg::Pos(Expr::Var(word))) if word == CEIL => Round::Ceil,
-        Some(_) => return None,
-    };
     Some(Index {
-        time: crate::loops::time_of(inst, time, cx)?,
-        round,
+        time: Some(crate::loops::time_of(inst, time, cx)?),
+        round: rounding(args.get(1))?,
         plus: 0,
     })
+}
+
+/// `idx`'s second argument.
+pub(crate) fn rounding(arg: Option<&Arg>) -> Option<Round> {
+    match arg {
+        None => Some(Round::Even),
+        Some(Arg::Pos(Expr::Var(word))) if word == FLOOR => Some(Round::Floor),
+        Some(Arg::Pos(Expr::Var(word))) if word == CEIL => Some(Round::Ceil),
+        Some(_) => None,
+    }
 }
 
 fn sum(l: Index, r: Index) -> Option<Index> {

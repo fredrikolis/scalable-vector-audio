@@ -22,7 +22,10 @@ impl Source<'_> {
     }
 
     pub(super) fn mapped(&self, map: Map, n: i64, out: &mut [f64]) -> Result<(), SampleError> {
-        let k = map.at(n);
+        self.nearest(map.at(n), out)
+    }
+
+    pub(super) fn nearest(&self, k: i64, out: &mut [f64]) -> Result<(), SampleError> {
         for (c, slot) in out.iter_mut().enumerate() {
             *slot = self.sample(c, k)?;
         }

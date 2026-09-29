@@ -452,3 +452,39 @@ fn sat_drives_a_sampled_operand_as_it_drives_a_closed_form() {
     );
     assert_eq!(hard_key, written_key, "under one key");
 }
+
+/// A stateful node read between its steps is keyed by the grid it steps on: a second reader
+/// at the same offset is answered by the first one's entry, and a read at another is not.
+#[test]
+fn reads_of_a_stateful_node_at_one_offset_share_one_entry() {
+    let dir = dir_of(
+        "offsets",
+        &[
+            (
+                "kick",
+                "lowpass(crop(sample(sin(2*pi*55*t)), 0s, 0.05s), cutoff=900, q=0.8)\n",
+            ),
+            ("early", "@kick(t - 0.1234s)\n"),
+            ("again", "0.5*@kick(t - 0.1234s)\n"),
+            ("later", "@kick(t - 0.2345s)\n"),
+        ],
+    );
+    let cache = store_all();
+    let kick = |root: &str| {
+        let r = over(&dir, root, 0.4, &cache);
+        let stats = r.cache_stats.expect("a render handed a store");
+        stats
+            .lookups
+            .into_iter()
+            .filter(|l| l.node == "kick")
+            .map(|l| l.outcome)
+            .collect::<Vec<_>>()
+    };
+    let hit = |o: &sva_engine::Outcome| *o == sva_engine::Outcome::Hit;
+    let cold = kick("early");
+    assert!(!cold.is_empty() && !cold.iter().any(hit), "{cold:?}");
+    let again = kick("again");
+    assert!(!again.is_empty() && again.iter().all(hit), "{again:?}");
+    let later = kick("later");
+    assert!(!later.is_empty() && !later.iter().any(hit), "{later:?}");
+}

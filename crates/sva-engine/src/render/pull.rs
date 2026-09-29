@@ -135,10 +135,14 @@ fn reads_ahead(held: &Render, id: NodeId) -> bool {
     extent::leaves(&program.renderer, &mut |leaf| {
         if let NodeRenderer::Read {
             slot: Slot::Read(_),
-            map,
+            ..
+        }
+        | NodeRenderer::Nearest {
+            slot: Slot::Read(_),
+            ..
         } = leaf
         {
-            ahead |= map.ahead();
+            ahead |= node::reads_ahead(leaf);
         }
     });
     ahead

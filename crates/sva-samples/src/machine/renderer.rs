@@ -211,8 +211,100 @@ fn extent(lo: Option<i128>, hi: Option<i128>) -> Extent {
     }
 }
 
-/// `scale*t + shift + gain*((inner_scale*t + inner_shift) mod period)` at the instant
-/// `n/rate`, each a rational `(num, den)` with `den > 0` and `period > 0`. The remainder and
+/// Sample `n` stands at `(a*n + b)/d` samples of `rate`, in lowest terms, `a, d > 0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Grid {
+    pub rate: u32,
+    pub a: i128,
+    pub b: i128,
+    pub d: i128,
+}
+
+impl Grid {
+    pub const fn of(rate: u32) -> Grid {
+        Grid {
+            rate,
+            a: 1,
+            b: 0,
+            d: 1,
+        }
+    }
+
+    pub fn is_rate(&self) -> bool {
+        (self.a, self.b, self.d) == (1, 0, 1)
+    }
+
+    fn exact(&self, n: i64) -> Option<(i128, i128)> {
+        let num = self.a.checked_mul(i128::from(n))?.checked_add(self.b)?;
+        Some((num, self.d.checked_mul(i128::from(self.rate))?))
+    }
+
+    /// One quotient: correctly rounded while both integers are under 2^53; past that each
+    /// integer rounds once converting and the quotient once more.
+    pub fn instant(&self, n: i64) -> f64 {
+        let num = self.a.saturating_mul(i128::from(n)).saturating_add(self.b);
+        num as f64 / self.d.saturating_mul(i128::from(self.rate)) as f64
+    }
+
+    pub fn stepped(&self, n: i64) -> f64 {
+        self.position(n) * (1.0 / f64::from(self.rate))
+    }
+
+    pub fn position(&self, n: i64) -> f64 {
+        self.a.saturating_mul(i128::from(n)).saturating_add(self.b) as f64 / self.d as f64
+    }
+
+    pub fn sr(&self) -> f64 {
+        f64::from(self.rate) * self.d as f64 / self.a as f64
+    }
+
+    pub fn count(&self, t: f64) -> f64 {
+        (t * f64::from(self.rate) * self.d as f64 - self.b as f64) / self.a as f64
+    }
+
+    /// The step `t` falls nearest, rounded exactly from `t`'s own binary value; `None` where
+    /// that is past what the integers hold.
+    pub fn step_at(&self, t: f64, round: Round) -> Option<i64> {
+        if !t.is_finite() {
+            return None;
+        }
+        let bits = t.abs().to_bits();
+        let (exp, frac) = ((bits >> 52) as i32, (bits & ((1 << 52) - 1)) as i128);
+        let (mantissa, shift) = match exp {
+            0 => (frac, 1074),
+            e => (frac | (1 << 52), 1075 - e),
+        };
+        let zeros = mantissa.trailing_zeros().min(127) as i32;
+        let (mantissa, shift) = match mantissa {
+            0 => (0, 0),
+            m => (m >> zeros, shift - zeros),
+        };
+        let mantissa = if t < 0.0 { -mantissa } else { mantissa };
+        let (num, den) = match shift {
+            s if s <= 0 => (mantissa.checked_mul(1i128.checked_shl((-s) as u32)?)?, 1),
+            s if s < 127 => (mantissa, 1i128 << s),
+            _ => return None,
+        };
+        let top = num
+            .checked_mul(self.d.checked_mul(i128::from(self.rate))?)?
+            .checked_sub(self.b.checked_mul(den)?)?;
+        let bottom = self.a.checked_mul(den)?;
+        let (floor, rem) = (top.div_euclid(bottom), top.rem_euclid(bottom));
+        let k = match round {
+            Round::Floor => floor,
+            Round::Ceil => floor + i128::from(rem != 0),
+            Round::Even => match (2 * rem).cmp(&bottom) {
+                std::cmp::Ordering::Less => floor,
+                std::cmp::Ordering::Greater => floor + 1,
+                std::cmp::Ordering::Equal => floor + floor.rem_euclid(2),
+            },
+        };
+        i64::try_from(k).ok()
+    }
+}
+
+/// `scale*t + shift + gain*((inner_scale*t + inner_shift) mod period)` at sample `n`'s
+/// instant, each a rational `(num, den)` with `den > 0` and `period > 0`. The remainder and
 /// the sum are integers over one denominator, so which side of a jump an instant falls on is
 /// decided exactly and only the quotient that states the sum rounds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -226,8 +318,8 @@ pub struct Wrap {
 
 impl Wrap {
     /// `None` where the integers it is computed in would overflow.
-    pub fn at(self, n: i64, rate: u32) -> Option<f64> {
-        let (n, rate) = (i128::from(n), i128::from(rate));
+    pub fn at(self, n: i64, grid: Grid) -> Option<f64> {
+        let (n, rate) = grid.exact(n)?;
         let [(s, sd), (o, od)] = self.inner;
         let over = sd.checked_mul(rate)?;
         let den = lcm(lcm(over, od)?, self.period.1)?;
@@ -258,6 +350,13 @@ impl Wrap {
 
 fn lcm(a: i128, b: i128) -> Option<i128> {
     (a / gcd(a, b)).checked_mul(b)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Round {
+    Even,
+    Floor,
+    Ceil,
 }
 
 /// Another node's samples, or this node's own past.
@@ -344,6 +443,15 @@ pub enum NodeRenderer {
         time: Box<NodeRenderer>,
     },
     Noise(u64),
+    /// The stored sample nearest the instant `time` names, moved by `plus`; `reach` holds
+    /// every offset from the sample being written it lands at.
+    Nearest {
+        slot: Slot,
+        time: Box<NodeRenderer>,
+        round: Round,
+        plus: i64,
+        reach: (i64, i64),
+    },
     Add(Vec<NodeRenderer>),
     Mul(Vec<NodeRenderer>),
     Sub(Box<NodeRenderer>, Box<NodeRenderer>),
@@ -390,6 +498,10 @@ impl NodeRenderer {
                 slot: Slot::Own, ..
             } => false,
             NodeRenderer::Formula { time, .. } => time.stateless(),
+            NodeRenderer::Nearest {
+                slot: Slot::Own, ..
+            } => false,
+            NodeRenderer::Nearest { time, .. } => time.stateless(),
             NodeRenderer::Add(set) | NodeRenderer::Mul(set) | NodeRenderer::Join(set) => {
                 set.iter().all(NodeRenderer::stateless)
             }

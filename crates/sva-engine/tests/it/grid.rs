@@ -20,7 +20,6 @@ fn composition() -> sva_ast::Graph {
                 "lowpass(sample(0.3*saw(220*t)), cutoff=900) + @vibrato + rand(t - t % 0.01s, \
                  seed=3) + @decay\n",
             ),
-            ("between", "@lfo(t - 0.0123456s)\n"),
         ],
     )
 }
@@ -82,14 +81,89 @@ fn a_formula_read_at_any_instant_is_exact() {
     }
 }
 
+fn close(got: &[f64], want: &[f64], at: &str) {
+    assert!(got.iter().any(|v| *v != 0.0), "{at}: silence tests nothing");
+    assert_eq!(got.len(), want.len(), "{at}");
+    for (n, (a, b)) in got.iter().zip(want).enumerate() {
+        assert!((a - b).abs() < 1e-9, "{at}: sample {n} is {a}, not {b}");
+    }
+}
+
+/// `@kick(t - d)` steps the kick on the grid `d` shifts it to: the same as writing the shift
+/// into what it filters, from where that starts.
 #[test]
-fn a_read_between_a_stateful_nodes_samples_refuses() {
-    let g = composition();
+fn a_stateful_node_read_between_its_steps_runs_on_the_grid_the_read_shifts_it_to() {
+    let g = graph_of(
+        "shifted",
+        &[
+            (
+                "kick",
+                "lowpass(crop(sample(sin(2*pi*55*t)), 0s, 0.05s), cutoff=900, q=0.8)\n",
+            ),
+            ("late", "@kick(t - 0.1234s)\n"),
+            (
+                "written",
+                "lowpass(crop(sample(sin(2*pi*55*(t - 0.1234s))), 0.1234s, 0.1734s), \
+                 cutoff=900, q=0.8)\n",
+            ),
+        ],
+    );
     for rate in RATES {
-        let Err(refused) = render(&g, "between", RenderConfig::seconds(rate, 0.05), None) else {
-            panic!("between at {rate} reads between samples");
+        let config = RenderConfig::seconds(rate, 0.3);
+        let at = |target: &str| {
+            let held = render(&g, target, config.clone(), None)
+                .unwrap_or_else(|e| panic!("{target} at {rate}: {e}"));
+            plane(&held, target)
         };
-        assert_eq!(refused.code(), "render.off_grid_read", "{refused}");
+        close(&at("late"), &at("written"), &format!("{rate}"));
+    }
+}
+
+/// `@x(0.5*t)` steps x at half the step: x rendered at twice the rate, sample for sample.
+#[test]
+fn a_stateful_node_read_at_half_speed_steps_at_half_the_step() {
+    let g = graph_of(
+        "slowed",
+        &[
+            (
+                "filtered",
+                "lowpass(crop(sample(0.3*saw(220*t)), 0s, 0.05s), cutoff=900, q=0.8)\n",
+            ),
+            ("slow", "@filtered(0.5*t)\n"),
+        ],
+    );
+    for rate in [8_000, 22_050, 24_000, 48_000] {
+        let slow = render(&g, "slow", RenderConfig::seconds(rate, 0.05), None)
+            .unwrap_or_else(|e| panic!("{rate}: {e}"));
+        let fast = render(&g, "filtered", RenderConfig::seconds(2 * rate, 0.025), None)
+            .unwrap_or_else(|e| panic!("{rate}: {e}"));
+        close(
+            &plane(&slow, "slow"),
+            &plane(&fast, "filtered"),
+            &format!("{rate}"),
+        );
+    }
+}
+
+/// A stateful node at a time that moves has no step to read there; typing says which
+/// construct holds the state and offers the nearest step.
+#[test]
+fn a_stateful_node_read_at_a_moving_time_refuses_at_typing() {
+    let g = graph_of(
+        "warped",
+        &[
+            ("pad", "lowpass(sample(0.3*saw(220*t)), cutoff=900)\n"),
+            ("d", "0.001*sin(2*pi*3*t)\n"),
+            ("warped", "@pad(t - @d)\n"),
+        ],
+    );
+    let Err(refused) = sva_engine::types(&g, "warped") else {
+        panic!("a filter has no value at a time that moves");
+    };
+    assert_eq!(refused.code(), "type.stateful_warp", "{refused}");
+    let said = refused.to_string();
+    for part in ["`pad`", "`lowpass(…)`", "idx("] {
+        assert!(said.contains(part), "{part} in {said}");
     }
 }
 

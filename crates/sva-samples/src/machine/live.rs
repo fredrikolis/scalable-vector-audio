@@ -25,10 +25,10 @@ impl NodeRenderer {
         live: &[Extent],
     ) -> Result<Buffer, SampleError> {
         let end = ctx.start + ctx.len as i64;
-        let mut machine = Machine::live(self, layout, ctx.rate, (ctx.start, end), live)?;
+        let mut machine = Machine::live(self, layout, ctx.grid, (ctx.start, end), live)?;
         let mut own = Tape::new(machine.width(), ctx.len, ctx.start);
         machine.steps(end, ctx.reads, &mut own)?;
-        let mut out = Buffer::of_planes(ctx.rate, own.into_planes());
+        let mut out = Buffer::of_planes(ctx.grid.rate, own.into_planes());
         out.start = ctx.start;
         Ok(out)
     }
@@ -156,7 +156,7 @@ fn operands(r: &NodeRenderer) -> Vec<&NodeRenderer> {
             x, cutoff, q, gain, ..
         } => vec![x, cutoff, q, gain],
         NodeRenderer::Physics { args, .. } => args.iter().collect(),
-        NodeRenderer::Formula { time, .. } => vec![time],
+        NodeRenderer::Formula { time, .. } | NodeRenderer::Nearest { time, .. } => vec![time],
         _ => Vec::new(),
     }
 }
@@ -222,6 +222,19 @@ fn rebuilt(r: &NodeRenderer, each: &mut Each) -> Result<NodeRenderer, SampleErro
             formula: formula.clone(),
             width: *width,
             time: one(time)?,
+        },
+        NodeRenderer::Nearest {
+            slot,
+            time,
+            round,
+            plus,
+            reach,
+        } => NodeRenderer::Nearest {
+            slot: *slot,
+            time: one(time)?,
+            round: *round,
+            plus: *plus,
+            reach: *reach,
         },
         leaf => leaf.clone(),
     })

@@ -10,6 +10,7 @@ use sva_formula::filter::Shape;
 use sva_formula::note;
 
 use crate::error::EngineError;
+use crate::time::Grid;
 use crate::vocabulary::is_builtin;
 
 pub use build::{from_roots, instantiate};
@@ -71,11 +72,13 @@ impl<'g> Scope<'g> {
     }
 }
 
-/// `time` is DYNAMIC: `p(t - d)` moves every `t` under the parameter, however deep.
+/// `time` is DYNAMIC: `p(t - d)` moves every `t` under the parameter, however deep. `sp` is a
+/// step of `grid`.
 #[derive(Clone, Copy)]
 pub struct Cx<'a> {
     pub(crate) scope: ScopeId,
     pub(crate) time: Option<&'a Time<'a>>,
+    pub(crate) grid: Grid,
 }
 
 pub(crate) struct Time<'a> {
@@ -89,15 +92,12 @@ enum Move<'a> {
 }
 
 impl<'a> Cx<'a> {
-    pub(crate) fn root(scope: ScopeId) -> Cx<'a> {
-        Cx { scope, time: None }
+    pub(crate) fn under(self, scope: ScopeId) -> Cx<'a> {
+        Cx { scope, ..self }
     }
 
-    pub(crate) fn under(self, scope: ScopeId) -> Cx<'a> {
-        Cx {
-            scope,
-            time: self.time,
-        }
+    pub(crate) fn on(self, grid: Grid) -> Cx<'a> {
+        Cx { grid, ..self }
     }
 }
 
@@ -157,6 +157,18 @@ impl<'g> Instances<'g> {
         self.rate
     }
 
+    pub(crate) fn grid(&self) -> Grid {
+        Grid::of(self.rate)
+    }
+
+    pub(crate) fn cx(&self, scope: ScopeId) -> Cx<'_> {
+        Cx {
+            scope,
+            time: None,
+            grid: self.grid(),
+        }
+    }
+
     pub fn origin(&self, instance: &str) -> Option<&str> {
         self.origin.get(instance).map(String::as_str)
     }
@@ -192,7 +204,7 @@ impl<'g> Instances<'g> {
 
     pub fn at<'a>(&'a self, path: &str) -> Option<(&'a Expr, Cx<'a>)> {
         let thunk = *self.nodes.get(path)?;
-        Some((thunk.expr, Cx::root(thunk.scope)))
+        Some((thunk.expr, self.cx(thunk.scope)))
     }
 
     pub fn bindings<'a>(&'a self, path: &str) -> Option<Vec<(&'a str, &'a Expr, Cx<'a>)>> {
@@ -201,7 +213,7 @@ impl<'g> Instances<'g> {
             self.scopes[thunk.scope as usize]
                 .vars
                 .iter()
-                .map(|(name, value)| (name.as_str(), value.expr, Cx::root(value.scope)))
+                .map(|(name, value)| (name.as_str(), value.expr, self.cx(value.scope)))
                 .collect(),
         )
     }
@@ -261,6 +273,7 @@ impl<'g> Instances<'g> {
                     Cx {
                         scope,
                         time: Some(&moved),
+                        grid: cx.grid,
                     },
                 ))
             }
@@ -393,6 +406,7 @@ impl<'g> Instances<'g> {
                         Cx {
                             scope,
                             time: Some(&moved),
+                            grid: ax.grid,
                         },
                         b,
                         by,
@@ -412,6 +426,7 @@ impl<'g> Instances<'g> {
                         Cx {
                             scope,
                             time: Some(&moved),
+                            grid: by.grid,
                         },
                     )
                 }
@@ -471,7 +486,7 @@ impl<'g> Instances<'g> {
         let held = &self.scopes[scope as usize].vars;
         held.len() == binds.len()
             && held.iter().zip(binds).all(|((k1, v1), (k2, v2))| {
-                k1 == k2 && self.same(v1.expr, Cx::root(v1.scope), v2.expr, Cx::root(v2.scope))
+                k1 == k2 && self.same(v1.expr, self.cx(v1.scope), v2.expr, self.cx(v2.scope))
             })
     }
 }

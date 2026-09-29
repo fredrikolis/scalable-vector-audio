@@ -1,4 +1,4 @@
-// Concern: turns one sampled node into the renderer that writes its buffer, or refuses a read no sample holds | Non-concern: collapsing a closed form (mod.rs), the op array | IO: (NodeId) -> a Buffer
+// Concern: turns one sampled node into the renderer that writes its buffer, or refuses a read no map spells | Non-concern: collapsing a closed form (mod.rs), the op array | IO: (NodeId) -> a Buffer
 
 use sva_formula::{NodeId, Var};
 use sva_samples::machine::ops::Layout;
@@ -11,7 +11,7 @@ use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::render::Render;
 use crate::render::extent::Supports;
-use crate::typing::{Typing, Value, When};
+use crate::typing::{Nearest, Typing, Value, When};
 
 /// A sampled node is the dearest kind this engine runs, so it is keyed as a collapse is: off
 /// the node's identity, the grid it was stepped on and the extent it was stepped over. Its
@@ -133,7 +133,7 @@ impl Program {
             })
             .collect();
         let ctx = Ctx {
-            rate: held.rate(),
+            grid: held.grid(id),
             start: extent.start,
             len: extent.len(),
             reads: &buffers,
@@ -201,8 +201,8 @@ impl Build<'_> {
             }
             Value::Cast(Cast::Sample, source) => Ok(self.buffer(source, Map::shift(0))),
             Value::Cast(..) => Err(uncollapsed(self.held, id)),
-            Value::Read { source, at, .. } => self.read(source, at),
-            Value::SelfAt { at } => self.own(at),
+            Value::Read { source, at, .. } => self.read(id, source, at),
+            Value::SelfAt { at } => self.own(id, at),
             Value::Noise(seed) => Ok(NodeRenderer::Noise(seed)),
             Value::Solver { .. } if id != self.owner => Ok(self.buffer(id, Map::shift(0))),
             Value::Solver { params, varying } => {
@@ -240,10 +240,11 @@ impl Build<'_> {
         }
     }
 
-    /// A stored sample where each of this program's instants reads one; a closed form exactly
-    /// at any instant; anything else refused, as no sample holds it.
-    fn read(&mut self, source: NodeId, at: When) -> Result<NodeRenderer, EngineError> {
-        if let Some(map) = at.map(self.held.rate()) {
+    /// A stored sample where each of this program's instants reads one, or the one nearest a
+    /// time that moves; a closed form exactly at any instant.
+    fn read(&mut self, id: NodeId, source: NodeId, at: When) -> Result<NodeRenderer, EngineError> {
+        let tys = &self.held.tys;
+        if let Some(map) = at.map(tys.grid(id), tys.grid(source)) {
             return Ok(self.buffer(source, map));
         }
         let time = match at {
@@ -256,6 +257,11 @@ impl Build<'_> {
             }
             When::Moving(time) => self.of(time)?,
             When::Index(index) => return Err(unreadable_index(self.held, self.owner, index)),
+            When::Nearest(nearest) => {
+                let slot = BufId(self.reads.len() as u32);
+                self.reads.push(source);
+                return self.nearest(id, Slot::Read(slot), nearest);
+            }
         };
         match formula(self.held, source)? {
             Some(formula) => Ok(NodeRenderer::Formula {
@@ -263,20 +269,46 @@ impl Build<'_> {
                 width: self.held.tys.ty(source).width as usize,
                 time: Box::new(time),
             }),
-            None => Err(off_grid(self.held, self.owner, source, at)),
+            None => Err(unplaced(self.held, self.owner)),
         }
     }
 
     /// A loop's own past, by index: a whole sample before the one being written.
-    fn own(&mut self, at: When) -> Result<NodeRenderer, EngineError> {
-        match (at.map(self.held.rate()), at) {
+    fn own(&mut self, id: NodeId, at: When) -> Result<NodeRenderer, EngineError> {
+        let grid = self.held.tys.grid(id);
+        match (at.map(grid, grid), at) {
             (Some(map), _) => Ok(NodeRenderer::Read {
                 slot: Slot::Own,
                 map,
             }),
+            (None, When::Nearest(nearest)) => self.nearest(id, Slot::Own, nearest),
             (None, When::Index(index)) => Err(unreadable_index(self.held, self.owner, index)),
             (None, _) => unreachable!("typing reads a loop's past by index only"),
         }
+    }
+
+    /// The step nearest a time that moves, where a bound on how far it lands holds.
+    fn nearest(
+        &mut self,
+        id: NodeId,
+        slot: Slot,
+        nearest: Nearest,
+    ) -> Result<NodeRenderer, EngineError> {
+        let Some(reach) = self.supports.reach(nearest, self.held.grid(id)) else {
+            return Err(collapse_refused(
+                &self.held.tys,
+                self.owner,
+                "no bound holds how far this idx(...) lands from the step being written",
+                "engine.unreadable_index",
+            ));
+        };
+        Ok(NodeRenderer::Nearest {
+            slot,
+            time: Box::new(self.of(nearest.time)?),
+            round: nearest.round,
+            plus: nearest.plus,
+            reach,
+        })
     }
 
     /// A sampled operand is already a buffer, so a renderer reads it rather than recomputing it.
@@ -408,55 +440,34 @@ fn formula(held: &Render, source: NodeId) -> Result<Option<Formula>, EngineError
         Value::Cast(Cast::Sample, of) => *of,
         _ => source,
     };
-    let band = Audible::of(&held.config.profile, held.rate());
+    let band = Audible::on(&held.config.profile, held.grid(source));
     let truncated = |e: &sva_samples::CollapseError| super::pointwise::refused(held, form, e);
-    if let Ok(sum) = crate::refs::spectral_sum_of(&held.tys, form, Var::T) {
-        let sum = truncate_spectral_sum(&sum, band).map_err(|e| truncated(&e))?;
-        return Ok(Some(Formula::Sum(Box::new(sum))));
-    }
+    let summed = crate::refs::spectral_sum_of(&held.tys, form, Var::T)
+        .ok()
+        .map(|sum| truncate_spectral_sum(&sum, band));
+    let refused = match summed {
+        Some(Ok(sum)) => return Ok(Some(Formula::Sum(Box::new(sum)))),
+        // A series no line enumeration reads is expanded term by term in the written form.
+        Some(Err(e)) => Some(truncated(&e)),
+        None => None,
+    };
     match crate::refs::substituted_closed_form(&held.tys, form) {
         Some(written) if written.var == Var::T => {
             let body = truncate_written(&written.body, band).map_err(|e| truncated(&e))?;
             Ok(Some(Formula::Written(Box::new(body))))
         }
-        _ => Ok(None),
+        _ => refused.map_or(Ok(None), Err),
     }
 }
 
-/// A node that holds state has a value only at the samples it steps through, at the rate the
-/// render asked for.
-fn off_grid(held: &Render, owner: NodeId, source: NodeId, at: When) -> EngineError {
-    let rate = held.rate();
-    let (what, help) = match at {
-        When::Time(time) if time.scale == crate::time::Q::ONE => (
-            format!(
-                "at {} samples from its own instant, between two of its samples at {rate} Hz",
-                time.shift.mul(crate::time::Q::int(i64::from(rate))).map_or(
-                    "a count past what this engine holds".to_string(),
-                    |n| format!("{}", n.to_f64())
-                )
-            ),
-            "read the nearest sample by index, as x[idx(t - d)], or shift by whole sp",
-        ),
-        When::Time(_) => (
-            "at a scaled time, which lands between its samples".to_string(),
-            "read it at t plus a whole number of sp, or by index, as x[idx(2*t)]",
-        ),
-        _ => (
-            "at a time that moves, which lands between its samples".to_string(),
-            "read it by index, as x[idx(...)], or write what it reads as a closed form",
-        ),
-    };
-    EngineError::refused(Diagnostic {
-        code: "render.off_grid_read".to_string(),
-        message: format!(
-            "`{}` has a value only at the samples it steps through, and `{}` reads it {what}",
-            held.tys.name(source),
-            held.tys.name(owner)
-        ),
-        location: Located::at(held.tys.name(owner), None),
-        help: help.to_string(),
-    })
+/// A time exactly placed past what a map's integers hold.
+fn unplaced(held: &Render, owner: NodeId) -> EngineError {
+    collapse_refused(
+        &held.tys,
+        owner,
+        "a read's time lands past what exact integers place",
+        "engine.unreadable_position",
+    )
 }
 
 fn unreadable_index(
@@ -468,7 +479,7 @@ fn unreadable_index(
         Some(_) => "a sample index this far out has no map a machine can read",
         None => {
             "this engine reads an index only as one idx(...) of a line in t, negated or not, \
-             plus a count"
+             or of t plus a closed form, plus a count"
         }
     };
     collapse_refused(&held.tys, owner, why, "engine.unreadable_index")

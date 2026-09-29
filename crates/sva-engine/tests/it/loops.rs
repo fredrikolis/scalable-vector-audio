@@ -156,6 +156,34 @@ fn a_filter_over_an_indexed_self_renders_at_any_rate() {
     }
 }
 
+/// `self[idx(w)]` with `w` moving reads the loop's nearest past step each sample: alone it has
+/// nothing to ring, and a burst comes back once the delay, near 5 ms here, has passed.
+#[test]
+fn a_loop_reads_its_past_at_a_delay_that_moves() {
+    let delay = "self[idx(t - 0.005s - 0.002s*sin(2*pi*0.5*t))]";
+    for rate in RATES {
+        let alone = format!("lp({delay}, cutoff=2000)\n");
+        let held = at_rate(&[("loop", &alone)], "loop", rate, 0.03);
+        let id = held.id("loop").expect("the root");
+        let plane = held.output(id).expect("a loop").plane(0).to_vec();
+        assert!(plane.iter().all(|v| *v == 0.0), "{rate}: nothing rings");
+        let rung =
+            format!("sample(crop(sin(2*pi*200*t), 0s, 0.002s)) + 0.5*lp({delay}, cutoff=2000)\n");
+        let held = at_rate(&[("loop", &rung)], "loop", rate, 0.03);
+        let id = held.id("loop").expect("the root");
+        let plane = held.output(id).expect("a loop").plane(0).to_vec();
+        let at = |secs: f64| (secs * f64::from(rate)) as usize;
+        assert!(
+            plane[at(0.0021)..at(0.0049)].iter().all(|v| *v == 0.0),
+            "{rate}: silent until the delay has passed"
+        );
+        assert!(
+            plane[at(0.005)..at(0.008)].iter().any(|v| v.abs() > 1e-3),
+            "{rate}: the burst comes back through the filter"
+        );
+    }
+}
+
 /// Karplus-Strong at 440 Hz: whole samples of delay by index, the fraction by a first-order
 /// allpass written out in the loop, `a[n] = c*v[n] + v[n-1] - c*a[n-1]` over the averaged
 /// delay line `v`, with `a[n-1] = y[n-1] - x[n-1]`.

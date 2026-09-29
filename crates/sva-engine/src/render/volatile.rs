@@ -183,7 +183,7 @@ impl Reach<'_, '_> {
         for (name, thunk) in &inst.scopes[cx.scope as usize].vars {
             let value = match self.declared(name) {
                 true => format!("?{name}"),
-                false => sva_ast::render_expr(&self.copy(thunk.expr, Cx::root(thunk.scope))),
+                false => sva_ast::render_expr(&self.copy(thunk.expr, inst.cx(thunk.scope))),
             };
             args.push(format!("{name}={value}"));
         }

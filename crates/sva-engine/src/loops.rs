@@ -101,17 +101,17 @@ pub(crate) fn tap_of(inst: &Instances, arg: &Expr, address: Address, cx: Cx) -> 
 /// A loop steps at the rate in use, so its index reads one delay back or a delay that moves.
 /// An index its lowering refuses reads as one that moves until the lowering says so.
 fn indexed_tap(inst: &Instances, arg: &Expr, cx: Cx) -> Tap {
-    let rate = inst.rate();
-    let map = crate::index::read(inst, arg, cx).and_then(|ix| ix.map(rate));
+    let map = crate::index::read(inst, arg, cx).and_then(|ix| ix.map(cx.grid));
     let Some(map) = map.filter(|m| m.a == m.d) else {
         return Tap::Indexed;
     };
     match (map.least(), map.lead()) {
         (_, most) if most > 0 => Tap::Forward,
         (_, 0) => Tap::Zero,
-        (least, most) if least == most => {
-            Q::new(-i128::from(least), i128::from(rate)).map_or(Tap::Indexed, Tap::Back)
-        }
+        (least, most) if least == most => cx
+            .grid
+            .steps(Q::int(-least))
+            .map_or(Tap::Indexed, Tap::Back),
         _ => Tap::Indexed,
     }
 }
@@ -438,9 +438,7 @@ fn walk(inst: &Instances, e: &Expr, cx: Cx) -> Option<Term> {
             _ => None,
         },
         Node::Lit(Literal::Num(n)) => Q::decimal(*n).map(Term::Number),
-        Node::Lit(Literal::Samples(n)) => Some(Term::Number(
-            Q::decimal(*n)?.div(Q::int(i64::from(inst.rate())))?,
-        )),
+        Node::Lit(Literal::Samples(n)) => Some(Term::Number(cx.grid.steps(Q::decimal(*n)?)?)),
         _ => Q::decimal(plain(amount(inst, e, cx)?)?).map(Term::Number),
     }
 }
@@ -473,7 +471,7 @@ fn folded(
     }
     match inst.node(e, cx) {
         Node::Lit(Literal::Num(n)) => Some(*n),
-        Node::Lit(Literal::Samples(n)) => Some(n / f64::from(inst.rate())),
+        Node::Lit(Literal::Samples(n)) => Some(cx.grid.steps_f64(*n)),
         Node::Name("pi") => Some(std::f64::consts::PI),
         Node::Name("inf") => Some(f64::INFINITY),
         Node::Name(other) => sva_formula::note::frequency(other),

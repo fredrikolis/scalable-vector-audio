@@ -55,8 +55,24 @@ fn identity_of(
         }
         None => own(typing, node, open, named)?,
     };
+    let found = gridded(typing, node, found);
     named.insert(node, found);
     Ok(found)
+}
+
+/// A node stepped on a grid a reader asked for is another node than the one on the render's.
+pub(super) fn gridded(typing: &Typing, node: NodeId, held: Hash) -> Hash {
+    let grid = typing.grid(node);
+    if grid.is_rate() {
+        return held;
+    }
+    let mut sink = Sink::new();
+    sink.hash(held);
+    sink.text("grid");
+    for q in [grid.step, grid.phase] {
+        rational(&mut sink, q);
+    }
+    sink.finish()
 }
 
 /// What the node itself holds, a named sum's slots aside.
@@ -169,24 +185,44 @@ pub(super) fn when(sink: &mut Sink, typing: &Typing, at: When) {
             Err(_) => sink.text(typing.name(id)),
         },
         When::Index(Some(index)) => {
-            sink.text(match index.round {
-                Round::Even => "index",
-                Round::Floor => "index floor",
-                Round::Ceil => "index ceil",
-            });
-            affine(sink, index.time);
+            round(sink, "index", index.round);
+            match index.time {
+                Some(time) => affine(sink, time),
+                None => sink.text("count"),
+            }
             sink.word(index.plus as u64);
         }
         When::Index(None) => sink.text("index unread"),
+        When::Nearest(nearest) => {
+            round(sink, "nearest", nearest.round);
+            match identity(typing, nearest.time) {
+                Ok(held) => sink.hash(held),
+                Err(_) => sink.text(typing.name(nearest.time)),
+            }
+            sink.word(nearest.plus as u64);
+        }
     }
+}
+
+fn round(sink: &mut Sink, what: &str, round: Round) {
+    let how = match round {
+        Round::Even => "",
+        Round::Floor => " floor",
+        Round::Ceil => " ceil",
+    };
+    sink.text(&format!("{what}{how}"));
 }
 
 fn affine(sink: &mut Sink, time: crate::time::Affine) {
     for q in [time.scale, time.shift] {
-        sink.word(q.num() as u64);
-        sink.word((q.num() >> 64) as u64);
-        sink.word(q.den() as u64);
+        rational(sink, q);
     }
+}
+
+fn rational(sink: &mut Sink, q: crate::time::Q) {
+    sink.word(q.num() as u64);
+    sink.word((q.num() >> 64) as u64);
+    sink.word(q.den() as u64);
 }
 
 const IDENTITY_ROTATE: u32 = 23;

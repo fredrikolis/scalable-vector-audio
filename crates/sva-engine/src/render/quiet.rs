@@ -78,13 +78,13 @@ const EVERYWHERE: Span = (f64::NEG_INFINITY, f64::INFINITY);
 /// support. A transform, a warp or a derivative asks its whole support.
 fn extents(shell: &Render) -> BTreeMap<NodeId, Span> {
     let tys = &shell.tys;
-    let rate = f64::from(shell.rate());
     let supports = Supports::new(shell);
-    let secs = |e: sva_samples::Extent| -> Span {
+    let secs = |id: NodeId, e: sva_samples::Extent| -> Span {
+        let grid = shell.grid(id);
         let edge = |n: i64| match n {
             i64::MIN => f64::NEG_INFINITY,
             i64::MAX => f64::INFINITY,
-            n => n as f64 / rate,
+            n => grid.instant(n),
         };
         match e.is_empty() {
             true => (0.0, 0.0),
@@ -96,9 +96,9 @@ fn extents(shell: &Render) -> BTreeMap<NodeId, Span> {
     let mut asked: BTreeMap<NodeId, Span> = BTreeMap::new();
     let mut out = BTreeMap::new();
     for &id in order.iter().rev() {
-        let support = secs(supports.of(id));
+        let support = secs(id, supports.of(id));
         let wanted = match shell.extents.decided.get(&id) {
-            Some(decided) => secs(*decided),
+            Some(decided) => secs(id, *decided),
             None => asked.get(&id).copied().unwrap_or((0.0, 0.0)),
         };
         let own = met(wanted, support);

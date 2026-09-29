@@ -364,7 +364,7 @@ fn the_bore_reads_its_positional_as_a_length() {
     let params = sva_samples::Params::DarabunditScavone(
         sva_samples::physics::darabundit_scavone::BoreParams::at(0.3),
     );
-    let mut solver = sva_samples::site(&params, 44_100).expect("a grid");
+    let mut solver = sva_samples::site(&params, 44_100.0).expect("a grid");
     let stepped: Vec<f64> = (0..rendered.len())
         .map(|_| solver.step(&[]).expect("a settled step"))
         .collect();

@@ -53,9 +53,9 @@ fn at_128_bpm(name: &str, files: &[(&str, &str)]) -> Graph {
 const ONSET: &str = "crop(sample(sin(2*pi*220*t)), 0s, 0.05s)";
 
 /// Half a bar at 128 bpm is 41343.75 samples of 44.1 kHz: the index rounds it to 41344 and
-/// reads that sample, where the instant itself lies between two samples and refuses.
+/// reads that sample.
 #[test]
-fn an_index_half_a_bar_back_reads_the_nearest_sample_where_the_instant_refuses() {
+fn an_index_half_a_bar_back_reads_the_nearest_sample() {
     let g = at_128_bpm(
         "index-bar",
         &[
@@ -65,7 +65,6 @@ fn an_index_half_a_bar_back_reads_the_nearest_sample_where_the_instant_refuses()
             ),
             ("indexed", "@x[idx(t - 0.5b)]\n"),
             ("nearest", "@x(t - 41344sp)\n"),
-            ("between", "@x(t - 0.5b)\n"),
         ],
     );
     let config = RenderConfig::seconds(44_100, 1.2);
@@ -73,10 +72,38 @@ fn an_index_half_a_bar_back_reads_the_nearest_sample_where_the_instant_refuses()
         bits(&whole(&g, "indexed", &config)),
         bits(&whole(&g, "nearest", &config))
     );
-    let Err(refused) = render(&g, "between", config, None) else {
-        panic!("a filter has no value between two of its samples");
-    };
-    assert_eq!(refused.code(), "render.off_grid_read", "{refused}");
+}
+
+/// `x[idx(w)]` with `w` moving reads, at each sample, the stored step nearest `w`.
+#[test]
+fn an_index_of_a_moving_time_reads_the_step_nearest_it() {
+    let g = graph_of(
+        "index-moving",
+        &[
+            (
+                "x",
+                "lowpass(crop(sample(sin(2*pi*220*t)), 0s, 0.05s), cutoff=900)\n",
+            ),
+            ("wobbled", "@x[idx(t - 0.005s - 0.002s*sin(2*pi*5*t))]\n"),
+        ],
+    );
+    let config = RenderConfig::seconds(RATE, 0.1);
+    let (x, wobbled) = (whole(&g, "x", &config), whole(&g, "wobbled", &config));
+    let rate = f64::from(RATE);
+    bits(&wobbled);
+    for (n, v) in wobbled.iter().enumerate() {
+        let t = n as f64 / rate;
+        let at = (t - 0.005 - 0.002 * (2.0 * std::f64::consts::PI * 5.0 * t).sin()) * rate;
+        let step = |k: f64| match k < 0.0 {
+            true => 0.0,
+            false => x.get(k as usize).copied().unwrap_or(0.0),
+        };
+        let sides = [step(at.floor()), step(at.ceil())];
+        match (at - at.floor() - 0.5).abs() < 1e-6 {
+            true => assert!(sides.contains(v), "sample {n} reads between {sides:?}"),
+            false => assert_eq!(v.to_bits(), step(at.round()).to_bits(), "sample {n}"),
+        }
+    }
 }
 
 #[test]

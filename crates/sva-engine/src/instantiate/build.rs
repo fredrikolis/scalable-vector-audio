@@ -6,7 +6,7 @@ use sva_ast::{Arg, ByteSpan, Expr, Graph};
 
 use crate::error::{BindingFault, EngineError};
 use crate::instantiate::{
-    Cx, Instances, MAX_INSTANCES, NO_PARAMS, SIGNAL_PARAM, Scope, ScopeId, Thunk, is_free_name,
+    Instances, MAX_INSTANCES, NO_PARAMS, SIGNAL_PARAM, Scope, ScopeId, Thunk, is_free_name,
     is_reserved, resolve_ref_path,
 };
 use crate::vocabulary::{SERIES, is_builtin};
@@ -193,7 +193,7 @@ impl<'g> Builder<'g> {
             if is_reserved(key) {
                 return Err(fault(file, span, BindingFault::Reserved(key.clone())));
             }
-            if self.out.holds_self(value.expr, Cx::root(value.scope)) {
+            if self.out.holds_self(value.expr, self.out.cx(value.scope)) {
                 return Err(fault(file, span, BindingFault::SelfInArgument(key.clone())));
             }
         }
@@ -455,10 +455,10 @@ impl<'g> Builder<'g> {
             .out
             .binds(place.scope, name)
             .expect("the caller matched this name against the same scope");
-        if !self.out.is_now(when, Cx::root(place.scope))
+        if !self.out.is_now(when, self.out.cx(place.scope))
             && let Some(what) = self
                 .out
-                .position_dependent(bound.expr, Cx::root(bound.scope))
+                .position_dependent(bound.expr, self.out.cx(bound.scope))
         {
             return Err(fault(
                 place.file,

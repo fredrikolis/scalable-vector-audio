@@ -2,7 +2,7 @@
 
 use crate::error::SampleError;
 use crate::machine::renderer::{
-    Binary, Formula, Map, NodeRenderer, Site, SiteId, Slot, Unary, Wrap,
+    Binary, Formula, Map, NodeRenderer, Round, Site, SiteId, Slot, Unary, Wrap,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -20,6 +20,12 @@ pub(crate) enum Op {
         slot: Slot,
         at: Map,
         by: f64,
+    },
+    /// The sample nearest the instant the operand below it names.
+    Nearest {
+        slot: Slot,
+        round: Round,
+        plus: i64,
     },
     /// The program's formula `at`, at the instant the operand below it names.
     Formula {
@@ -128,6 +134,21 @@ fn lower(r: &NodeRenderer, layout: &Layout, out: &mut Lowered) -> Result<usize, 
             out.formulas.push(formula.clone());
             let at = out.formulas.len() - 1;
             out.push(Op::Formula { at }, *width)
+        }
+        NodeRenderer::Nearest {
+            slot,
+            time,
+            round,
+            plus,
+            ..
+        } => {
+            meet(1, lower(time, layout, out)?)?;
+            let op = Op::Nearest {
+                slot: *slot,
+                round: *round,
+                plus: *plus,
+            };
+            out.push(op, slot_width(*slot, layout))
         }
         NodeRenderer::Mul(parts) if let Some((slot, at, by)) = scaled_read(parts) => {
             out.push(Op::ReadScaled { slot, at, by }, slot_width(slot, layout))

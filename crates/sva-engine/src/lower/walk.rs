@@ -4,13 +4,13 @@ use sva_ast::{Address, Arg, BinOp, ByteSpan, Expr, Literal};
 use sva_formula::{Body, C64, Held, IndexId, NodeId, Ty, Var, note};
 
 use crate::cast::Cast;
-use crate::error::EngineError;
+use crate::error::{EngineError, Located};
 use crate::instantiate::{Cx, Node};
 use crate::loops::{self, Tap};
-use crate::lower::{Lowering, Piece, SelfMode, constant};
+use crate::lower::{Lowering, Piece, SelfMode, constant, on};
 use crate::overload;
 use crate::time::{Affine, Q};
-use crate::typing::{Value, When};
+use crate::typing::{Nearest, Value, When};
 
 impl Lowering<'_, '_> {
     pub(super) fn walk(&mut self, e: &Expr, cx: Cx, var: Var) -> Result<Piece, EngineError> {
@@ -143,7 +143,7 @@ impl Lowering<'_, '_> {
                 })
             }
             Tap::Moving => unreachable!("an index moves as an index, never as a time"),
-            Tap::Indexed => When::Index(self.sample_index(arg, span, cx)?),
+            Tap::Indexed => self.sample_index(arg, span, cx)?,
             refused => {
                 return Err(loops::tap_refusal(refused, self.here(Some(span)))
                     .expect("a tap that is not a delay names its reason"));
@@ -164,6 +164,7 @@ impl Lowering<'_, '_> {
     }
 
     fn literal(&mut self, l: &Literal, var: Var) -> Result<Piece, EngineError> {
+        let grid = self.grid;
         match l {
             Literal::Num(n) => Ok(Piece::ClosedForm(Body::Const(C64::real(*n)))),
             Literal::Bars(_) if var == Var::F => Err(self.refused(
@@ -172,10 +173,15 @@ impl Lowering<'_, '_> {
                 "write the duration in seconds, or move it into the closed form in t",
             )),
             Literal::Bars(_) => Err(EngineError::UnresolvedBars(self.here(None))),
-            Literal::Samples(n) => {
+            Literal::Samples(n) if grid.is_rate() => {
                 let count = self.part(Body::Const(C64::real(*n)), None);
-                let rate = self.part(Body::Const(C64::real(self.inst.rate().into())), None);
+                let rate = self.part(Body::Const(C64::real(grid.rate.into())), None);
                 Ok(Piece::ClosedForm(Body::Div(count, rate)))
+            }
+            Literal::Samples(n) => {
+                let exact = Q::decimal(*n).and_then(|n| grid.steps(n));
+                let secs = exact.map_or_else(|| grid.steps_f64(*n), Q::to_f64);
+                Ok(Piece::ClosedForm(Body::Const(C64::real(secs))))
             }
             Literal::Str(s) => match note::frequency(s) {
                 Some(hz) => Ok(Piece::ClosedForm(Body::Const(C64::real(hz)))),
@@ -377,12 +383,10 @@ impl Lowering<'_, '_> {
         cx: Cx,
         var: Var,
     ) -> Result<Piece, EngineError> {
-        let id = self
-            .typing
-            .id(path)
-            .ok_or_else(|| EngineError::UnknownNode(path.to_string()))?;
+        let id = self.source(path)?;
         let closed = self.typing.ty(id).is_closed_form();
-        let at = match loops::time_of(self.inst, arg, cx) {
+        let stateful = self.holds_state(id);
+        let (id, at) = match loops::time_of(self.inst, arg, cx) {
             Some(time) if closed && time == Affine::NOW => {
                 return Ok(Piece::ClosedForm(Body::Node(id)));
             }
@@ -393,11 +397,16 @@ impl Lowering<'_, '_> {
                     of,
                 }));
             }
-            Some(time) if !closed => When::Time(time),
+            Some(time) if stateful => match self.grid.read(time) {
+                Some(grid) => (on(path, grid, self.inst, self.typing)?, When::Time(time)),
+                None => (id, When::Time(time)),
+            },
+            Some(time) if !closed => (id, When::Time(time)),
             _ if closed => return self.warped(id, arg, span, cx, var),
             None => match per_lane(arg) {
                 Some(_) => return Err(self.per_lane_on_samples(path, id, arg, span)),
-                None => When::Moving(self.time(arg, cx)?),
+                None if stateful => return Err(self.stateful_warp(path, span)),
+                None => (id, When::Moving(self.time(arg, cx)?)),
             },
             Some(_) => unreachable!("a closed form's time is matched above"),
         };
@@ -414,11 +423,8 @@ impl Lowering<'_, '_> {
         cx: Cx,
         var: Var,
     ) -> Result<Piece, EngineError> {
-        let id = self
-            .typing
-            .id(path)
-            .ok_or_else(|| EngineError::UnknownNode(path.to_string()))?;
-        let at = When::Index(self.sample_index(arg, span, cx)?);
+        let id = self.source(path)?;
+        let at = self.sample_index(arg, span, cx)?;
         let source = match self.typing.ty(id).is_closed_form() {
             true => {
                 let ty = Cast::Sample
@@ -431,14 +437,9 @@ impl Lowering<'_, '_> {
         Ok(Piece::Value(self.reading(source, at, span, var)))
     }
 
-    /// An index is an integer, which typing refuses otherwise; `None` where no one rounded
-    /// line spells it, which evaluation refuses.
-    fn sample_index(
-        &self,
-        arg: &Expr,
-        span: ByteSpan,
-        cx: Cx,
-    ) -> Result<Option<crate::index::Index>, EngineError> {
+    /// An index is an integer, which typing refuses otherwise: one rounded line plus a count,
+    /// the nearest step to a time that moves, or `None` for any other, which evaluation refuses.
+    fn sample_index(&mut self, arg: &Expr, span: ByteSpan, cx: Cx) -> Result<When, EngineError> {
         if !crate::index::integer(self.inst, arg, cx) {
             return Err(self.refused_at(
                 "type.non_integer_index",
@@ -450,7 +451,135 @@ impl Lowering<'_, '_> {
                 Some(span),
             ));
         }
-        Ok(crate::index::read(self.inst, arg, cx))
+        if let Some(index) = crate::index::read(self.inst, arg, cx) {
+            return Ok(When::Index(Some(index)));
+        }
+        Ok(match self.nearest(arg, cx)? {
+            Some(nearest) => When::Nearest(nearest),
+            None => When::Index(None),
+        })
+    }
+
+    /// `idx(w) + k`, `w` a time that moves.
+    fn nearest(&mut self, e: &Expr, cx: Cx) -> Result<Option<Nearest>, EngineError> {
+        let inst = self.inst;
+        if let Some(r) = inst.follow(e, cx, |e2, cx2| self.nearest(e2, cx2)) {
+            return r;
+        }
+        let count = |x: &Expr| crate::index::read(inst, x, cx).and_then(|ix| ix.as_count());
+        let (inner, by) = match inst.node(e, cx) {
+            Node::Call { name, args, .. } if name == sva_ast::INDEX => {
+                let (Some(Arg::Pos(time)), Some(round)) =
+                    (args.first(), crate::index::rounding(args.get(1)))
+                else {
+                    return Ok(None);
+                };
+                let time = self.time(time, cx)?;
+                return Ok(Some(Nearest {
+                    time,
+                    round,
+                    plus: 0,
+                }));
+            }
+            Node::Bin(BinOp::Add, l, r) => match (count(l), count(r)) {
+                (Some(k), None) => (r, k),
+                (None, Some(k)) => (l, k),
+                _ => return Ok(None),
+            },
+            Node::Bin(BinOp::Sub, l, r) => match count(r).and_then(i64::checked_neg) {
+                Some(k) => (l, k),
+                None => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        Ok(self.nearest(inner, cx)?.and_then(|n| {
+            Some(Nearest {
+                plus: n.plus.checked_add(by)?,
+                ..n
+            })
+        }))
+    }
+
+    /// A stateful node has a value only at the steps it takes, which a time that moves
+    /// lands between.
+    fn stateful_warp(&self, path: &str, span: ByteSpan) -> EngineError {
+        let note = match self.construct(path, 0) {
+            Some((what, at)) => format!("\nnote: `{path}` is stateful: {what} at {at}"),
+            None => String::new(),
+        };
+        self.refused_at(
+            "type.stateful_warp",
+            format!("stateful `{path}` read at a moving time{note}"),
+            &format!("read the nearest step: `@{path}[idx(…)]`"),
+            Some(span),
+        )
+    }
+
+    /// The first construct in `path`'s body that steps: a filter, a solver, `self`, an index
+    /// read, or one inside a stateful node it reads.
+    fn construct(&self, path: &str, depth: usize) -> Option<(String, Located)> {
+        let (e, cx) = self.inst.at(path)?;
+        let mut found = None;
+        self.visit(e, cx, &mut |node| {
+            let (what, span) = match node {
+                Node::Call { name, span, .. }
+                    if sva_formula::filter::Shape::from_name(name).is_some()
+                        || crate::overload::FINITE_DIFFERENCE.contains(&name) =>
+                {
+                    (format!("`{name}(…)`"), span)
+                }
+                Node::Own { address, span, .. } => (
+                    match address {
+                        Address::Time => "`self(…)`".to_string(),
+                        Address::Index => "`self[…]`".to_string(),
+                    },
+                    span,
+                ),
+                Node::Read {
+                    path: read,
+                    address: Address::Index,
+                    span,
+                    ..
+                } => (format!("`@{read}[…]`"), span),
+                Node::Read { path: read, .. }
+                    if depth < 32
+                        && self.typing.id(read).is_some_and(|id| self.holds_state(id)) =>
+                {
+                    found = self.construct(read, depth + 1);
+                    return found.is_some();
+                }
+                _ => return false,
+            };
+            found = Some((what, Located::at(path, Some(span))));
+            true
+        });
+        found
+    }
+
+    /// A value only at the steps it takes: no closed form, and nothing a formula reads anywhere.
+    fn holds_state(&self, id: NodeId) -> bool {
+        !self.typing.ty(id).is_closed_form() && !crate::schedule::anywhere(self.typing, id)
+    }
+
+    /// Every node under `e`, first to last, until `stop` answers true.
+    fn visit(&self, e: &Expr, cx: Cx, stop: &mut dyn FnMut(Node) -> bool) -> bool {
+        let inst = self.inst;
+        if let Some(r) = inst.follow(e, cx, |e2, cx2| self.visit(e2, cx2, stop)) {
+            return r;
+        }
+        let node = inst.node(e, cx);
+        if stop(node) {
+            return true;
+        }
+        match node {
+            Node::Lit(_) | Node::Name(_) => false,
+            Node::Bin(_, l, r) => self.visit(l, cx, stop) || self.visit(r, cx, stop),
+            Node::Own { arg, .. } | Node::Read { arg, .. } => self.visit(arg, cx, stop),
+            Node::Call { args, .. } => args.iter().any(|a| {
+                let (Arg::Pos(x) | Arg::Named(_, x)) = a;
+                self.visit(x, cx, stop)
+            }),
+        }
     }
 
     /// One read of `source`'s samples at `at`.

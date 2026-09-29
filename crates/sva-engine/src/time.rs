@@ -193,21 +193,88 @@ impl Affine {
         scale: Q::ONE,
         shift: Q::ZERO,
     };
+}
 
-    /// Sample `n` stepped at `rate` reads the instant of sample `(a*n + b)/d`, exactly.
-    pub fn position(self, rate: u32) -> Option<(i128, i128, i128)> {
-        let scale = self.scale;
-        let shift = self.shift.mul(Q::int(i64::from(rate)))?;
-        let d = scale.den.checked_mul(shift.den)? / gcd(scale.den, shift.den);
-        let a = scale.num.checked_mul(d / scale.den)?;
-        let b = shift.num.checked_mul(d / shift.den)?;
-        Some((a, b, d))
+/// Sample `m` of a node stands at `step*m + phase` samples of `rate`, `step > 0` and
+/// `0 <= phase < step`: the render's own grid, or the one a reader's time asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Grid {
+    pub rate: u32,
+    pub step: Q,
+    pub phase: Q,
+}
+
+impl Grid {
+    pub fn of(rate: u32) -> Grid {
+        Grid {
+            rate,
+            step: Q::ONE,
+            phase: Q::ZERO,
+        }
     }
 
-    /// The stored sample each sample stepped at `rate` reads; `None` where one lands between
-    /// two.
-    pub fn map(self, rate: u32) -> Option<sva_samples::Map> {
-        let (a, b, d) = self.position(rate)?;
+    pub fn is_rate(self) -> bool {
+        self == Grid::of(self.rate)
+    }
+
+    fn rate_q(self) -> Q {
+        Q::int(i64::from(self.rate))
+    }
+
+    pub fn steps(self, n: Q) -> Option<Q> {
+        n.mul(self.step)?.div(self.rate_q())
+    }
+
+    pub fn steps_f64(self, n: f64) -> f64 {
+        n * self.step.to_f64() / f64::from(self.rate)
+    }
+
+    /// The grid a read at `time` steps its source on: the step scaled by `time`'s, and the
+    /// phase its instants land at.
+    pub fn read(self, time: Affine) -> Option<Grid> {
+        let k = time.scale;
+        let step = match k.is_zero() {
+            true => self.step,
+            false => Q::new(k.num.abs(), k.den)?.mul(self.step)?,
+        };
+        let at = k.mul(self.phase)?.add(time.shift.mul(self.rate_q())?)?;
+        Some(Grid {
+            step,
+            phase: at.rem(step)?,
+            ..self
+        })
+    }
+
+    /// Sample `n` of this grid reads `time` at sample `(a*n + b)/d` of `on`, exactly.
+    pub fn position(self, time: Affine, on: Grid) -> Option<(i128, i128, i128)> {
+        let a = time.scale.mul(self.step)?.div(on.step)?;
+        let b = time
+            .scale
+            .mul(self.phase)?
+            .add(time.shift.mul(self.rate_q())?)?
+            .sub(on.phase)?
+            .div(on.step)?;
+        let d = a.den.checked_mul(b.den)? / gcd(a.den, b.den);
+        Some((
+            a.num.checked_mul(d / a.den)?,
+            b.num.checked_mul(d / b.den)?,
+            d,
+        ))
+    }
+
+    pub fn map(self, time: Affine, on: Grid) -> Option<sva_samples::Map> {
+        let (a, b, d) = self.position(time, on)?;
         sva_samples::Map::new(a, b, d)
+    }
+
+    pub fn samples(self) -> sva_samples::Grid {
+        let (step, phase) = (self.step, self.phase);
+        let d = step.den / gcd(step.den, phase.den) * phase.den;
+        sva_samples::Grid {
+            rate: self.rate,
+            a: step.num * (d / step.den),
+            b: phase.num * (d / phase.den),
+            d,
+        }
     }
 }

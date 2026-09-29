@@ -245,6 +245,10 @@ pub static REGISTRY: [(&str, &str); 80] = [
         "a discrete loop reading its own past at an instant rather than by index",
     ),
     (
+        "type.stateful_warp",
+        "a node that holds state read at a time that moves",
+    ),
+    (
         "type.bars_in_frequency",
         "a bar unit inside a closed form in f",
     ),
@@ -435,12 +439,8 @@ pub static REGISTRY: [(&str, &str); 80] = [
     ),
     (
         "engine.unreadable_index",
-        "an integer index that is more than one idx(...) of a line in t plus a count",
-    ),
-    (
-        "render.off_grid_read",
-        "a node that holds state read between its samples, at a scaled time or at a time \
-         that moves",
+        "an integer index that is more than one idx(...) of a line in t, or of t plus a \
+         bounded closed form, plus a count",
     ),
     (
         "engine.per_lane_read_on_samples",

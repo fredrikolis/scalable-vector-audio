@@ -147,6 +147,9 @@ fn read_as(
     let crate::typing::Value::ClosedForm(form) = render.tys.value(base) else {
         return None;
     };
+    if !render.grid(base).is_rate() {
+        return None;
+    }
     let extent = render.extent_of(base)?;
     let (rate, len) = (render.rate(), extent.len());
     let profile = &render.config.profile;
@@ -279,13 +282,20 @@ fn closed_form_flops(
     paid: &mut Carried,
 ) -> (u128, &'static str) {
     let var = render.tys.var(id);
-    let (rate, len) = (render.rate(), extent.len());
+    let (mut rate, len) = (render.rate(), extent.len());
     let profile = &render.config.profile;
-    let sum = refs::spectral_sum_of(&render.tys, id, var)
-        .ok()
-        .and_then(|sum| sva_samples::collapse::plan::of(&sum, rate, extent, profile, len).ok());
+    let sum = match render.grid(id).is_rate() {
+        true => refs::spectral_sum_of(&render.tys, id, var).ok(),
+        false => crate::render::moved_rows(&render.tys, id).map(|(moved, sum)| {
+            rate = moved;
+            sum
+        }),
+    };
+    let sum =
+        sum.and_then(|sum| sva_samples::collapse::plan::of(&sum, rate, extent, profile, len).ok());
     // A form with no spectral sum takes the written rows, which a sum splits addend by addend.
     let plan = sum.or_else(|| {
+        render.grid(id).is_rate().then_some(())?;
         let form = written_closed_form(render, id)?;
         sva_samples::collapse::plan::of_written(&form, rate, extent, profile, len).ok()
     });

@@ -90,9 +90,13 @@ RENDER:
   `sp` count or `self[idx(t) - 1]` means one sample at whatever rate is asked.
   A discrete loop reads its own past only by index; `self(t - d)` in one
   refuses as `type.discrete_self_at_time`, naming what made it discrete. A
-  read of a node that holds state between two of its samples, at a scaled time
-  or at a time that moves refuses as `render.off_grid_read`; `@x[idx(...)]`
-  reads the nearest sample instead. An edit to a stream plays from the next sample on.
+  node that holds state read at `k*t - d` steps on the grid that read asks
+  for, `k` times the step and shifted by `d`, every input it reads, `sp` and
+  `idx` with it, and one grid is stepped once however many reads ask for it.
+  Read at a time that moves it refuses as `type.stateful_warp`, naming what
+  holds its state; `@x[idx(...)]` reads its nearest step instead, and `idx` of
+  `t` plus a bounded closed form, as `idx(t - 5ms - 2ms*sin(2*pi*t))`, is
+  read sample by sample. An edit to a stream plays from the next sample on.
   `--flop-budget <n>` is the operation count paid before a render refuses.
 
   `ledger` prints one row per node under the target. A row's `share` is the

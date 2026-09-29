@@ -198,7 +198,7 @@ fn partials_one_and_two_imply_the_asked_f0_and_b_at_any_rate() {
 #[test]
 fn a_string_whose_second_partial_passes_nyquist_refuses() {
     let p = Params::WillemsenBilbaoSerafin(WillemsenBilbaoSerafinParams::at(12_000.0));
-    let Err(refused) = site(&p, 44_100) else {
+    let Err(refused) = site(&p, 44_100.0) else {
         panic!("a 12 kHz string rang at 44.1 kHz");
     };
     assert_eq!(refused.code(), "samples.string_past_rate", "{refused:?}");
@@ -244,7 +244,7 @@ fn a_friction_solve_that_does_not_settle_refuses() {
         bow_vel: 1e3,
         ..WillemsenBilbaoSerafinParams::at(440.0)
     });
-    let mut solver = site(&p, 44_100).expect("a grid this rate holds");
+    let mut solver = site(&p, 44_100.0).expect("a grid this rate holds");
     let refused = (0..44_100)
         .find_map(|_| solver.step(&[]).err())
         .expect("the solve fails to settle within a second");

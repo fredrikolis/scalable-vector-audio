@@ -17,7 +17,7 @@ use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Cx, Instances, Node};
 use crate::loops::{self, SelfKind};
 use crate::overload;
-use crate::time::Affine;
+use crate::time::{Affine, Grid};
 use crate::typing::{Node as Typed, Typing, Value, When};
 
 pub(crate) use calls::{noise_at, rand_arguments};
@@ -48,17 +48,54 @@ pub struct Lowering<'a, 'g> {
     indices: Vec<(String, IndexId)>,
     mode: SelfMode,
     own: Vec<(crate::time::Q, NodeId)>,
+    grid: Grid,
 }
 
 /// Dependencies are already typed, so every ref this reads answers with a decided `Ty`.
 pub fn node(path: &str, inst: &Instances, typing: &mut Typing) -> Result<NodeId, EngineError> {
     match typing.id(path) {
-        Some(id) if !typing.pending(id) => return Ok(id),
-        _ => {}
+        Some(id) if !typing.pending(id) => Ok(id),
+        _ => lowered(path, inst.grid(), inst, typing),
     }
+}
+
+/// `path` on `grid`: on the render's own, the node typing already holds; on any other, its
+/// copy there, every input it reads on that grid too, lowered once.
+pub(crate) fn on(
+    path: &str,
+    grid: Grid,
+    inst: &Instances,
+    typing: &mut Typing,
+) -> Result<NodeId, EngineError> {
+    let base = typing
+        .id(path)
+        .ok_or_else(|| EngineError::UnknownNode(path.to_string()))?;
+    if grid.is_rate() {
+        return Ok(base);
+    }
+    if let Some(id) = typing.copy(path, grid) {
+        return Ok(id);
+    }
+    if !typing.opened(path) {
+        return Err(crate::refs::cyclic(typing, base));
+    }
+    let found = lowered(path, grid, inst, typing);
+    typing.closed(path);
+    let id = found?;
+    typing.copied(path, grid, id);
+    Ok(id)
+}
+
+fn lowered(
+    path: &str,
+    grid: Grid,
+    inst: &Instances,
+    typing: &mut Typing,
+) -> Result<NodeId, EngineError> {
     let (expr, cx) = inst
         .at(path)
         .ok_or_else(|| EngineError::UnknownNode(path.to_string()))?;
+    let cx = cx.on(grid);
     let var = axis_of(inst, typing, expr, cx, path)?;
     let kind = match inst.reads_self(path) {
         false => None,
@@ -67,50 +104,26 @@ pub fn node(path: &str, inst: &Instances, typing: &mut Typing) -> Result<NodeId,
             Some(loops::classify(inst, expr, cx, path, discrete))
         }
     };
-    let closed = match kind {
+    let (mode, closed) = match kind {
         Some(SelfKind::Refuse(e)) => return Err(*e),
-        Some(SelfKind::Series { gain, delay }) => Some((gain, delay)),
-        Some(SelfKind::Discrete { why }) => {
-            return discrete_loop(path, inst, typing, (expr, cx), var, why);
-        }
-        None => None,
+        Some(SelfKind::Series { gain, delay }) => (SelfMode::Zero, Some((gain, delay))),
+        Some(SelfKind::Discrete { why }) => (SelfMode::Discrete(why), None),
+        None => (SelfMode::Absent, None),
     };
     let mut low = Lowering {
         inst,
         typing,
         node: path,
         indices: Vec::new(),
-        mode: match closed {
-            Some(_) => SelfMode::Zero,
-            None => SelfMode::Absent,
-        },
+        mode,
         own: Vec::new(),
+        grid,
     };
     let piece = low.walk(expr, cx, var)?;
     let piece = match closed {
         Some((gain, delay)) => low.expand(piece, var, gain, delay)?,
         None => piece,
     };
-    low.seal(piece, var, Some(path))
-}
-
-fn discrete_loop(
-    path: &str,
-    inst: &Instances,
-    typing: &mut Typing,
-    (expr, cx): (&Expr, Cx),
-    var: Var,
-    why: String,
-) -> Result<NodeId, EngineError> {
-    let mut low = Lowering {
-        inst,
-        typing,
-        node: path,
-        indices: Vec::new(),
-        mode: SelfMode::Discrete(why),
-        own: Vec::new(),
-    };
-    let piece = low.walk(expr, cx, var)?;
     low.seal(piece, var, Some(path))
 }
 
@@ -251,6 +264,7 @@ impl<'g> Lowering<'_, 'g> {
             held => held,
         } {
             Piece::Value(id) => {
+                let path = path.filter(|_| self.grid.is_rate());
                 let settled = path
                     .and_then(|p| self.typing.id(p))
                     .filter(|held| self.typing.pending(*held));
@@ -266,6 +280,7 @@ impl<'g> Lowering<'_, 'g> {
                                 at: When::Time(Affine::NOW),
                                 site,
                             },
+                            grid: self.grid,
                         };
                         self.typing.settle(held, node);
                         Ok(held)
@@ -294,7 +309,9 @@ impl<'g> Lowering<'_, 'g> {
                     ty,
                     var,
                     value: Value::ClosedForm(form),
+                    grid: self.grid,
                 };
+                let path = path.filter(|_| self.grid.is_rate());
                 match path.and_then(|p| self.typing.id(p)) {
                     Some(held) if self.typing.pending(held) => {
                         self.typing.settle(held, node);
@@ -306,6 +323,11 @@ impl<'g> Lowering<'_, 'g> {
         }
     }
 
+    /// `path` on the grid this node steps on.
+    fn source(&mut self, path: &str) -> Result<NodeId, EngineError> {
+        on(path, self.grid, self.inst, self.typing)
+    }
+
     fn register(&mut self, value: Value, ty: Ty, var: Var) -> NodeId {
         let name = self.node.to_string();
         self.typing.push(
@@ -314,6 +336,7 @@ impl<'g> Lowering<'_, 'g> {
                 ty,
                 var,
                 value,
+                grid: self.grid,
             },
             None,
         )

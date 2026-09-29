@@ -128,8 +128,7 @@ pub fn varying(model: &str) -> &'static [(&'static str, Varies)] {
 
 /// One grid, sized at the observation's rate; nothing here reads a sample back. A size only
 /// the rate decides is checked here, where the rate is known — `valid()` never sees one.
-pub fn site(p: &Params, rate: u32) -> Result<Box<dyn Solver>, SampleError> {
-    let sr = f64::from(rate);
+pub fn site(p: &Params, sr: f64) -> Result<Box<dyn Solver>, SampleError> {
     Ok(match p {
         Params::ChaigneAskenfelt(p) => Box::new(ChaigneAskenfeltSite::new(p, sr)?),
         Params::WillemsenBilbaoSerafin(p) => Box::new(WillemsenBilbaoSerafinSite::new(p, sr)?),

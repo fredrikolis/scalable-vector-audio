@@ -25,7 +25,11 @@ pub struct Audible {
 
 impl Audible {
     pub fn of(profile: &Profile, rate: u32) -> Audible {
-        let ceiling = profile.ceiling(rate);
+        Audible::on(profile, crate::Grid::of(rate))
+    }
+
+    pub fn on(profile: &Profile, grid: crate::Grid) -> Audible {
+        let ceiling = profile.ceiling_hz.min(grid.sr() / 2.0);
         Audible {
             ceiling,
             precision: profile.half_lsb(),
