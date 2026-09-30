@@ -337,8 +337,8 @@ impl Stream {
         }
     }
 
-    /// Retires every term whose support, pruned as a render prunes it, lies wholly before the
-    /// first sample of `notes` the root's window from now on asks, as a render's demand finds it.
+    /// Retires every term whose support, pruned as a render prunes it, ended by now and before
+    /// the first sample of `notes` the root's window from now on asks, as its demand finds it.
     fn prune(&mut self) {
         let (table, tys) = (&self.driver.table, &self.shell.tys);
         let (now, last) = (self.driver.at, self.driver.last());
@@ -353,7 +353,7 @@ impl Stream {
         let supports = &self.supports;
         let gone = |handle: Handle| {
             let support = supports.get(&handle);
-            support.is_some_and(|s| asked.is_none_or(|from| s.end <= from))
+            support.is_some_and(|s| s.end <= now && asked.is_none_or(|from| s.end <= from))
         };
         let named = |handle: Handle| {
             let id = tys.id(&handle.node())?;

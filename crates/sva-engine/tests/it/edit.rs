@@ -716,3 +716,25 @@ fn every_faded_note_leaves_the_sum() {
     assert!(whole_g.define("final", expr(&format!("@echo(t, x={a} + {b})"))));
     assert_eq!(heard, whole(&whole_g, "final", heard.len()));
 }
+
+/// A note added where its master is silent still lands, and leaves the sum only once its own
+/// support ended.
+#[test]
+fn a_note_added_under_a_silent_master_lands() {
+    let g = composition(1.0);
+    let stream = opened(&g, &format!("crop(@notes, 0s, {BLOCK}sp)"), None);
+    blocks(&stream, 2);
+    let build = |_: &Stream| {
+        let term = expr("@blip(t, f0=300)");
+        Ok::<_, sva_engine::EngineError>(Change::Add(g.clone(), term, Placed::Landing))
+    };
+    let Ok(Changed::Added(note)) = change(&stream, build, &NoStore).now() else {
+        panic!("an add answers its handle");
+    };
+    let at = 2 * BLOCK as i64;
+    assert_eq!(stream.borrow().landed(note), Some(at), "the note landed");
+    blocks(&stream, 12);
+    assert_eq!(stream.borrow().landed(note), Some(at), "the note sounds on");
+    blocks(&stream, 1);
+    assert_eq!(stream.borrow().counts().terms, 0, "the note ended");
+}
