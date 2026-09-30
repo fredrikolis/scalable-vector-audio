@@ -119,6 +119,20 @@ impl Value {
             .then(|| (self.reads[slot.0 as usize], map.at(0)))
     }
 
+    /// A stateful value with nothing of its past computed: silent before `now`, stepping from
+    /// there.
+    pub(crate) fn silent_from(&mut self, now: i64) -> Result<(), sva_samples::SampleError> {
+        let Kind::Program(program) = &mut self.kind else {
+            unreachable!("a stateful value is a program");
+        };
+        program.machine = Some(Machine::over(&program.spanned, now)?);
+        program.marks.clear();
+        self.held = Held::Run(Tape::new(self.width, 0, now));
+        self.support = self.support.intersect(Extent::from(now));
+        self.pure = false;
+        Ok(())
+    }
+
     pub(crate) fn covers(&self) -> Segments {
         let mut out = Segments::default();
         if let Kind::Stored(stored) = &self.kind {

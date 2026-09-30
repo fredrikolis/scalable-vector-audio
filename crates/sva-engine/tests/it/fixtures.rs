@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::cell::RefCell;
 
 use sva_ast::{Expr, Graph};
-use sva_engine::{Change, Changed, EngineError, Handle, Placed, Render, Stream, Through, change};
+use sva_engine::{
+    Block, Change, Changed, EngineError, Handle, Placed, Render, Stream, Through, change,
+};
 
 static RUN: AtomicU32 = AtomicU32::new(0);
 
@@ -108,4 +110,10 @@ pub fn samples(r: &Render) -> BTreeMap<String, Vec<f64>> {
         .iter()
         .map(|(id, b)| (r.tys.name(*id).to_string(), b.plane(0).to_vec()))
         .collect()
+}
+
+/// The block from where `stream` stands, of the size it opened with.
+pub fn next(stream: &mut Stream) -> Result<Option<Block>, EngineError> {
+    let (at, n) = (stream.position(), stream.config().block);
+    stream.read(at, n)
 }

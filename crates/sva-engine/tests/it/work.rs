@@ -1,6 +1,6 @@
 // Concern: proves a stream's and a render's work counters count what they did and price it alike | Non-concern: what any sample holds (stream.rs) | IO: (a composition) -> Work
 
-use crate::fixtures::{Now, graph_of};
+use crate::fixtures::{Now, graph_of, next};
 use sva_ast::Graph;
 use sva_engine::{NoStore, Range, RenderConfig, Stream, StreamConfig, Work, render};
 
@@ -42,7 +42,7 @@ fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Work {
         .now()
         .expect("a stream");
     while stream.position() < samples as i64 {
-        if stream.next_block().expect("a block").is_none() {
+        if next(&mut stream).expect("a block").is_none() {
             break;
         }
     }

@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 
-use crate::fixtures::{Now, added, graph_of, replaced};
+use crate::fixtures::{Now, added, graph_of, next, replaced};
 use sva_ast::Graph;
 use sva_engine::{
     NoStore, PSYCHOACOUSTIC_V1, Profile, Range, Render, RenderConfig, Stream, StreamConfig,
@@ -156,10 +156,7 @@ fn a_faded_key_up_leaves_the_stream_s_sum_with_no_remove() {
     let stream = RefCell::new(stream.expect("opens"));
     let blocks = |count: usize| {
         for _ in 0..count {
-            let block = stream
-                .borrow_mut()
-                .next_block()
-                .unwrap_or_else(|e| panic!("{e}"));
+            let block = next(&mut stream.borrow_mut()).unwrap_or_else(|e| panic!("{e}"));
             assert!(block.is_some(), "the stream plays on");
         }
     };

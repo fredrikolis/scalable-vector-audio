@@ -1,4 +1,4 @@
-// Concern: pulls a table block by block until its range ends or `until` holds, dropping what no later block reads | Non-concern: what a value computes | IO: (Table, range) -> the root's blocks
+// Concern: pulls or skips a table block by block until its range ends or `until` holds, dropping what no later block reads | Non-concern: what a value computes | IO: (Table, range) -> blocks
 
 use sva_samples::Extent;
 
@@ -23,6 +23,8 @@ pub(super) struct Driver {
     end: Option<i64>,
     /// Root samples held behind `at`, for `until` to read its open frame.
     keep: i64,
+    /// Where the samples heard without a break since start from: a skip starts them anew.
+    heard: i64,
     most_bytes: usize,
     pub(super) work: Work,
     pub(super) recording: Recording,
@@ -83,6 +85,7 @@ impl Driver {
             table,
             start: range.start,
             at: range.start,
+            heard: range.start,
             last: range.end,
             block,
             keep: config.until.as_ref().map_or(0, |_| frame as i64),
@@ -112,15 +115,14 @@ impl Driver {
         self.last
     }
 
-    pub(super) fn next_to(&self) -> i64 {
-        self.last
-            .min(self.at.saturating_add(self.block as i64))
-            .max(self.at)
+    fn next_to(&self, n: usize) -> i64 {
+        self.last.min(self.at.saturating_add(n as i64)).max(self.at)
     }
 
-    pub(super) fn next_block(&mut self) -> Result<Option<Block>, EngineError> {
+    /// `n` samples from where it stands, cut where its range ends; `None` from there on.
+    pub(super) fn read(&mut self, n: usize) -> Result<Option<Block>, EngineError> {
         let from = self.at;
-        if !self.pull()? {
+        if !self.pulled(n)? {
             return Ok(None);
         }
         let end = self.end.map_or(self.at, |end| end.clamp(from, self.at));
@@ -131,12 +133,36 @@ impl Driver {
         }))
     }
 
+    /// Stands at `to`, past where it stood, computing nothing before it, and answers the
+    /// stateful values it started silent: each the rest of the range asks from before its run
+    /// reaches.
+    pub(super) fn skip(&mut self, to: i64) -> Result<Vec<usize>, EngineError> {
+        if self.end.is_some_and(|end| self.at >= end) {
+            return Ok(Vec::new());
+        }
+        let to = to.min(self.last);
+        let silenced = self.table.skipped(Extent::new(to, self.last))?;
+        self.recording.reach(to);
+        (self.at, self.heard) = (to, to);
+        let future = (to < self.last).then(|| Extent::new(to, self.last));
+        self.table.release(future, Extent::NOWHERE, self.start);
+        if self.last <= to {
+            self.end = Some(to);
+        }
+        Ok(silenced)
+    }
+
     pub(super) fn pull(&mut self) -> Result<bool, EngineError> {
+        self.pulled(self.block)
+    }
+
+    /// Computes `n` samples on from where it stands; false once it ended.
+    pub(super) fn pulled(&mut self, n: usize) -> Result<bool, EngineError> {
         let from = self.at;
         if self.end.is_some_and(|end| from >= end) {
             return Ok(false);
         }
-        let to = self.next_to();
+        let to = self.next_to(n);
         self.recording.reach(from);
         let window = Extent::new(from, to);
         if from == self.start {
@@ -171,7 +197,7 @@ impl Driver {
     }
 
     /// The one place `until` is checked. A level is known once its frame is whole, so only the
-    /// frames the last block left open are read again.
+    /// frames the last block left open are read again; a frame a skip cut into is never known.
     fn settle(&mut self, from: i64, to: i64) {
         if self.end.is_some() {
             return;
@@ -184,7 +210,7 @@ impl Driver {
         };
         let frame = self.frame as i64;
         let open = self.start + (from - 1 - self.start).div_euclid(frame) * frame;
-        let base = open.max(self.start);
+        let base = open.max(self.heard);
         let heard = self.table.samples(self.table.root, Extent::new(base, to));
         let planes: Vec<&[f64]> = heard.planes.iter().map(Vec::as_slice).collect();
         let rate = self.table.values[self.table.root].grid.rate;

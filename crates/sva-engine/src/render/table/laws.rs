@@ -172,7 +172,7 @@ fn a_tree_is_the_same_bits_shared_or_apart_whole_or_streamed() {
         let at = sva_ast::parse_expr("@root").expect("a ref");
         let mut stream = now(Stream::open(&g, &at, stream, None, &NoStore)).expect("it streams");
         let mut heard = Vec::new();
-        while let Some(block) = stream.next_block().expect("a block") {
+        while let Some(block) = stream.read(stream.position(), block).expect("a block") {
             heard.extend_from_slice(block.plane(0));
         }
         assert_eq!(

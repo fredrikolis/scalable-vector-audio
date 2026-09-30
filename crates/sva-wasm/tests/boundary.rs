@@ -681,15 +681,30 @@ fn opened(held: &Composition, node: &str) -> Stream {
 }
 
 fn blocks(stream: &Stream, count: usize) -> Vec<f32> {
-    let mut out = vec![0.0f32; BLOCK];
     let mut heard = Vec::with_capacity(count * BLOCK);
     for _ in 0..count {
-        let took = stream
-            .next(&mut out)
-            .unwrap_or_else(|_| unreachable!("a block"));
-        heard.extend_from_slice(&out[..took]);
+        heard.extend(read(stream));
     }
     heard
+}
+
+/// The block from where the stream stands, its frames interleaved.
+fn read(stream: &Stream) -> Vec<f32> {
+    read_at(stream, stream.position() as usize)
+}
+
+/// The block from sample `at`, its frames interleaved.
+fn read_at(stream: &Stream, at: usize) -> Vec<f32> {
+    let width = stream.channels();
+    let out = js_sys::Float32Array::new_with_length((width * BLOCK) as u32);
+    let took = stream
+        .read(at as f64, &out)
+        .unwrap_or_else(|_| unreachable!("a block"));
+    out.subarray(0, (took * width) as u32).to_vec()
+}
+
+fn floats(n: usize) -> js_sys::Float32Array {
+    js_sys::Float32Array::new_with_length(n as u32)
 }
 
 fn refused_as(refused: Option<JsValue>, code: &str) {
@@ -745,6 +760,41 @@ fn a_stream_crosses_block_by_block_and_a_replaced_term_releases_it() {
     refused_as(now(gated.edit("@notes([0, 1s])")).err(), "validation_error");
 }
 
+/// A live stream behind the clock skips to now: the block starts there, a formula plays on
+/// as the whole render does, and a filter that would need the span between starts silent,
+/// listed in `dropped`.
+#[wasm_bindgen_test]
+fn a_live_stream_reads_past_its_position_to_skip_there() {
+    let mut held = page();
+    held.insert(
+        "filtered",
+        "lowpass(sample(@partials/one), cutoff=300, q=0.7)\n",
+    );
+    let live = options(&[("live", JsValue::TRUE)]);
+    let stream = now(held.stream("@notes([0, 1s])", BLOCK, live))
+        .unwrap_or_else(|e| unreachable!("it streams: {}", as_text(&e)));
+    now(stream.add("@partials/one", None)).unwrap_or_else(|e| unreachable!("{}", as_text(&e)));
+    read(&stream);
+    let at = 10 * BLOCK + 3;
+    let heard = read_at(&stream, at);
+    assert_eq!(stream.position(), (at + BLOCK) as f64);
+    let whole = plane(&render(&held, "partials/one"));
+    assert_eq!(heard[..], whole[at..at + BLOCK]);
+
+    now(stream.add("@filtered", None)).unwrap_or_else(|e| unreachable!("{}", as_text(&e)));
+    read(&stream);
+    let at = stream.position() as usize + 4 * BLOCK;
+    assert_eq!(read_at(&stream, at).len(), BLOCK);
+    let stats = stream
+        .stats()
+        .unwrap_or_else(|_| unreachable!("stats answer"));
+    assert!(
+        as_text(&stats).contains("filtered"),
+        "the filter is dropped: {}",
+        as_text(&stats)
+    );
+}
+
 /// What a page asks every second is cheap: `counts` crosses as whole numbers, no blip left in
 /// the sum once each ended, and `stats` lists only a stream's latest lookups, however long it
 /// played, counting all it made.
@@ -782,26 +832,69 @@ fn a_stream_counts_what_it_did_and_lists_only_its_latest_lookups() {
     assert!(made.as_f64() > Some(listed), "{}", as_text(&made));
 }
 
-/// Component `c` of a block starts at `c * block` in the array a page hands over.
+/// Component `c` of frame `i` lands at `i * channels + c` in the array a page hands over.
 #[wasm_bindgen_test]
-fn a_wide_stream_lays_each_component_a_block_apart() {
+fn a_wide_stream_interleaves_each_frame() {
     let held = page();
     let stream = opened(&held, "wide");
     assert_eq!(stream.channels(), 2);
-    let mut out = vec![0.0f32; 2 * BLOCK];
-    let took = stream
-        .next(&mut out)
-        .unwrap_or_else(|_| unreachable!("a block"));
+    let out = read(&stream);
+    assert_eq!(out.len(), 2 * BLOCK);
     let wide = render(&held, "wide");
     for c in 0..2 {
         let whole = wide
             .samples(c)
             .unwrap_or_else(|_| unreachable!("two components"));
-        assert_eq!(
-            out[c * BLOCK..c * BLOCK + took],
-            whole[..took],
-            "component {c}"
-        );
+        let heard: Vec<f32> = out.iter().skip(c).step_by(2).copied().collect();
+        assert_eq!(heard[..], whole[..BLOCK], "component {c}");
+    }
+}
+
+/// A read fills a view onto a playout ring's SharedArrayBuffer (a plain ArrayBuffer where the
+/// host has none) from its offset, and touches nothing else of the ring.
+#[wasm_bindgen_test]
+fn a_read_fills_a_view_onto_a_shared_ring() {
+    let held = page();
+    let stream = opened(&held, "wide");
+    let (frame, ring) = (2 * 4, 4 * BLOCK);
+    let shared =
+        js_sys::Reflect::has(&js_sys::global(), &"SharedArrayBuffer".into()).unwrap_or(false);
+    let buffer: JsValue = if shared {
+        js_sys::SharedArrayBuffer::new((ring * frame) as u32).into()
+    } else {
+        js_sys::ArrayBuffer::new((ring * frame) as u32).into()
+    };
+    js_sys::Float32Array::new(&buffer).fill(7.0, 0, (ring * 2) as u32);
+    let view = js_sys::Float32Array::new_with_byte_offset_and_length(
+        &buffer,
+        (BLOCK * frame) as u32,
+        (2 * BLOCK) as u32,
+    );
+    let took = stream
+        .read(0.0, &view)
+        .unwrap_or_else(|e| unreachable!("a block: {}", as_text(&e)));
+    assert_eq!(took, BLOCK);
+    let whole = js_sys::Float32Array::new(&buffer).to_vec();
+    assert!(
+        whole[..2 * BLOCK].iter().all(|&v| v == 7.0),
+        "before the view"
+    );
+    assert!(
+        whole[4 * BLOCK..].iter().all(|&v| v == 7.0),
+        "after the view"
+    );
+    let wide = render(&held, "wide");
+    for c in 0..2 {
+        let rendered = wide
+            .samples(c)
+            .unwrap_or_else(|_| unreachable!("two components"));
+        let heard: Vec<f32> = whole[2 * BLOCK..4 * BLOCK]
+            .iter()
+            .skip(c)
+            .step_by(2)
+            .copied()
+            .collect();
+        assert_eq!(heard[..], rendered[..BLOCK], "component {c}");
     }
 }
 
@@ -813,20 +906,17 @@ fn an_open_stream_ends_where_the_render_does() {
     let stream = now(held.stream("@master", BLOCK, options(&[])))
         .unwrap_or_else(|_| unreachable!("a decay ends"));
     assert_eq!(stream.end(), None, "no block has reached the end yet");
-    let mut out = vec![0.0f32; BLOCK];
     let mut heard = Vec::new();
     loop {
-        let took = stream
-            .next(&mut out)
-            .unwrap_or_else(|_| unreachable!("a block"));
-        if took == 0 {
+        let out = read(&stream);
+        if out.is_empty() {
             break;
         }
-        heard.extend_from_slice(&out[..took]);
+        heard.extend(out);
     }
     let end = stream.end().unwrap_or_else(|| unreachable!("an end"));
     assert_eq!(heard.len() as f64, end);
-    assert_eq!(stream.next(&mut out).ok(), Some(0), "nothing after the end");
+    assert!(read(&stream).is_empty(), "nothing after the end");
     let whole = held
         .rendered("@master", None, options(&[]))
         .unwrap_or_else(|_| unreachable!("the same decay ends"));
@@ -837,8 +927,15 @@ fn an_open_stream_ends_where_the_render_does() {
 fn a_stream_refuses_what_it_cannot_take_at_the_boundary() {
     let held = page();
     let stream = opened(&held, "partials/one");
-    let mut short = vec![0.0f32; BLOCK - 1];
-    refused_as(stream.next(&mut short).err(), "wasm.bad_argument");
+    refused_as(stream.read(0.5, &floats(BLOCK)).err(), "wasm.bad_argument");
+    refused_as(stream.read(0.0, &floats(0)).err(), "engine.empty_read");
+    read(&stream);
+    refused_as(
+        stream.read(0.0, &floats(BLOCK)).err(),
+        "engine.stream_behind",
+    );
+    let wide = opened(&held, "wide");
+    refused_as(wide.read(0.0, &floats(3)).err(), "wasm.bad_argument");
     let open = |options: JsValue| now(held.stream("@master([0, 1s])", BLOCK, options)).err();
     refused_as(open(JsValue::from(3)), "wasm.bad_argument");
     refused_as(
@@ -1124,14 +1221,13 @@ async fn a_stream_plays_on_while_its_edits_await_the_store() {
         polled.is_pending(),
         "the lookup of a node the stream has not met awaits the directory"
     );
-    let mut out = vec![0.0f32; BLOCK];
-    assert_eq!(stream.next(&mut out).ok(), Some(BLOCK));
+    assert_eq!(read(&stream).len(), BLOCK);
     assert_eq!(stream.position(), BLOCK as f64);
     let mut second = std::pin::pin!(stream.add("@master(t - 0.05s)", None));
     let _ = second
         .as_mut()
         .poll(&mut Context::from_waker(Waker::noop()));
-    assert_eq!(stream.next(&mut out).ok(), Some(BLOCK));
+    assert_eq!(read(&stream).len(), BLOCK);
     let first = first
         .await
         .unwrap_or_else(|e| unreachable!("added: {}", as_text(&e)));

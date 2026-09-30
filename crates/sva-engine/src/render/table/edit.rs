@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use sva_samples::{Extent, Machine, NodeRenderer, Slot, Tape};
+use sva_samples::{Machine, NodeRenderer, Slot};
 
 use super::Table;
 use super::program::leaves;
@@ -186,22 +186,15 @@ fn carry(value: &mut Value, old: Value) {
     value.pure = false;
 }
 
-/// Nothing of its past computed: silent before `now`, stepping from there.
+/// A fresh stateful value started silent at `now`.
 fn start_silent(value: &mut Value, now: i64) -> bool {
     let end = value.end();
-    let Kind::Program(program) = &mut value.kind else {
+    let Kind::Program(program) = &value.kind else {
         return false;
     };
     let start = program.start.expect("a stateful program");
     if now <= start || end.is_some_and(|end| end > start) {
         return false;
     }
-    let Ok(machine) = Machine::over(&program.spanned, now) else {
-        return false;
-    };
-    program.machine = Some(machine);
-    value.held = Held::Run(Tape::new(value.width, 0, now));
-    value.support = value.support.intersect(Extent::from(now));
-    value.pure = false;
-    true
+    value.silent_from(now).is_ok()
 }

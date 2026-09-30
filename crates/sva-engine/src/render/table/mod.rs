@@ -282,6 +282,29 @@ impl Table {
         Ok(pulled)
     }
 
+    /// Silences each stateful value `window` asks from a sample its run has not reached, from
+    /// that sample, readers first: nothing before it is computed. Those it silenced.
+    pub(crate) fn skipped(&mut self, window: Extent) -> Result<Vec<usize>, EngineError> {
+        let mut silenced = Vec::new();
+        loop {
+            let needs = self.demand(window);
+            let behind = needs.iter().enumerate().rev().find(|(at, need)| {
+                let stateful = matches!(&self.values[*at].kind, Kind::Program(p) if p.stateful());
+                let asked = need.hold.hull().start;
+                stateful && !need.compute.is_empty() && need.compute.hull().start < asked
+            });
+            let Some((at, need)) = behind else {
+                return Ok(silenced);
+            };
+            let from = need.hold.hull().start;
+            let value = &mut self.values[at];
+            value
+                .silent_from(from)
+                .map_err(|e| eval::sample_refused(&value.name, &e))?;
+            silenced.push(at);
+        }
+    }
+
     fn pulled(
         &mut self,
         asked: &[(usize, Extent)],

@@ -1,6 +1,6 @@
 // Concern: proves a stream's blocks are the samples a whole render writes, bit for bit, or it refuses | Non-concern: one machine's own blocks (sva-samples) | IO: (a composition, bindings) -> blocks
 
-use crate::fixtures::{Now, graph_of};
+use crate::fixtures::{Now, graph_of, next};
 use sva_ast::Graph;
 use sva_engine::{NoStore, Range, RenderConfig, Stream, StreamConfig, render};
 
@@ -100,7 +100,7 @@ fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Vec<f64> {
         .unwrap_or_else(|e| panic!("{e}"));
     let mut out = Vec::with_capacity(samples + block);
     while out.len() < samples {
-        let block = stream.next_block().unwrap_or_else(|e| panic!("{e}"));
+        let block = next(&mut stream).unwrap_or_else(|e| panic!("{e}"));
         out.extend_from_slice(block.expect("a stream with no end").plane(0));
     }
     out.truncate(samples);
@@ -212,7 +212,7 @@ fn an_open_stream_ends_where_its_support_does() {
         .now()
         .expect("opens");
         let mut heard = Vec::new();
-        while let Some(block) = stream.next_block().expect("a block") {
+        while let Some(block) = next(&mut stream).expect("a block") {
             heard.extend_from_slice(block.plane(0));
         }
         assert_eq!(Some(heard.len() as i64), stream.end(), "{target}");
@@ -248,7 +248,7 @@ fn a_stream_from_a_later_start_is_the_whole_render_over_the_same_range() {
             .now()
             .unwrap_or_else(|e| panic!("{target}: {e}"));
         let mut heard = Vec::new();
-        while let Some(block) = stream.next_block().expect("a block") {
+        while let Some(block) = next(&mut stream).expect("a block") {
             heard.extend_from_slice(block.plane(0));
         }
         assert_eq!(heard, want, "{target}");
@@ -289,7 +289,7 @@ fn an_open_stream_whose_support_never_ends_streams_on_while_pulled() {
         .unwrap_or_else(|e| panic!("{target}: {e}"));
         let mut heard = Vec::new();
         for _ in 0..30 {
-            let block = stream.next_block().expect("a block").expect("no end");
+            let block = next(&mut stream).expect("a block").expect("no end");
             heard.extend_from_slice(block.plane(0));
         }
         assert_eq!(stream.end(), None, "{target}");
@@ -313,7 +313,7 @@ fn a_closed_stream_ends_at_its_range() {
         .now()
         .expect("a closed range opens");
     let mut heard = 0;
-    while let Some(block) = stream.next_block().expect("a block") {
+    while let Some(block) = next(&mut stream).expect("a block") {
         heard += block.len();
     }
     assert_eq!((heard, stream.end()), (1_000, Some(1_000)));
@@ -368,9 +368,7 @@ fn streamed_at(g: &Graph, target: &str, rate: u32, block: usize, samples: usize)
         .unwrap_or_else(|e| panic!("{e}"));
     let mut out = Vec::with_capacity(samples + block);
     while out.len() < samples {
-        let block = stream
-            .next_block()
-            .unwrap_or_else(|e| panic!("{target}: {e}"));
+        let block = next(&mut stream).unwrap_or_else(|e| panic!("{target}: {e}"));
         out.extend_from_slice(block.expect("a stream with no end").plane(0));
     }
     out.truncate(samples);

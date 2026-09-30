@@ -413,7 +413,8 @@ impl Composition {
             store: self.persistent.clone(),
             freed: Rc::default(),
         };
-        Ok(Stream { edits })
+        let scratch = RefCell::new(Vec::with_capacity(edits.inner.borrow().width() * block));
+        Ok(Stream { edits, scratch })
     }
 
     #[wasm_bindgen(getter)]
@@ -633,10 +634,11 @@ fn answered(rendered: &Rendered, asked: &[Asked]) -> Result<JsValue, JsValue> {
 /// A target block by block, reading `@notes` as the sum of its terms, as `@hall(t, x=@notes)`.
 /// A key-up replaces a term with one whose release is a number. A term leaves with its handle
 /// once the stream passes its support. An edit lands at the first block boundary
-/// after the store answered it; `next` and every getter answer meanwhile.
+/// after the store answered it; `read` and every getter answer meanwhile.
 #[wasm_bindgen]
 pub struct Stream {
     edits: Edits,
+    scratch: RefCell<Vec<f32>>,
 }
 
 /// What an edit in flight holds: never the page's object, which the page may free meanwhile.
@@ -735,31 +737,40 @@ fn promised<T: Into<JsValue>>(
 
 #[wasm_bindgen]
 impl Stream {
-    /// Writes the next block into `out`, component `c` from `c * block`, and returns the
-    /// samples each component took: `block`, fewer where silence ends inside it, `0` after.
-    pub fn next(&self, out: &mut [f32]) -> Result<usize, JsValue> {
-        let inner = &mut self.edits.inner.borrow_mut();
-        let (width, block) = (inner.width(), inner.config().block);
-        if out.len() < width * block {
+    /// Writes frames from sample `at` into `out` (a SharedArrayBuffer view too) interleaved,
+    /// `out[i * channels + c]`, and returns how many: `out.length / channels`, fewer at the end.
+    /// A later `at` skips; live, what needed the span starts silent, in `stats().dropped`.
+    pub fn read(&self, at: f64, out: &js_sys::Float32Array) -> Result<usize, JsValue> {
+        if !(at.is_finite() && at >= 0.0 && at.fract() == 0.0) {
             return Err(refuse(
-                format!(
-                    "`out` holds {} samples, and a block is {width} component(s) of {block}",
-                    out.len()
-                ),
-                "pass a Float32Array of channels * block samples",
+                format!("`at` is {at}, not a whole sample"),
+                "pass a whole sample, the stream's `position` or later",
             ));
         }
-        let engine = |e| thrown(&CliError::Engine(e));
-        let Some(held) = inner.next_block().map_err(engine)? else {
+        let inner = &mut self.edits.inner.borrow_mut();
+        let (width, room) = (inner.width(), out.length() as usize);
+        if room % width != 0 {
+            return Err(refuse(
+                format!("`out` holds {room} samples, not whole frames of {width} component(s)"),
+                "pass a Float32Array of channels * frames samples",
+            ));
+        }
+        let Some(held) = inner
+            .read(at as i64, room / width)
+            .map_err(|e| thrown(&CliError::Engine(e)))?
+        else {
             return Ok(0);
         };
-        let planes: Vec<Vec<f32>> = (0..width)
-            .map(|c| sva_core::encode::float32(sva_engine::STREAMED, held.plane(c)))
-            .collect::<Result<_, _>>()
-            .map_err(|e| thrown(&e))?;
-        for (c, plane) in planes.iter().enumerate() {
-            out[c * block..c * block + plane.len()].copy_from_slice(plane);
+        let scratch = &mut self.scratch.borrow_mut();
+        scratch.clear();
+        for i in 0..held.len() {
+            for c in 0..width {
+                let sample = held.plane(c)[i];
+                let sample = sva_core::encode::float32_sample(sva_engine::STREAMED, sample);
+                scratch.push(sample.map_err(|e| thrown(&e))?);
+            }
         }
+        out.subarray(0, scratch.len() as u32).copy_from(scratch);
         Ok(held.len())
     }
 

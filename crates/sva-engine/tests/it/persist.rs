@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
-use crate::fixtures::{added, graph_of, replaced, samples};
+use crate::fixtures::{added, graph_of, next, replaced, samples};
 use sva_ast::Graph;
 use sva_engine::{
     Backend, CacheStats, Change, Changed, EngineError, Handle, Hash, INDEX_NAME, NoStore, Outcome,
@@ -781,8 +781,8 @@ fn a_stream_reads_a_note_another_store_over_its_directory_persisted() {
     now(added(&warm, &graph, &term, &player)).expect("added");
     for _ in 0..(RATE / 256) {
         let (cold, warm) = (
-            cold.borrow_mut().next_block().expect("a block"),
-            warm.borrow_mut().next_block().expect("a block"),
+            next(&mut cold.borrow_mut()).expect("a block"),
+            next(&mut warm.borrow_mut()).expect("a block"),
         );
         assert_eq!(
             warm.map(|b| b.plane(0).to_vec()),
@@ -846,7 +846,7 @@ fn term(text: &str) -> sva_ast::Expr {
 
 fn played(stream: &RefCell<Stream>) -> Vec<u64> {
     let mut heard = Vec::new();
-    while let Some(block) = stream.borrow_mut().next_block().expect("a block") {
+    while let Some(block) = next(&mut stream.borrow_mut()).expect("a block") {
         heard.extend(block.plane(0).iter().map(|v| v.to_bits()));
     }
     heard
@@ -879,9 +879,7 @@ fn a_stream_plays_a_stored_held_note_from_its_samples() {
         let handle = handle.expect("added");
         let mut blocks = Vec::new();
         for _ in 0..4 {
-            let block = stream
-                .borrow_mut()
-                .next_block()
+            let block = next(&mut stream.borrow_mut())
                 .expect("a block")
                 .expect("a block");
             blocks.extend(block.plane(0).iter().map(|v| v.to_bits()));
@@ -932,9 +930,7 @@ fn an_exact_stream_computes_a_held_note_past_what_the_store_holds() {
     let player = opened(&memory, u64::MAX);
     let warm = notes(&graph, 8_000, &player);
     now(added(&warm, &graph, &term(STRIKE), &player)).expect("added");
-    let first = warm
-        .borrow_mut()
-        .next_block()
+    let first = next(&mut warm.borrow_mut())
         .expect("a block")
         .expect("a block");
     assert_eq!(
@@ -957,9 +953,7 @@ fn late(graph: &Graph, live: bool, store: &impl sva_engine::Through) -> (Vec<u64
         stream.borrow_mut().go_live();
     }
     for _ in 0..4 {
-        stream
-            .borrow_mut()
-            .next_block()
+        next(&mut stream.borrow_mut())
             .expect("a block")
             .expect("a block");
     }
@@ -1049,7 +1043,7 @@ fn a_stream_reads_each_stored_notes_header_once() {
     let player = opened(&memory, u64::MAX);
     let stream = notes(&graph, 8_000, &player);
     let c = now(added(&stream, &graph, &term(STRIKE), &player)).expect("added");
-    stream.borrow_mut().next_block().expect("a block");
+    next(&mut stream.borrow_mut()).expect("a block");
     taken(&memory);
 
     let g = "@string(t - 700sp, f0=392)";
@@ -1062,7 +1056,7 @@ fn a_stream_reads_each_stored_notes_header_once() {
             "{name} is no entry of the unmet note"
         );
     }
-    stream.borrow_mut().next_block().expect("a block");
+    next(&mut stream.borrow_mut()).expect("a block");
     taken(&memory);
 
     let fade =
@@ -1078,7 +1072,7 @@ fn a_stream_reads_each_stored_notes_header_once() {
         assert!(now(replaced(&stream, &graph, released, &player)).expect("replaced"));
         let released = fade(&format!("{}sp", 1100 + k), "@string(t - 700sp, f0=392)");
         assert!(now(replaced(&stream, &graph, (g, &term(&released)), &player)).expect("replaced"));
-        stream.borrow_mut().next_block().expect("a block");
+        next(&mut stream.borrow_mut()).expect("a block");
     }
     assert_eq!(taken(&memory), [], "every note here was met");
     assert!(!store_hits(&stream).is_empty());
@@ -1283,7 +1277,7 @@ fn a_live_stream_plays_on_while_its_edits_await_a_slow_store() {
         }
         waited += left.len();
         pending = left;
-        let block = shared.borrow_mut().next_block().expect("a block");
+        let block = next(&mut shared.borrow_mut()).expect("a block");
         heard.push(block.expect("a block when asked").plane(0).to_vec());
         k += 1;
     }
@@ -1303,7 +1297,7 @@ fn a_live_stream_plays_on_while_its_edits_await_a_slow_store() {
                 ours.insert(*edit, handle);
             }
         }
-        let block = reference.borrow_mut().next_block().expect("a block");
+        let block = next(&mut reference.borrow_mut()).expect("a block");
         let block = block.expect("a block");
         expected.push(block.plane(0).to_vec());
     }

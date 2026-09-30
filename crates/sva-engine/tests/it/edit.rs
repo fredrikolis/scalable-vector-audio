@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 
-use crate::fixtures::{Now, added, edited, graph_of, removed, replaced};
+use crate::fixtures::{Now, added, edited, graph_of, next, removed, replaced};
 use sva_ast::Graph;
 use sva_engine::{
     Cache, NoStore, Outcome, PayloadKind, Range, RenderConfig, Stream, StreamConfig, render,
@@ -105,10 +105,7 @@ fn edit(stream: &RefCell<Stream>, g: &Graph, text: &str) {
 fn blocks(stream: &RefCell<Stream>, count: usize) -> Vec<f64> {
     let mut out = Vec::with_capacity(count * BLOCK);
     for _ in 0..count {
-        let block = stream
-            .borrow_mut()
-            .next_block()
-            .unwrap_or_else(|e| panic!("{e}"));
+        let block = next(&mut stream.borrow_mut()).unwrap_or_else(|e| panic!("{e}"));
         out.extend_from_slice(block.expect("a stream with no end").plane(0));
     }
     out
@@ -373,7 +370,7 @@ fn a_long_session_holds_no_more_than_its_first_seconds() {
                 .collect();
             edit(&stream, &g, &format!("@echo(t, x={})", notes.join(" + ")));
         }
-        let block = stream.borrow_mut().next_block().expect("a block");
+        let block = next(&mut stream.borrow_mut()).expect("a block");
         block.expect("no end");
         held.push(stream.borrow().held_bytes());
     }

@@ -1,6 +1,6 @@
 // Concern: proves an index read reads the sample its integer names, whole or streamed | Non-concern: a read at an instant (refs.rs) | IO: (a composition) -> samples or a refusal
 
-use crate::fixtures::{Now, graph_of};
+use crate::fixtures::{Now, graph_of, next};
 use sva_ast::{Graph, PerBar};
 use sva_engine::{NoStore, Range, RenderConfig, Stream, StreamConfig, render};
 
@@ -34,7 +34,7 @@ fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Vec<f64> {
         .unwrap_or_else(|e| panic!("{e}"));
     let mut out = Vec::with_capacity(samples + block);
     while out.len() < samples {
-        match stream.next_block().unwrap_or_else(|e| panic!("{e}")) {
+        match next(&mut stream).unwrap_or_else(|e| panic!("{e}")) {
             Some(block) => out.extend_from_slice(block.plane(0)),
             None => break,
         }
@@ -264,8 +264,7 @@ fn an_index_prunes_its_source_only_where_its_reach_is_bounded() {
             .now()
             .unwrap_or_else(|e| panic!("{e}"));
         let mut most = 0;
-        while stream
-            .next_block()
+        while next(&mut stream)
             .unwrap_or_else(|e| panic!("{e}"))
             .is_some()
         {

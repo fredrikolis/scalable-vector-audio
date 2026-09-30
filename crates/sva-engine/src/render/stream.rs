@@ -265,14 +265,50 @@ impl Stream {
         self.driver.table.took(key, samples);
     }
 
-    /// The next block, cut where the stream ends; `None` from there on.
-    pub fn next_block(&mut self) -> Result<Option<Block>, EngineError> {
-        let block = self.driver.next_block()?;
+    /// `n` samples from sample `at`, cut where the stream ends; `None` from there on. An `at`
+    /// behind the stream is refused; one past it skips there, computing through the span, or,
+    /// live, as `go_live` says.
+    pub fn read(&mut self, at: i64, n: usize) -> Result<Option<Block>, EngineError> {
+        let now = self.driver.at;
+        if at < now {
+            return Err(refused(
+                "engine.stream_behind",
+                format!("sample {at} is before sample {now}, where the stream stands"),
+                "read from the stream's position or later",
+            ));
+        }
+        if n == 0 {
+            return Err(refused(
+                "engine.empty_read",
+                format!("a read of no samples at sample {at}"),
+                "read one sample or more",
+            ));
+        }
+        match self.live {
+            true if at > now => {
+                for silenced in self.driver.skip(at)? {
+                    self.dropped
+                        .push(self.driver.table.values[silenced].name.clone());
+                }
+            }
+            _ => {
+                let block = self.config.block;
+                while self.driver.at < at {
+                    let step = block.min((at - self.driver.at) as usize);
+                    if !self.driver.pulled(step)? {
+                        return Ok(None);
+                    }
+                    self.prune();
+                }
+            }
+        }
+        let block = self.driver.read(n)?;
         self.prune();
         Ok(block)
     }
 
-    /// An edited node with no state there starts silent, never computing its past.
+    /// An edited node with no state there, or one a read skips past, starts silent there,
+    /// never computing its past, and is named in `dropped`; a formula reads on exactly.
     pub fn go_live(&mut self) {
         self.live = true;
     }
@@ -572,10 +608,18 @@ fn reading(order: &schedule::Order, path: &str) -> BTreeSet<String> {
 }
 
 fn refusal(what: String) -> EngineError {
+    refused(
+        "engine.no_stream",
+        format!("this target opens no stream: {what}"),
+        "stream an expression over the nodes the composition defines",
+    )
+}
+
+fn refused(code: &str, message: String, help: &str) -> EngineError {
     EngineError::refused(Diagnostic {
-        code: "engine.no_stream".to_string(),
-        message: format!("this target opens no stream: {what}"),
+        code: code.to_string(),
+        message,
         location: Located::at(STREAMED, None),
-        help: "stream an expression over the nodes the composition defines".to_string(),
+        help: help.to_string(),
     })
 }
