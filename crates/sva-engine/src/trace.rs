@@ -134,6 +134,7 @@ fn sampled_leaf(
             Some("rand, noise drawn per step of the rate in use".to_string())
         }
         crate::typing::Value::Solver { .. } => Some("a finite-difference builtin".to_string()),
+        crate::typing::Value::Stored(_) => Some("samples the store answered".to_string()),
         crate::typing::Value::Cast(crate::cast::Cast::Sample, source) => {
             Some(format!("sample({})", typing.name(*source)))
         }

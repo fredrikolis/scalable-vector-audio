@@ -220,7 +220,7 @@ pub fn execute(job: Job) -> Result<Rendered, CliError> {
     rendered(&job, graph, render)
 }
 
-/// `execute` reading through `store` in place of `job`'s own cache; it writes nothing there.
+/// `execute` reading through `store` in place of `job`'s own cache; only `persist` writes it.
 pub async fn execute_through<B: Backend>(
     job: Job<'_>,
     store: &Store<B>,

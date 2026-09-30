@@ -25,6 +25,8 @@ pub struct Graph {
     spans: HashMap<String, Option<FileSpan>>,
     per_bar: Option<PerBar>,
     skipped: Vec<Skipped>,
+    /// Each node's text as its source answered it, or as a defined one prints.
+    texts: HashMap<String, String>,
 }
 
 fn has_bar_literal(e: &Expr) -> bool {
@@ -76,6 +78,11 @@ impl Graph {
 
     pub fn expr(&self, path: &str) -> Option<&Expr> {
         self.nodes.get(path)
+    }
+
+    /// A node's whole text, comments and all, before any parse.
+    pub fn text(&self, path: &str) -> Option<&str> {
+        self.texts.get(path).map(String::as_str)
     }
 
     /// What an invocation binding nothing for a name gets, in written order. A caller's own
@@ -158,6 +165,8 @@ impl Graph {
             Some(per_bar) => resolve_bar_literals(&expr, per_bar),
             None => expr,
         };
+        self.texts
+            .insert(path.to_string(), crate::print::render(&expr));
         self.nodes.insert(path.to_string(), expr);
         self.spans.insert(path.to_string(), None);
         true
@@ -426,7 +435,6 @@ struct Loading {
     missing: BTreeSet<String>,
     refusals: Vec<Refusal>,
     skipped: Vec<Skipped>,
-    /// Kept only for a dangling ref to re-inspect the byte right past its truncated path.
     texts: HashMap<String, String>,
 }
 
@@ -522,6 +530,7 @@ impl Loading {
             spans: self.spans,
             per_bar: None,
             skipped: self.skipped,
+            texts: self.texts,
         })
     }
 }

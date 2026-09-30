@@ -822,41 +822,61 @@ fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
 }
 
 /// What a page hands `open`: a directory handle held in memory, as the origin-private file
-/// system answers one. A missing name rejects as `NotFoundError`, and a write lands on close.
+/// system answers one. A missing name rejects as `NotFoundError`, a write lands on close, and a
+/// file moves into another directory whole.
 fn fake_directory() -> JsValue {
     js_sys::Function::new_no_args(
         r#"
-        const files = new Map();
         const missing = () => Object.assign(new Error("missing"), { name: "NotFoundError" });
-        return {
-            files,
-            async getFileHandle(name, options) {
-                if (!files.has(name)) {
-                    if (!(options && options.create)) throw missing();
-                    files.set(name, new Uint8Array(0));
-                }
-                return {
-                    async getFile() {
-                        const bytes = files.get(name);
-                        if (!bytes) throw missing();
-                        return { size: bytes.length, async arrayBuffer() { return bytes.slice().buffer; } };
-                    },
-                    async createWritable() {
-                        let pending = new Uint8Array(0);
-                        return {
-                            async write(data) { pending = new Uint8Array(data); },
-                            async close() { files.set(name, pending); },
-                        };
-                    },
-                };
-            },
-            async removeEntry(name) { if (!files.delete(name)) throw missing(); },
-            keys() {
-                const names = [...files.keys()];
-                let at = 0;
-                return { async next() { return at < names.length ? { done: false, value: names[at++] } : { done: true }; } };
-            },
+        const directory = () => {
+            const files = new Map();
+            const dirs = new Map();
+            const held = {
+                files,
+                dirs,
+                async getFileHandle(name, options) {
+                    if (!files.has(name)) {
+                        if (!(options && options.create)) throw missing();
+                        files.set(name, new Uint8Array(0));
+                    }
+                    return {
+                        async getFile() {
+                            const bytes = files.get(name);
+                            if (!bytes) throw missing();
+                            return { size: bytes.length, async arrayBuffer() { return bytes.slice().buffer; } };
+                        },
+                        async createWritable() {
+                            let pending = new Uint8Array(0);
+                            return {
+                                async write(data) { pending = new Uint8Array(data); },
+                                async close() { files.set(name, pending); },
+                            };
+                        },
+                        async move(into, as) {
+                            const bytes = files.get(name);
+                            if (!bytes) throw missing();
+                            files.delete(name);
+                            into.files.set(as, bytes);
+                        },
+                    };
+                },
+                async getDirectoryHandle(name, options) {
+                    if (!dirs.has(name)) {
+                        if (!(options && options.create)) throw missing();
+                        dirs.set(name, directory());
+                    }
+                    return dirs.get(name);
+                },
+                async removeEntry(name) { if (!files.delete(name) && !dirs.delete(name)) throw missing(); },
+                keys() {
+                    const names = [...files.keys(), ...dirs.keys()];
+                    let at = 0;
+                    return { async next() { return at < names.length ? { done: false, value: names[at++] } : { done: true }; } };
+                },
+            };
+            return held;
         };
+        return directory();
         "#,
     )
     .call0(&JsValue::NULL)
@@ -909,4 +929,28 @@ async fn a_render_writes_the_directory_nothing_until_the_page_persists() {
         as_text(&warm)
     );
     assert_eq!(Composition::new(None).persist().await.ok(), Some(0));
+}
+
+/// A staging area whose lock no page holds, as a closed tab leaves one, goes when a store opens.
+#[wasm_bindgen_test]
+async fn opening_a_store_sweeps_a_staging_area_no_page_holds() {
+    let dir = fake_directory();
+    let make: js_sys::Function = field(&dir, "getDirectoryHandle").into();
+    let left = make
+        .call2(
+            &dir,
+            &"staging-left".into(),
+            &options(&[("create", true.into())]),
+        )
+        .unwrap_or_else(|_| unreachable!("the fake makes a directory"));
+    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(left))
+        .await
+        .unwrap_or_else(|_| unreachable!("it settles"));
+    over_store(&dir).await;
+    let names: Vec<String> = js_sys::Array::from(&field(&dir, "dirs"))
+        .iter()
+        .filter_map(|pair| js_sys::Array::from(&pair).get(0).as_string())
+        .collect();
+    assert!(!names.contains(&"staging-left".to_string()), "{names:?}");
+    assert_eq!(names.len(), 1, "the page's own staging area: {names:?}");
 }

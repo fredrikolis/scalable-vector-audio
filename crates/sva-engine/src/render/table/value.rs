@@ -21,6 +21,7 @@ pub(crate) enum Kind {
     Frames { window: usize, hop: usize },
     Istft,
     Spectrum(Box<SpectralSum>),
+    Stored { priced: u128 },
 }
 
 pub(crate) struct Program {
@@ -66,6 +67,7 @@ pub(crate) struct Value {
     pub(crate) label: Option<Label>,
     /// Where a stateful value's arguments switch, and its identity before each.
     pub(crate) switches: Vec<(i64, Hash)>,
+    pub(crate) moved: f64,
     /// Its samples are its identity's alone; one an edit carried on, or anything reading one,
     /// holds a history no key names, so the store neither answers nor keeps it.
     pub(crate) pure: bool,
@@ -276,6 +278,7 @@ mod tests {
             evaluated: Vec::new(),
             label: None,
             switches: Vec::new(),
+            moved: 0.0,
             pure: true,
         }
     }

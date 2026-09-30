@@ -37,12 +37,13 @@ pub(crate) fn of(
     tys: &Typing,
     supports: &Supports,
     (id, grid): (NodeId, Grid),
-    profile: &sva_samples::Profile,
+    (profile, bounds): (&sva_samples::Profile, &std::collections::BTreeSet<NodeId>),
 ) -> Result<Program, EngineError> {
     let mut build = Build {
         tys,
         supports,
         profile,
+        bounds,
         owner: id,
         fine: grid != tys.grid(id),
         grid,
@@ -63,6 +64,8 @@ struct Build<'a> {
     tys: &'a Typing,
     supports: &'a Supports<'a>,
     profile: &'a sva_samples::Profile,
+    /// Nodes read as values of their own, never inlined into a reader's program.
+    bounds: &'a std::collections::BTreeSet<NodeId>,
     owner: NodeId,
     /// Evaluated finer than its own typing's step, as an alias score's reference is: only a
     /// closed form is.
@@ -82,6 +85,9 @@ impl Build<'_> {
     }
 
     fn of(&mut self, id: NodeId) -> Result<NodeRenderer, EngineError> {
+        if id != self.owner && self.bounds.contains(&id) {
+            return Ok(self.slot(Source::Node(id), Map::shift(0)));
+        }
         match self.tys.value(id).clone() {
             Value::ClosedForm(form) => match (
                 &form.body,
@@ -99,6 +105,7 @@ impl Build<'_> {
             Value::Read { source, at, .. } => self.read(source, at),
             Value::SelfAt { at } => self.own(at),
             Value::Noise(seed) => Ok(NodeRenderer::Noise(seed)),
+            Value::Stored(_) => Ok(self.slot(Source::Node(id), Map::shift(0))),
             Value::Solver { .. } if id != self.owner => {
                 Ok(self.slot(Source::Node(id), Map::shift(0)))
             }
@@ -437,7 +444,7 @@ impl Build<'_> {
         args: &[NodeId],
     ) -> Result<NodeRenderer, EngineError> {
         let args = match name {
-            "+" => addends(self.tys, args),
+            "+" => addends(self.tys, args, self.bounds),
             _ => args.to_vec(),
         };
         let mut lowered = Vec::with_capacity(args.len());
@@ -543,10 +550,15 @@ fn inlined(tys: &Typing, body: &Body) -> Option<Body> {
 
 /// `a + b + c` nests to the left; as one sum, the same fold from `+0` in the same order, a
 /// span prunes a dead addend outright rather than leaving the sum around it.
-fn addends(tys: &Typing, args: &[NodeId]) -> Vec<NodeId> {
+fn addends(
+    tys: &Typing,
+    args: &[NodeId],
+    bounds: &std::collections::BTreeSet<NodeId>,
+) -> Vec<NodeId> {
     let (mut head, mut tails) = (args, Vec::new());
     while let Value::Op { name, args: inner } = tys.value(head[0])
         && name == "+"
+        && !bounds.contains(&head[0])
     {
         tails.push(&head[1..]);
         head = inner;

@@ -8,11 +8,12 @@ mod laws;
 mod period;
 pub(crate) mod program;
 mod segments;
+pub(crate) mod spill;
 mod store;
 pub(crate) mod support;
 mod value;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use sva_formula::{ClosedForm, Hash, Held as Representation, NodeId, Var};
 use sva_samples::{
@@ -56,7 +57,17 @@ impl Table {
         wanted: &[NodeId],
         profile: &Profile,
     ) -> Result<Table, EngineError> {
-        Table::built(tys, (root, wanted), profile, 1, false)
+        Table::bounded(tys, (root, wanted), profile, &BTreeSet::new())
+    }
+
+    /// The same, each of `bounds` a value of its own wherever it is read, never inlined.
+    pub(crate) fn bounded(
+        tys: &Typing,
+        (root, wanted): (NodeId, &[NodeId]),
+        profile: &Profile,
+        bounds: &BTreeSet<NodeId>,
+    ) -> Result<Table, EngineError> {
+        Table::built(tys, (root, wanted), profile, (1, bounds), false)
     }
 
     /// Every read its own value, as if each were written out where it is read.
@@ -67,7 +78,7 @@ impl Table {
         wanted: &[NodeId],
         profile: &Profile,
     ) -> Result<Table, EngineError> {
-        Table::built(tys, (root, wanted), profile, 1, true)
+        Table::built(tys, (root, wanted), profile, (1, &BTreeSet::new()), true)
     }
 
     /// Every value `fine` times finer than its own step: a closed form's reference.
@@ -78,14 +89,20 @@ impl Table {
         profile: &Profile,
         fine: i128,
     ) -> Result<Table, EngineError> {
-        Table::built(tys, (root, wanted), profile, fine, false)
+        Table::built(
+            tys,
+            (root, wanted),
+            profile,
+            (fine, &BTreeSet::new()),
+            false,
+        )
     }
 
     fn built(
         tys: &Typing,
         (root, wanted): (NodeId, &[NodeId]),
         profile: &Profile,
-        fine: i128,
+        (fine, bounds): (i128, &BTreeSet<NodeId>),
         apart: bool,
     ) -> Result<Table, EngineError> {
         let supports = Supports::new(tys);
@@ -94,6 +111,7 @@ impl Table {
             supports: &supports,
             profile,
             fine,
+            bounds,
             apart,
             copies: 0,
             reading: Vec::new(),
@@ -130,10 +148,16 @@ impl Table {
         }
     }
 
-    /// Prices every value over `range` before a sample is computed.
+    /// Prices every value over `range` before a sample is computed; a stored one costs what
+    /// computing it did.
     pub(crate) fn plan(&mut self, range: Extent) {
         let needs = self.demand(range);
         self.planned = self.price(&needs);
+        for (planned, value) in self.planned.iter_mut().zip(&self.values) {
+            if let Kind::Stored { priced } = value.kind {
+                *planned += priced;
+            }
+        }
     }
 
     /// A table of nothing, standing in while its successor takes over.
@@ -304,7 +328,8 @@ impl Table {
             .any(|w| *w != root && self.values[*w].reads.contains(&root));
         for (at, need) in needs.into_iter().enumerate() {
             let whole = self.whole(at) && !(output && at == root);
-            if self.values[at].alias().is_some() || whole {
+            let stored = matches!(self.values[at].kind, Kind::Stored { .. });
+            if self.values[at].alias().is_some() || whole || stored {
                 continue;
             }
             let mut kept = need.hold;
@@ -398,6 +423,7 @@ struct Building<'a> {
     supports: &'a Supports<'a>,
     profile: &'a Profile,
     fine: i128,
+    bounds: &'a BTreeSet<NodeId>,
     /// Every read its own value rather than one per identity.
     apart: bool,
     /// Values made apart so far, each its own key.
@@ -547,6 +573,7 @@ impl Building<'_> {
             evaluated: Vec::new(),
             label: None,
             switches: Vec::new(),
+            moved: 0.0,
             pure: true,
         };
         let Source::Node(id) = source else {
@@ -558,6 +585,16 @@ impl Building<'_> {
         };
         let id = *id;
         match (tys.ty(id).held, tys.value(id)) {
+            (_, Typed::Stored(held)) => {
+                self.moved = self.moved.max(held.moved);
+                value.moved = held.moved;
+                value.label = Some(held.label.clone());
+                value.held = Held::Segments(held.segments.clone());
+                value.kind = Kind::Stored {
+                    priced: held.priced,
+                };
+                Ok(value)
+            }
             (Representation::Frames, Typed::Cast(Cast::Stft { window, hop }, of)) => {
                 value.kind = Kind::Frames {
                     window: *window,
@@ -664,8 +701,14 @@ impl Building<'_> {
                 },
             ));
         }
-        let built = program::of(self.tys, self.supports, (id, value.grid), self.profile)?;
+        let built = program::of(
+            self.tys,
+            self.supports,
+            (id, value.grid),
+            (self.profile, self.bounds),
+        )?;
         self.moved = self.moved.max(built.moved);
+        value.moved = built.moved;
         let grid = value.grid;
         let mut reads = Vec::with_capacity(built.reads.len());
         for source in &built.reads {

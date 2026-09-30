@@ -101,8 +101,6 @@ struct Held {
     tree: u64,
     fork: bool,
     slot: Option<Hash>,
-    /// The persistent store holds these bytes already.
-    persisted: bool,
 }
 
 impl Held {
@@ -358,7 +356,6 @@ impl Cache {
                         held.read = tick;
                         held.tree = stamp.tree;
                         held.fork = stamp.fork;
-                        held.persisted = false;
                         let after = held.bytes();
                         Ok((before, after))
                     }
@@ -404,7 +401,6 @@ impl Cache {
             tree: stamp.tree,
             fork: stamp.fork,
             slot: stamp.slot,
-            persisted: false,
         };
         if let Some(old) = state.entries.insert(key, held) {
             state.bytes -= old.bytes();
@@ -418,52 +414,6 @@ impl Cache {
     }
 }
 
-impl Cache {
-    pub(crate) fn warmed(&self, key: Hash, entry: Entry) {
-        let mut state = self.locked();
-        let bytes = entry.payload.bytes() as u64;
-        if bytes > state.max_bytes {
-            return;
-        }
-        let (read, tree) = (state.tick(), state.tree);
-        let held = Held {
-            payload: entry.payload,
-            label: entry.label,
-            read,
-            tree,
-            fork: false,
-            slot: None,
-            persisted: true,
-        };
-        if let Some(old) = state.entries.insert(key, held) {
-            state.bytes -= old.bytes();
-        }
-        state.bytes += bytes;
-        state.bounded();
-    }
-
-    pub(crate) fn unpersisted(&self) -> Vec<Hash> {
-        self.locked()
-            .entries
-            .iter()
-            .filter(|(_, held)| !held.persisted && matches!(held.payload, Payload::Segments(_)))
-            .map(|(key, _)| *key)
-            .collect()
-    }
-
-    pub(crate) fn encoded(&self, key: Hash) -> Option<Vec<u8>> {
-        let state = self.locked();
-        let held = state.entries.get(&key)?;
-        super::codec::encode(&held.payload, held.label.as_ref())
-    }
-
-    pub(crate) fn persisted(&self, key: Hash) {
-        if let Some(held) = self.locked().entries.get_mut(&key) {
-            held.persisted = true;
-        }
-    }
-}
-
 /// A run that starts inside or at the end of the one held continues it: what it holds past
 /// that one's end is laid on, the samples both hold being the same.
 fn overlaps(held: &super::Run, more: &super::Run) -> bool {
@@ -472,7 +422,7 @@ fn overlaps(held: &super::Run, more: &super::Run) -> bool {
 }
 
 /// `more` laid among `parts`, each touching pair joined into one.
-fn joined(parts: &mut Vec<sva_samples::Buffer>, more: Vec<sva_samples::Buffer>) {
+pub(crate) fn joined(parts: &mut Vec<sva_samples::Buffer>, more: Vec<sva_samples::Buffer>) {
     for part in more {
         parts.push(part);
     }

@@ -118,6 +118,10 @@ fn built(
             sink.text("noise");
             sink.word(*seed);
         }
+        Value::Stored(held) => {
+            sink.text("stored");
+            sink.hash(held.key);
+        }
         Value::Solver { params, varying } => {
             let mut held = (**params).clone();
             for (key, _) in varying {

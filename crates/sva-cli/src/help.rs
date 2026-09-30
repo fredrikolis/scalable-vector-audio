@@ -107,14 +107,16 @@ RENDER:
   stream plays from the next sample on.
   `--flop-budget <n>` is the operation count paid before a render refuses.
 
-  Every value a render computes is kept in a store on disk, so the next render
-  of anything that reads the same value reads it back instead of computing it,
-  bit for bit. The store is on by default, at `$XDG_CACHE_HOME/sva`, else
-  `~/.cache/sva`; `--cache <path>` moves it (a `/dev/shm` path keeps it in
-  memory) and `--cache none` turns it off. It holds at most {store_gb} GB, the
-  least recently used values going first, and a store another build of
-  sva-cli wrote is emptied when opened. It is written once, when the render
-  ends, fails, or is stopped by SIGINT or SIGTERM, and never while it runs.
+  Every node's value a render computes is kept in a store on disk, named by
+  the node's file text, its bindings and what it reads, so the next render of
+  anything that reads the same node reads it back, bit for bit, and neither
+  types nor computes anything under it. The store is on by default, at
+  `$XDG_CACHE_HOME/sva`, else `~/.cache/sva`; `--cache <path>` moves it (a
+  `/dev/shm` path keeps it in memory) and `--cache none` turns it off. It holds
+  at most {store_gb} GB, the least recently used values going first, and a
+  store another build of sva-cli wrote is emptied when opened. A render stages
+  what it computes beside the store as it goes, and the store itself is written
+  once, when the render ends, fails, or is stopped by SIGINT or SIGTERM.
 
   `ledger` prints one row per node under the target. A row's `share` is the
   part of its reader's own energy that row accounts for, so one reader's refs

@@ -212,7 +212,7 @@ impl Composition {
         let mut held = Composition::new(name);
         if let Some(dir) = dir {
             let backend = opfs::Opfs { dir };
-            let store = Store::open(backend, held.store.clone(), DEFAULT_STORE_BYTES).await;
+            let store = Store::open(backend, DEFAULT_STORE_BYTES).await;
             held.persistent = Some(store.map_err(unstored)?);
         }
         Ok(held)

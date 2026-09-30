@@ -1,74 +1,121 @@
-// Concern: writes one stored value's segments and label as bytes, and reads them back | Non-concern: where the bytes live or when | IO: (Entry) <-> bytes, a corrupt one None
+// Concern: writes one stored node value and one staged run of its samples as bytes, and reads them back | Non-concern: where the bytes live or when | IO: (Stored or Buffer) <-> bytes, a corrupt one None
 
-use sva_samples::{Buffer, Cost, Detail, Dropped, Label, PSYCHOACOUSTIC_V1, Rule, Source};
+use sva_formula::Codomain;
+use sva_samples::{
+    Buffer, Cost, Detail, Dropped, Extent, Grid, Label, PSYCHOACOUSTIC_V1, Rule, Source,
+};
 
-use super::{Entry, Payload};
+use super::Stored;
 
-const MAGIC: &[u8; 4] = b"SVAv";
+const ENTRY: &[u8; 4] = b"SVAn";
+const CHUNK: &[u8; 4] = b"SVAc";
 
-/// Only segments are written; `None` for any other payload.
-pub(crate) fn encode(payload: &Payload, label: Option<&Label>) -> Option<Vec<u8>> {
-    let Payload::Segments(parts) = payload else {
-        return None;
-    };
-    let mut out = MAGIC.to_vec();
-    word(&mut out, parts.len() as u64);
-    for part in parts {
-        word(&mut out, u64::from(part.rate));
-        word(&mut out, part.start as u64);
-        word(&mut out, part.width as u64);
-        word(&mut out, part.len() as u64);
-        for plane in &part.planes {
-            for sample in plane {
-                word(&mut out, sample.to_bits());
-            }
-        }
-    }
-    match label {
-        None => out.push(0),
-        Some(label) => {
-            out.push(1);
-            labelled(&mut out, label);
-        }
-    }
-    let sum = checksum(&out);
-    word(&mut out, sum);
-    Some(out)
+pub(crate) fn entry(stored: &Stored) -> Vec<u8> {
+    let mut out = ENTRY.to_vec();
+    word(&mut out, stored.key.0);
+    word(&mut out, stored.key.1);
+    labelled(&mut out, &stored.label);
+    out.push(stored.width);
+    out.push(match stored.codomain {
+        Codomain::Real => 0,
+        Codomain::Complex => 1,
+    });
+    maybe(&mut out, stored.rate.map(u64::from));
+    word(&mut out, u64::from(stored.grid.rate));
+    out.extend_from_slice(&stored.grid.a.to_le_bytes());
+    out.extend_from_slice(&stored.grid.d.to_le_bytes());
+    word(&mut out, stored.support.start as u64);
+    word(&mut out, stored.support.end as u64);
+    out.extend_from_slice(&stored.priced.to_le_bytes());
+    word(&mut out, stored.moved.to_bits());
+    out.push(u8::from(stored.readable));
+    segments(&mut out, &stored.segments);
+    sealed(out)
 }
 
 /// A truncated, corrupt or foreign entry is `None`, never a partial value.
-pub(crate) fn decode(bytes: &[u8]) -> Option<Entry> {
-    let body = bytes.len().checked_sub(8)?;
-    let (body, sum) = bytes.split_at(body);
-    if checksum(body).to_le_bytes() != sum || !body.starts_with(MAGIC) {
-        return None;
-    }
-    let mut r = Reader(&body[MAGIC.len()..]);
-    let count = r.word()? as usize;
-    let mut parts = Vec::new();
-    for _ in 0..count.min(r.0.len()) {
-        let rate = u32::try_from(r.word()?).ok()?;
-        let start = r.word()? as i64;
-        let (width, len) = (r.word()? as usize, r.word()? as usize);
-        let planes = (0..width)
-            .map(|_| (0..len).map(|_| r.word().map(f64::from_bits)).collect())
-            .collect::<Option<Vec<Vec<f64>>>>()?;
-        let mut part = Buffer::of_planes(rate, planes);
-        part.start = start;
-        parts.push(part);
-    }
-    if parts.len() != count {
-        return None;
-    }
-    let label = match r.byte()? {
-        0 => None,
-        1 => Some(r.label()?),
+pub(crate) fn read_entry(bytes: &[u8]) -> Option<Stored> {
+    let mut r = Reader(opened(bytes, ENTRY)?);
+    let key = sva_formula::Hash(r.word()?, r.word()?);
+    let label = r.label()?;
+    let width = r.byte()?;
+    let codomain = match r.byte()? {
+        0 => Codomain::Real,
+        1 => Codomain::Complex,
         _ => return None,
     };
-    r.0.is_empty().then_some(Entry {
-        payload: Payload::Segments(parts),
+    let rate = match r.maybe()? {
+        Some(rate) => Some(u32::try_from(rate).ok()?),
+        None => None,
+    };
+    let grid = Grid {
+        rate: u32::try_from(r.word()?).ok()?,
+        a: r.wide()? as i128,
+        d: r.wide()? as i128,
+    };
+    let (start, end) = (r.word()? as i64, r.word()? as i64);
+    let support = (start <= end).then(|| Extent::new(start, end))?;
+    let priced = r.wide()?;
+    let moved = f64::from_bits(r.word()?);
+    let readable = match r.byte()? {
+        0 => false,
+        1 => true,
+        _ => return None,
+    };
+    let segments = r.segments()?;
+    r.0.is_empty().then_some(Stored {
+        key,
+        segments,
         label,
+        width,
+        codomain,
+        rate,
+        grid,
+        support,
+        priced,
+        moved,
+        readable,
     })
+}
+
+pub(crate) fn chunk(samples: &Buffer) -> Vec<u8> {
+    let mut out = CHUNK.to_vec();
+    segments(&mut out, std::slice::from_ref(samples));
+    sealed(out)
+}
+
+pub(crate) fn read_chunk(bytes: &[u8]) -> Option<Buffer> {
+    let mut r = Reader(opened(bytes, CHUNK)?);
+    let mut parts = r.segments()?;
+    (r.0.is_empty() && parts.len() == 1).then(|| parts.remove(0))
+}
+
+fn sealed(mut out: Vec<u8>) -> Vec<u8> {
+    let sum = checksum(&out);
+    word(&mut out, sum);
+    out
+}
+
+/// The body past `magic`, where the checksum holds.
+fn opened<'b>(bytes: &'b [u8], magic: &[u8; 4]) -> Option<&'b [u8]> {
+    let body = bytes.len().checked_sub(8)?;
+    let (body, sum) = bytes.split_at(body);
+    (checksum(body).to_le_bytes() == sum && body.starts_with(magic)).then(|| &body[magic.len()..])
+}
+
+fn segments(out: &mut Vec<u8>, parts: &[Buffer]) {
+    word(out, parts.len() as u64);
+    for part in parts {
+        word(out, u64::from(part.rate));
+        word(out, part.start as u64);
+        word(out, part.width as u64);
+        word(out, part.len() as u64);
+        for plane in &part.planes {
+            for sample in plane {
+                word(out, sample.to_bits());
+            }
+        }
+    }
 }
 
 fn checksum(bytes: &[u8]) -> u64 {
@@ -200,6 +247,26 @@ impl Reader<'_> {
 
     fn word(&mut self) -> Option<u64> {
         Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+    }
+
+    fn segments(&mut self) -> Option<Vec<Buffer>> {
+        let count = self.word()? as usize;
+        let mut parts = Vec::new();
+        for _ in 0..count.min(self.0.len()) {
+            let rate = u32::try_from(self.word()?).ok()?;
+            let start = self.word()? as i64;
+            let (width, len) = (self.word()? as usize, self.word()? as usize);
+            if width.saturating_mul(len).saturating_mul(8) > self.0.len() {
+                return None;
+            }
+            let planes = (0..width)
+                .map(|_| (0..len).map(|_| self.word().map(f64::from_bits)).collect())
+                .collect::<Option<Vec<Vec<f64>>>>()?;
+            let mut part = Buffer::of_planes(rate, planes);
+            part.start = start;
+            parts.push(part);
+        }
+        (parts.len() == count).then_some(parts)
     }
 
     fn wide(&mut self) -> Option<u128> {

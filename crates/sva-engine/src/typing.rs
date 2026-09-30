@@ -2,12 +2,14 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use sva_formula::filter::Shape;
 use sva_formula::{C64, ClosedForm, Codomain, Env, Held, NodeId, Origin, ParamId, Ty, Var, infer};
 use sva_samples::Params;
 
 use crate::arguments::{Arguments, Called, Chosen};
+use crate::cache::Stored;
 use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::Instances;
@@ -45,6 +47,8 @@ pub enum Value {
         params: Box<Params>,
         varying: Vec<(&'static str, NodeId)>,
     },
+    /// Samples the store answered in place of the node's own source, which is never typed.
+    Stored(Arc<Stored>),
 }
 
 /// A read's instant: the exact time `k*t + s` written; a closed form of `t` held as a node;
@@ -117,6 +121,8 @@ pub struct Typing {
     indices: u32,
     sum: Option<(NodeId, Vec<SumSlot>)>,
     numbers: Numbers,
+    /// Every node lowered from its source, in order.
+    lowered: Vec<String>,
 }
 
 /// Each node's folded number, derived from the nodes alone; a settle evicts it all.
@@ -147,6 +153,14 @@ impl Typing {
             .as_ref()
             .filter(|(held, _)| *held == node)
             .map(|(_, slots)| slots.as_slice())
+    }
+
+    pub(crate) fn lowering(&mut self, path: &str) {
+        self.lowered.push(path.to_string());
+    }
+
+    pub(crate) fn lowered(&self) -> &[String] {
+        &self.lowered
     }
 
     pub(crate) fn next_index(&mut self) -> sva_formula::IndexId {
@@ -348,11 +362,23 @@ impl Env for Table<'_> {
 
 /// Dependencies first, so a ref reads a type already decided.
 pub fn infer_all(inst: &Instances, order: &Order) -> Result<Typing, EngineError> {
+    infer_over(inst, order, &BTreeMap::new())
+}
+
+/// Each node `stored` names stands as its samples, and nothing under it is typed.
+pub(crate) fn infer_over(
+    inst: &Instances,
+    order: &Order,
+    stored: &BTreeMap<String, Arc<Stored>>,
+) -> Result<Typing, EngineError> {
     let mut typing = Typing::default();
     for group in &order.groups {
-        match order.is_loop(group) {
-            true => settle_loop(&mut typing, inst, group)?,
-            false => {
+        match (order.is_loop(group), group.as_slice()) {
+            (false, [path]) if let Some(held) = stored.get(path) => {
+                typing.push(standing(path, held), Some(path));
+            }
+            (true, _) => settle_loop(&mut typing, inst, group)?,
+            (false, _) => {
                 for path in group {
                     lower::node(path, inst, &mut typing)?;
                 }
@@ -361,6 +387,20 @@ pub fn infer_all(inst: &Instances, order: &Order) -> Result<Typing, EngineError>
     }
     name_files(&mut typing, inst);
     Ok(typing)
+}
+
+fn standing(path: &str, held: &Arc<Stored>) -> Node {
+    Node {
+        name: path.to_string(),
+        ty: Ty {
+            width: held.width,
+            rate: held.rate,
+            ..Ty::discrete(Held::Sampled, held.codomain)
+        },
+        var: Var::T,
+        value: Value::Stored(Arc::clone(held)),
+        grid: held.grid,
+    }
 }
 
 const SEEDS: [Held; 2] = [Held::Form(Var::T), Held::Sampled];

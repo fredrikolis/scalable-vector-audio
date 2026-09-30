@@ -1,5 +1,6 @@
 // Concern: named bytes under one filesystem path, each write whole or absent | Non-concern: what the bytes mean, the budget (sva-engine) | IO: (name[, bytes]) -> bytes, names, or why not
 
+use std::fs::File;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,7 +10,42 @@ use sva_core::Backend;
 /// One implementation for a disk directory and `/dev/shm` alike: both are paths.
 pub struct Directory {
     pub path: PathBuf,
+    /// A staging area's lock, held for as long as it is in use.
+    _lock: Option<File>,
 }
+
+impl Directory {
+    pub fn at(path: PathBuf) -> Directory {
+        Directory { path, _lock: None }
+    }
+
+    /// Every staging area whose lock no process holds, removed; its lock file stays, so a
+    /// process never waits on a lock file another is deleting.
+    fn swept(&self) -> Result<(), String> {
+        let Ok(entries) = std::fs::read_dir(&self.path) else {
+            return Ok(());
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let dir = entry.metadata().is_ok_and(|m| m.is_dir());
+            if !dir || !name.starts_with(STAGING) {
+                continue;
+            }
+            let lock = self.path.join(format!("{name}.lock"));
+            let free = match File::options().write(true).open(&lock) {
+                Ok(file) => file.try_lock().is_ok(),
+                Err(_) => true,
+            };
+            if free {
+                let path = entry.path();
+                std::fs::remove_dir_all(&path).map_err(|e| failed("remove", &path, e))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+const STAGING: &str = ".staging-";
 
 static WRITES: AtomicU64 = AtomicU64::new(0);
 
@@ -62,5 +98,30 @@ impl Backend for Directory {
             }
         }
         Ok(out)
+    }
+
+    /// `.staging-<pid>`, locked before it exists, so a sweep never removes it while it runs.
+    async fn staging(&self) -> Result<Directory, String> {
+        std::fs::create_dir_all(&self.path).map_err(|e| failed("create", &self.path, e))?;
+        let name = format!("{STAGING}{}", std::process::id());
+        let lock = self.path.join(format!("{name}.lock"));
+        let held = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock)
+            .map_err(|e| failed("open", &lock, e))?;
+        held.lock().map_err(|e| failed("lock", &lock, e))?;
+        self.swept()?;
+        Ok(Directory {
+            path: self.path.join(name),
+            _lock: Some(held),
+        })
+    }
+
+    async fn rename(&self, name: &str, to: &Directory) -> Result<(), String> {
+        std::fs::create_dir_all(&to.path).map_err(|e| failed("create", &to.path, e))?;
+        let (from, onto) = (self.path.join(name), to.path.join(name));
+        std::fs::rename(&from, &onto).map_err(|e| failed("rename onto", &onto, e))
     }
 }

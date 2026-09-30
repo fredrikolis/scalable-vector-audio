@@ -62,6 +62,7 @@ impl<'a> Supports<'a> {
             Value::Op { name, args } => self.operation(name, args, grid, &|arg| self.of(arg)),
             Value::SelfAt { .. } => Extent::NOWHERE,
             Value::Noise(_) => Extent::EVERYWHERE,
+            Value::Stored(held) => held.support,
             Value::Read {
                 source,
                 at: When::Step(step),

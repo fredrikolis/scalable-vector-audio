@@ -205,7 +205,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 79] = [
+pub static REGISTRY: [(&str, &str); 80] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -484,6 +484,10 @@ pub static REGISTRY: [(&str, &str); 79] = [
     (
         "render.no_end",
         "an interval with no end over a root whose support never ends",
+    ),
+    (
+        "store.unwritable",
+        "the staging area beside a persistent store refused a write",
     ),
     (
         "render.unrepresentable_sample",

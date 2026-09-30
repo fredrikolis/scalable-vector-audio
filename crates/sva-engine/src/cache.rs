@@ -6,9 +6,13 @@ mod persist;
 mod stats;
 mod store;
 
-pub use persist::{Backend, DEFAULT_STORE_BYTES, Persisted, STORE_VERSION, Store, VERSION_NAME};
+pub(crate) use persist::node_key;
+pub use persist::{
+    Backend, DEFAULT_STORE_BYTES, Persisted, STORE_VERSION, Store, Stored, VERSION_NAME,
+};
 pub(crate) use stats::Recording;
 pub use stats::{CacheStats, Lookup, Outcome};
+pub(crate) use store::joined;
 pub use store::{Cache, CachePolicy, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY, PrunePolicy};
 pub use sva_formula::Hash;
 

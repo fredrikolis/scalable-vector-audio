@@ -264,7 +264,7 @@ fn reads_itself(typing: &sva_engine::Typing, id: sva_engine::NodeId) -> bool {
         Value::Cast(_, source) | Value::Filter { x: source, .. } | Value::Read { source, .. } => {
             reads_itself(typing, *source)
         }
-        Value::ClosedForm(_) | Value::Solver { .. } | Value::Noise(_) => false,
+        Value::ClosedForm(_) | Value::Solver { .. } | Value::Noise(_) | Value::Stored(_) => false,
     }
 }
 
@@ -326,7 +326,7 @@ fn collect_taps(typing: &sva_engine::Typing, id: sva_engine::NodeId, out: &mut V
         Value::Cast(_, source) | Value::Filter { x: source, .. } | Value::Read { source, .. } => {
             collect_taps(typing, *source, out)
         }
-        Value::ClosedForm(_) | Value::Solver { .. } | Value::Noise(_) => {}
+        Value::ClosedForm(_) | Value::Solver { .. } | Value::Noise(_) | Value::Stored(_) => {}
     }
 }
 

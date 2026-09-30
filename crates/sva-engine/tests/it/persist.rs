@@ -1,25 +1,47 @@
-// Concern: proves the persistent store answers a warm render, wipes on a version change, keeps its budget | Non-concern: any real medium | IO: (a composition, a fake backend) -> stats
+// Concern: proves a store answers a render from its root down, stages until persist, wipes on a new version, keeps a budget | Non-concern: any real medium | IO: (a composition, a fake backend) -> stats
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use crate::fixtures::{graph_of, samples};
 use sva_ast::Graph;
 use sva_engine::{
-    Backend, Cache, CacheStats, Hash, Outcome, Render, RenderConfig, STORE_VERSION, Store,
-    VERSION_NAME, render_through,
+    Backend, CacheStats, Hash, Outcome, Render, RenderConfig, STORE_VERSION, Store, VERSION_NAME,
+    render, render_through,
 };
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
 
+/// One map of names; a staging area's names sit under its prefix, where `list` never looks.
+/// While the flag is up, every rename fails.
 #[derive(Clone, Default)]
-struct Memory(Arc<Mutex<BTreeMap<String, Vec<u8>>>>);
+struct Memory(
+    Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    String,
+    Arc<AtomicBool>,
+);
 
 impl Memory {
     fn names(&self) -> Vec<String> {
-        self.0.lock().unwrap().keys().cloned().collect()
+        self.0
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|n| !n.contains('/'))
+            .cloned()
+            .collect()
+    }
+
+    fn staged(&self) -> Vec<String> {
+        let held = self.0.lock().unwrap();
+        held.keys().filter(|n| n.contains('/')).cloned().collect()
+    }
+
+    fn at(&self, name: &str) -> String {
+        format!("{}{name}", self.1)
     }
 
     fn entries(&self) -> Vec<String> {
@@ -31,11 +53,11 @@ impl Memory {
     }
 
     fn bytes(&self, name: &str) -> Option<Vec<u8>> {
-        self.0.lock().unwrap().get(name).cloned()
+        self.0.lock().unwrap().get(&self.at(name)).cloned()
     }
 
     fn set(&self, name: &str, bytes: Vec<u8>) {
-        self.0.lock().unwrap().insert(name.to_string(), bytes);
+        self.0.lock().unwrap().insert(self.at(name), bytes);
     }
 }
 
@@ -50,7 +72,7 @@ impl Backend for Memory {
     }
 
     async fn delete(&self, name: &str) -> Result<(), String> {
-        self.0.lock().unwrap().remove(name);
+        self.0.lock().unwrap().remove(&self.at(name));
         Ok(())
     }
 
@@ -58,8 +80,25 @@ impl Backend for Memory {
         let held = self.0.lock().unwrap();
         Ok(held
             .iter()
-            .map(|(n, b)| (n.clone(), b.len() as u64))
+            .filter_map(|(n, b)| Some((n.strip_prefix(&self.1)?, b)))
+            .filter(|(n, _)| !n.contains('/'))
+            .map(|(n, b)| (n.to_string(), b.len() as u64))
             .collect())
+    }
+
+    async fn staging(&self) -> Result<Memory, String> {
+        let prefix = format!("{}staging/", self.1);
+        Ok(Memory(Arc::clone(&self.0), prefix, Arc::clone(&self.2)))
+    }
+
+    async fn rename(&self, name: &str, to: &Memory) -> Result<(), String> {
+        if self.2.load(Ordering::Relaxed) {
+            return Err("the medium refused".to_string());
+        }
+        let mut held = self.0.lock().unwrap();
+        let bytes = held.remove(&self.at(name)).ok_or("nothing staged")?;
+        held.insert(to.at(name), bytes);
+        Ok(())
     }
 }
 
@@ -77,7 +116,7 @@ fn now<F: Future>(future: F) -> F::Output {
 
 /// A fresh in-memory store over `memory`, as a new process opens it.
 fn opened(memory: &Memory, max_bytes: u64) -> Store<Memory> {
-    now(Store::open(memory.clone(), Cache::new(), max_bytes)).expect("the store opens")
+    now(Store::open(memory.clone(), max_bytes)).expect("the store opens")
 }
 
 fn rendered(graph: &Graph, store: &Store<Memory>) -> Render {
@@ -236,4 +275,209 @@ fn past_its_budget_the_store_evicts_the_least_recently_used_first() {
     assert!(all_held(&memory, &a), "read since, so kept");
     assert!(!all_held(&memory, &b), "least recently used, so gone");
     assert!(all_held(&memory, &c), "just written, so kept");
+}
+
+fn rendered_over(graph: &Graph, store: &Store<Memory>, seconds: f64) -> Render {
+    now(render_through(
+        graph,
+        "master",
+        RenderConfig::seconds(RATE, seconds),
+        store,
+    ))
+    .expect("a render")
+}
+
+fn bits(render: &Render) -> Vec<Vec<u64>> {
+    let root = render.output(render.root).expect("the root's samples");
+    root.planes
+        .iter()
+        .map(|plane| plane.iter().map(|v| v.to_bits()).collect())
+        .collect()
+}
+
+fn sorted(names: &[String]) -> Vec<&str> {
+    let mut out: Vec<&str> = names.iter().map(String::as_str).collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+#[test]
+fn a_warm_render_whose_root_hits_visits_one_key_and_types_and_plans_nothing() {
+    let memory = Memory::default();
+    let graph = two_voices("root-hit", 330);
+    let store = opened(&memory, u64::MAX);
+    let cold = rendered(&graph, &store);
+    now(store.persist()).expect("persisted");
+
+    let warm = rendered(&graph, &opened(&memory, u64::MAX));
+    let stats = stats(&warm);
+    assert_eq!(stats.lookups.len(), 1, "one key: {stats:?}");
+    assert_eq!(stats.lookups[0].node, "master");
+    assert_eq!(stats.lookups[0].outcome, Outcome::Hit);
+    assert!(stats.typed.is_empty(), "typed {:?}", stats.typed);
+    assert!(stats.planned.is_empty(), "planned {:?}", stats.planned);
+    assert_eq!(bits(&cold), bits(&warm));
+}
+
+/// `master` reads `e` through `p`; `s` and `q` are the siblings on the way down.
+fn nested(name: &str, hz: u32) -> Graph {
+    graph_of(
+        name,
+        &[
+            ("e", &format!("sample(sin(2*pi*{hz}*t))*0.5\n")),
+            ("q", "sample(sin(2*pi*550*t))*0.25\n"),
+            ("s", "sample(sin(2*pi*330*t))*0.5\n"),
+            ("p", "@e*0.5 + @q\n"),
+            ("master", "@p + @s*0.5\n"),
+        ],
+    )
+}
+
+#[test]
+fn an_edit_visits_the_missed_path_and_its_hit_siblings_and_types_only_the_missed() {
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    rendered(&nested("path-before", 220), &store);
+    now(store.persist()).expect("persisted");
+
+    let edited = nested("path-after", 440);
+    let warm = rendered(&edited, &opened(&memory, u64::MAX));
+    let stats = stats(&warm);
+    let visited: Vec<String> = stats.lookups.iter().map(|l| l.node.clone()).collect();
+    assert_eq!(
+        sorted(&visited),
+        ["e", "master", "p", "q", "s"],
+        "{stats:?}"
+    );
+    assert_eq!(visited.len(), 5, "each node is visited once");
+    for lookup in &stats.lookups {
+        let hit = ["q", "s"].contains(&lookup.node.as_str());
+        assert_eq!(lookup.outcome == Outcome::Hit, hit, "{lookup:?}");
+    }
+    assert_eq!(sorted(&stats.typed), ["e", "master", "p"]);
+    assert_eq!(sorted(&stats.planned), ["e", "master", "p"]);
+    let fresh = render(
+        &edited,
+        "master",
+        RenderConfig::seconds(RATE, SECONDS),
+        None,
+    );
+    assert_eq!(
+        bits(&warm),
+        bits(&fresh.expect("a render")),
+        "hits read as computed"
+    );
+}
+
+#[test]
+fn a_cold_render_through_a_store_writes_the_bits_a_render_without_one_does() {
+    let graph = graph_of(
+        "cold-bits",
+        &[
+            (
+                "x",
+                "lowpass(sample(sin(2*pi*220*t)) + sample(sin(2*pi*3000*t))*0.3, cutoff=800)\n",
+            ),
+            ("y", "@x(t - 0.01s)*0.5\n"),
+            ("z", "sample(sin(2*pi*440*t))*0.5\n"),
+            ("master", "@x*0.5 + @y + @z*0.25\n"),
+        ],
+    );
+    let config = RenderConfig::seconds(RATE, 1.2);
+    let fresh = render(&graph, "master", config.clone(), None).expect("a render");
+    let store = opened(&Memory::default(), u64::MAX);
+    let cold = now(render_through(&graph, "master", config, &store)).expect("a render");
+    assert!(
+        bits(&fresh)[0].iter().any(|b| *b != 0),
+        "silence tests nothing"
+    );
+    assert_eq!(bits(&cold), bits(&fresh));
+}
+
+#[test]
+fn a_render_stages_what_it_drops_and_only_persist_moves_it_into_the_store() {
+    let memory = Memory::default();
+    let graph = two_voices("staging", 330);
+    let store = opened(&memory, u64::MAX);
+    let cold = rendered_over(&graph, &store, 2.0);
+    assert!(memory.entries().is_empty(), "the store is unchanged");
+    let staged: u64 = memory
+        .staged()
+        .iter()
+        .map(|name| memory.0.lock().unwrap()[name].len() as u64)
+        .sum();
+    assert!(staged > 0, "the render staged what it computed");
+    assert!(
+        (cold.held_bytes as u64) < staged,
+        "the render held {} bytes at most, less than the {staged} it staged",
+        cold.held_bytes
+    );
+    let done = now(store.persist()).expect("persisted");
+    assert_eq!(done.written, memory.entries().len());
+    assert!(memory.staged().is_empty(), "every staged value moved");
+}
+
+#[test]
+fn a_comment_changes_a_nodes_identity_and_a_file_nothing_reads_changes_none() {
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    let before = rendered(&two_voices("comment-before", 330), &store);
+    now(store.persist()).expect("persisted");
+    let key = |render: &Render, node: &str| {
+        stats(render)
+            .lookups
+            .iter()
+            .find(|l| l.node == node)
+            .map(|l| l.key)
+    };
+
+    let commented = graph_of(
+        "comment-after",
+        &[
+            ("x", "sample(sin(2*pi*220*t))*0.5\n"),
+            ("y", "sample(sin(2*pi*330*t))*0.5\n"),
+            ("master", "; the mix\n@x*0.5 + @y*0.25\n"),
+        ],
+    );
+    let after = rendered(&commented, &opened(&memory, u64::MAX));
+    assert_ne!(key(&before, "master"), key(&after, "master"));
+    assert!(
+        outcomes(stats(&after), "master")
+            .iter()
+            .all(|o| *o != Outcome::Hit)
+    );
+    assert!(
+        outcomes(stats(&after), "x")
+            .iter()
+            .all(|o| *o == Outcome::Hit)
+    );
+
+    let beside = graph_of(
+        "unread-after",
+        &[
+            ("x", "sample(sin(2*pi*220*t))*0.5\n"),
+            ("y", "sample(sin(2*pi*330*t))*0.5\n"),
+            ("master", "@x*0.5 + @y*0.25\n"),
+            ("unread", "sample(sin(2*pi*990*t))\n"),
+        ],
+    );
+    let unread = rendered(&beside, &opened(&memory, u64::MAX));
+    assert_eq!(key(&before, "master"), key(&unread, "master"));
+    assert_eq!(stats(&unread).lookups.len(), 1, "the root hits");
+}
+
+#[test]
+fn a_persist_that_fails_leaves_every_value_it_did_not_commit_staged() {
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    rendered(&two_voices("refused", 330), &store);
+    memory.2.store(true, Ordering::Relaxed);
+    assert!(now(store.persist()).is_err());
+    assert!(memory.entries().is_empty());
+
+    memory.2.store(false, Ordering::Relaxed);
+    let done = now(store.persist()).expect("persisted");
+    assert_eq!(done.written, 3, "x, y and master were still staged");
+    assert_eq!(memory.entries().len(), 3);
 }

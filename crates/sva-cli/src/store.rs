@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::Thread;
 
-use sva_core::{Cache, CliError, DEFAULT_STORE_BYTES, Diagnostic, Store, error_envelope};
+use sva_core::{CliError, DEFAULT_STORE_BYTES, Diagnostic, Store, error_envelope};
 
 use crate::args::CacheAt;
 use crate::directory::Directory;
@@ -65,9 +65,9 @@ pub fn opened(at: &CacheAt) -> Result<Option<&'static Store<Directory>>, CliErro
         CacheAt::Path(path) => path.clone(),
         CacheAt::Platform => platform()?,
     };
-    let backend = Directory { path: path.clone() };
-    let store = wait(Store::open(backend, Cache::new(), DEFAULT_STORE_BYTES))
-        .map_err(|why| unusable(&path, &why))?;
+    let backend = Directory::at(path.clone());
+    let store =
+        wait(Store::open(backend, DEFAULT_STORE_BYTES)).map_err(|why| unusable(&path, &why))?;
     let store = OPEN.get_or_init(|| store);
     let mut signals = signal_hook::iterator::Signals::new([
         signal_hook::consts::SIGINT,

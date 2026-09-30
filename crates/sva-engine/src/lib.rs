@@ -16,6 +16,7 @@ pub mod query;
 mod refs;
 pub mod render;
 mod schedule;
+mod source;
 mod time;
 mod trace;
 mod typing;
@@ -27,7 +28,7 @@ pub use cache::log::cache_log;
 pub use cache::{
     Backend, Cache, CachePolicy, CacheStats, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY,
     DEFAULT_STORE_BYTES, Hash, Lookup, Outcome, PayloadKind, Persisted, PrunePolicy, STORE_VERSION,
-    Store, VERSION_NAME,
+    Store, Stored, VERSION_NAME,
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};

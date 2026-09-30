@@ -54,6 +54,18 @@ impl Order {
         self.deps.get(path).map_or(&[], Vec::as_slice)
     }
 
+    pub(crate) fn within(&self, kept: &BTreeSet<String>) -> Order {
+        Order {
+            groups: self
+                .groups
+                .iter()
+                .filter(|group| group.iter().all(|path| kept.contains(path)))
+                .cloned()
+                .collect(),
+            deps: self.deps.clone(),
+        }
+    }
+
     /// A group of one whose node does not ref itself is an ordinary node; anything else is a loop.
     pub fn is_loop(&self, group: &[String]) -> bool {
         match group {
@@ -273,7 +285,7 @@ pub(crate) fn holds_self(typing: &Typing, id: NodeId, seen: &mut BTreeSet<NodeId
             .into_iter()
             .any(|operand| holds_self(typing, *operand, seen)),
         Value::Solver { varying, .. } => varying.iter().any(|(_, a)| holds_self(typing, *a, seen)),
-        Value::ClosedForm(_) | Value::Noise(_) => false,
+        Value::ClosedForm(_) | Value::Noise(_) | Value::Stored(_) => false,
     }
 }
 
@@ -298,7 +310,7 @@ pub(crate) fn materialized_operands(typing: &Typing, id: NodeId) -> Vec<NodeId> 
         out
     };
     match typing.value(id) {
-        Value::ClosedForm(_) | Value::Noise(_) => Vec::new(),
+        Value::ClosedForm(_) | Value::Noise(_) | Value::Stored(_) => Vec::new(),
         Value::SelfAt { at, .. } => sampled(at.moving()),
         Value::Solver { varying, .. } => sampled(varying.iter().map(|(_, a)| *a).collect()),
         Value::Cast(Cast::Sample, source) => vec![*source],
@@ -368,7 +380,7 @@ fn reads_under(typing: &Typing, id: NodeId, seen: &mut BTreeSet<NodeId>, out: &m
                 read_through(typing, *arg, seen, out);
             }
         }
-        Value::SelfAt { .. } | Value::Noise(_) => {}
+        Value::SelfAt { .. } | Value::Noise(_) | Value::Stored(_) => {}
     }
 }
 

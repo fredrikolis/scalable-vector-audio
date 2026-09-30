@@ -3,8 +3,6 @@
 use sva_formula::Hash;
 use sva_samples::Label;
 
-use std::collections::HashMap;
-
 use super::store::{Kept, Stamp};
 use super::{Cache, CachePolicy, Entry, Expected, Payload, PayloadKind};
 
@@ -26,7 +24,7 @@ pub struct Lookup {
     pub key: Hash,
     pub kind: PayloadKind,
     pub outcome: Outcome,
-    /// What the persistent store answered the value's first lookup.
+    /// What a persistent store answered.
     pub store: Option<bool>,
 }
 
@@ -41,6 +39,8 @@ pub struct CacheStats {
     pub evictions: u64,
     /// Each output sample a pull reached, and how many lookups had been made by then.
     pub reached: Vec<(i64, usize)>,
+    pub typed: Vec<String>,
+    pub planned: Vec<String>,
 }
 
 impl CacheStats {
@@ -76,7 +76,6 @@ impl CacheStats {
     }
 }
 
-/// One render's lookups.
 pub(crate) struct Recording {
     cache: Option<Cache>,
     policy: CachePolicy,
@@ -84,7 +83,6 @@ pub(crate) struct Recording {
     evictions: u64,
     lookups: Vec<Lookup>,
     reached: Vec<(i64, usize)>,
-    warmed: HashMap<Hash, bool>,
 }
 
 impl Recording {
@@ -97,12 +95,7 @@ impl Recording {
             evictions: cache.map_or(0, Cache::evictions),
             lookups: Vec::new(),
             reached: Vec::new(),
-            warmed: HashMap::new(),
         }
-    }
-
-    pub(crate) fn warmed(&mut self, warmed: HashMap<Hash, bool>) {
-        self.warmed = warmed;
     }
 
     pub(crate) fn reach(&mut self, at: i64) {
@@ -118,6 +111,8 @@ impl Recording {
             entries: cache.map_or(0, Cache::entries),
             evictions: cache.map_or(0, |c| c.evictions() - self.evictions),
             reached: self.reached.clone(),
+            typed: Vec::new(),
+            planned: Vec::new(),
         }
     }
 
@@ -150,7 +145,7 @@ impl Recording {
             key,
             kind,
             outcome,
-            store: self.warmed.remove(&key),
+            store: None,
         });
         self.lookups.len() - 1
     }

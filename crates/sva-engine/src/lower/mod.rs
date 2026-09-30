@@ -101,6 +101,7 @@ fn lowered(
     let (expr, cx) = inst
         .at(path)
         .ok_or_else(|| EngineError::UnknownNode(path.to_string()))?;
+    typing.lowering(path);
     let cx = cx.on(grid);
     let var = axis_of(inst, typing, expr, cx, path)?;
     let kind = match inst.reads_self(path) {

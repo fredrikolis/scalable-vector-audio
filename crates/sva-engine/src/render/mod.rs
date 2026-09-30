@@ -3,15 +3,17 @@
 mod answer;
 pub(crate) mod bound;
 mod drive;
+mod frontier;
 mod quiet;
 mod slots;
 mod stream;
 pub(crate) mod table;
 mod terms;
+mod through;
 pub mod until;
 mod volatile;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use sva_ast::Graph;
 use sva_formula::{NodeId, SpectralSum};
@@ -89,6 +91,7 @@ pub use drive::Block;
 pub use quiet::{QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, quiet_tails};
 pub use stream::{STREAMED, Stream, StreamConfig};
 pub use terms::{Handle, NOTES};
+pub use through::render_through;
 pub use until::Until;
 
 /// Samples a whole render pulls at once; any size writes the same bits.
@@ -221,32 +224,21 @@ pub fn render(
     cache: Option<&Cache>,
 ) -> Result<Render, EngineError> {
     let recording = Recording::over(cache, config.cache_policy);
-    let held = planned(prepared(graph, target, config.rate)?, config)?;
-    finished(held, recording)
-}
-
-/// `render` through `store`: each value's segments the in-memory store lacks are read from
-/// the persistent one before the first is computed. Nothing is written to it.
-pub async fn render_through<B: crate::cache::Backend>(
-    graph: &Graph,
-    target: &str,
-    config: RenderConfig,
-    store: &crate::cache::Store<B>,
-) -> Result<Render, EngineError> {
-    let mut recording = Recording::over(Some(store.cache()), config.cache_policy);
-    let held = planned(prepared(graph, target, config.rate)?, config)?;
-    if let Some(table) = &held.table {
-        recording.warmed(store.warm(&table.segment_keys()).await);
-    }
-    finished(held, recording)
-}
-
-fn finished(mut held: Render, recording: Recording) -> Result<Render, EngineError> {
+    let mut held = planned(
+        prepared(graph, target, config.rate)?,
+        config,
+        &BTreeSet::new(),
+    )?;
     pulled(&mut held, recording)?;
-    scored(&mut held)?;
-    compose_read(&mut held);
-    stamp(&mut held);
+    closed(&mut held)?;
     Ok(held)
+}
+
+fn closed(held: &mut Render) -> Result<(), EngineError> {
+    scored(held)?;
+    compose_read(held);
+    stamp(held);
+    Ok(())
 }
 
 pub(crate) struct Prepared<'g> {
@@ -274,23 +266,35 @@ pub(crate) fn prepared<'g>(
     })
 }
 
-fn planned(prepared: Prepared<'_>, config: RenderConfig) -> Result<Render, EngineError> {
+fn planned(
+    prepared: Prepared<'_>,
+    config: RenderConfig,
+    bounds: &BTreeSet<NodeId>,
+) -> Result<Render, EngineError> {
     let Prepared {
         instances,
         tys,
         root,
-        ..
     } = prepared;
+    planned_over(&instances, (tys, root), config, bounds)
+}
+
+fn planned_over(
+    instances: &instantiate::Instances,
+    (tys, root): (Typing, NodeId),
+    config: RenderConfig,
+    bounds: &BTreeSet<NodeId>,
+) -> Result<Render, EngineError> {
     let schedule = schedule::plan(&tys, root, &config.asks);
     let bindings = tys
         .paths()
-        .filter_map(|(path, id)| Some((id, resolved(&instances, path)?)))
+        .filter_map(|(path, id)| Some((id, resolved(instances, path)?)))
         .collect();
     let mut held = Render::shell(tys, root, config, schedule);
     held.bindings = bindings;
-    ranged(&mut held)?;
+    ranged(&mut held, bounds)?;
     let target = held.tys.name(held.root).to_string();
-    let volatile = volatile::mark(&instances, &held, &target)?;
+    let volatile = volatile::mark(instances, &held, &target)?;
     if let Some(table) = &mut held.table {
         table.slots(|id| volatile.slot(id));
     }
@@ -299,11 +303,15 @@ fn planned(prepared: Prepared<'_>, config: RenderConfig) -> Result<Render, Engin
 
 /// The range and every value a render of `target` would compute, and no sample.
 pub fn plan(graph: &Graph, target: &str, config: RenderConfig) -> Result<Render, EngineError> {
-    planned(prepared(graph, target, config.rate)?, config)
+    planned(
+        prepared(graph, target, config.rate)?,
+        config,
+        &BTreeSet::new(),
+    )
 }
 
 /// A reading of samples or of their cost needs the range; lines and structure never do.
-fn ranged(held: &mut Render) -> Result<(), EngineError> {
+fn ranged(held: &mut Render, bounds: &BTreeSet<NodeId>) -> Result<(), EngineError> {
     let counts = counts(&held.config.asks);
     let envelope = held.config.asks.iter().any(|ask| {
         matches!(
@@ -321,7 +329,8 @@ fn ranged(held: &mut Render) -> Result<(), EngineError> {
     }
     held.range = Some(range_of(held, Ends::Refused)?);
     let wanted: Vec<NodeId> = held.schedule.wanted.clone();
-    let mut table = Table::build(&held.tys, held.root, &wanted, &held.config.profile)?;
+    let root = (held.root, wanted.as_slice());
+    let mut table = Table::bounded(&held.tys, root, &held.config.profile, bounds)?;
     table.plan(held.range.expect("a range was decided"));
     held.table = Some(table);
     Ok(())
@@ -408,16 +417,34 @@ fn affordable(held: &Render) -> Result<(), EngineError> {
 
 /// Every wanted value pulled over the range, block by block, until `until` stops it.
 fn pulled(held: &mut Render, recording: Recording) -> Result<(), EngineError> {
+    if let Some(mut driver) = driving(held, recording)? {
+        while driver.pull()? {}
+        drove(held, driver);
+    }
+    Ok(())
+}
+
+/// What pulls a render's table, where it materializes one at all.
+fn driving(held: &mut Render, recording: Recording) -> Result<Option<drive::Driver>, EngineError> {
     affordable(held)?;
     let (Some(table), Some(range)) = (held.table.take(), held.range) else {
-        return Ok(());
+        return Ok(None);
     };
     if !materializes(held) {
         held.table = Some(table);
-        return Ok(());
+        return Ok(None);
     }
-    let mut driver = drive::Driver::new(table, range, BLOCK, &held.config, recording);
-    while driver.pull()? {}
+    Ok(Some(drive::Driver::new(
+        table,
+        range,
+        BLOCK,
+        &held.config,
+        recording,
+    )))
+}
+
+fn drove(held: &mut Render, driver: drive::Driver) {
+    let range = held.range.expect("a pulled render has a range");
     held.held_bytes = driver.most_bytes();
     held.cache_stats = Some(driver.recording.stats());
     if let Some(stop) = driver.stop().filter(|stop| *stop < range.end) {
@@ -440,7 +467,6 @@ fn pulled(held: &mut Render, recording: Recording) -> Result<(), EngineError> {
         }
     }
     held.table = Some(table);
-    Ok(())
 }
 
 /// A closed form's value `fine` times finer than the render's step: what an alias score
@@ -491,7 +517,11 @@ pub(crate) fn render_apart(
     target: &str,
     config: RenderConfig,
 ) -> Result<Render, EngineError> {
-    let mut held = planned(prepared(graph, target, config.rate)?, config)?;
+    let mut held = planned(
+        prepared(graph, target, config.rate)?,
+        config,
+        &BTreeSet::new(),
+    )?;
     if let (Some(range), Some(_)) = (held.range, &held.table) {
         let wanted = held.schedule.wanted.clone();
         let mut table = Table::apart(&held.tys, held.root, &wanted, &held.config.profile)?;

@@ -117,3 +117,23 @@ fn the_default_store_is_under_xdg_cache_home_and_none_keeps_none() {
     assert!(run(&dir, &args, Some(&off)).status.success());
     assert!(!off.join("sva").exists(), "`none` keeps no store");
 }
+
+/// A staging area is removed once no process holds its lock, and kept while one does.
+#[test]
+fn a_staging_area_no_process_holds_is_swept_and_a_held_one_survives() {
+    let dir = scratch("store-sweep");
+    put(&dir, "x", "crop(sample(sin(2*pi*220*t)), 0s, 0.05s)*0.5\n");
+    let store = scratch("store-sweep-store");
+    let stale = store.join(".staging-4000000001");
+    std::fs::create_dir_all(&stale).expect("a stale area");
+    std::fs::write(stale.join("chunk"), b"left behind").expect("a chunk");
+    let live = store.join(".staging-4000000002");
+    std::fs::create_dir_all(&live).expect("a live area");
+    let lock = std::fs::File::create(store.join(".staging-4000000002.lock")).expect("a lock");
+    lock.lock().expect("held");
+    let args = ["@x", "--representation", "loudness", "--cache"];
+    let args: Vec<&str> = args.into_iter().chain([store.to_str().unwrap()]).collect();
+    assert!(run(&dir, &args, None).status.success());
+    assert!(!stale.exists(), "no process held it");
+    assert!(live.exists(), "this test holds it");
+}

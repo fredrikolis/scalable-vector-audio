@@ -2,6 +2,7 @@
 
 use js_sys::{Promise, Uint8Array};
 use sva_engine::Backend;
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -15,8 +16,14 @@ extern "C" {
     #[wasm_bindgen(method, js_name = getFileHandle)]
     fn get_file_handle(this: &DirectoryHandle, name: &str, options: &JsValue) -> Promise;
 
+    #[wasm_bindgen(method, js_name = getDirectoryHandle)]
+    fn get_directory_handle(this: &DirectoryHandle, name: &str, options: &JsValue) -> Promise;
+
     #[wasm_bindgen(method, js_name = removeEntry)]
     fn remove_entry(this: &DirectoryHandle, name: &str) -> Promise;
+
+    #[wasm_bindgen(method, js_name = removeEntry)]
+    fn remove_tree(this: &DirectoryHandle, name: &str, options: &JsValue) -> Promise;
 
     #[wasm_bindgen(method)]
     fn keys(this: &DirectoryHandle) -> Names;
@@ -34,6 +41,9 @@ extern "C" {
     #[wasm_bindgen(method, js_name = createWritable)]
     fn create_writable(this: &FileHandle) -> Promise;
 
+    #[wasm_bindgen(method, js_name = move)]
+    fn move_into(this: &FileHandle, dir: &DirectoryHandle, name: &str) -> Promise;
+
     type File;
 
     #[wasm_bindgen(method, js_name = arrayBuffer)]
@@ -41,6 +51,15 @@ extern "C" {
 
     #[wasm_bindgen(method, getter)]
     fn size(this: &File) -> f64;
+
+    /// `navigator.locks`: a page holds one lock per staging area for as long as it lives.
+    type LockManager;
+
+    #[wasm_bindgen(method)]
+    fn request(this: &LockManager, name: &str, granted: &JsValue) -> Promise;
+
+    #[wasm_bindgen(method)]
+    fn query(this: &LockManager) -> Promise;
 
     type Writable;
 
@@ -73,7 +92,73 @@ async fn settled<T: JsCast>(promise: Promise) -> Result<T, JsValue> {
     Ok(JsFuture::from(promise).await?.unchecked_into())
 }
 
+const STAGING: &str = "staging-";
+
+fn locks() -> Result<LockManager, String> {
+    let navigator = js_sys::Reflect::get(&js_sys::global(), &"navigator".into()).map_err(why)?;
+    let locks = field(&navigator, "locks");
+    match locks.is_undefined() {
+        true => Err("this page has no navigator.locks".to_string()),
+        false => Ok(locks.unchecked_into()),
+    }
+}
+
+fn lock_of(staging: &str) -> String {
+    format!("sva-store-{staging}")
+}
+
+/// `name` locked until the page goes: its callback's promise never settles.
+async fn hold(name: &str) -> Result<(), String> {
+    let locks = locks()?;
+    let granted = Promise::new(&mut |resolve, _| {
+        let held = Closure::once_into_js(move || {
+            let _ = resolve.call0(&JsValue::NULL);
+            Promise::new(&mut |_, _| {})
+        });
+        let _ = locks.request(name, &held);
+    });
+    settled::<JsValue>(granted).await.map_err(why)?;
+    Ok(())
+}
+
+async fn held() -> Result<Vec<String>, String> {
+    let state: JsValue = settled(locks()?.query()).await.map_err(why)?;
+    let held = js_sys::Array::from(&field(&state, "held"));
+    Ok(held
+        .iter()
+        .filter_map(|lock| field(&lock, "name").as_string())
+        .collect())
+}
+
 impl Opfs {
+    /// Every staging area whose lock no page holds, removed.
+    async fn swept(&self) -> Result<(), String> {
+        let held = held().await?;
+        let names = self.dir.keys();
+        let mut stale = Vec::new();
+        loop {
+            let step: JsValue = settled(names.next()).await.map_err(why)?;
+            if field(&step, "done").is_truthy() {
+                break;
+            }
+            let Some(name) = field(&step, "value").as_string() else {
+                continue;
+            };
+            if name.starts_with(STAGING) && !held.contains(&lock_of(&name)) {
+                stale.push(name);
+            }
+        }
+        let options = js_sys::Object::new();
+        js_sys::Reflect::set(&options, &"recursive".into(), &true.into()).map_err(why)?;
+        for name in stale {
+            match settled::<JsValue>(self.dir.remove_tree(&name, &options)).await {
+                Err(e) if !missing(&e) => return Err(why(e)),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     async fn handle(&self, name: &str, create: bool) -> Result<Option<FileHandle>, String> {
         let options = js_sys::Object::new();
         js_sys::Reflect::set(&options, &"create".into(), &create.into()).map_err(why)?;
@@ -137,5 +222,33 @@ impl Backend for Opfs {
                 out.push((name, file.size() as u64));
             }
         }
+    }
+
+    /// A directory of its own per page, locked before it exists, so a sweep never removes one
+    /// a live page uses.
+    async fn staging(&self) -> Result<Opfs, String> {
+        let name = format!(
+            "{STAGING}{:016x}",
+            (js_sys::Math::random() * 2f64.powi(53)) as u64
+        );
+        hold(&lock_of(&name)).await?;
+        self.swept().await?;
+        let options = js_sys::Object::new();
+        js_sys::Reflect::set(&options, &"create".into(), &true.into()).map_err(why)?;
+        let dir = settled(self.dir.get_directory_handle(&name, &options)).await;
+        Ok(Opfs {
+            dir: dir.map_err(why)?,
+        })
+    }
+
+    async fn rename(&self, name: &str, to: &Opfs) -> Result<(), String> {
+        let handle = self
+            .handle(name, false)
+            .await?
+            .ok_or_else(|| format!("`{name}` is not staged"))?;
+        settled::<JsValue>(handle.move_into(&to.dir, name))
+            .await
+            .map_err(why)?;
+        Ok(())
     }
 }

@@ -3,6 +3,7 @@
 use sva_samples::Extent;
 
 use super::RenderConfig;
+use super::table::spill::Spill;
 use super::table::{Pulled, Table};
 use super::until::{Known, Until};
 use crate::cache::Recording;
@@ -25,6 +26,7 @@ pub(super) struct Driver {
     most_bytes: usize,
     pub(super) work: Work,
     pub(super) recording: Recording,
+    pub(super) spill: Option<Spill>,
 }
 
 pub struct Block {
@@ -94,6 +96,7 @@ impl Driver {
                 ..Work::default()
             },
             recording,
+            spill: None,
         }
     }
 
@@ -142,8 +145,12 @@ impl Driver {
                 .history(window, self.block as i64, &mut self.recording)?;
             self.priced(&history);
         }
+        let asked = self.spill.as_ref().map(|_| self.table.demand(window));
         let pulled = self.table.pull(window, &mut self.recording)?;
         self.priced(&pulled);
+        if let (Some(spill), Some(asked)) = (&mut self.spill, asked) {
+            spill.take(&self.table, &asked);
+        }
         self.work.samples += (to - from) as u64;
         self.at = to;
         self.settle(from, to);

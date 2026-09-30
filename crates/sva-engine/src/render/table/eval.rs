@@ -31,6 +31,7 @@ pub(crate) fn compute(
             Kind::Frames { .. } => frames(value, segment, done)?,
             Kind::Istft => istft(value, segment, done, profile)?,
             Kind::Spectrum(_) => spectrum(value, segment, profile)?,
+            Kind::Stored { .. } => unreachable!("a stored value holds all a reader asks"),
         };
         value.evaluated.push(segment);
     }
@@ -305,6 +306,7 @@ pub(crate) fn price(value: &Value, need: &Segments) -> u128 {
                     * sva_samples::collapse::transform_flops((*window).max(1))
             }
             Kind::Istft | Kind::Spectrum(_) => segment.len() as u128,
+            Kind::Stored { .. } => 0,
         })
         .sum()
 }
