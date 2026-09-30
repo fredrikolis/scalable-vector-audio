@@ -50,7 +50,7 @@ fn identity_of(
                 sink.hash(match slot {
                     SumSlot::Node(id) if *id == node => built(typing, node, open, named)?,
                     SumSlot::Node(id) => identity_of(typing, *id, open, named)?,
-                    SumSlot::Retired(held) => *held,
+                    SumSlot::Retired(held, _) => *held,
                 });
             }
             sink.finish()

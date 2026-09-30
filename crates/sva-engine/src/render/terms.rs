@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use sva_ast::{Address, Arg, BinOp, ByteSpan, Expr, Literal};
 use sva_formula::Hash;
+use sva_samples::Extent;
 
 use crate::typing::{SumSlot, Typing};
 
@@ -40,7 +41,7 @@ impl Term {
 #[derive(Clone)]
 enum Slot {
     Live(Term),
-    Retired(Hash),
+    Retired(Hash, Extent),
 }
 
 #[derive(Clone, Default)]
@@ -52,14 +53,14 @@ impl Terms {
     fn live(&self) -> impl Iterator<Item = &Term> {
         self.slots.iter().filter_map(|s| match s {
             Slot::Live(t) => Some(t),
-            Slot::Retired(_) => None,
+            Slot::Retired(..) => None,
         })
     }
 
     fn live_mut(&mut self) -> impl Iterator<Item = &mut Term> {
         self.slots.iter_mut().filter_map(|s| match s {
             Slot::Live(t) => Some(t),
-            Slot::Retired(_) => None,
+            Slot::Retired(..) => None,
         })
     }
 
@@ -152,37 +153,33 @@ impl Terms {
             .unwrap_or(Expr::Lit(Literal::Num(0.0)))
     }
 
-    /// `notes` named by its slots, a retired term by the identity it had.
+    /// `notes` named by its slots, a retired term by the identity and support it had.
     pub(super) fn name(&self, tys: &mut Typing) {
         let Some(notes) = tys.id(NOTES) else {
             return;
         };
         let slots = self.slots.iter().map(|s| match s {
             Slot::Live(t) => tys.id(&t.handle.node()).map(SumSlot::Node),
-            Slot::Retired(h) => Some(SumSlot::Retired(*h)),
+            Slot::Retired(h, support) => Some(SumSlot::Retired(*h, *support)),
         });
         if let Some(slots) = slots.collect::<Option<Vec<_>>>() {
             tys.name_sum(notes, slots);
         }
     }
 
-    /// Retires every term `gone` names, bar the last where all are, so what reads `notes`
-    /// keeps its shape, each as the identity `named` gives it. True where any went.
+    /// Retires every term `gone` names, each as the identity and support `named` gives it.
+    /// True where any went.
     pub(super) fn prune(
         &mut self,
         gone: &dyn Fn(Handle) -> bool,
-        named: &dyn Fn(Handle) -> Option<Hash>,
+        named: &dyn Fn(Handle) -> Option<(Hash, Extent)>,
     ) -> bool {
         let live = self.live().count();
-        let keep = match self.live().all(|t| gone(t.handle)) {
-            true => self.live().last().map(|t| t.handle),
-            false => None,
-        };
         self.slots = std::mem::take(&mut self.slots)
             .into_iter()
             .filter_map(|slot| match slot {
-                Slot::Live(t) if gone(t.handle) && Some(t.handle) != keep => {
-                    named(t.handle).map(Slot::Retired)
+                Slot::Live(t) if gone(t.handle) => {
+                    named(t.handle).map(|(identity, support)| Slot::Retired(identity, support))
                 }
                 other => Some(other),
             })

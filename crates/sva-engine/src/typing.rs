@@ -135,11 +135,12 @@ impl PartialEq for Numbers {
     }
 }
 
-/// One term of a stream's note sum: its node, or the identity it had before it ended.
+/// One term of a stream's note sum: its node, or the identity and support it had before it
+/// ended.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum SumSlot {
     Node(NodeId),
-    Retired(sva_formula::Hash),
+    Retired(sva_formula::Hash, sva_samples::Extent),
 }
 
 impl Typing {

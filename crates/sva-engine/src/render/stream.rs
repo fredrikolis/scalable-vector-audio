@@ -43,7 +43,7 @@ pub struct Stream {
     graph: Graph,
     expr: Expr,
     terms: Terms,
-    ends: BTreeMap<Handle, i64>,
+    supports: BTreeMap<Handle, Extent>,
     met: Met,
     generation: u64,
     live: bool,
@@ -128,7 +128,7 @@ impl Stream {
             graph: graph.clone(),
             expr: target.clone(),
             terms,
-            ends: BTreeMap::new(),
+            supports: BTreeMap::new(),
             met,
             generation: 0,
             live: false,
@@ -242,8 +242,8 @@ impl Stream {
         }
         let supports = Supports::new(&self.shell.tys, &self.shell.config.profile);
         let tys = &self.shell.tys;
-        let end = |handle: Handle| Some((handle, supports.of(tys.id(&handle.node())?).end));
-        self.ends = self.terms.handles().filter_map(end).collect();
+        let support = |handle: Handle| Some((handle, supports.of(tys.id(&handle.node())?)));
+        self.supports = self.terms.handles().filter_map(support).collect();
         self.generation += 1;
         self.prune();
     }
@@ -303,14 +303,17 @@ impl Stream {
             Some(_) => None,
             None => Some(i64::MIN),
         };
-        let ends = &self.ends;
+        let supports = &self.supports;
         let gone = |handle: Handle| {
-            let end = ends.get(&handle);
-            end.is_some_and(|end| asked.is_none_or(|from| *end <= from))
+            let support = supports.get(&handle);
+            support.is_some_and(|s| asked.is_none_or(|from| s.end <= from))
         };
         let named = |handle: Handle| {
             let id = tys.id(&handle.node())?;
-            crate::refs::identity(tys, id).ok()
+            Some((
+                crate::refs::identity(tys, id).ok()?,
+                *supports.get(&handle)?,
+            ))
         };
         if self.terms.prune(&gone, &named) {
             self.generation += 1;

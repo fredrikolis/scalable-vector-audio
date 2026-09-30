@@ -10,7 +10,7 @@ use crate::cast::Cast;
 use crate::render::bound::Tail;
 use crate::schedule;
 use crate::time::{Affine, Lattice, Q};
-use crate::typing::{Step, Typing, Value, When};
+use crate::typing::{Step, SumSlot, Typing, Value, When};
 
 /// Where each node can be nonzero, in samples of its own grid: outside its support a node is
 /// zero. A node is its own clock: a read's shift moves it by whole samples.
@@ -52,9 +52,20 @@ impl<'a> Supports<'a> {
             true => self.looped(id),
             false => self.pruned(id, self.fresh(id)),
         };
+        let found = self.retired(id).fold(found, Extent::hull);
         self.open.borrow_mut().remove(&id);
         self.held.borrow_mut().insert(id, found);
         found
+    }
+
+    /// Where a stream's note sum was nonzero through the terms it retired: a reader carrying
+    /// state from their past rings on as though they still sounded.
+    fn retired(&self, id: NodeId) -> impl Iterator<Item = Extent> {
+        let slots = self.tys.sum_slots(id).unwrap_or_default().iter();
+        slots.filter_map(|slot| match slot {
+            SumSlot::Retired(_, support) => Some(*support),
+            SumSlot::Node(_) => None,
+        })
     }
 
     /// The approved exception to exact supports: zero from a sample where its bound over every

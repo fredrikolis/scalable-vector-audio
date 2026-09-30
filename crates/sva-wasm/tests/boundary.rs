@@ -726,6 +726,12 @@ fn a_stream_crosses_block_by_block_and_a_replaced_term_releases_it() {
     let released = now(gated.replace(key, &format!("@gated(t, release={at})"), None));
     assert_eq!(released.ok(), Some(true));
     assert!(blocks(&gated, 2).iter().all(|v| *v == 0.0));
+    assert_eq!(
+        now(gated.remove(key)).ok(),
+        Some(false),
+        "a released term leaves the sum once the stream passes it"
+    );
+    let key = now(gated.add("@gated", None)).unwrap_or_else(refusal);
     assert_eq!(now(gated.remove(key)).ok(), Some(true));
     assert_eq!(
         now(gated.remove(key)).ok(),
@@ -739,8 +745,9 @@ fn a_stream_crosses_block_by_block_and_a_replaced_term_releases_it() {
     refused_as(now(gated.edit("@notes([0, 1s])")).err(), "validation_error");
 }
 
-/// What a page asks every second is cheap: `counts` crosses as whole numbers, and `stats`
-/// lists only a stream's latest lookups, however long it played, counting all it made.
+/// What a page asks every second is cheap: `counts` crosses as whole numbers, no blip left in
+/// the sum once each ended, and `stats` lists only a stream's latest lookups, however long it
+/// played, counting all it made.
 #[wasm_bindgen_test]
 fn a_stream_counts_what_it_did_and_lists_only_its_latest_lookups() {
     let mut held = page();
@@ -762,7 +769,7 @@ fn a_stream_counts_what_it_did_and_lists_only_its_latest_lookups() {
     let count = |name: &str| field(&counts, name).as_f64();
     assert_eq!(
         (count("dropped"), count("late"), count("terms")),
-        (Some(0.0), Some(0.0), Some(1.0)),
+        (Some(0.0), Some(0.0), Some(0.0)),
         "{}",
         as_text(&counts)
     );

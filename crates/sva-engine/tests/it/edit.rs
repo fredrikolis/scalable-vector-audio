@@ -554,7 +554,7 @@ const PAD: &str = "release = inf\ncrop(sin(2*pi*f0*t)*exp(-t/0.25), 0s, release)
     crop(exp(-release/0.25)*sin(2*pi*f0*t)*exp(-(t - release)/0.05), release, 3600s)\n";
 
 /// A player that strikes, lets up and removes each note once faded: `@notes` sums only the
-/// notes sounding and fading, one kept where none is, however many notes went before.
+/// notes sounding and fading, however many notes went before.
 #[test]
 fn a_removed_term_leaves_the_sum_once_the_stream_passes_its_cut() {
     let g = graph_of("pads", &[("pad", PAD)]);
@@ -597,7 +597,7 @@ fn a_removed_term_leaves_the_sum_once_the_stream_passes_its_cut() {
         }
         let terms = stream.borrow().counts().terms;
         assert!(
-            terms <= sounding.len().max(1),
+            terms <= sounding.len(),
             "{terms} terms after note {i}, {} sounding",
             sounding.len()
         );
@@ -686,4 +686,36 @@ fn a_term_placed_at_its_landing_plays_from_its_sample_zero_there() {
     let last = format!("@pad(t - {landed}sp, f0=300, release={}sp)", 2 * BLOCK);
     assert!(whole_g.define("final", expr(&last)));
     assert_eq!(heard, whole(&whole_g, "final", heard.len()), "{last}");
+}
+
+/// Once every note has faded past the stream, none is left in the sum; the echo over it
+/// rings on through an edit, and a note added after plays as the whole render of both.
+#[test]
+fn every_faded_note_leaves_the_sum() {
+    let g = composition(1.0);
+    let stream = opened(&g, "@echo(t, x=@notes)", None);
+    stream.borrow_mut().go_live();
+    let a = format!("@blip(t - {BLOCK}sp, f0=200)");
+    added(&stream, &g, &expr(&a), &NoStore)
+        .now()
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut heard = blocks(&stream, 20);
+    assert_eq!(stream.borrow().counts().terms, 0, "the note faded");
+    edit(&stream, &g, "@echo(t, x=@notes)");
+    heard.extend(blocks(&stream, 4));
+    let b = format!("@blip(t - {}sp, f0=300)", 24 * BLOCK);
+    added(&stream, &g, &expr(&b), &NoStore)
+        .now()
+        .unwrap_or_else(|e| panic!("{e}"));
+    heard.extend(blocks(&stream, 20));
+    assert_eq!(stream.borrow().counts().terms, 0, "both notes faded");
+    assert!(
+        stream.borrow().dropped().is_empty(),
+        "{:?}",
+        stream.borrow().dropped()
+    );
+
+    let mut whole_g = g.clone();
+    assert!(whole_g.define("final", expr(&format!("@echo(t, x={a} + {b})"))));
+    assert_eq!(heard, whole(&whole_g, "final", heard.len()));
 }
