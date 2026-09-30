@@ -446,3 +446,28 @@ fn a_note_added_under_a_reverb_keeps_its_tail_ringing() {
 fn a_note_added_under_parallel_combs_reads_each_comb_s_own_past() {
     added_under(&|x| format!("@hall(t, x=sample({x}))"));
 }
+
+/// A loop's delay lengthened mid-stream reads further back than its predecessor kept: the
+/// predecessor is not carried, so an exact stream steps the loop again from its start and
+/// plays the whole render of the edit, and a live one starts it silent, named dropped.
+#[test]
+fn a_loop_edited_to_read_further_back_than_it_kept_steps_again_or_starts_silent() {
+    let g = reverb();
+    let comb = |delay: f64| format!("@comb(t, x=sample(@blip(t, f0=200)), delay={delay})");
+    let k = 4 * BLOCK;
+    let mut exact = opened(&g, &comb(0.0297), None);
+    let mut heard = blocks(&mut exact, k / BLOCK);
+    edit(&mut exact, &g, &comb(0.0371));
+    heard.extend(blocks(&mut exact, 8));
+    let mut whole_g = g.clone();
+    assert!(whole_g.define("final", expr(&comb(0.0371))));
+    let want = whole(&whole_g, "final", heard.len());
+    assert_eq!(heard[k..], want[k..]);
+
+    let mut live = opened(&g, &comb(0.0297), None);
+    live.go_live();
+    blocks(&mut live, k / BLOCK);
+    edit(&mut live, &g, &comb(0.0371));
+    blocks(&mut live, 8);
+    assert_eq!(live.dropped().len(), 1, "{:?}", live.dropped());
+}

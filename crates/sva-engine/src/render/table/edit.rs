@@ -139,17 +139,19 @@ fn stateful(value: &Value) -> bool {
     matches!(&value.kind, Kind::Program(program) if program.stateful())
 }
 
-/// An alike value, stood no later than `now`, whose call sites take the new value's.
+/// An alike value, stood no later than `now`, holding as much of its past as the new value
+/// reads back, whose call sites take the new value's.
 fn continues(value: &Value, old: &Value, now: i64) -> bool {
     let (Kind::Program(program), Kind::Program(was)) = (&value.kind, &old.kind) else {
         return false;
     };
-    let (Some(machine), Some(end)) = (&was.machine, old.end()) else {
+    let (Some(machine), Some(end), Held::Run(tape)) = (&was.machine, old.end(), &old.held) else {
         return false;
     };
     let fresh = Machine::over(&program.spanned, end);
     old.width == value.width
         && end <= now
+        && tape.base() <= end.saturating_sub(program.own).max(tape.origin())
         && fresh.is_ok_and(|opened| opened.accepts(&machine.state()))
 }
 
