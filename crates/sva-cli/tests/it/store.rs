@@ -112,7 +112,7 @@ fn the_default_store_is_under_xdg_cache_home_and_none_keeps_none() {
             .status
             .success()
     );
-    assert!(on.join("sva").join("version").is_file());
+    assert!(on.join("sva").join("index").is_file());
     let args = ["@x", "--representation", "loudness", "--cache", "none"];
     assert!(run(&dir, &args, Some(&off)).status.success());
     assert!(!off.join("sva").exists(), "`none` keeps no store");

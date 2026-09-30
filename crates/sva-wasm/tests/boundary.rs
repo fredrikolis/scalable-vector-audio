@@ -928,12 +928,12 @@ fn fake_directory() -> JsValue {
     .unwrap_or_else(|_| unreachable!("the fake builds"))
 }
 
-/// Every value's file, beside the store's own version and recency files.
+/// Every value's file, beside the store's own index.
 fn values_in(dir: &JsValue) -> usize {
     js_sys::Array::from(&field(dir, "files"))
         .iter()
         .filter_map(|pair| js_sys::Array::from(&pair).get(0).as_string())
-        .filter(|name| name != "version" && name != "recency")
+        .filter(|name| name != "index")
         .count()
 }
 

@@ -1,14 +1,15 @@
 // Concern: node values on a backend, staged then committed: version, budget, eviction | Non-concern: the bytes' medium (a Backend) | IO: (key) -> Stored; samples -> staged; persist() -> commits
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
 
 use sva_formula::{Codomain, Hash};
 use sva_samples::{Buffer, Extent, Grid, Label};
 
+use super::index::{Index, key_of, name_of};
 use super::{codec, joined};
 
-/// A node's samples, and what a render needs to read them in place of typing the node.
+/// A node's samples, and what a render reads in place of typing it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stored {
     pub key: Hash,
@@ -19,11 +20,11 @@ pub struct Stored {
     pub rate: Option<u32>,
     pub grid: Grid,
     pub support: Extent,
-    /// Flops it and every value under it cost when computed.
+    /// Flops it and all under it cost.
     pub priced: u128,
     /// The most seconds a read under it moved to land on a sample.
     pub moved: f64,
-    /// A reader may take these samples in place of computing the node.
+    /// A reader may take these samples for the node.
     pub readable: bool,
 }
 
@@ -42,7 +43,7 @@ impl Stored {
     }
 }
 
-/// One node's value at one rate and profile, named by its source.
+/// Keyed by its source's identity, the rate and the profile.
 pub(crate) fn node_key(identity: Hash, rate: u32, profile: &sva_samples::Profile) -> Hash {
     super::mixed(
         identity,
@@ -64,18 +65,19 @@ fn version() -> String {
     format!("sva store format {STORE_FORMAT}")
 }
 
-pub const VERSION_NAME: &str = "version";
+pub const INDEX_NAME: &str = "index";
 
-const RECENCY_NAME: &str = "recency";
+/// Kept beside entries by an older format.
+const RETIRED: [&str; 2] = ["version", "recency"];
 
 const META: &str = "meta";
 
-/// Named byte storage. A `put` is whole or absent: no reader ever sees half of one.
+/// Named bytes. A `put` is whole or absent: no reader sees half of one.
 pub trait Backend: Sized {
     fn get(&self, name: &str) -> impl Future<Output = Result<Option<Vec<u8>>, String>>;
     fn put(&self, name: &str, bytes: &[u8]) -> impl Future<Output = Result<(), String>>;
     fn delete(&self, name: &str) -> impl Future<Output = Result<(), String>>;
-    /// Every name held, with its size in bytes.
+    /// Each name, with its size in bytes.
     fn list(&self) -> impl Future<Output = Result<Vec<(String, u64)>, String>>;
     /// An area beside these names that no other store writes and `list` never names.
     fn staging(&self) -> impl Future<Output = Result<Self, String>>;
@@ -83,7 +85,7 @@ pub trait Backend: Sized {
     fn rename(&self, name: &str, to: &Self) -> impl Future<Output = Result<(), String>>;
 }
 
-/// What a stream looks a node up in before typing it: a store, or nothing at all.
+/// A store, or nothing, that a stream looks a node up in.
 pub trait Through {
     fn lookup(&self, key: Hash) -> impl Future<Output = Option<Stored>>;
 }
@@ -102,63 +104,14 @@ impl Through for NoStore {
     }
 }
 
-#[derive(Default)]
-struct Index {
-    held: HashMap<Hash, (u64, u64)>,
-    clock: u64,
-    bytes: u64,
-}
-
-impl Index {
-    fn touch(&mut self, key: Hash, bytes: u64) {
-        self.clock += 1;
-        let at = self.clock;
-        if let Some((old, _)) = self.held.insert(key, (bytes, at)) {
-            self.bytes -= old;
-        }
-        self.bytes += bytes;
-    }
-
-    fn read(&mut self, key: Hash) {
-        self.clock += 1;
-        let at = self.clock;
-        if let Some((_, held)) = self.held.get_mut(&key) {
-            *held = at;
-        }
-    }
-
-    /// The directory's entries at their sizes; one another store committed is least recent.
-    fn sync(&mut self, listed: Vec<(Hash, u64)>) {
-        let held = std::mem::take(&mut self.held);
-        self.held = listed
-            .into_iter()
-            .map(|(key, bytes)| (key, (bytes, held.get(&key).map_or(0, |(_, at)| *at))))
-            .collect();
-        self.bytes = self.held.values().map(|(bytes, _)| bytes).sum();
-    }
-
-    fn forget(&mut self, key: Hash) {
-        if let Some((bytes, _)) = self.held.remove(&key) {
-            self.bytes -= bytes;
-        }
-    }
-
-    fn oldest_first(&self) -> Vec<Hash> {
-        let mut keys: Vec<(u64, Hash)> = self.held.iter().map(|(k, (_, at))| (*at, *k)).collect();
-        keys.sort_unstable();
-        keys.into_iter().map(|(_, k)| k).collect()
-    }
-}
-
 #[derive(Clone, Default)]
 struct Staged {
     chunks: Vec<String>,
     meta: bool,
 }
 
-/// Node values under their keys. A render reads through it and spills to the staging area;
-/// only `persist` changes the store, committing each staged value whole by rename and evicting
-/// the least recently used past the budget.
+/// Node values under their keys: a render stages, and only `persist` commits each value whole
+/// by rename, evicting the least recently used past the budget.
 pub struct Store<B> {
     backend: B,
     staging: B,
@@ -174,16 +127,6 @@ pub struct Persisted {
     pub evicted: usize,
 }
 
-fn name_of(key: Hash) -> String {
-    format!("{:016x}{:016x}", key.0, key.1)
-}
-
-fn key_of(name: &str) -> Option<Hash> {
-    let hex = |s: &str| u64::from_str_radix(s, 16).ok();
-    let valid = name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit());
-    valid.then(|| Some(Hash(hex(&name[..16])?, hex(&name[16..])?)))?
-}
-
 fn locked<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
     held.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -192,31 +135,22 @@ impl<B: Backend> Store<B> {
     /// A store of another format is emptied first.
     pub async fn open(backend: B, max_bytes: u64) -> Result<Store<B>, String> {
         let version = version();
-        if backend.get(VERSION_NAME).await?.as_deref() != Some(version.as_bytes()) {
-            for (name, _) in backend.list().await? {
-                if key_of(&name).is_some() || name == RECENCY_NAME || name == VERSION_NAME {
-                    backend.delete(&name).await?;
+        let found = backend.get(INDEX_NAME).await?;
+        let index = match found.and_then(|text| Index::read(&text, &version)) {
+            Some(index) => index,
+            None => {
+                for (name, _) in backend.list().await? {
+                    if key_of(&name).is_some() || RETIRED.contains(&name.as_str()) {
+                        backend.delete(&name).await?;
+                    }
                 }
+                let empty = Index::default();
+                backend
+                    .put(INDEX_NAME, empty.text(&version).as_bytes())
+                    .await?;
+                empty
             }
-            backend.put(VERSION_NAME, version.as_bytes()).await?;
-        }
-        let order = backend.get(RECENCY_NAME).await?.unwrap_or_default();
-        let order = String::from_utf8_lossy(&order);
-        let rank: HashMap<&str, usize> = order.lines().enumerate().map(|(k, n)| (n, k)).collect();
-        let mut held: Vec<(usize, Hash, u64)> = backend
-            .list()
-            .await?
-            .into_iter()
-            .filter_map(|(name, bytes)| {
-                let at = rank.get(name.as_str()).map_or(0, |k| k + 1);
-                Some((at, key_of(&name)?, bytes))
-            })
-            .collect();
-        held.sort_unstable();
-        let mut index = Index::default();
-        for (_, key, bytes) in held {
-            index.touch(key, bytes);
-        }
+        };
         let staging = backend.staging().await?;
         Ok(Store {
             backend,
@@ -240,7 +174,7 @@ impl<B: Backend> Store<B> {
         locked(&self.index).held.contains_key(&key)
     }
 
-    /// Staged first; the backend asked past the index, which misses another store's commits.
+    /// Staged first; past the index, the backend, for another store's commits.
     pub(crate) async fn lookup(&self, key: Hash) -> Option<Stored> {
         if let Some(staged) = self.staged_value(key).await {
             return Some(staged);
@@ -252,7 +186,7 @@ impl<B: Backend> Store<B> {
         let found = codec::read_entry(&bytes).filter(|found| found.key == key)?;
         let mut index = locked(&self.index);
         match index.held.contains_key(&key) {
-            true => index.read(key),
+            true => index.used(key),
             false => index.touch(key, bytes.len() as u64),
         }
         Some(found)
@@ -273,7 +207,6 @@ impl<B: Backend> Store<B> {
         Some(stored)
     }
 
-    /// One run of `key`'s samples, moved into the staging area.
     pub(crate) async fn stage(&self, key: Hash, samples: &Buffer) -> Result<(), String> {
         let n = {
             let mut written = locked(&self.written);
@@ -298,8 +231,8 @@ impl<B: Backend> Store<B> {
         Ok(())
     }
 
-    /// A staged value whose meta was never staged is dropped. Each key leaves the staging
-    /// record only once its files have, so a write that fails leaves every later one staged.
+    /// A value staged without its meta is dropped. A key leaves the staging record only once
+    /// its files have, so a failed write leaves every later one staged.
     pub async fn persist(&self) -> Result<Persisted, String> {
         let mut done = Persisted::default();
         let keys: Vec<Hash> = locked(&self.staged).keys().copied().collect();
@@ -331,16 +264,12 @@ impl<B: Backend> Store<B> {
             locked(&self.index).forget(key);
             done.evicted += 1;
         }
-        let order: String = locked(&self.index)
-            .oldest_first()
-            .into_iter()
-            .map(|key| name_of(key) + "\n")
-            .collect();
-        self.backend.put(RECENCY_NAME, order.as_bytes()).await?;
+        let text = locked(&self.index).text(&version());
+        self.backend.put(INDEX_NAME, text.as_bytes()).await?;
         Ok(done)
     }
 
-    /// `key`'s staged value moved whole into the store, and its size; none past the budget.
+    /// `key`'s staged value moved whole into the store, and its size; none past budget.
     async fn committed(&self, key: Hash, held: &Staged) -> Result<Option<u64>, String> {
         let whole = match held.meta {
             true => self.staged_value_of(key, held).await?,

@@ -1,32 +1,35 @@
 // Concern: proves a store answers a render or a stream from its root down, stages until persist, keeps a version and a budget | Non-concern: any real medium | IO: (composition, fake backend) -> hits
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use crate::fixtures::{graph_of, samples};
 use sva_ast::Graph;
 use sva_engine::{
-    Backend, CacheStats, Hash, NoStore, Outcome, Range, Render, RenderConfig, STORE_FORMAT, Store,
-    Stream, StreamConfig, VERSION_NAME, render, render_through,
+    Backend, CacheStats, Hash, INDEX_NAME, NoStore, Outcome, Range, Render, RenderConfig,
+    STORE_FORMAT, Store, Stream, StreamConfig, render, render_through,
 };
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
 
 /// One map of names; a staging area's names sit under its prefix, where `list` never looks.
-/// While the flag is up, every rename fails.
+/// While `refusing` is up, every rename fails. `reads` logs each read: the name and the bytes it
+/// answered.
 #[derive(Clone, Default)]
-struct Memory(
-    Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
-    String,
-    Arc<AtomicBool>,
-);
+struct Memory {
+    held: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    prefix: String,
+    refusing: Arc<AtomicBool>,
+    reads: Arc<Mutex<Vec<(String, usize)>>>,
+    lists: Arc<AtomicUsize>,
+}
 
 impl Memory {
     fn names(&self) -> Vec<String> {
-        self.0
+        self.held
             .lock()
             .unwrap()
             .keys()
@@ -36,34 +39,34 @@ impl Memory {
     }
 
     fn staged(&self) -> Vec<String> {
-        let held = self.0.lock().unwrap();
+        let held = self.held.lock().unwrap();
         held.keys().filter(|n| n.contains('/')).cloned().collect()
     }
 
     fn at(&self, name: &str) -> String {
-        format!("{}{name}", self.1)
+        format!("{}{name}", self.prefix)
     }
 
     fn entries(&self) -> Vec<String> {
-        let skip = [VERSION_NAME, "recency"];
-        self.names()
-            .into_iter()
-            .filter(|n| !skip.contains(&n.as_str()))
-            .collect()
+        let names = self.names().into_iter();
+        names.filter(|n| n != INDEX_NAME).collect()
     }
 
     fn bytes(&self, name: &str) -> Option<Vec<u8>> {
-        self.0.lock().unwrap().get(&self.at(name)).cloned()
+        self.held.lock().unwrap().get(&self.at(name)).cloned()
     }
 
     fn set(&self, name: &str, bytes: Vec<u8>) {
-        self.0.lock().unwrap().insert(self.at(name), bytes);
+        self.held.lock().unwrap().insert(self.at(name), bytes);
     }
 }
 
 impl Backend for Memory {
     async fn get(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
-        Ok(self.bytes(name))
+        let found = self.bytes(name);
+        let read = (self.at(name), found.as_ref().map_or(0, Vec::len));
+        self.reads.lock().unwrap().push(read);
+        Ok(found)
     }
 
     async fn put(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
@@ -72,30 +75,33 @@ impl Backend for Memory {
     }
 
     async fn delete(&self, name: &str) -> Result<(), String> {
-        self.0.lock().unwrap().remove(&self.at(name));
+        self.held.lock().unwrap().remove(&self.at(name));
         Ok(())
     }
 
     async fn list(&self) -> Result<Vec<(String, u64)>, String> {
-        let held = self.0.lock().unwrap();
+        self.lists.fetch_add(1, Ordering::Relaxed);
+        let held = self.held.lock().unwrap();
         Ok(held
             .iter()
-            .filter_map(|(n, b)| Some((n.strip_prefix(&self.1)?, b)))
+            .filter_map(|(n, b)| Some((n.strip_prefix(&self.prefix)?, b)))
             .filter(|(n, _)| !n.contains('/'))
             .map(|(n, b)| (n.to_string(), b.len() as u64))
             .collect())
     }
 
     async fn staging(&self) -> Result<Memory, String> {
-        let prefix = format!("{}staging/", self.1);
-        Ok(Memory(Arc::clone(&self.0), prefix, Arc::clone(&self.2)))
+        Ok(Memory {
+            prefix: format!("{}staging/", self.prefix),
+            ..self.clone()
+        })
     }
 
     async fn rename(&self, name: &str, to: &Memory) -> Result<(), String> {
-        if self.2.load(Ordering::Relaxed) {
+        if self.refusing.load(Ordering::Relaxed) {
             return Err("the medium refused".to_string());
         }
-        let mut held = self.0.lock().unwrap();
+        let mut held = self.held.lock().unwrap();
         let bytes = held.remove(&self.at(name)).ok_or("nothing staged")?;
         held.insert(to.at(name), bytes);
         Ok(())
@@ -197,24 +203,24 @@ fn an_edit_recomputes_only_the_edited_node_and_its_readers() {
 }
 
 #[test]
-fn a_store_another_version_wrote_is_wiped_on_open() {
+fn a_store_another_format_wrote_is_wiped_on_open() {
     let memory = Memory::default();
     let store = opened(&memory, u64::MAX);
     rendered(&two_voices("version", 330), &store);
     now(store.persist()).expect("persisted");
     assert!(!memory.entries().is_empty());
 
-    memory.set(VERSION_NAME, b"sva-engine 0.0.0 format 0".to_vec());
+    memory.set(INDEX_NAME, b"sva-engine 0.0.0 format 0\n".to_vec());
     let reopened = opened(&memory, u64::MAX);
-    assert_eq!(memory.names(), vec![VERSION_NAME.to_string()]);
-    assert_eq!(memory.bytes(VERSION_NAME), Some(format_only()));
+    assert_eq!(memory.names(), vec![INDEX_NAME.to_string()]);
+    assert_eq!(memory.bytes(INDEX_NAME), Some(format_only()));
     assert_eq!(reopened.bytes(), 0);
 }
 
-/// The version file as every build at this format writes it, whatever its engine version or
-/// sources: the bytes a store in a user's browser keeps across releases.
+/// The index as every build at this format writes it for an empty store, whatever its engine
+/// version or sources: the bytes a store in a user's browser keeps across releases.
 fn format_only() -> Vec<u8> {
-    format!("sva store format {STORE_FORMAT}").into_bytes()
+    format!("sva store format {STORE_FORMAT}\n").into_bytes()
 }
 
 /// A store another build wrote at this format, as a release that changes no stored value
@@ -226,13 +232,36 @@ fn a_store_survives_a_build_change_that_keeps_its_format() {
     let store = opened(&memory, u64::MAX);
     let cold = rendered(&graph, &store);
     now(store.persist()).expect("persisted");
-    memory.set(VERSION_NAME, format_only());
+    let index = memory.bytes(INDEX_NAME).expect("an index");
+    assert!(
+        index.starts_with(&format_only()),
+        "the version is the format alone"
+    );
     let entries = memory.entries();
 
     let warm = rendered(&graph, &opened(&memory, u64::MAX));
     assert_eq!(memory.entries(), entries, "nothing was wiped");
     assert_eq!(stats(&warm).computed(), 0, "{:?}", stats(&warm));
     assert_eq!(bits(&cold), bits(&warm));
+}
+
+/// Opening a store reads one file, its index, however many entries it holds, and lists none.
+#[test]
+fn opening_a_store_reads_its_index_alone() {
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    rendered(&two_voices("index", 330), &store);
+    now(store.persist()).expect("persisted");
+    assert!(memory.entries().len() > 1);
+    memory.reads.lock().unwrap().clear();
+    memory.lists.store(0, Ordering::Relaxed);
+
+    let reopened = opened(&memory, u64::MAX);
+    let reads = memory.reads.lock().unwrap().clone();
+    assert_eq!(reads.len(), 1, "{reads:?}");
+    assert_eq!(reads[0].0, INDEX_NAME);
+    assert_eq!(memory.lists.load(Ordering::Relaxed), 0);
+    assert!(reopened.bytes() > 0, "the index names every entry");
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
@@ -509,7 +538,7 @@ fn a_render_stages_what_it_drops_and_only_persist_moves_it_into_the_store() {
     let staged: u64 = memory
         .staged()
         .iter()
-        .map(|name| memory.0.lock().unwrap()[name].len() as u64)
+        .map(|name| memory.held.lock().unwrap()[name].len() as u64)
         .sum();
     assert!(staged > 0, "the render staged what it computed");
     assert!(
@@ -576,11 +605,11 @@ fn a_persist_that_fails_leaves_every_value_it_did_not_commit_staged() {
     let memory = Memory::default();
     let store = opened(&memory, u64::MAX);
     rendered(&two_voices("refused", 330), &store);
-    memory.2.store(true, Ordering::Relaxed);
+    memory.refusing.store(true, Ordering::Relaxed);
     assert!(now(store.persist()).is_err());
     assert!(memory.entries().is_empty());
 
-    memory.2.store(false, Ordering::Relaxed);
+    memory.refusing.store(false, Ordering::Relaxed);
     let done = now(store.persist()).expect("persisted");
     assert_eq!(done.written, 3, "x, y and master were still staged");
     assert_eq!(memory.entries().len(), 3);

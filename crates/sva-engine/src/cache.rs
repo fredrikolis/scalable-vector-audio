@@ -1,6 +1,7 @@
 // Concern: declares what a store holds under a content hash and how a value's key is built | Non-concern: what the store keeps and evicts (store.rs) | IO: (Hash) -> a payload
 
 mod codec;
+mod index;
 pub(crate) mod log;
 mod persist;
 mod stats;
@@ -8,8 +9,8 @@ mod store;
 
 pub(crate) use persist::node_key;
 pub use persist::{
-    Backend, DEFAULT_STORE_BYTES, NoStore, Persisted, STORE_FORMAT, Store, Stored, Through,
-    VERSION_NAME,
+    Backend, DEFAULT_STORE_BYTES, INDEX_NAME, NoStore, Persisted, STORE_FORMAT, Store, Stored,
+    Through,
 };
 pub(crate) use stats::Recording;
 pub use stats::{CacheStats, Lookup, Outcome};
