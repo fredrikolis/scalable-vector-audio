@@ -171,7 +171,8 @@ fn readable(tys: &Typing, id: NodeId) -> bool {
 }
 
 /// Each value a missed node computes, at its own node's key: the root whatever it is, any
-/// other where a reader may take its samples.
+/// other where a reader may take its samples. One that only moves a value stored or staged
+/// stands for that value's samples, holding none of its own.
 fn staging(
     held: &Render,
     keys: &BTreeMap<String, Hash>,
@@ -215,7 +216,30 @@ fn staging(
         };
         out.push((at, *key, meta));
     }
+    let staged: BTreeMap<usize, Hash> = out.iter().map(|(at, key, _)| (*at, *key)).collect();
+    for (at, _, meta) in &mut out {
+        let Some((moved, by)) = moves(table, *at) else {
+            continue;
+        };
+        let stored = table.values[moved].node.and_then(|id| {
+            let (file, shift) = found.stored.get(tys.name(id))?.file()?;
+            Some((file, by - shift))
+        });
+        let staged = staged.get(&moved).map(|key| (*key, by));
+        if let Some((of, by)) = staged.or(stored) {
+            *meta = meta.clone().referring(of, by);
+        }
+    }
     out
+}
+
+/// The value `at` only moves, through every move between, and by how much.
+fn moves(table: &Table, at: usize) -> Option<(usize, i64)> {
+    let (mut read, mut by) = table.values[at].moves()?;
+    while let Some((next, shift)) = table.values[read].moves() {
+        (read, by) = (next, by + shift);
+    }
+    Some((read, by))
 }
 
 /// What a value and every value under it cost over the range, and the most any moved a read.

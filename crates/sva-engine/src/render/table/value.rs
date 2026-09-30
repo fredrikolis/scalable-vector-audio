@@ -86,6 +86,39 @@ impl Value {
         }
     }
 
+    /// The value it only moves and by how much: an alias, or a crop with no fade of a read,
+    /// whose window holds all it may be nonzero over.
+    pub(crate) fn moves(&self) -> Option<(usize, i64)> {
+        let Kind::Program(program) = &self.kind else {
+            return None;
+        };
+        if let Some(moved) = self.alias() {
+            return Some(moved);
+        }
+        let NodeRenderer::Crop {
+            x,
+            window,
+            rise,
+            fall,
+            ..
+        } = &program.renderer
+        else {
+            return None;
+        };
+        let NodeRenderer::Read {
+            slot: sva_samples::Slot::Read(slot),
+            map,
+        } = x.as_ref()
+        else {
+            return None;
+        };
+        let held = Extent::new(window.0, window.1);
+        let bare = *rise <= 0.0 && *fall <= 0.0 && map.a == 1 && map.d == 1;
+        let within = held.intersect(self.support) == self.support;
+        (bare && within && program.start.is_none())
+            .then(|| (self.reads[slot.0 as usize], map.at(0)))
+    }
+
     pub(crate) fn covers(&self) -> Segments {
         let mut out = Segments::default();
         if let Kind::Stored(stored) = &self.kind {

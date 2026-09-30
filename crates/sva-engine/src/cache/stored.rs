@@ -24,20 +24,27 @@ pub struct Stored {
 pub(crate) enum Samples {
     #[default]
     None,
+    /// Its `n` is the file's `n - shift`.
     Entry {
         file: Hash,
         runs: Vec<Laid>,
+        shift: i64,
     },
-    Staged(Vec<(String, Extent)>),
+    Staged {
+        chunks: Vec<(String, Extent)>,
+        shift: i64,
+    },
+    /// As written: sample `n` is `key`'s sample `n + by`.
+    Of { key: Hash, by: i64 },
 }
 
-/// `at` is its first byte in the entry.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Laid {
     pub(crate) rate: u32,
     pub(crate) start: i64,
     pub(crate) width: usize,
     pub(crate) len: usize,
+    /// Its first byte.
     pub(crate) at: u64,
     pub(crate) sums: Vec<u64>,
 }
@@ -51,12 +58,33 @@ impl Laid {
 impl Stored {
     pub(crate) fn extents(&self) -> Vec<Extent> {
         let mut out: Vec<Extent> = match &self.samples {
-            Samples::None => Vec::new(),
-            Samples::Entry { runs, .. } => runs.iter().map(Laid::extent).collect(),
-            Samples::Staged(chunks) => chunks.iter().map(|(_, e)| *e).collect(),
+            Samples::None | Samples::Of { .. } => Vec::new(),
+            Samples::Entry { runs, shift, .. } => runs
+                .iter()
+                .map(|run| run.extent().shifted(*shift))
+                .collect(),
+            Samples::Staged { chunks, shift } => {
+                chunks.iter().map(|(_, e)| e.shifted(*shift)).collect()
+            }
         };
         out.sort_by_key(|e| e.start);
         out
+    }
+
+    pub(crate) fn referring(self, key: Hash, by: i64) -> Stored {
+        let samples = Samples::Of { key, by };
+        Stored { samples, ..self }
+    }
+
+    pub(crate) fn file(&self) -> Option<(Hash, i64)> {
+        match self.samples {
+            Samples::Entry { file, shift, .. } => Some((file, shift)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn refers(&self) -> bool {
+        matches!(self.samples, Samples::Of { .. })
     }
 
     pub(crate) fn holds(&self, over: Extent) -> bool {

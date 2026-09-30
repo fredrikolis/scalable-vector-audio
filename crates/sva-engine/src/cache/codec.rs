@@ -13,7 +13,9 @@ use super::stored::{Laid, Samples};
 const ENTRY: &[u8; 4] = b"SVAh";
 const STAGED_RUN: &[u8; 4] = b"SVAc";
 
-/// Samples per chunk of a run: what one checksum covers, and the least a read loads.
+/// Samples per chunk of a run: what one checksum covers, and the least a read loads. Samples
+/// stay f64, as the render computes them: a stored value is read by others, and f32 would
+/// change the bits of every value that reads it.
 pub(crate) const CHUNK: usize = 4096;
 
 /// A header's length, then the header, then each run's samples chunk by chunk, every plane of
@@ -70,6 +72,15 @@ fn header(stored: &Stored, laid: &[Laid]) -> Vec<u8> {
     out.extend_from_slice(&stored.priced.to_le_bytes());
     word(&mut out, stored.moved.to_bits());
     out.push(u8::from(stored.readable));
+    match stored.samples {
+        Samples::Of { key, by } => {
+            out.push(1);
+            word(&mut out, key.0);
+            word(&mut out, key.1);
+            word(&mut out, by as u64);
+        }
+        _ => out.push(0),
+    }
     word(&mut out, laid.len() as u64);
     for run in laid {
         word(&mut out, u64::from(run.rate));
@@ -120,6 +131,14 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Stored, u64)> {
         1 => true,
         _ => return None,
     };
+    let of = match r.byte()? {
+        0 => None,
+        1 => Some(Samples::Of {
+            key: Hash(r.word()?, r.word()?),
+            by: r.word()? as i64,
+        }),
+        _ => return None,
+    };
     let count = r.word()? as usize;
     let mut runs = Vec::new();
     let mut at = span as u64;
@@ -143,9 +162,15 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Stored, u64)> {
         });
         at = at.checked_add((width.checked_mul(len)?.checked_mul(8)?) as u64)?;
     }
-    let samples = match runs.is_empty() {
-        true => Samples::None,
-        false => Samples::Entry { file, runs },
+    let samples = match (of, runs.is_empty()) {
+        (Some(of), true) => of,
+        (Some(_), false) => return None,
+        (None, true) => Samples::None,
+        (None, false) => Samples::Entry {
+            file,
+            runs,
+            shift: 0,
+        },
     };
     let stored = Stored {
         key,

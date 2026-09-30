@@ -14,7 +14,7 @@ use super::{codec, joined};
 pub const DEFAULT_STORE_BYTES: u64 = 2 << 30;
 
 /// Bumped by, and only by, a change to a stored value's bytes.
-pub const STORE_FORMAT: u32 = 4;
+pub const STORE_FORMAT: u32 = 5;
 
 fn version() -> String {
     format!("sva store format {STORE_FORMAT}")
@@ -146,9 +146,26 @@ impl<B: Backend> Store<B> {
         locked(&self.index).held.contains_key(&key)
     }
 
-    /// Staged first; past the index, the backend, for another store's commits. Reads a header,
-    /// never a sample.
+    /// Reads headers, never a sample; one standing for another's samples reads that one's.
     pub(crate) async fn lookup(&self, key: Hash) -> Option<Stored> {
+        let found = self.written(key).await?;
+        let Samples::Of { key: of, by } = found.samples else {
+            return Some(found);
+        };
+        let samples = match self.written(of).await?.samples {
+            Samples::Entry { file, runs, .. } => Samples::Entry {
+                file,
+                runs,
+                shift: -by,
+            },
+            Samples::Staged { chunks, .. } => Samples::Staged { chunks, shift: -by },
+            _ => return None,
+        };
+        Some(Stored { samples, ..found })
+    }
+
+    /// Staged first; past the index, the backend, for another store's commits.
+    async fn written(&self, key: Hash) -> Option<Stored> {
         if let Some(staged) = self.staged_value(key).await {
             return Some(staged);
         }
@@ -176,17 +193,19 @@ impl<B: Backend> Store<B> {
         };
         let meta = self.staging.get(&staged_name(key, META)).await.ok()??;
         let (mut stored, _) = codec::read_head(&meta, key)?;
-        stored.samples = Samples::Staged(chunks);
+        if !stored.refers() {
+            stored.samples = Samples::Staged { chunks, shift: 0 };
+        }
         Some(stored)
     }
 
     pub(crate) async fn read(&self, stored: &Stored, over: Extent) -> Option<Vec<Buffer>> {
         let mut out = Vec::new();
         match &stored.samples {
-            Samples::None => {}
-            Samples::Entry { file, runs } => {
+            Samples::None | Samples::Of { .. } => {}
+            Samples::Entry { file, runs, shift } => {
                 for run in runs {
-                    let met = run.extent().intersect(over);
+                    let met = run.extent().intersect(over.shifted(-shift));
                     if met.is_empty() {
                         continue;
                     }
@@ -196,14 +215,18 @@ impl<B: Backend> Store<B> {
                     let to = to + usize::from((met.end - run.start) % chunk != 0);
                     let (at, len) = codec::span_of(run, from, to);
                     let bytes = self.backend.get_range(&name_of(*file), at, len).await;
-                    out.push(codec::read_chunks(&bytes.ok()??, run, from, to)?);
+                    let mut samples = codec::read_chunks(&bytes.ok()??, run, from, to)?;
+                    samples.start += shift;
+                    out.push(samples);
                 }
             }
-            Samples::Staged(chunks) => {
+            Samples::Staged { chunks, shift } => {
                 for (name, e) in chunks {
-                    if !e.intersect(over).is_empty() {
+                    if !e.intersect(over.shifted(-shift)).is_empty() {
                         let bytes = self.staging.get(name).await.ok()??;
-                        out.push(codec::read_chunk(&bytes)?);
+                        let mut samples = codec::read_chunk(&bytes)?;
+                        samples.start += shift;
+                        out.push(samples);
                     }
                 }
             }
@@ -279,7 +302,8 @@ impl<B: Backend> Store<B> {
             true => self.staged_value_of(key, held).await?,
             false => None,
         };
-        let Some((stored, runs)) = whole.filter(|(_, runs)| !runs.is_empty()) else {
+        let whole = whole.filter(|(stored, runs)| !runs.is_empty() || stored.refers());
+        let Some((stored, runs)) = whole else {
             return Ok(None);
         };
         let bytes = codec::entry(&stored, &runs);

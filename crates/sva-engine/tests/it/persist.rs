@@ -276,7 +276,7 @@ fn opening_a_store_reads_its_index_alone() {
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
-const PINNED: (u32, u64) = (4, 5105506435661358223);
+const PINNED: (u32, u64) = (5, 14712008217718854089);
 
 /// A change to how a value is encoded, or to what the engine computes for any construct here,
 /// fails this until `STORE_FORMAT` is bumped and the digest pinned again: rows, a filter, a
@@ -874,4 +874,103 @@ fn adding_a_note_the_store_lacks_reads_no_sample_bytes() {
             "{name}: {bytes} bytes read, past its {span}-byte header"
         );
     }
+}
+
+/// A target that only crops or moves a stored node is stored as that node's samples, not a
+/// copy of them: its entry is a header alone, and a warm render reads it back bit for bit.
+#[test]
+fn a_crop_of_a_stored_node_stores_no_copy() {
+    for (name, target) in [
+        ("crop-range", "@string(t, f0=261.63)\n"),
+        ("crop-call", "crop(@string(t, f0=261.63), 0.01s, 0.2s)\n"),
+    ] {
+        let graph = graph_of(name, &[("string", HELD), ("warm", target)]);
+        let memory = Memory::default();
+        let config = RenderConfig {
+            range: Range {
+                start: Some(0),
+                end: Some(2_000),
+            },
+            ..RenderConfig::at(RATE)
+        };
+        let store = opened(&memory, u64::MAX);
+        let cold = now(render_through(&graph, "warm", config.clone(), &store)).expect("a render");
+        now(store.persist()).expect("persisted");
+        let root = stats(&cold).lookups.iter().find(|l| l.node == "warm");
+        let root = root.expect("the root was looked up").key;
+        let entry = memory
+            .bytes(&format!("{:016x}{:016x}", root.0, root.1))
+            .expect("the root is stored");
+        assert_eq!(
+            entry.len(),
+            head_of(&entry),
+            "{name}: the root holds no sample"
+        );
+        assert_eq!(memory.entries().len(), 2, "{name}: the note and the root");
+
+        let store = opened(&memory, u64::MAX);
+        let warm = now(render_through(&graph, "warm", config, &store)).expect("a render");
+        assert_eq!(stats(&warm).computed(), 0, "{name}: {:?}", stats(&warm));
+        assert_eq!(bits(&warm), bits(&cold), "{name}");
+    }
+}
+
+fn entry_of(memory: &Memory, render: &Render, node: &str) -> Vec<u8> {
+    let key = stats(render).lookups.iter().find(|l| l.node == node);
+    let key = key.unwrap_or_else(|| panic!("`{node}` was looked up")).key;
+    let name = format!("{:016x}{:016x}", key.0, key.1);
+    memory
+        .bytes(&name)
+        .unwrap_or_else(|| panic!("`{node}` is stored"))
+}
+
+/// A crop of a moved note, and a crop of a target the store answers as another's samples,
+/// each refer to the note's samples themselves; a referral whose samples are gone is a miss,
+/// computed again bit for bit.
+#[test]
+fn a_referral_names_the_samples_themselves_and_misses_once_they_are_gone() {
+    let graph = graph_of(
+        "referrals",
+        &[
+            ("string", HELD),
+            ("moved", "@string(t - 80sp, f0=261.63)\n"),
+            ("warm", "@string(t, f0=261.63)\n"),
+            ("chain", "crop(@moved, 0.02s, 0.2s)\n"),
+            ("outer", "crop(@warm, 0s, 0.2s)\n"),
+        ],
+    );
+    let memory = Memory::default();
+    let config = RenderConfig {
+        range: Range {
+            start: Some(0),
+            end: Some(2_000),
+        },
+        ..RenderConfig::at(RATE)
+    };
+    let render = |target: &str| {
+        let store = opened(&memory, u64::MAX);
+        let done = now(render_through(&graph, target, config.clone(), &store)).expect("a render");
+        now(store.persist()).expect("persisted");
+        done
+    };
+    render("warm");
+    for target in ["chain", "outer"] {
+        let cold = render(target);
+        let entry = entry_of(&memory, &cold, target);
+        assert_eq!(entry.len(), head_of(&entry), "{target}: a header alone");
+        let warm = render(target);
+        assert_eq!(stats(&warm).computed(), 0, "{target}: {:?}", stats(&warm));
+        assert_eq!(bits(&warm), bits(&cold), "{target}");
+    }
+
+    let before = render("outer");
+    for name in memory.entries() {
+        let entry = memory.bytes(&name).expect("an entry");
+        if entry.len() > head_of(&entry) {
+            memory.held.lock().unwrap().remove(&name);
+        }
+    }
+    let after = render("outer");
+    assert!(stats(&after).computed() > 0, "{:?}", stats(&after));
+    assert_eq!(bits(&after), bits(&before));
 }

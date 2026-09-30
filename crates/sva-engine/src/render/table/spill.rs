@@ -36,7 +36,8 @@ impl Spill {
     }
 
     pub(crate) fn take(&mut self, table: &Table, asked: &[Need]) {
-        for staging in &mut self.staged {
+        let own = self.staged.iter_mut();
+        for staging in own.filter(|s| !s.meta.as_ref().is_some_and(Stored::refers)) {
             let fresh = asked[staging.at].hold.minus(&staging.taken);
             for e in fresh.iter() {
                 self.samples
