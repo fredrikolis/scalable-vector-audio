@@ -5,6 +5,7 @@ use sva_samples::Label;
 
 use super::store::{Kept, Stamp};
 use super::{Cache, CachePolicy, Entry, Expected, Payload, PayloadKind};
+use crate::recent::Recent;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -28,10 +29,12 @@ pub struct Lookup {
     pub store: Option<bool>,
 }
 
-/// Every lookup in order, and the store as the render left it.
+/// Every lookup in order, or a stream's latest, and the store as the render left it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CacheStats {
     pub lookups: Vec<Lookup>,
+    /// Lookups made before `lookups`.
+    pub shed: usize,
     pub bytes: u64,
     pub max_bytes: u64,
     pub entries: usize,
@@ -83,8 +86,8 @@ pub(crate) struct Recording {
     policy: CachePolicy,
     tree: u64,
     evictions: u64,
-    lookups: Vec<Lookup>,
-    reached: Vec<(i64, usize)>,
+    lookups: Recent<Lookup>,
+    reached: Option<Vec<(i64, usize)>>,
 }
 
 impl Recording {
@@ -95,28 +98,42 @@ impl Recording {
             policy: policy.unwrap_or_else(|| cache.map_or(CachePolicy::None, Cache::policy)),
             tree: cache.map_or(0, Cache::begin_tree),
             evictions: cache.map_or(0, Cache::evictions),
-            lookups: Vec::new(),
-            reached: Vec::new(),
+            lookups: Recent::keeping(usize::MAX),
+            reached: Some(Vec::new()),
+        }
+    }
+
+    pub(crate) fn latest(self, kept: usize) -> Recording {
+        Recording {
+            lookups: Recent::keeping(kept),
+            reached: None,
+            ..self
         }
     }
 
     pub(crate) fn found(&mut self, lookups: Vec<Lookup>) {
-        self.lookups.extend(lookups);
+        for lookup in lookups {
+            self.lookups.push(lookup);
+        }
     }
 
     pub(crate) fn reach(&mut self, at: i64) {
-        self.reached.push((at, self.lookups.len()));
+        let made = self.lookups.made();
+        if let Some(reached) = &mut self.reached {
+            reached.push((at, made));
+        }
     }
 
     pub(crate) fn stats(&self) -> CacheStats {
         let cache = self.cache.as_ref();
         CacheStats {
-            lookups: self.lookups.clone(),
+            lookups: self.lookups.iter().cloned().collect(),
+            shed: self.lookups.shed(),
             bytes: cache.map_or(0, Cache::bytes),
             max_bytes: cache.map_or(0, Cache::max_bytes),
             entries: cache.map_or(0, Cache::entries),
             evictions: cache.map_or(0, |c| c.evictions() - self.evictions),
-            reached: self.reached.clone(),
+            reached: self.reached.clone().unwrap_or_default(),
             typed: Vec::new(),
             planned: Vec::new(),
             unstaged: None,
@@ -153,8 +170,7 @@ impl Recording {
             kind,
             outcome,
             store: None,
-        });
-        self.lookups.len() - 1
+        })
     }
 
     /// Read unnoted; its value notes one lookup.

@@ -690,9 +690,25 @@ impl Stream {
         parse(&work_json(&self.inner.borrow().work()))
     }
 
+    /// Each list the latest; its `pagination.count` counts all.
     pub fn stats(&self) -> Result<JsValue, JsValue> {
         let inner = self.inner.borrow();
-        parse(&stream_stats_json(&inner.stats(), inner.dropped()))
+        let made = inner.counts().dropped;
+        parse(&stream_stats_json(&inner.stats(), (&inner.dropped(), made)))
+    }
+
+    /// `late`: edits landed past where issued.
+    pub fn counts(&self) -> Result<JsValue, JsValue> {
+        let counts = self.inner.borrow().counts();
+        let out = js_sys::Object::new();
+        for (key, value) in [
+            ("dropped", counts.dropped),
+            ("late", counts.late),
+            ("terms", counts.terms),
+        ] {
+            js_sys::Reflect::set(&out, &key.into(), &(value as f64).into())?;
+        }
+        Ok(out.into())
     }
 
     #[wasm_bindgen(getter)]

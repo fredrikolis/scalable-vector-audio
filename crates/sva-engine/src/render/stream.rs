@@ -17,10 +17,14 @@ use crate::cache::{Cache, CacheStats, Lookup, Outcome, Recording, Stored, Throug
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::flops::Work;
 use crate::instantiate;
+use crate::recent::Recent;
 use crate::schedule;
 use crate::typing;
 
 pub const STREAMED: &str = "streamed";
+
+/// The lookups, and the names started silent, a stream keeps of all it made.
+pub const LATEST: usize = 256;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct StreamConfig {
@@ -41,7 +45,16 @@ pub struct Stream {
     met: Met,
     generation: u64,
     live: bool,
-    dropped: Vec<String>,
+    dropped: Recent<String>,
+    late: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counts {
+    pub dropped: usize,
+    /// Edits that landed past the sample they were issued at.
+    pub late: usize,
+    pub terms: usize,
 }
 
 /// Each hit met: a header holds until its store moves the samples; any holder may fill a miss.
@@ -100,7 +113,7 @@ impl Stream {
         }
         let next = ahead(found.range.start, render.rate);
         through::load(&mut found.table, store, next, &BTreeSet::new()).await;
-        let mut recording = Recording::over(cache, config.render.cache_policy);
+        let mut recording = Recording::over(cache, config.render.cache_policy).latest(LATEST);
         recording.found(found.hits);
         let driver = Driver::new(
             found.table,
@@ -116,7 +129,8 @@ impl Stream {
             met,
             generation: 0,
             live: false,
-            dropped: Vec::new(),
+            dropped: Recent::keeping(LATEST),
+            late: 0,
             driver,
             config,
             shell: found.shell,
@@ -184,7 +198,12 @@ impl Stream {
 
     /// Values of the same identity carry on; a changed stateful one takes its predecessor's
     /// state; the rest start now.
-    fn apply(&mut self, prospect: Prospect, shelled: Shelled, fetched: &[(Hash, Vec<Buffer>)]) {
+    fn apply(
+        &mut self,
+        (prospect, issued): (Prospect, i64),
+        shelled: Shelled,
+        fetched: &[(Hash, Vec<Buffer>)],
+    ) {
         let Shelled {
             shell,
             range,
@@ -196,8 +215,10 @@ impl Stream {
         for (key, samples) in fetched {
             table.took(*key, samples);
         }
-        self.dropped
-            .extend(dropped.into_iter().map(|at| table.values[at].name.clone()));
+        for at in dropped {
+            self.dropped.push(table.values[at].name.clone());
+        }
+        self.late += usize::from(self.driver.at > issued);
         self.driver.replace(table, range.end);
         self.driver.recording.found(hits);
         self.shell = shell;
@@ -237,9 +258,17 @@ impl Stream {
         self.live = true;
     }
 
-    /// Each node a live edit started silent.
-    pub fn dropped(&self) -> &[String] {
-        &self.dropped
+    /// The latest nodes a live edit started silent, of `counts().dropped`.
+    pub fn dropped(&self) -> Vec<&str> {
+        self.dropped.iter().map(String::as_str).collect()
+    }
+
+    pub fn counts(&self) -> Counts {
+        Counts {
+            dropped: self.dropped.made(),
+            late: self.late,
+            terms: self.terms.count(),
+        }
     }
 
     /// Retires every term whose value no later block reads.
@@ -269,11 +298,6 @@ impl Stream {
             .id(node)
             .and_then(|id| table.of(id))
             .map_or(Vec::new(), |at| table.values[at].evaluated.clone())
-    }
-
-    /// The terms `@notes` sums, sounding or cut but not yet passed.
-    pub fn terms(&self) -> usize {
-        self.terms.count()
     }
 
     /// The values its table holds, which an edit's cost grows with.
@@ -348,6 +372,7 @@ pub async fn change<E: From<EngineError>>(
     let mut local = Met::default();
     let mut fetched: Vec<(Hash, Vec<Buffer>)> = Vec::new();
     let (mut unread, mut asked) = (BTreeSet::new(), Vec::<(Hash, Extent)>::new());
+    let issued = stream.borrow().driver.at;
     loop {
         let change = build(&stream.borrow())?;
         let mut prospect = match stream.borrow().prospect(change) {
@@ -381,7 +406,9 @@ pub async fn change<E: From<EngineError>>(
             };
             if wants.is_empty() {
                 let answer = prospect.answer;
-                stream.borrow_mut().apply(prospect, shelled, &fetched);
+                stream
+                    .borrow_mut()
+                    .apply((prospect, issued), shelled, &fetched);
                 return Ok(answer);
             }
             for (stored, over) in wants {

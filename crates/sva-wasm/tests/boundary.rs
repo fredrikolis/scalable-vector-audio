@@ -736,6 +736,42 @@ fn a_stream_crosses_block_by_block_and_a_replaced_term_releases_it() {
     refused_as(now(gated.edit("@notes([0, 1s])")).err(), "validation_error");
 }
 
+/// What a page asks every second is cheap: `counts` crosses as whole numbers, and `stats`
+/// lists only a stream's latest lookups, however long it played, counting all it made.
+#[wasm_bindgen_test]
+fn a_stream_counts_what_it_did_and_lists_only_its_latest_lookups() {
+    let mut held = page();
+    held.insert(
+        "blip",
+        "crop(lowpass(sample(sin(2*pi*f0*t)), cutoff=2000, q=0.7), 0s, 0.02s)\n",
+    );
+    let stream = now(held.stream("@notes", BLOCK, options(&[])))
+        .unwrap_or_else(|e| unreachable!("it streams: {}", as_text(&e)));
+    for i in 0..300 {
+        let at = stream.position();
+        let term = format!("@blip(t - {at}sp, f0={})", 100 + i);
+        now(stream.add(&term)).unwrap_or_else(|e| unreachable!("added: {}", as_text(&e)));
+        blocks(&stream, 1);
+    }
+    let counts = stream
+        .counts()
+        .unwrap_or_else(|_| unreachable!("counts answer"));
+    let count = |name: &str| field(&counts, name).as_f64();
+    assert_eq!(
+        (count("dropped"), count("late"), count("terms")),
+        (Some(0.0), Some(0.0), Some(1.0)),
+        "{}",
+        as_text(&counts)
+    );
+    let stats = stream
+        .stats()
+        .unwrap_or_else(|_| unreachable!("stats answer"));
+    let listed = items(&stats, "lookups").length() as f64;
+    let made = field(&field(&field(&stats, "lookups"), "pagination"), "count");
+    assert!(listed <= 256.0, "{listed} lookups listed");
+    assert!(made.as_f64() > Some(listed), "{}", as_text(&made));
+}
+
 /// Component `c` of a block starts at `c * block` in the array a page hands over.
 #[wasm_bindgen_test]
 fn a_wide_stream_lays_each_component_a_block_apart() {
@@ -1093,6 +1129,15 @@ async fn a_stream_plays_on_while_its_edits_await_the_store() {
         .await
         .unwrap_or_else(|e| unreachable!("added: {}", as_text(&e)));
     assert_ne!(first, second);
+    let counts = stream
+        .counts()
+        .unwrap_or_else(|_| unreachable!("counts answer"));
+    assert_eq!(
+        field(&counts, "late").as_f64(),
+        Some(2.0),
+        "both landed past where they were issued: {}",
+        as_text(&counts)
+    );
     assert!(
         blocks(&stream, 4).iter().any(|v| *v != 0.0),
         "the terms landed"

@@ -36,7 +36,7 @@ pub fn num(v: f64) -> String {
 
 /// The `cli` standard's collection: `count` is the whole of it, `has_more` that `items` is
 /// not, and `next_cursor` the interval start the caller reads the rest from.
-pub fn collection(
+fn collection(
     items: impl IntoIterator<Item = String>,
     held: usize,
     next: Option<String>,
@@ -48,12 +48,17 @@ pub fn collection(
     format!(
         "{{ \"items\": [{}], \"pagination\": {{ \"count\": {held}, \"has_more\": {}, \"next_cursor\": {cursor} }} }}",
         written.join(", "),
-        next.is_some()
+        written.len() < held
     )
 }
 
 pub fn list<T>(items: &[T], f: impl Fn(&T) -> String) -> String {
     collection(items.iter().map(f), items.len(), None)
+}
+
+/// The latest `items` of a log that made `made`.
+pub fn latest<T>(items: &[T], made: usize, f: impl Fn(&T) -> String) -> String {
+    collection(items.iter().map(f), made, None)
 }
 
 /// `items` holds the first `shown`; `resumes_at` names the second the next one begins at.

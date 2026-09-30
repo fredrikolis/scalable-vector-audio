@@ -964,7 +964,15 @@ fn late(graph: &Graph, live: bool, store: &impl sva_engine::Through) -> (Vec<u64
             .expect("a block");
     }
     now(added(&stream, graph, &term(LATE), store)).expect("added");
-    (played(&stream), stream.borrow().dropped().to_vec())
+    (
+        played(&stream),
+        stream
+            .borrow()
+            .dropped()
+            .iter()
+            .map(|n| n.to_string())
+            .collect(),
+    )
 }
 
 /// A live stream adding a held note after it began plays the stored samples, then drops what

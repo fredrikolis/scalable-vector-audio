@@ -8,7 +8,7 @@ use sva_engine::{
     Outcome, Output, PayloadKind, Source, SpectralSum, Spectrum, StereoFrame, StereoImage, Work,
 };
 
-use crate::json::{NONE, capped, escape, list, num};
+use crate::json::{NONE, capped, escape, latest, list, num};
 
 /// Past this a caller reading stdout wants a later interval start, not a wall of JSON.
 pub const SAMPLE_LIMIT: usize = 4096;
@@ -487,14 +487,16 @@ pub fn stats_json(stats: &CacheStats) -> String {
     stats_with(stats, "")
 }
 
-/// `stats_json`, and `dropped`: each node a live stream's edits started silent.
-pub fn stream_stats_json(stats: &CacheStats, dropped: &[String]) -> String {
-    let dropped = list(dropped, |name| format!("\"{}\"", escape(name)));
+/// `stats_json` over a stream's latest lookups, and `dropped`: the latest nodes its live edits
+/// started silent. Each list's `pagination.count` counts all it made.
+pub fn stream_stats_json(stats: &CacheStats, (dropped, made): (&[&str], usize)) -> String {
+    let dropped = latest(dropped, made, |name| format!("\"{}\"", escape(name)));
     stats_with(stats, &format!(", \"dropped\": {dropped}"))
 }
 
 fn stats_with(stats: &CacheStats, extra: &str) -> String {
-    let lookups = list(&stats.lookups, |l| {
+    let made = stats.shed + stats.lookups.len();
+    let lookups = latest(&stats.lookups, made, |l| {
         let outcome = match l.outcome {
             Outcome::Hit => "hit",
             Outcome::ComputedStored => "computed_stored",

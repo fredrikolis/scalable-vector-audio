@@ -273,7 +273,11 @@ fn a_term_removed_while_it_sounds_is_cut_where_the_stream_stands() {
         Some(false),
         "a removed handle"
     );
-    assert_eq!(stream.borrow().terms(), 1, "the cut term left the sum");
+    assert_eq!(
+        stream.borrow().counts().terms,
+        1,
+        "the cut term left the sum"
+    );
     heard.extend(blocks(&stream, 30));
 
     let cut = (6 * BLOCK) as f64 / f64::from(RATE);
@@ -592,7 +596,7 @@ fn a_removed_term_leaves_the_sum_once_the_stream_passes_its_cut() {
             let removed = removed(&stream, gone, &NoStore).now().ok();
             assert_eq!(removed, Some(true), "note {i}'s predecessor");
         }
-        let terms = stream.borrow().terms();
+        let terms = stream.borrow().counts().terms;
         assert!(
             terms <= sounding.len().max(1),
             "{terms} terms after note {i}, {} sounding",
