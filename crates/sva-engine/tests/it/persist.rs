@@ -277,6 +277,40 @@ fn past_its_budget_the_store_evicts_the_least_recently_used_first() {
     assert!(all_held(&memory, &c), "just written, so kept");
 }
 
+/// Two stores over one directory, as two workers of a page open it: what one persists, the
+/// other, opened before, answers from.
+#[test]
+fn a_store_answers_what_another_over_its_directory_persisted_after_it_opened() {
+    let memory = Memory::default();
+    let graph = two_voices("shared", 330);
+    let (first, second) = (opened(&memory, u64::MAX), opened(&memory, u64::MAX));
+    rendered(&graph, &first);
+    now(first.persist()).expect("persisted");
+    let warm = rendered(&graph, &second);
+    assert_eq!(stats(&warm).computed(), 0, "{:?}", stats(&warm));
+}
+
+#[test]
+fn stores_sharing_a_directory_keep_one_budget_over_what_both_persisted() {
+    let (_, one) = persisted_tone(&Memory::default(), u64::MAX, 100);
+    let memory = Memory::default();
+    let (first, second) = (opened(&memory, one * 3 / 2), opened(&memory, one * 3 / 2));
+    rendered(&tone("tone-100", 100), &first);
+    now(first.persist()).expect("persisted");
+    rendered(&tone("tone-200", 200), &second);
+    now(second.persist()).expect("persisted");
+    let held: u64 = memory
+        .entries()
+        .iter()
+        .map(|n| memory.bytes(n).map_or(0, |b| b.len() as u64))
+        .sum();
+    assert!(
+        held <= one * 3 / 2,
+        "{held} bytes held past a budget of {}",
+        one * 3 / 2
+    );
+}
+
 fn rendered_over(graph: &Graph, store: &Store<Memory>, seconds: f64) -> Render {
     now(render_through(
         graph,

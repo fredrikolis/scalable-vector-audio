@@ -110,6 +110,16 @@ impl Index {
         }
     }
 
+    /// The directory's entries at their sizes; one another store committed is least recent.
+    fn sync(&mut self, listed: Vec<(Hash, u64)>) {
+        let held = std::mem::take(&mut self.held);
+        self.held = listed
+            .into_iter()
+            .map(|(key, bytes)| (key, (bytes, held.get(&key).map_or(0, |(_, at)| *at))))
+            .collect();
+        self.bytes = self.held.values().map(|(bytes, _)| bytes).sum();
+    }
+
     fn forget(&mut self, key: Hash) {
         if let Some((bytes, _)) = self.held.remove(&key) {
             self.bytes -= bytes;
@@ -213,17 +223,21 @@ impl<B: Backend> Store<B> {
         locked(&self.index).held.contains_key(&key)
     }
 
-    /// Staged first. An entry that does not decode is a miss, left for `persist` to replace.
+    /// Staged first; the backend asked past the index, which misses another store's commits.
     pub(crate) async fn lookup(&self, key: Hash) -> Option<Stored> {
         if let Some(staged) = self.staged_value(key).await {
             return Some(staged);
         }
-        if !self.holds(key) {
+        let Some(bytes) = self.backend.get(&name_of(key)).await.ok()? else {
+            locked(&self.index).forget(key);
             return None;
-        }
-        let bytes = self.backend.get(&name_of(key)).await.ok()??;
+        };
         let found = codec::read_entry(&bytes).filter(|found| found.key == key)?;
-        locked(&self.index).read(key);
+        let mut index = locked(&self.index);
+        match index.held.contains_key(&key) {
+            true => index.read(key),
+            false => index.touch(key, bytes.len() as u64),
+        }
         Some(found)
     }
 
@@ -286,6 +300,11 @@ impl<B: Backend> Store<B> {
             self.staging.delete(&staged_name(key, META)).await?;
             locked(&self.staged).remove(&key);
         }
+        let listed = self.backend.list().await?;
+        let listed = listed
+            .into_iter()
+            .filter_map(|(name, bytes)| Some((key_of(&name)?, bytes)));
+        locked(&self.index).sync(listed.collect());
         let oldest = locked(&self.index).oldest_first();
         for key in oldest {
             if self.bytes() <= self.max_bytes {
