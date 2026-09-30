@@ -1,4 +1,4 @@
-// Concern: the JS surface — a composition a page fills node by node, renders, streams, persists | Non-concern: the pipeline (sva-core), the store's medium | IO: (path, text) -> samples, blocks, stores
+// Concern: the JS surface — a composition a page fills node by node, renders, warms, streams, persists | Non-concern: the pipeline, the store's medium | IO: (path, text) -> samples, blocks, stores
 
 //! A page holds no directory: nodes arrive one at a time, so a composition is BUILT rather
 //! than read. A refusal crosses as a thrown `Error`: `name` is the CLI's error code,
@@ -12,8 +12,8 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
 
 use sva_core::{
-    Asked, CliError, Diagnostic, Job, Printed, Rendered, Report, SAMPLE_LIMIT, error_envelope,
-    execute, execute_through, query_data, stats_json, stream_stats_json, work_json,
+    Asked, CliError, Diagnostic, Job, Printed, Rendered, Report, Representation, SAMPLE_LIMIT,
+    error_envelope, execute, execute_through, query_data, stats_json, stream_stats_json, work_json,
 };
 use sva_engine::{
     Buffer, Cache, CachePolicy, CacheStats, DEFAULT_STORE_BYTES, Extent, Handle, Hash, PrunePolicy,
@@ -70,6 +70,7 @@ struct Options {
     volatile: Vec<String>,
     cache: Option<CachePolicy>,
     live: bool,
+    readings: Vec<String>,
 }
 
 /// `keys` are the options this call reads; any other is refused by name.
@@ -105,25 +106,31 @@ fn options_of(options: &JsValue, keys: &[&str]) -> Result<Options, JsValue> {
                     .as_bool()
                     .ok_or_else(|| refuse("`live` is not a boolean".into(), "pass true or false"))?
             }
-            _ => {
-                let names = value.dyn_ref::<js_sys::Array>().ok_or_else(|| {
-                    refuse(
-                        "`volatile` is not an array".into(),
-                        "pass an array of names",
-                    )
-                })?;
-                for name in names.iter() {
-                    held.volatile.push(name.as_string().ok_or_else(|| {
-                        refuse(
-                            "`volatile` holds something that is not a name".into(),
-                            "pass an array of names",
-                        )
-                    })?);
-                }
-            }
+            "readings" => held.readings = names(&key, &value)?,
+            _ => held.volatile = names(&key, &value)?,
         }
     }
     Ok(held)
+}
+
+fn names(key: &str, value: &JsValue) -> Result<Vec<String>, JsValue> {
+    let names = value.dyn_ref::<js_sys::Array>().ok_or_else(|| {
+        refuse(
+            format!("`{key}` is not an array"),
+            "pass an array of strings",
+        )
+    })?;
+    names
+        .iter()
+        .map(|name| {
+            name.as_string().ok_or_else(|| {
+                refuse(
+                    format!("`{key}` holds something that is not a string"),
+                    "pass an array of strings",
+                )
+            })
+        })
+        .collect()
 }
 
 fn whole<N: TryFrom<u64>>(key: &str, value: &JsValue) -> Result<N, JsValue> {
@@ -294,6 +301,46 @@ impl Composition {
         rendered
             .map(|inner| Rendering { inner, asked })
             .map_err(|e| thrown(&e))
+    }
+
+    /// `target` staged as `render` would, until `persist`; `{ stats, representations }`,
+    /// the latter `representations()` for `readings`, null unasked. Options: `rate`, `bits`,
+    /// `flop_budget`, `readings`.
+    pub async fn warm(&self, target: &str, options: JsValue) -> Result<JsValue, JsValue> {
+        let options = options_of(&options, &["rate", "bits", "flop_budget", "readings"])?;
+        let Some(store) = self.persistent.0.as_deref() else {
+            return Err(refuse(
+                "`warm` stages into a store, and this composition was opened over none".into(),
+                "open it with `Composition.open(name, dir)` over a directory",
+            ));
+        };
+        let asked = representations_of(&options.readings)?;
+        if let Some(samples) = asked
+            .iter()
+            .find(|asked| asked.representation == Representation::Samples)
+        {
+            return Err(refuse(
+                format!("`{}` reads samples, and `warm` answers none", samples.name),
+                "render the target to read its samples",
+            ));
+        }
+        let job = Job {
+            rate: options.rate,
+            bits: options.bits,
+            flop_budget: options.flop_budget,
+            asked: &asked,
+            ..Job::over(&self.inner, target)
+        };
+        let warmed = sva_core::warm(job, store).await.map_err(|e| thrown(&e))?;
+        let representations = match &warmed.readings {
+            Some(read) => answered(read, &asked)?,
+            None => JsValue::NULL,
+        };
+        let out = js_sys::Object::new();
+        let set = |key: &str, value: &JsValue| js_sys::Reflect::set(&out, &key.into(), value);
+        set("stats", &parse(&stats_json(&warmed.stats))?)?;
+        set("representations", &representations)?;
+        Ok(out.into())
     }
 
     /// `target` block by block, through this store. `options`: `rate`, `bits`, `until`, `cache`,
@@ -475,38 +522,40 @@ impl Rendering {
     /// The object `sva-cli render` puts under `data`, one reading per representation asked,
     /// arrays capped as it caps.
     pub fn representations(&self) -> Result<JsValue, JsValue> {
-        let mut answers = Vec::with_capacity(self.asked.len());
-        for asked in &self.asked {
-            let node = asked.node.as_deref().unwrap_or(&self.inner.target);
-            let answer = self
-                .inner
-                .answer(node, asked.representation)
-                .map_err(|e| thrown(&e))?;
-            answers.push(Printed {
-                name: asked.name.clone(),
-                answer,
-                skim: asked.skim,
-            });
-        }
-        let rate = self.inner.config.rate;
-        let interval = self
-            .inner
-            .render
-            .range
-            .map(|r| (r.start_secs(rate), r.end as f64 / f64::from(rate)));
-        parse(&query_data(&Report {
-            target: &self.inner.expression,
-            rate,
-            bits: Some(self.inner.config.profile.precision_bits),
-            interval,
-            profile: self.inner.config.profile.name,
-            label: self.inner.label(),
-            written: &[],
-            answers: &answers,
-            analyses: &[],
-            limit: Some(SAMPLE_LIMIT),
-        }))
+        answered(&self.inner, &self.asked)
     }
+}
+
+fn answered(rendered: &Rendered, asked: &[Asked]) -> Result<JsValue, JsValue> {
+    let mut answers = Vec::with_capacity(asked.len());
+    for asked in asked {
+        let node = asked.node.as_deref().unwrap_or(&rendered.target);
+        let answer = rendered
+            .answer(node, asked.representation)
+            .map_err(|e| thrown(&e))?;
+        answers.push(Printed {
+            name: asked.name.clone(),
+            answer,
+            skim: asked.skim,
+        });
+    }
+    let rate = rendered.config.rate;
+    let interval = rendered
+        .render
+        .range
+        .map(|r| (r.start_secs(rate), r.end as f64 / f64::from(rate)));
+    parse(&query_data(&Report {
+        target: &rendered.expression,
+        rate,
+        bits: Some(rendered.config.profile.precision_bits),
+        interval,
+        profile: rendered.config.profile.name,
+        label: rendered.label(),
+        written: &[],
+        answers: &answers,
+        analyses: &[],
+        limit: Some(SAMPLE_LIMIT),
+    }))
 }
 
 /// A target block by block, reading `@notes` as the sum of its terms, as `@hall(t, x=@notes)`.

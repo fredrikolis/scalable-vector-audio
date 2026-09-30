@@ -8,7 +8,7 @@
 use std::task::{Context, Poll, Waker};
 use sva_wasm::{Composition, Rendering, Stream, builtins, outline};
 
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::wasm_bindgen_test;
 
 /// Through js-sys, not a local `extern "C"`: an import naming `JSON.parse` a second time inside
@@ -1082,4 +1082,67 @@ async fn a_call_on_a_stream_mid_edit_is_refused() {
     add.await
         .unwrap_or_else(|e| unreachable!("added: {}", as_text(&e)));
     assert_eq!(stream.next(&mut out).ok(), Some(BLOCK));
+}
+
+async fn warmed(held: &Composition, readings: &[&str]) -> JsValue {
+    let readings: js_sys::Array = readings.iter().map(|r| JsValue::from_str(r)).collect();
+    held.warm(
+        "@master([0, 0.1s])",
+        options(&[("readings", readings.into())]),
+    )
+    .await
+    .unwrap_or_else(|e| unreachable!("it warms: {}", as_text(&e)))
+}
+
+/// A warm answers stats and, only where asked, readings: never a sample. Persisted, the target
+/// renders from the store alone; warmed again, nothing is computed.
+#[wasm_bindgen_test]
+async fn a_warm_answers_no_samples_and_readings_only_when_asked() {
+    let dir = fake_directory();
+    let held = over_store(&dir).await;
+    let bare = warmed(&held, &[]).await;
+    let keys: Vec<String> = js_sys::Object::keys(bare.unchecked_ref::<js_sys::Object>())
+        .iter()
+        .filter_map(|key| key.as_string())
+        .collect();
+    assert_eq!(keys, ["stats", "representations"], "{}", as_text(&bare));
+    assert!(field(&bare, "representations").is_null());
+    assert!(field(&field(&bare, "stats"), "computed").as_f64() > Some(0.0));
+    assert_eq!(values_in(&dir), 0, "a warm writes nothing");
+    held.persist()
+        .await
+        .unwrap_or_else(|_| unreachable!("persisted"));
+
+    let reader = over_store(&dir).await;
+    let hit = stored_render(&reader).await;
+    assert_eq!(
+        field(&hit, "computed").as_f64(),
+        Some(0.0),
+        "{}",
+        as_text(&hit)
+    );
+    let again = warmed(&reader, &[]).await;
+    let stats = field(&again, "stats");
+    assert_eq!(
+        field(&stats, "computed").as_f64(),
+        Some(0.0),
+        "{}",
+        as_text(&stats)
+    );
+
+    let read = warmed(&reader, &["envelope"]).await;
+    let asked = field(&field(&read, "representations"), "representations");
+    assert!(
+        !field(&asked, "envelope").is_undefined(),
+        "{}",
+        as_text(&read)
+    );
+    assert!(field(&asked, "samples").is_undefined());
+    let refused = reader
+        .warm(
+            "@master([0, 0.1s])",
+            options(&[("readings", js_sys::Array::of1(&"samples".into()).into())]),
+        )
+        .await;
+    refused_as(refused.err(), "wasm.bad_argument");
 }

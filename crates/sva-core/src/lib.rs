@@ -1,4 +1,4 @@
-// Concern: the parse->tempo->render pipeline shared by both front ends | Non-concern: argv (sva-cli), JS bindings (sva-wasm) | IO: (a Source, a target) -> Rendered, a Stream or CliError
+// Concern: the parse->tempo->render pipeline shared by both front ends | Non-concern: argv (sva-cli), JS bindings (sva-wasm) | IO: (a Source, a target) -> Rendered, Warmed, a Stream or CliError
 
 mod answer;
 mod builtins;
@@ -42,8 +42,8 @@ pub use sva_engine::{Handle, QuietTail, Stream, Until};
 
 pub use sva_engine::{Answer, Extent, Label, Output, Representation};
 pub use sva_engine::{
-    Backend, Cache, CachePolicy, DEFAULT_STORE_BYTES, NoStore, Persisted, PrunePolicy, Store,
-    Through,
+    Backend, Cache, CachePolicy, CacheStats, DEFAULT_STORE_BYTES, NoStore, Persisted, PrunePolicy,
+    Store, Through,
 };
 
 pub const ROOT: &str = "master";
@@ -229,6 +229,31 @@ pub async fn execute_through<B: Backend>(
     let (graph, config) = settle(&job)?;
     let render = render_through(&graph, PROBE, config, store).await;
     rendered(&job, graph, render)
+}
+
+pub struct Warmed {
+    pub stats: CacheStats,
+    pub readings: Option<Rendered>,
+}
+
+/// Readings, where asked, are `execute_through`'s, the root computed for them.
+pub async fn warm<B: Backend>(job: Job<'_>, store: &Store<B>) -> Result<Warmed, CliError> {
+    if !job.asked.is_empty() {
+        let mut read = execute_through(job, store).await?;
+        let stats = read.render.cache_stats.take();
+        let stats = stats.expect("a render through a store reports on it");
+        return Ok(Warmed {
+            stats,
+            readings: Some(read),
+        });
+    }
+    let (graph, config) = settle(&job)?;
+    let stats = sva_engine::warm(&graph, PROBE, config, store).await;
+    let stats = stats.map_err(|e| CliError::Engine(as_written(e, job.target)))?;
+    Ok(Warmed {
+        stats,
+        readings: None,
+    })
 }
 
 fn rendered(

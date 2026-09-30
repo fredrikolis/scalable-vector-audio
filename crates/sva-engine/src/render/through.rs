@@ -1,4 +1,4 @@
-// Concern: renders from the root down through a persistent store, staging what it computes | Non-concern: the store's medium and commit, a render with no store | IO: (&Graph, target, Store) -> Render
+// Concern: renders or warms from the root down through a persistent store, staging what it computes | Non-concern: the store's medium and commit | IO: (&Graph, target, Store) -> Render or CacheStats
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -8,7 +8,7 @@ use sva_formula::{Hash, Held as Representation, NodeId};
 use super::table::spill::Spill;
 use super::table::{self, Table};
 use super::{Render, RenderConfig, closed, drive, driving, drove, frontier, planned_over};
-use crate::cache::{Backend, CacheStats, Outcome, Recording, Store, Stored, Through};
+use crate::cache::{Backend, CacheStats, Lookup, Outcome, Recording, Store, Stored, Through};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate;
 use crate::schedule;
@@ -23,11 +23,57 @@ pub async fn render_through<B: Backend>(
     config: RenderConfig,
     store: &Store<B>,
 ) -> Result<Render, EngineError> {
+    match through(graph, target, config, store, Keep::Wanted).await? {
+        Reached::Render(held) => Ok(*held),
+        Reached::Held(_) => unreachable!("a render reads a stored root's samples"),
+    }
+}
+
+/// `render_through`'s staging alone, `config` asking nothing: a stored root ends it unread.
+pub async fn warm<B: Backend>(
+    graph: &Graph,
+    target: &str,
+    config: RenderConfig,
+    store: &Store<B>,
+) -> Result<CacheStats, EngineError> {
+    Ok(
+        match through(graph, target, config, store, Keep::Nothing).await? {
+            Reached::Render(mut held) => held.cache_stats.take().expect("a render through a store"),
+            Reached::Held(lookups) => CacheStats {
+                lookups,
+                ..CacheStats::default()
+            },
+        },
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    Wanted,
+    Nothing,
+}
+
+enum Reached {
+    Render(Box<Render>),
+    Held(Vec<Lookup>),
+}
+
+async fn through<B: Backend>(
+    graph: &Graph,
+    target: &str,
+    config: RenderConfig,
+    store: &Store<B>,
+    keep: Keep,
+) -> Result<Reached, EngineError> {
     let instances = instantiate::instantiate(graph, target, config.rate)?;
     let root = instances.instance_of(target)?;
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&root))?;
     let keys = keys(graph, &instances, &order, &config);
     let mut found = frontier::Frontier::from((&instances, &order), &keys, &root, (&config, false));
+    found.walk(store).await;
+    if keep == Keep::Nothing && found.stored.contains_key(&root) {
+        return Ok(Reached::Held(found.lookups));
+    }
     let (mut held, typed) = loop {
         found.walk(store).await;
         let tys = typing::infer_over(&instances, &order.within(&found.visited), &found.stored)?;
@@ -65,7 +111,7 @@ pub async fn render_through<B: Backend>(
             store.stage_meta(key, &meta).await.map_err(unstaged)?;
             kept.insert(key);
         }
-        drove(&mut held, driver);
+        drove(&mut held, driver, keep == Keep::Wanted);
     }
     let computed = held.table.as_ref().map_or(Vec::new(), |table| {
         let computed = table.values.iter();
@@ -90,7 +136,7 @@ pub async fn render_through<B: Backend>(
         ..CacheStats::default()
     });
     closed(&mut held)?;
-    Ok(held)
+    Ok(Reached::Render(Box::new(held)))
 }
 
 /// Each instance's store key: its source identity at the render's rate and profile.

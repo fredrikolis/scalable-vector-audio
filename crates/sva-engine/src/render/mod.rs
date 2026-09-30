@@ -91,7 +91,7 @@ pub use drive::Block;
 pub use quiet::{QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, quiet_tails};
 pub use stream::{STREAMED, Stream, StreamConfig};
 pub use terms::{Handle, NOTES};
-pub use through::render_through;
+pub use through::{render_through, warm};
 pub use until::Until;
 
 /// Samples a whole render pulls at once; any size writes the same bits.
@@ -419,7 +419,7 @@ fn affordable(held: &Render) -> Result<(), EngineError> {
 fn pulled(held: &mut Render, recording: Recording) -> Result<(), EngineError> {
     if let Some(mut driver) = driving(held, recording)? {
         while driver.pull()? {}
-        drove(held, driver);
+        drove(held, driver, true);
     }
     Ok(())
 }
@@ -443,7 +443,8 @@ fn driving(held: &mut Render, recording: Recording) -> Result<Option<drive::Driv
     )))
 }
 
-fn drove(held: &mut Render, driver: drive::Driver) {
+/// `keep`: each wanted value's samples copied out of the table.
+fn drove(held: &mut Render, driver: drive::Driver, keep: bool) {
     let range = held.range.expect("a pulled render has a range");
     held.held_bytes = driver.most_bytes();
     held.cache_stats = Some(driver.recording.stats());
@@ -452,7 +453,8 @@ fn drove(held: &mut Render, driver: drive::Driver) {
     }
     let range = held.range.expect("a pulled render has a range");
     let table = driver.table;
-    for (id, at) in held.schedule.wanted.iter().map(|id| (*id, table.of(*id))) {
+    let wanted = held.schedule.wanted.iter().filter(|_| keep);
+    for (id, at) in wanted.map(|id| (*id, table.of(*id))) {
         let Some(at) = at else {
             continue;
         };

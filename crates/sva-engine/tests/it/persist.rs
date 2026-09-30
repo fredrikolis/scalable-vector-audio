@@ -9,13 +9,13 @@ use crate::fixtures::{graph_of, samples};
 use sva_ast::Graph;
 use sva_engine::{
     Backend, CacheStats, Hash, INDEX_NAME, NoStore, Outcome, Range, Render, RenderConfig,
-    STORE_FORMAT, Store, Stream, StreamConfig, render, render_through,
+    STORE_FORMAT, Store, Stream, StreamConfig, render, render_through, warm,
 };
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
 
-/// One map of names; a staging area's names sit under its prefix, where `list` never looks.
+/// One map of names; each staging area's names sit under its own prefix, where `list` never looks.
 /// While `refusing` is up, every rename fails. `reads` logs each read: the name and the bytes it
 /// answered.
 #[derive(Clone, Default)]
@@ -101,9 +101,12 @@ impl Backend for Memory {
             .collect())
     }
 
+    /// Each store its own area, as the backend promises: none writes another's.
     async fn staging(&self) -> Result<Memory, String> {
+        static AREAS: AtomicUsize = AtomicUsize::new(0);
+        let area = AREAS.fetch_add(1, Ordering::Relaxed);
         Ok(Memory {
-            prefix: format!("{}staging/", self.prefix),
+            prefix: format!("{}staging-{area}/", self.prefix),
             ..self.clone()
         })
     }
@@ -973,4 +976,78 @@ fn a_referral_names_the_samples_themselves_and_misses_once_they_are_gone() {
     let after = render("outer");
     assert!(stats(&after).computed() > 0, "{:?}", stats(&after));
     assert_eq!(bits(&after), bits(&before));
+}
+
+fn warmed_into(graph: &Graph, store: &Store<Memory>) -> CacheStats {
+    now(warm(
+        graph,
+        "master",
+        RenderConfig::seconds(RATE, SECONDS),
+        store,
+    ))
+    .expect("warmed")
+}
+
+/// A warmed target, once persisted, renders from the store alone, bit for bit the fresh render.
+#[test]
+fn a_warmed_and_persisted_target_renders_as_a_store_hit() {
+    let memory = Memory::default();
+    let graph = nested("warmed", 220);
+    let store = opened(&memory, u64::MAX);
+    let warmed = warmed_into(&graph, &store);
+    assert!(warmed.computed() > 0, "{warmed:?}");
+    assert!(memory.entries().is_empty(), "warm persists nothing");
+    now(store.persist()).expect("persisted");
+
+    let hit = rendered(&graph, &opened(&memory, u64::MAX));
+    assert_eq!(stats(&hit).lookups.len(), 1, "{:?}", stats(&hit));
+    assert_eq!(stats(&hit).lookups[0].outcome, Outcome::Hit);
+    let fresh = render(&graph, "master", RenderConfig::seconds(RATE, SECONDS), None);
+    assert_eq!(bits(&hit), bits(&fresh.expect("a render")));
+}
+
+/// Warming what the store holds looks the root up, header alone, and computes and stages nothing.
+#[test]
+fn warming_a_stored_target_computes_nothing() {
+    let memory = Memory::default();
+    let graph = nested("rewarmed", 220);
+    let store = opened(&memory, u64::MAX);
+    warmed_into(&graph, &store);
+    now(store.persist()).expect("persisted");
+    let store = opened(&memory, u64::MAX);
+    memory.reads.lock().unwrap().clear();
+
+    let again = warmed_into(&graph, &store);
+    assert_eq!(again.computed(), 0, "{again:?}");
+    assert_eq!(again.lookups.len(), 1, "{again:?}");
+    assert_eq!(again.lookups[0].outcome, Outcome::Hit);
+    for (name, bytes) in memory.reads.lock().unwrap().iter() {
+        let span = memory.bytes(name).map_or(0, |entry| head_of(&entry));
+        assert!(
+            *bytes <= span,
+            "{name}: {bytes} bytes read, past its header"
+        );
+    }
+    assert!(memory.staged().is_empty(), "nothing staged");
+    assert_eq!(now(store.persist()).expect("persisted").written, 0);
+}
+
+/// Two workers over one directory, each warming its own note and persisting it: both notes
+/// are stored, and a store opened afterwards answers each from its root.
+#[test]
+fn stores_sharing_a_directory_each_persist_what_they_warmed() {
+    let memory = Memory::default();
+    let (low, high) = (nested("note-low", 220), nested("note-high", 440));
+    let (first, second) = (opened(&memory, u64::MAX), opened(&memory, u64::MAX));
+    warmed_into(&low, &first);
+    warmed_into(&high, &second);
+    now(first.persist()).expect("persisted");
+    now(second.persist()).expect("persisted");
+
+    let reader = opened(&memory, u64::MAX);
+    for graph in [&low, &high] {
+        let hit = rendered(graph, &reader);
+        assert_eq!(stats(&hit).lookups.len(), 1, "{:?}", stats(&hit));
+        assert_eq!(stats(&hit).lookups[0].outcome, Outcome::Hit);
+    }
 }
