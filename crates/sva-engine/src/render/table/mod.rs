@@ -6,6 +6,7 @@ pub(crate) mod edit;
 mod eval;
 #[cfg(test)]
 mod laws;
+mod load;
 mod period;
 pub(crate) mod program;
 mod segments;
@@ -33,7 +34,6 @@ use crate::refs;
 use crate::time::Lattice;
 use crate::typing::{Typing, Value as Typed};
 use program::Source;
-use segments::Segments;
 use support::Supports;
 use value::Program;
 
@@ -172,8 +172,8 @@ impl Table {
         let needs = self.demand(range);
         self.planned = self.price(&needs);
         for (planned, value) in self.planned.iter_mut().zip(&self.values) {
-            if let Kind::Stored { priced, .. } = value.kind {
-                *planned += priced;
+            if let Kind::Stored(stored) = &value.kind {
+                *planned += stored.priced;
             }
         }
     }
@@ -478,7 +478,7 @@ impl Building<'_> {
 
     /// The stored samples of `live`'s node, reading `live` for all they miss; none where they
     /// were written on another grid or width.
-    fn prefix(&mut self, live: usize, stored: &Stored) -> Result<usize, EngineError> {
+    fn prefix(&mut self, live: usize, stored: &Arc<Stored>) -> Result<usize, EngineError> {
         let of = &self.values[live];
         if stored.grid != of.grid || usize::from(stored.width) != of.width {
             return Ok(live);
@@ -487,10 +487,6 @@ impl Building<'_> {
             identity: crate::cache::mixed(of.key.identity, &[PREFIX]),
             step: of.key.step,
         };
-        let mut covers = Segments::default();
-        for part in &stored.segments {
-            covers.add(part.extent().intersect(of.support));
-        }
         let mut value = Value {
             key,
             node: of.node,
@@ -499,23 +495,16 @@ impl Building<'_> {
             width: of.width,
             support: of.support,
             period: None,
-            kind: Kind::Stored {
-                priced: stored.priced,
-                covers: covers.clone(),
-            },
+            kind: Kind::Stored(Arc::clone(stored)),
             reads: vec![live],
             held: Held::Segments(Vec::new()),
-            evaluated: covers.iter().collect(),
+            evaluated: Vec::new(),
             label: Some(stored.label.clone()),
             switches: Vec::new(),
             moved: stored.moved,
             pure: true,
         };
-        for part in &stored.segments {
-            for e in covers.intersect(part.extent()).iter() {
-                value.hold(part.over(e, part.extent()));
-            }
-        }
+        value.evaluated = value.covers().iter().collect();
         self.moved = self.moved.max(stored.moved);
         self.values.push(value);
         let at = self.values.len() - 1;
@@ -659,11 +648,7 @@ impl Building<'_> {
                 self.moved = self.moved.max(held.moved);
                 value.moved = held.moved;
                 value.label = Some(held.label.clone());
-                value.held = Held::Segments(held.segments.clone());
-                value.kind = Kind::Stored {
-                    priced: held.priced,
-                    covers: value.holding(),
-                };
+                value.kind = Kind::Stored(Arc::clone(held));
                 Ok(value)
             }
             (Representation::Frames, Typed::Cast(Cast::Stft { window, hop }, of)) => {

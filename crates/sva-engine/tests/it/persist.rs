@@ -69,6 +69,17 @@ impl Backend for Memory {
         Ok(found)
     }
 
+    async fn get_range(&self, name: &str, from: u64, len: u64) -> Result<Option<Vec<u8>>, String> {
+        let found = self.bytes(name).map(|bytes| {
+            let from = (from as usize).min(bytes.len());
+            let to = from.saturating_add(len as usize).min(bytes.len());
+            bytes[from..to].to_vec()
+        });
+        let read = (self.at(name), found.as_ref().map_or(0, Vec::len));
+        self.reads.lock().unwrap().push(read);
+        Ok(found)
+    }
+
     async fn put(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
         self.set(name, bytes.to_vec());
         Ok(())
@@ -265,7 +276,7 @@ fn opening_a_store_reads_its_index_alone() {
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
-const PINNED: (u32, u64) = (3, 6023739010022230036);
+const PINNED: (u32, u64) = (4, 5105506435661358223);
 
 /// A change to how a value is encoded, or to what the engine computes for any construct here,
 /// fails this until `STORE_FORMAT` is bumped and the digest pinned again: rows, a filter, a
@@ -824,19 +835,43 @@ fn a_held_note_longer_than_the_store_continues_live_seamlessly() {
         );
         let mut heard: Vec<u64> = first.plane(0).iter().map(|v| v.to_bits()).collect();
         heard.extend(played(&mut warm));
-        let first = heard.iter().zip(&cold).position(|(a, b)| a != b);
-        eprintln!(
-            "live {live} len {} {} first diff {first:?} dropped {:?}",
-            heard.len(),
-            cold.len(),
-            warm.dropped()
+        assert!(
+            heard == cold,
+            "live {live}: the stored samples, then the live ones"
         );
-        assert!(heard == cold, "live {live}");
         assert!(
             warm.dropped().is_empty(),
             "live {live}: {:?}",
             warm.dropped()
         );
         assert!(!store_hits(&warm).is_empty(), "live {live}");
+    }
+}
+
+/// An entry's header span, off its first eight bytes: all a lookup may read of it.
+fn head_of(entry: &[u8]) -> usize {
+    8 + u64::from_le_bytes(entry[..8].try_into().expect("eight bytes")) as usize
+}
+
+/// Adding a note the store does not hold reads no sample: the notes already sounding are
+/// looked up again, header alone, and the new one's lookup finds nothing.
+#[test]
+fn adding_a_note_the_store_lacks_reads_no_sample_bytes() {
+    let (graph, memory) = warmed("unstored", 2_000);
+    let player = opened(&memory, u64::MAX);
+    let mut stream = notes(&graph, 8_000, &player);
+    now(stream.add(&graph, &term(STRIKE), &player)).expect("added");
+    stream.next_block().expect("a block");
+    memory.reads.lock().unwrap().clear();
+
+    now(stream.add(&graph, &term("@string(t - 700sp, f0=392)"), &player)).expect("added");
+    let reads = memory.reads.lock().unwrap().clone();
+    assert!(!reads.is_empty(), "the add looked the store up");
+    for (name, bytes) in &reads {
+        let span = memory.bytes(name).map_or(0, |entry| head_of(&entry));
+        assert!(
+            *bytes <= span,
+            "{name}: {bytes} bytes read, past its {span}-byte header"
+        );
     }
 }

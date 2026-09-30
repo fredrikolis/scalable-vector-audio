@@ -6,8 +6,8 @@ pub(crate) mod log;
 mod persist;
 mod stats;
 mod store;
+mod stored;
 
-pub(crate) use persist::node_key;
 pub use persist::{
     Backend, DEFAULT_STORE_BYTES, INDEX_NAME, NoStore, Persisted, STORE_FORMAT, Store, Stored,
     Through,
@@ -16,6 +16,7 @@ pub(crate) use stats::Recording;
 pub use stats::{CacheStats, Lookup, Outcome};
 pub(crate) use store::joined;
 pub use store::{Cache, CachePolicy, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY, PrunePolicy};
+pub(crate) use stored::node_key;
 pub use sva_formula::Hash;
 
 use std::collections::BTreeMap;

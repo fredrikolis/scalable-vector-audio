@@ -24,11 +24,8 @@ pub(crate) enum Kind {
     },
     Istft,
     Spectrum(Box<SpectralSum>),
-    /// The store's samples over `covers`; a value it reads computes what they miss.
-    Stored {
-        priced: u128,
-        covers: Segments,
-    },
+    /// Stored samples, loaded as asked; a value it reads computes what they miss.
+    Stored(std::sync::Arc<crate::cache::Stored>),
 }
 
 pub(crate) struct Program {
@@ -87,6 +84,16 @@ impl Value {
             Kind::Program(program) => program.alias.map(|(slot, by)| (self.reads[slot], by)),
             _ => None,
         }
+    }
+
+    pub(crate) fn covers(&self) -> Segments {
+        let mut out = Segments::default();
+        if let Kind::Stored(stored) = &self.kind {
+            for e in stored.extents() {
+                out.add(e.intersect(self.support));
+            }
+        }
+        out
     }
 
     pub(crate) fn holding(&self) -> Segments {

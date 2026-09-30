@@ -36,13 +36,11 @@ impl Table {
         let mut asks = Vec::new();
         for (stored, remainder, start) in &remainders {
             let asked = &needs[*stored].hold;
-            let Kind::Stored { covers, .. } = &self.values[*stored].kind else {
-                unreachable!("a stored value");
-            };
-            if rest[*stored].hold.minus(covers).is_empty() {
+            let covers = self.values[*stored].covers();
+            if rest[*stored].hold.minus(&covers).is_empty() {
                 continue;
             }
-            let Some(due) = due(covers, asked) else {
+            let Some(due) = due(&covers, asked) else {
                 continue;
             };
             let from = self.values[*remainder].end().unwrap_or(*start);

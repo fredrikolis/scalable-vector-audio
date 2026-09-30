@@ -59,7 +59,9 @@ impl Stream {
     ) -> Result<Stream, EngineError> {
         let mut terms = Terms::default();
         let render = &blocked(&config)?.render;
-        let found = shelled(graph, target, &mut terms, render, store).await?;
+        let mut found = shelled(graph, target, &mut terms, render, store).await?;
+        let next = ahead(found.range.start, render.rate);
+        through::load(&mut found.table, store, next).await;
         let mut recording = Recording::over(cache, config.render.cache_policy);
         recording.found(found.hits);
         let driver = Driver::new(
@@ -156,6 +158,7 @@ impl Stream {
         } = found;
         let old = std::mem::replace(&mut self.driver.table, Table::empty());
         let dropped = edit::carried(&mut table, old, self.driver.at, self.live);
+        through::load(&mut table, store, ahead(self.driver.at, render.rate)).await;
         self.dropped
             .extend(dropped.into_iter().map(|at| table.values[at].name.clone()));
         self.driver.replace(table, range.end);
@@ -166,6 +169,23 @@ impl Stream {
         self.terms = terms;
         self.prune();
         Ok(())
+    }
+
+    /// Loads the stored samples the next second reads; a block reading one not loaded has it
+    /// computed, or, live, started silent where not ready.
+    pub async fn fetch(&mut self, store: &impl Through) {
+        let next = ahead(self.driver.at, self.config.render.rate);
+        through::load(&mut self.driver.table, store, next).await;
+    }
+
+    /// What `fetch` reads, for a caller reading it as the stream plays.
+    pub fn wanted(&self) -> Vec<(Arc<Stored>, Extent)> {
+        let next = ahead(self.driver.at, self.config.render.rate);
+        self.driver.table.wants(next)
+    }
+
+    pub fn took(&mut self, key: sva_formula::Hash, samples: Vec<sva_samples::Buffer>) {
+        self.driver.table.took(key, samples);
     }
 
     /// The next block, cut where the stream ends; `None` from there on.
@@ -244,6 +264,10 @@ impl Stream {
     }
 }
 
+fn ahead(at: i64, rate: u32) -> Extent {
+    Extent::new(at, at.saturating_add(i64::from(rate)))
+}
+
 fn blocked(config: &StreamConfig) -> Result<&StreamConfig, EngineError> {
     match config.block {
         0 => Err(refusal("a block of no samples".to_string())),
@@ -277,8 +301,7 @@ fn wrapped(graph: &Graph, target: &Expr, terms: &Terms) -> Result<Graph, EngineE
     Ok(wrapped)
 }
 
-/// The wrapped graph typed whole, each node `store` answers from the root down standing on its
-/// samples, and its own value, typed beneath it, computing what they miss.
+/// The wrapped graph typed whole, each node `store` answers standing on its samples.
 async fn shelled(
     graph: &Graph,
     target: &Expr,
@@ -300,7 +323,7 @@ async fn shelled(
     terms.typed(&instances, &mut tys);
     let prefixes: BTreeMap<NodeId, Arc<Stored>> = std::mem::take(&mut found.stored)
         .into_iter()
-        .filter_map(|(path, stored)| Some((tys.id(&path)?, stored)))
+        .map(|(path, stored)| (tys.id(&path).expect("a walked node is typed"), stored))
         .collect();
     let schedule = schedule::plan(&tys, id, &[]);
     let shell = Render::shell(tys, id, config.clone(), schedule);

@@ -52,6 +52,9 @@ extern "C" {
     #[wasm_bindgen(method, getter)]
     fn size(this: &File) -> f64;
 
+    #[wasm_bindgen(method)]
+    fn slice(this: &File, start: f64, end: f64) -> File;
+
     /// `navigator.locks`: a page holds one lock per staging area for as long as it lives.
     type LockManager;
 
@@ -183,6 +186,15 @@ impl Backend for Opfs {
             return Ok(None);
         };
         let buffer: JsValue = settled(file.array_buffer()).await.map_err(why)?;
+        Ok(Some(Uint8Array::new(&buffer).to_vec()))
+    }
+
+    async fn get_range(&self, name: &str, from: u64, len: u64) -> Result<Option<Vec<u8>>, String> {
+        let Some(file) = self.file(name).await? else {
+            return Ok(None);
+        };
+        let part = file.slice(from as f64, from.saturating_add(len) as f64);
+        let buffer: JsValue = settled(part.array_buffer()).await.map_err(why)?;
         Ok(Some(Uint8Array::new(&buffer).to_vec()))
     }
 

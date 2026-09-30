@@ -8,7 +8,7 @@ use sva_formula::{Hash, Held as Representation, NodeId};
 use super::table::spill::Spill;
 use super::table::{self, Table};
 use super::{Render, RenderConfig, closed, drive, driving, drove, frontier, planned_over};
-use crate::cache::{Backend, CacheStats, Outcome, Recording, Store, Stored};
+use crate::cache::{Backend, CacheStats, Outcome, Recording, Store, Stored, Through};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate;
 use crate::schedule;
@@ -40,9 +40,12 @@ pub async fn render_through<B: Backend>(
             .filter(|id| readable(&tys, *id))
             .collect();
         let typed = tys.lowered().to_vec();
-        let held = planned_over(&instances, (tys, id), config.clone(), &bounds)?;
-        let short = match (&held.table, held.range) {
-            (Some(table), Some(range)) => short(table, range),
+        let mut held = planned_over(&instances, (tys, id), config.clone(), &bounds)?;
+        let short = match (&mut held.table, held.range) {
+            (Some(table), Some(range)) => {
+                load(table, store, range).await;
+                short(table, range)
+            }
             _ => Vec::new(),
         };
         if short.is_empty() {
@@ -104,6 +107,16 @@ pub(crate) fn keys(
             (path, key)
         })
         .collect()
+}
+
+/// What `window` asks of each stored value's samples, read off `store`; what it cannot read
+/// stays short.
+pub(crate) async fn load(table: &mut Table, store: &impl Through, window: sva_samples::Extent) {
+    for (stored, over) in table.wants(window) {
+        if let Some(samples) = store.read(&stored, over).await {
+            table.took(stored.key, samples);
+        }
+    }
 }
 
 /// Each stored node whose samples miss some its readers ask over `range`.
@@ -189,7 +202,7 @@ fn staging(
         let ty = tys.ty(id);
         let meta = Stored {
             key: *key,
-            segments: Vec::new(),
+            samples: Default::default(),
             label: table.label(at),
             width: u8::try_from(value.width).expect("a width the typing held"),
             codomain: ty.codomain,

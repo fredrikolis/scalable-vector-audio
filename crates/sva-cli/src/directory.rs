@@ -1,7 +1,7 @@
 // Concern: named bytes under one filesystem path, each write whole or absent | Non-concern: what the bytes mean, the budget (sva-engine) | IO: (name[, bytes]) -> bytes, names, or why not
 
 use std::fs::File;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -61,6 +61,20 @@ impl Backend for Directory {
             Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
             Err(e) => Err(failed("read", &path, e)),
         }
+    }
+
+    async fn get_range(&self, name: &str, from: u64, len: u64) -> Result<Option<Vec<u8>>, String> {
+        let path = self.path.join(name);
+        let mut file = match File::open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(failed("open", &path, e)),
+        };
+        let mut out = Vec::new();
+        file.seek(SeekFrom::Start(from))
+            .and_then(|_| file.take(len).read_to_end(&mut out))
+            .map_err(|e| failed("read", &path, e))?;
+        Ok(Some(out))
     }
 
     /// Written under a dot name `list` skips, then renamed over `name` in one step.

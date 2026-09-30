@@ -5,12 +5,53 @@ use sva_samples::{
     Buffer, Cost, Detail, Dropped, Extent, Grid, Label, PSYCHOACOUSTIC_V1, Rule, Source,
 };
 
+use sva_formula::Hash;
+
 use super::Stored;
+use super::stored::{Laid, Samples};
 
-const ENTRY: &[u8; 4] = b"SVAn";
-const CHUNK: &[u8; 4] = b"SVAc";
+const ENTRY: &[u8; 4] = b"SVAh";
+const STAGED_RUN: &[u8; 4] = b"SVAc";
 
-pub(crate) fn entry(stored: &Stored) -> Vec<u8> {
+/// Samples per chunk of a run: what one checksum covers, and the least a read loads.
+pub(crate) const CHUNK: usize = 4096;
+
+/// A header's length, then the header, then each run's samples chunk by chunk, every plane of
+/// a chunk together, so a stretch of a run is one read.
+pub(crate) fn entry(stored: &Stored, runs: &[Buffer]) -> Vec<u8> {
+    let mut laid = Vec::new();
+    let mut body = Vec::new();
+    for run in runs {
+        let mut sums = Vec::new();
+        let at = body.len() as u64;
+        for from in (0..run.len()).step_by(CHUNK) {
+            let to = (from + CHUNK).min(run.len());
+            let chunk = body.len();
+            for plane in &run.planes {
+                for sample in &plane[from..to] {
+                    word(&mut body, sample.to_bits());
+                }
+            }
+            sums.push(checksum(&body[chunk..]));
+        }
+        laid.push(Laid {
+            rate: run.rate,
+            start: run.start,
+            width: run.width,
+            len: run.len(),
+            at,
+            sums,
+        });
+    }
+    let head = sealed(header(stored, &laid));
+    let mut out = Vec::with_capacity(8 + head.len() + body.len());
+    word(&mut out, head.len() as u64);
+    out.extend_from_slice(&head);
+    out.extend_from_slice(&body);
+    out
+}
+
+fn header(stored: &Stored, laid: &[Laid]) -> Vec<u8> {
     let mut out = ENTRY.to_vec();
     word(&mut out, stored.key.0);
     word(&mut out, stored.key.1);
@@ -29,14 +70,31 @@ pub(crate) fn entry(stored: &Stored) -> Vec<u8> {
     out.extend_from_slice(&stored.priced.to_le_bytes());
     word(&mut out, stored.moved.to_bits());
     out.push(u8::from(stored.readable));
-    segments(&mut out, &stored.segments);
-    sealed(out)
+    word(&mut out, laid.len() as u64);
+    for run in laid {
+        word(&mut out, u64::from(run.rate));
+        word(&mut out, run.start as u64);
+        word(&mut out, run.width as u64);
+        word(&mut out, run.len as u64);
+        for sum in &run.sums {
+            word(&mut out, *sum);
+        }
+    }
+    out
 }
 
-/// A truncated, corrupt or foreign entry is `None`, never a partial value.
-pub(crate) fn read_entry(bytes: &[u8]) -> Option<Stored> {
-    let mut r = Reader(opened(bytes, ENTRY)?);
-    let key = sva_formula::Hash(r.word()?, r.word()?);
+/// How many of an entry's first bytes its header takes, off its first eight.
+pub(crate) fn head_len(first: &[u8]) -> Option<usize> {
+    let len = u64::from_le_bytes(first.get(..8)?.try_into().ok()?);
+    8usize.checked_add(usize::try_from(len).ok()?)
+}
+
+/// The meta an entry's header states, its samples laid in `file`, and the entry's length; a
+/// truncated, corrupt or foreign header is `None`, never a partial value.
+pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Stored, u64)> {
+    let span = head_len(bytes)?;
+    let mut r = Reader(opened(bytes.get(8..span)?, ENTRY)?);
+    let key = Hash(r.word()?, r.word()?);
     let label = r.label()?;
     let width = r.byte()?;
     let codomain = match r.byte()? {
@@ -62,10 +120,35 @@ pub(crate) fn read_entry(bytes: &[u8]) -> Option<Stored> {
         1 => true,
         _ => return None,
     };
-    let segments = r.segments()?;
-    r.0.is_empty().then_some(Stored {
+    let count = r.word()? as usize;
+    let mut runs = Vec::new();
+    let mut at = span as u64;
+    for _ in 0..count.min(r.0.len()) {
+        let rate = u32::try_from(r.word()?).ok()?;
+        let start = r.word()? as i64;
+        let (width, len) = (r.word()? as usize, r.word()? as usize);
+        let sums = (0..len.div_ceil(CHUNK).min(r.0.len()))
+            .map(|_| r.word())
+            .collect::<Option<Vec<u64>>>()?;
+        if sums.len() != len.div_ceil(CHUNK) {
+            return None;
+        }
+        runs.push(Laid {
+            rate,
+            start,
+            width,
+            len,
+            at,
+            sums,
+        });
+        at = at.checked_add((width.checked_mul(len)?.checked_mul(8)?) as u64)?;
+    }
+    let samples = match runs.is_empty() {
+        true => Samples::None,
+        false => Samples::Entry { file, runs },
+    };
+    let stored = Stored {
         key,
-        segments,
         label,
         width,
         codomain,
@@ -75,17 +158,62 @@ pub(crate) fn read_entry(bytes: &[u8]) -> Option<Stored> {
         priced,
         moved,
         readable,
-    })
+        samples,
+    };
+    (runs_whole(count, &stored.samples) && r.0.is_empty()).then_some((stored, at))
+}
+
+fn runs_whole(count: usize, samples: &Samples) -> bool {
+    match samples {
+        Samples::Entry { runs, .. } => runs.len() == count,
+        _ => count == 0,
+    }
+}
+
+/// Where in its file a run's chunks `from..to` lie, and how many bytes.
+pub(crate) fn span_of(run: &Laid, from: usize, to: usize) -> (u64, u64) {
+    let bytes = |chunks: usize| ((chunks * CHUNK).min(run.len) * run.width * 8) as u64;
+    (run.at + bytes(from), bytes(to) - bytes(from))
+}
+
+/// A run's chunks `from..to` off the bytes `span_of` names; `None` where a checksum fails.
+pub(crate) fn read_chunks(bytes: &[u8], run: &Laid, from: usize, to: usize) -> Option<Buffer> {
+    let first = from * CHUNK;
+    let len = (to * CHUNK).min(run.len).checked_sub(first)?;
+    if bytes.len() != len * run.width * 8 {
+        return None;
+    }
+    let mut planes = vec![Vec::with_capacity(len); run.width];
+    let mut at = 0;
+    for (k, sum) in run.sums[from..to].iter().enumerate() {
+        let n = (CHUNK).min(run.len - first - k * CHUNK);
+        let chunk = &bytes[at..at + n * run.width * 8];
+        if checksum(chunk) != *sum {
+            return None;
+        }
+        for (c, plane) in planes.iter_mut().enumerate() {
+            let own = &chunk[c * n * 8..(c + 1) * n * 8];
+            plane.extend(
+                own.chunks_exact(8).map(|b| {
+                    f64::from_bits(u64::from_le_bytes(b.try_into().expect("eight bytes")))
+                }),
+            );
+        }
+        at += chunk.len();
+    }
+    let mut out = Buffer::of_planes(run.rate, planes);
+    out.start = run.start + first as i64;
+    Some(out)
 }
 
 pub(crate) fn chunk(samples: &Buffer) -> Vec<u8> {
-    let mut out = CHUNK.to_vec();
+    let mut out = STAGED_RUN.to_vec();
     segments(&mut out, std::slice::from_ref(samples));
     sealed(out)
 }
 
 pub(crate) fn read_chunk(bytes: &[u8]) -> Option<Buffer> {
-    let mut r = Reader(opened(bytes, CHUNK)?);
+    let mut r = Reader(opened(bytes, STAGED_RUN)?);
     let mut parts = r.segments()?;
     (r.0.is_empty() && parts.len() == 1).then(|| parts.remove(0))
 }

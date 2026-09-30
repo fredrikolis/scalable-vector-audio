@@ -888,7 +888,12 @@ fn fake_directory() -> JsValue {
                         async getFile() {
                             const bytes = files.get(name);
                             if (!bytes) throw missing();
-                            return { size: bytes.length, async arrayBuffer() { return bytes.slice().buffer; } };
+                            const blob = (held) => ({
+                                size: held.length,
+                                async arrayBuffer() { return held.slice().buffer; },
+                                slice(start, end) { return blob(held.slice(start, end)); },
+                            });
+                            return blob(bytes);
                         },
                         async createWritable() {
                             let pending = new Uint8Array(0);
@@ -1036,7 +1041,13 @@ async fn a_stream_reads_a_note_another_worker_persisted() {
             .add("@blip(t - 512sp, f0=200)")
             .await
             .unwrap_or_else(|e| unreachable!("added: {}", as_text(&e)));
-        heard.push((blocks(&stream, 16), stream.stats()));
+        let mut heard_here = blocks(&stream, 8);
+        stream
+            .fetch()
+            .await
+            .unwrap_or_else(|e| unreachable!("fetched: {}", as_text(&e)));
+        heard_here.extend(blocks(&stream, 8));
+        heard.push((heard_here, stream.stats()));
     }
     let hits = |stats: &Result<JsValue, JsValue>| {
         field(stats.as_ref().ok().unwrap_or(&JsValue::NULL), "hits").as_f64()

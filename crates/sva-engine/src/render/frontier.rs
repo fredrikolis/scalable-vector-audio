@@ -19,6 +19,8 @@ pub(crate) struct Frontier<'w> {
     config: &'w RenderConfig,
     streaming: bool,
     pinned: BTreeSet<String>,
+    /// Walked beneath a streamed hit, not looked up.
+    unlooked: BTreeSet<String>,
     stack: Vec<Step>,
     pub(crate) stored: BTreeMap<String, Arc<Stored>>,
     pub(crate) visited: BTreeSet<String>,
@@ -45,6 +47,7 @@ impl<'w> Frontier<'w> {
             config,
             streaming,
             pinned: pinned(inst, order, config),
+            unlooked: BTreeSet::new(),
             stack: vec![Step::Visit(root.to_string(), true)],
             stored: BTreeMap::new(),
             visited: BTreeSet::new(),
@@ -64,10 +67,14 @@ impl<'w> Frontier<'w> {
                     }
                     continue;
                 }
+                Step::Visit(path, true) if self.unlooked.remove(&path) => (path, true),
                 Step::Visit(path, _) if self.visited.contains(&path) => continue,
                 Step::Visit(path, look) => (path, look),
             };
-            self.visited.insert(path.clone());
+            let late = !self.visited.insert(path.clone());
+            if !look {
+                self.unlooked.insert(path.clone());
+            }
             if look
                 && !self.pinned.contains(&path)
                 && let Some(hit) = store.lookup(self.keys[&path]).await
@@ -76,12 +83,15 @@ impl<'w> Frontier<'w> {
                 self.lookups
                     .push(noted(&path, self.keys[&path], Outcome::Hit));
                 self.stored.insert(path.clone(), Arc::new(hit));
-                if self.streaming {
+                if self.streaming && !late {
                     self.opened(path, false);
                 }
                 continue;
             }
-            self.opened(path, look);
+            match late {
+                true => self.relooked(path),
+                false => self.opened(path, look),
+            }
         }
     }
 
@@ -90,6 +100,18 @@ impl<'w> Frontier<'w> {
         self.stored.remove(path);
         self.lookups.retain(|lookup| lookup.node != path);
         self.opened(path.to_string(), true);
+    }
+
+    /// Walked unlooked, then missed: its reads are looked up.
+    fn relooked(&mut self, path: String) {
+        if !self.pinned.contains(&path) {
+            let key = self.keys[&path];
+            self.lookups
+                .push(noted(&path, key, Outcome::ComputedNotStored));
+        }
+        for read in self.order.deps(&path).iter().rev() {
+            self.stack.push(Step::Visit(read.clone(), true));
+        }
     }
 
     fn opened(&mut self, path: String, look: bool) {

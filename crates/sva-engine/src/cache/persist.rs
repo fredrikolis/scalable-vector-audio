@@ -3,63 +3,18 @@
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
 
-use sva_formula::{Codomain, Hash};
-use sva_samples::{Buffer, Extent, Grid, Label};
+use sva_formula::Hash;
+use sva_samples::{Buffer, Extent};
 
 use super::index::{Index, key_of, name_of};
+use super::stored::Samples;
+pub use super::stored::Stored;
 use super::{codec, joined};
-
-/// A node's samples, and what a render reads in place of typing it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Stored {
-    pub key: Hash,
-    pub segments: Vec<Buffer>,
-    pub label: Label,
-    pub width: u8,
-    pub codomain: Codomain,
-    pub rate: Option<u32>,
-    pub grid: Grid,
-    pub support: Extent,
-    /// Flops it and all under it cost.
-    pub priced: u128,
-    /// The most seconds a read under it moved to land on a sample.
-    pub moved: f64,
-    /// A reader may take these samples for the node.
-    pub readable: bool,
-}
-
-impl Stored {
-    pub(crate) fn holds(&self, over: Extent) -> bool {
-        let mut from = over.start;
-        let mut parts: Vec<Extent> = self.segments.iter().map(Buffer::extent).collect();
-        parts.sort_by_key(|e| e.start);
-        for part in parts {
-            if from >= over.end || part.start > from {
-                break;
-            }
-            from = from.max(part.end);
-        }
-        from >= over.end
-    }
-}
-
-/// Keyed by its source's identity, the rate and the profile.
-pub(crate) fn node_key(identity: Hash, rate: u32, profile: &sva_samples::Profile) -> Hash {
-    super::mixed(
-        identity,
-        &[
-            u64::from(rate),
-            profile.precision_bits as u64,
-            profile.ceiling_hz.to_bits(),
-            0x6e_6f_64_65_00_00_00_01,
-        ],
-    )
-}
 
 pub const DEFAULT_STORE_BYTES: u64 = 2 << 30;
 
 /// Bumped by, and only by, a change to a stored value's bytes.
-pub const STORE_FORMAT: u32 = 3;
+pub const STORE_FORMAT: u32 = 4;
 
 fn version() -> String {
     format!("sva store format {STORE_FORMAT}")
@@ -75,6 +30,13 @@ const META: &str = "meta";
 /// Named bytes. A `put` is whole or absent: no reader sees half of one.
 pub trait Backend: Sized {
     fn get(&self, name: &str) -> impl Future<Output = Result<Option<Vec<u8>>, String>>;
+    /// At most `len` bytes from `from` on, fewer where the name ends sooner.
+    fn get_range(
+        &self,
+        name: &str,
+        from: u64,
+        len: u64,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, String>>;
     fn put(&self, name: &str, bytes: &[u8]) -> impl Future<Output = Result<(), String>>;
     fn delete(&self, name: &str) -> impl Future<Output = Result<(), String>>;
     /// Each name, with its size in bytes.
@@ -85,14 +47,20 @@ pub trait Backend: Sized {
     fn rename(&self, name: &str, to: &Self) -> impl Future<Output = Result<(), String>>;
 }
 
-/// A store, or nothing, that a stream looks a node up in.
+/// A store, or nothing, that a render looks a node up in and reads its samples from.
 pub trait Through {
     fn lookup(&self, key: Hash) -> impl Future<Output = Option<Stored>>;
+    /// Whole chunks holding `over`; `None` where they are gone or corrupt.
+    fn read(&self, stored: &Stored, over: Extent) -> impl Future<Output = Option<Vec<Buffer>>>;
 }
 
 impl<B: Backend> Through for Store<B> {
     fn lookup(&self, key: Hash) -> impl Future<Output = Option<Stored>> {
         Store::lookup(self, key)
+    }
+
+    fn read(&self, stored: &Stored, over: Extent) -> impl Future<Output = Option<Vec<Buffer>>> {
+        Store::read(self, stored, over)
     }
 }
 
@@ -102,11 +70,15 @@ impl Through for NoStore {
     async fn lookup(&self, _: Hash) -> Option<Stored> {
         None
     }
+
+    async fn read(&self, _: &Stored, _: Extent) -> Option<Vec<Buffer>> {
+        None
+    }
 }
 
 #[derive(Clone, Default)]
 struct Staged {
-    chunks: Vec<String>,
+    chunks: Vec<(String, Extent)>,
     meta: bool,
 }
 
@@ -174,20 +146,24 @@ impl<B: Backend> Store<B> {
         locked(&self.index).held.contains_key(&key)
     }
 
-    /// Staged first; past the index, the backend, for another store's commits.
+    /// Staged first; past the index, the backend, for another store's commits. Reads a header,
+    /// never a sample.
     pub(crate) async fn lookup(&self, key: Hash) -> Option<Stored> {
         if let Some(staged) = self.staged_value(key).await {
             return Some(staged);
         }
-        let Some(bytes) = self.backend.get(&name_of(key)).await.ok()? else {
+        let name = name_of(key);
+        let Some(mut bytes) = self.backend.get_range(&name, 0, 8).await.ok()? else {
             locked(&self.index).forget(key);
             return None;
         };
-        let found = codec::read_entry(&bytes).filter(|found| found.key == key)?;
+        let rest = codec::head_len(&bytes)? - 8;
+        bytes.extend(self.backend.get_range(&name, 8, rest as u64).await.ok()??);
+        let (found, len) = codec::read_head(&bytes, key).filter(|(found, _)| found.key == key)?;
         let mut index = locked(&self.index);
         match index.held.contains_key(&key) {
             true => index.used(key),
-            false => index.touch(key, bytes.len() as u64),
+            false => index.touch(key, len),
         }
         Some(found)
     }
@@ -199,12 +175,40 @@ impl<B: Backend> Store<B> {
             held.chunks.clone()
         };
         let meta = self.staging.get(&staged_name(key, META)).await.ok()??;
-        let mut stored = codec::read_entry(&meta)?;
-        for chunk in chunks {
-            let bytes = self.staging.get(&chunk).await.ok()??;
-            joined(&mut stored.segments, vec![codec::read_chunk(&bytes)?]);
-        }
+        let (mut stored, _) = codec::read_head(&meta, key)?;
+        stored.samples = Samples::Staged(chunks);
         Some(stored)
+    }
+
+    pub(crate) async fn read(&self, stored: &Stored, over: Extent) -> Option<Vec<Buffer>> {
+        let mut out = Vec::new();
+        match &stored.samples {
+            Samples::None => {}
+            Samples::Entry { file, runs } => {
+                for run in runs {
+                    let met = run.extent().intersect(over);
+                    if met.is_empty() {
+                        continue;
+                    }
+                    let chunk = codec::CHUNK as i64;
+                    let from = ((met.start - run.start) / chunk) as usize;
+                    let to = (met.end - run.start).div_euclid(chunk) as usize;
+                    let to = to + usize::from((met.end - run.start) % chunk != 0);
+                    let (at, len) = codec::span_of(run, from, to);
+                    let bytes = self.backend.get_range(&name_of(*file), at, len).await;
+                    out.push(codec::read_chunks(&bytes.ok()??, run, from, to)?);
+                }
+            }
+            Samples::Staged(chunks) => {
+                for (name, e) in chunks {
+                    if !e.intersect(over).is_empty() {
+                        let bytes = self.staging.get(name).await.ok()??;
+                        out.push(codec::read_chunk(&bytes)?);
+                    }
+                }
+            }
+        }
+        Some(out)
     }
 
     pub(crate) async fn stage(&self, key: Hash, samples: &Buffer) -> Result<(), String> {
@@ -219,14 +223,14 @@ impl<B: Backend> Store<B> {
             .entry(key)
             .or_default()
             .chunks
-            .push(name);
+            .push((name, samples.extent()));
         Ok(())
     }
 
     /// `stored` holds no samples.
     pub(crate) async fn stage_meta(&self, key: Hash, stored: &Stored) -> Result<(), String> {
         let name = staged_name(key, META);
-        self.staging.put(&name, &codec::entry(stored)).await?;
+        self.staging.put(&name, &codec::entry(stored, &[])).await?;
         locked(&self.staged).entry(key).or_default().meta = true;
         Ok(())
     }
@@ -244,7 +248,7 @@ impl<B: Backend> Store<B> {
                 locked(&self.index).touch(key, bytes);
                 done.written += 1;
             }
-            for chunk in &held.chunks {
+            for (chunk, _) in &held.chunks {
                 self.staging.delete(chunk).await?;
             }
             self.staging.delete(&staged_name(key, META)).await?;
@@ -275,10 +279,10 @@ impl<B: Backend> Store<B> {
             true => self.staged_value_of(key, held).await?,
             false => None,
         };
-        let Some(stored) = whole.filter(|stored| !stored.segments.is_empty()) else {
+        let Some((stored, runs)) = whole.filter(|(_, runs)| !runs.is_empty()) else {
             return Ok(None);
         };
-        let bytes = codec::entry(&stored);
+        let bytes = codec::entry(&stored, &runs);
         if bytes.len() as u64 > self.max_bytes {
             return Ok(None);
         }
@@ -288,21 +292,26 @@ impl<B: Backend> Store<B> {
         Ok(Some(bytes.len() as u64))
     }
 
-    async fn staged_value_of(&self, key: Hash, held: &Staged) -> Result<Option<Stored>, String> {
+    async fn staged_value_of(
+        &self,
+        key: Hash,
+        held: &Staged,
+    ) -> Result<Option<(Stored, Vec<Buffer>)>, String> {
         let Some(meta) = self.staging.get(&staged_name(key, META)).await? else {
             return Ok(None);
         };
-        let Some(mut stored) = codec::read_entry(&meta) else {
+        let Some((stored, _)) = codec::read_head(&meta, key) else {
             return Ok(None);
         };
-        for chunk in &held.chunks {
+        let mut runs = Vec::new();
+        for (chunk, _) in &held.chunks {
             let bytes = self.staging.get(chunk).await?;
             match bytes.as_deref().and_then(codec::read_chunk) {
-                Some(samples) => joined(&mut stored.segments, vec![samples]),
+                Some(samples) => joined(&mut runs, vec![samples]),
                 None => return Ok(None),
             }
         }
-        Ok(Some(stored))
+        Ok(Some((stored, runs)))
     }
 }
 

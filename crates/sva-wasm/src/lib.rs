@@ -16,8 +16,8 @@ use sva_core::{
     execute, execute_through, query_data, stats_json, stream_stats_json, work_json,
 };
 use sva_engine::{
-    Cache, CachePolicy, CacheStats, DEFAULT_STORE_BYTES, Handle, Hash, PrunePolicy, Store, Stored,
-    Through,
+    Buffer, Cache, CachePolicy, CacheStats, DEFAULT_STORE_BYTES, Extent, Handle, Hash, PrunePolicy,
+    Store, Stored, Through,
 };
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
@@ -195,6 +195,13 @@ impl Through for Page {
     async fn lookup(&self, key: Hash) -> Option<Stored> {
         match &self.0 {
             Some(store) => Through::lookup(&**store, key).await,
+            None => None,
+        }
+    }
+
+    async fn read(&self, stored: &Stored, over: Extent) -> Option<Vec<Buffer>> {
+        match &self.0 {
+            Some(store) => Through::read(&**store, stored, over).await,
             None => None,
         }
     }
@@ -602,6 +609,25 @@ impl Stream {
             removed.map_err(CliError::Engine)
         })
         .await
+    }
+
+    /// Reads the stored samples the next second of blocks plays, and the stream plays on
+    /// meanwhile. A block reading stored samples not yet read computes them, or, live, starts
+    /// the note silent where its live remainder is not ready.
+    pub async fn fetch(&self) -> Result<(), JsValue> {
+        let (wanted, store) = {
+            let playing = self.seen()?;
+            (playing.inner.wanted(), playing.store.clone())
+        };
+        for (stored, over) in wanted {
+            let Some(samples) = store.read(&stored, over).await else {
+                continue;
+            };
+            if let Ok(mut playing) = self.held() {
+                playing.inner.took(stored.key, samples);
+            }
+        }
+        Ok(())
     }
 
     /// `{ samples, priced_flops, waves }` since it opened.
