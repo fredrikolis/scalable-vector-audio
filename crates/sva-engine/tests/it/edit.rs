@@ -417,9 +417,7 @@ fn reverb() -> Graph {
     )
 }
 
-/// Two notes under a master, the second added live: the stream is the whole render of both,
-/// nothing dropped. A reader reading two values through one map (the dry signal beside the
-/// room, parallel combs) carries each on from its own.
+/// Two notes under a master, the second added live: the whole render of both, nothing dropped.
 fn added_under(master: &dyn Fn(&str) -> String) {
     let g = reverb();
     let mut stream = opened(&g, &master("@notes"), None);
@@ -470,4 +468,10 @@ fn a_loop_edited_to_read_further_back_than_it_kept_steps_again_or_starts_silent(
     edit(&mut live, &g, &comb(0.0371));
     blocks(&mut live, 8);
     assert_eq!(live.dropped().len(), 1, "{:?}", live.dropped());
+}
+
+/// With no note playing, `@notes` is the number zero, and the loops over it type.
+#[test]
+fn a_reverb_over_the_bare_note_sum_opens_with_no_notes_and_plays_them() {
+    added_under(&|x| format!("@space(t, x={x}, dry={x}, mix=0.3)"));
 }

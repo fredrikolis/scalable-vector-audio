@@ -293,12 +293,14 @@ impl Lowering<'_, '_> {
         let params = overload::signature(name).map(|s| s.params).unwrap_or(&[]);
         let mut args = Vec::with_capacity(pieces.len());
         for (at, piece) in pieces.into_iter().enumerate() {
-            let constant = matches!(&piece, Piece::ClosedForm(f) if constant::is_constant(f));
             if matches!(&piece, Piece::ClosedForm(f) if constant::holds_infinite(f))
                 && !(name == "crop" && (1..=2).contains(&at))
             {
                 return Err(self.infinite(&format!("`{name}` reads inf as a signal")));
             }
+            let written = matches!(&piece, Piece::ClosedForm(f) if constant::is_constant(f));
+            let id = self.seal(piece, var, None)?;
+            let constant = written || constant::number_of(self.typing, id).is_some();
             if !constant
                 && params
                     .get(at)
@@ -314,7 +316,6 @@ impl Lowering<'_, '_> {
                     span,
                 ));
             }
-            let id = self.seal(piece, var, None)?;
             args.push((id, constant));
         }
         if name == crate::vocabulary::CHANNEL
