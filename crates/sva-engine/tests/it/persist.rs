@@ -25,6 +25,16 @@ struct Memory {
     refusing: Arc<AtomicBool>,
     reads: Arc<Mutex<Vec<(String, usize)>>>,
     lists: Arc<AtomicUsize>,
+    locked: Arc<AtomicBool>,
+}
+
+/// The fake's lock, released when dropped.
+struct Held(Arc<AtomicBool>);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 impl Memory {
@@ -62,6 +72,21 @@ impl Memory {
 }
 
 impl Backend for Memory {
+    type Lock = Held;
+
+    async fn lock(&self) -> Result<Held, String> {
+        std::future::poll_fn(|_| {
+            let free =
+                self.locked
+                    .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed);
+            match free {
+                Ok(_) => Poll::Ready(Ok(Held(self.locked.clone()))),
+                Err(_) => Poll::Pending,
+            }
+        })
+        .await
+    }
+
     async fn get(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
         let found = self.bytes(name);
         let read = (self.at(name), found.as_ref().map_or(0, Vec::len));

@@ -47,6 +47,8 @@ impl Directory {
 
 const STAGING: &str = ".staging-";
 
+const LOCK: &str = ".lock";
+
 static WRITES: AtomicU64 = AtomicU64::new(0);
 
 fn failed(what: &str, path: &Path, e: std::io::Error) -> String {
@@ -54,6 +56,22 @@ fn failed(what: &str, path: &Path, e: std::io::Error) -> String {
 }
 
 impl Backend for Directory {
+    /// Closing the file releases it.
+    type Lock = File;
+
+    async fn lock(&self) -> Result<File, String> {
+        std::fs::create_dir_all(&self.path).map_err(|e| failed("create", &self.path, e))?;
+        let path = self.path.join(LOCK);
+        let held = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| failed("open", &path, e))?;
+        held.lock().map_err(|e| failed("lock", &path, e))?;
+        Ok(held)
+    }
+
     async fn get(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
         let path = self.path.join(name);
         match std::fs::read(&path) {

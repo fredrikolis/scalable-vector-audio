@@ -845,9 +845,10 @@ fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
     assert!(field(&whole, "waves").is_null());
 }
 
-/// What a page hands `open`: an in-memory directory handle. A missing name rejects as
-/// `NotFoundError`, a write lands on close, a file moves whole. Each call installs a fresh origin's
-/// `navigator.locks`: exclusive, queued, releasable; no shared mode, `steal`, `signal` or 2nd page.
+/// An in-memory directory handle. A missing name rejects as `NotFoundError`; a write lands on
+/// close; a file moves whole. A file is open from `createWritable` to `close` and while it moves,
+/// and removing or moving it then rejects, as OPFS does. Each call installs fresh exclusive,
+/// queued `navigator.locks`.
 fn fake_directory() -> JsValue {
     js_sys::Function::new_no_args(
         r#"
@@ -873,12 +874,20 @@ fn fake_directory() -> JsValue {
         }
         Object.defineProperty(globalThis.navigator, "locks", { value: locks, configurable: true });
         const missing = () => Object.assign(new Error("missing"), { name: "NotFoundError" });
-        const directory = () => {
+        const busy = () => Object.assign(new Error("open elsewhere"), { name: "NoModificationAllowedError" });
+        const directory = (name) => {
             const files = new Map();
             const dirs = new Map();
+            const open = new Map();
+            const opened = (name, by) => {
+                const count = (open.get(name) || 0) + by;
+                if (count === 0) open.delete(name); else open.set(name, count);
+            };
             const held = {
+                name,
                 files,
                 dirs,
+                open,
                 async getFileHandle(name, options) {
                     if (!files.has(name)) {
                         if (!(options && options.create)) throw missing();
@@ -897,27 +906,38 @@ fn fake_directory() -> JsValue {
                         },
                         async createWritable() {
                             let pending = new Uint8Array(0);
+                            opened(name, 1);
                             return {
                                 async write(data) { pending = new Uint8Array(data); },
-                                async close() { files.set(name, pending); },
+                                async close() { files.set(name, pending); opened(name, -1); },
                             };
                         },
                         async move(into, as) {
+                            if (!files.has(name)) throw missing();
+                            if (open.has(name) || into.open.has(as)) throw busy();
+                            opened(name, 1);
+                            into.open.set(as, (into.open.get(as) || 0) + 1);
+                            await null;
                             const bytes = files.get(name);
-                            if (!bytes) throw missing();
                             files.delete(name);
                             into.files.set(as, bytes);
+                            opened(name, -1);
+                            const left = into.open.get(as) - 1;
+                            if (left === 0) into.open.delete(as); else into.open.set(as, left);
                         },
                     };
                 },
                 async getDirectoryHandle(name, options) {
                     if (!dirs.has(name)) {
                         if (!(options && options.create)) throw missing();
-                        dirs.set(name, directory());
+                        dirs.set(name, directory(name));
                     }
                     return dirs.get(name);
                 },
-                async removeEntry(name) { if (!files.delete(name) && !dirs.delete(name)) throw missing(); },
+                async removeEntry(name) {
+                    if (open.has(name)) throw busy();
+                    if (!files.delete(name) && !dirs.delete(name)) throw missing();
+                },
                 keys() {
                     const names = [...files.keys(), ...dirs.keys()];
                     let at = 0;
@@ -926,7 +946,7 @@ fn fake_directory() -> JsValue {
             };
             return held;
         };
-        return directory();
+        return directory("sva");
         "#,
     )
     .call0(&JsValue::NULL)
@@ -1145,6 +1165,63 @@ async fn a_warm_answers_no_samples_and_readings_only_when_asked() {
         )
         .await;
     refused_as(refused.err(), "wasm.bad_argument");
+}
+
+/// `index` set to what an older format wrote, over the values a newer one left under it.
+fn aged(dir: &JsValue) {
+    let files: js_sys::Map = field(dir, "files").into();
+    let text = js_sys::Uint8Array::from(&b"sva store format 1\n"[..]);
+    files.set(&"index".into(), &text);
+}
+
+/// What `work` resolves to, run as its own task beside the others.
+fn task(work: impl Future<Output = Result<JsValue, JsValue>> + 'static) -> js_sys::Promise {
+    wasm_bindgen_futures::future_to_promise(work)
+}
+
+/// Four workers warm and one renders the same sound, each over its own store on one directory
+/// an older format left, all at once: every open wipes or waits, every persist commits whole,
+/// and none of them fails.
+#[wasm_bindgen_test]
+async fn workers_opening_one_aged_directory_at_once_each_warm_render_and_persist() {
+    let dir = fake_directory();
+    let first = over_store(&dir).await;
+    stored_render(&first).await;
+    first
+        .persist()
+        .await
+        .unwrap_or_else(|e| unreachable!("persisted: {}", as_text(&e)));
+    let values = values_in(&dir);
+    aged(&dir);
+    let workers: js_sys::Array = (0..5)
+        .map(|n| {
+            let dir = dir.clone();
+            task(async move {
+                let held = Composition::open(None, Some(dir.into())).await?;
+                let mut held = held;
+                held.insert("master", "sample(sin(2*pi*100*t))*0.5\n");
+                match n {
+                    0 => drop(
+                        held.render("@master([0, 0.1s])", None, options(&[]))
+                            .await?,
+                    ),
+                    _ => drop(held.warm("@master([0, 0.1s])", options(&[])).await?),
+                }
+                Ok(JsValue::from(held.persist().await?))
+            })
+        })
+        .collect();
+    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::all(&workers))
+        .await
+        .unwrap_or_else(|e| unreachable!("every worker succeeds: {}", as_text(&e)));
+    assert_eq!(values_in(&dir), values, "each value stored once, whole");
+    let warm = stored_render(&over_store(&dir).await).await;
+    assert_eq!(
+        field(&warm, "computed").as_f64(),
+        Some(0.0),
+        "{}",
+        as_text(&warm)
+    );
 }
 
 /// FNV-1a over every component's f64 bits, little-endian: a native `sva-cli render '@master([0,

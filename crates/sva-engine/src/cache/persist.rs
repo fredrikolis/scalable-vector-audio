@@ -29,6 +29,10 @@ const META: &str = "meta";
 
 /// Named bytes. A `put` is whole or absent: no reader sees half of one.
 pub trait Backend: Sized {
+    /// Held until dropped.
+    type Lock;
+    /// The one exclusive lock over these names, shared by every store over them, awaited.
+    fn lock(&self) -> impl Future<Output = Result<Self::Lock, String>>;
     fn get(&self, name: &str) -> impl Future<Output = Result<Option<Vec<u8>>, String>>;
     /// At most `len` bytes from `from` on, fewer where the name ends sooner.
     fn get_range(
@@ -41,7 +45,8 @@ pub trait Backend: Sized {
     fn delete(&self, name: &str) -> impl Future<Output = Result<(), String>>;
     /// Each name, with its size in bytes.
     fn list(&self) -> impl Future<Output = Result<Vec<(String, u64)>, String>>;
-    /// An area beside these names that no other store writes and `list` never names.
+    /// An area beside these names that no other store writes and `list` never names; asked
+    /// under `lock`.
     fn staging(&self) -> impl Future<Output = Result<Self, String>>;
     /// `name` moved from here into `to` in one step, over whatever `to` held under it.
     fn rename(&self, name: &str, to: &Self) -> impl Future<Output = Result<(), String>>;
@@ -83,7 +88,8 @@ struct Staged {
 }
 
 /// Node values under their keys: a render stages, and only `persist` commits each value whole
-/// by rename, evicting the least recently used past the budget.
+/// by rename, evicting the least recently used past the budget. Every change to the backend's
+/// names runs under its lock; lookups and reads never wait on it.
 pub struct Store<B> {
     backend: B,
     staging: B,
@@ -107,6 +113,7 @@ impl<B: Backend> Store<B> {
     /// A store of another format is emptied first.
     pub async fn open(backend: B, max_bytes: u64) -> Result<Store<B>, String> {
         let version = version();
+        let held = backend.lock().await?;
         let found = backend.get(INDEX_NAME).await?;
         let index = match found.and_then(|text| Index::read(&text, &version)) {
             Some(index) => index,
@@ -124,6 +131,7 @@ impl<B: Backend> Store<B> {
             }
         };
         let staging = backend.staging().await?;
+        drop(held);
         Ok(Store {
             backend,
             staging,
@@ -261,6 +269,7 @@ impl<B: Backend> Store<B> {
     /// A value staged without its meta is dropped. A key leaves the staging record only once
     /// its files have, so a failed write leaves every later one staged.
     pub async fn persist(&self) -> Result<Persisted, String> {
+        let _held = self.backend.lock().await?;
         let mut done = Persisted::default();
         let keys: Vec<Hash> = locked(&self.staged).keys().copied().collect();
         for key in keys {

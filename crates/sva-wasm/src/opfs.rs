@@ -28,6 +28,9 @@ extern "C" {
     #[wasm_bindgen(method)]
     fn keys(this: &DirectoryHandle) -> Names;
 
+    #[wasm_bindgen(method, getter)]
+    fn name(this: &DirectoryHandle) -> String;
+
     type Names;
 
     #[wasm_bindgen(method)]
@@ -55,7 +58,8 @@ extern "C" {
     #[wasm_bindgen(method)]
     fn slice(this: &File, start: f64, end: f64) -> File;
 
-    /// `navigator.locks`: a page holds one lock per staging area for as long as it lives.
+    /// `navigator.locks`: a page holds one lock per staging area for as long as it lives, and
+    /// the directory's own lock while it changes the directory's names.
     type LockManager;
 
     #[wasm_bindgen(method)]
@@ -110,18 +114,34 @@ fn lock_of(staging: &str) -> String {
     format!("sva-store-{staging}")
 }
 
-/// `name` locked until the page goes: its callback's promise never settles.
-async fn hold(name: &str) -> Result<(), String> {
+/// Web Locks keep a lock while its callback's promise is unsettled: the lock is `name`'s until
+/// the function this answers is called.
+async fn granted(name: &str) -> Result<js_sys::Function, String> {
     let locks = locks()?;
     let granted = Promise::new(&mut |resolve, _| {
         let held = Closure::once_into_js(move || {
-            let _ = resolve.call0(&JsValue::NULL);
-            Promise::new(&mut |_, _| {})
+            let mut release = JsValue::UNDEFINED;
+            let kept = Promise::new(&mut |done, _| release = done.into());
+            let _ = resolve.call1(&JsValue::NULL, &release);
+            kept
         });
         let _ = locks.request(name, &held);
     });
-    settled::<JsValue>(granted).await.map_err(why)?;
-    Ok(())
+    settled(granted).await.map_err(why)
+}
+
+/// `name` locked until the page goes.
+async fn hold(name: &str) -> Result<(), String> {
+    granted(name).await.map(drop)
+}
+
+/// A directory's lock, released when dropped.
+pub struct Held(js_sys::Function);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let _ = self.0.call0(&JsValue::NULL);
+    }
 }
 
 async fn held() -> Result<Vec<String>, String> {
@@ -181,6 +201,16 @@ impl Opfs {
 }
 
 impl Backend for Opfs {
+    type Lock = Held;
+
+    /// Named after the directory, as a handle names nothing wider: two directories of one name
+    /// share it, which only makes each wait on the other's changes.
+    async fn lock(&self) -> Result<Held, String> {
+        granted(&format!("sva-store-dir-{}", self.dir.name()))
+            .await
+            .map(Held)
+    }
+
     async fn get(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
         let Some(file) = self.file(name).await? else {
             return Ok(None);
