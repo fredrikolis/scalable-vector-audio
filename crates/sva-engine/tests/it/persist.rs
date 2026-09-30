@@ -836,33 +836,41 @@ fn an_exact_stream_computes_a_held_note_past_what_the_store_holds() {
 
 const LATE: &str = "@string(t - 512sp, f0=261.63)";
 
+/// Four blocks in, adds the late note and plays on.
+fn late(graph: &Graph, live: bool, store: &impl sva_engine::Through) -> (Vec<u64>, Vec<String>) {
+    let mut stream = notes(graph, 8_000, store);
+    if live {
+        stream.go_live();
+    }
+    for _ in 0..4 {
+        stream.next_block().expect("a block").expect("a block");
+    }
+    now(stream.add(graph, &term(LATE), store)).expect("added");
+    (played(&mut stream), stream.dropped().to_vec())
+}
+
 /// A live stream adding a held note after it began plays the stored samples, then drops what
-/// is not ready, the note's own value past them, as it drops any stateful value an edit finds
-/// unready.
+/// is not ready, the note's own value past them, started where the note stands, as a
+/// storeless live stream drops the whole note.
 #[test]
 fn a_live_stream_drops_a_held_note_that_is_not_ready() {
     let (graph, memory) = warmed("held-live", 2_000);
-    let mut cold = notes(&graph, 8_000, &NoStore);
-    for _ in 0..4 {
-        cold.next_block().expect("a block").expect("a block");
-    }
-    now(cold.add(&graph, &term(LATE), &NoStore)).expect("added");
-    let cold = played(&mut cold);
+    let (cold, _) = late(&graph, false, &NoStore);
+    let (unready, _) = late(&graph, true, &NoStore);
     let player = opened(&memory, u64::MAX);
-    let mut warm = notes(&graph, 8_000, &player);
-    warm.go_live();
-    for _ in 0..4 {
-        warm.next_block().expect("a block").expect("a block");
-    }
-    now(warm.add(&graph, &term(LATE), &player)).expect("added");
-    let heard = played(&mut warm);
+    let (heard, dropped) = late(&graph, true, &player);
     let stored = (512 + 2_000 - 1_024) as usize;
     assert!(
         cold[..stored].iter().any(|b| *b != 0),
         "silence tests nothing"
     );
     assert_eq!(heard[..stored], cold[..stored], "the stored samples");
-    assert_eq!(warm.dropped(), ["string(f0=261.63, release=inf)"]);
+    assert_eq!(
+        heard[stored..],
+        unready[stored..],
+        "the note dropped past them"
+    );
+    assert_eq!(dropped, ["string(f0=261.63, release=inf)"]);
 }
 
 /// An entry's header span, off its first eight bytes: all a lookup may read of it.

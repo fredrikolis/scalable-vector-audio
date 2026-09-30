@@ -50,6 +50,11 @@ pub(crate) fn carried(new: &mut Table, old: Table, now: i64, live: bool) -> Vec<
             let there = here.map(|n| map.at(n));
             local[read] = local[read].max(there);
         }
+        if let Kind::Stored { .. } = new.values[at].kind {
+            for read in new.values[at].reads.clone() {
+                local[read] = local[read].max(here);
+            }
+        }
         if let Some(was) = same[at] {
             let old = old[was].take().expect("an old value carries on once");
             take(&mut new.values[at], old);
