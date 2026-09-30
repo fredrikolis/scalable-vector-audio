@@ -22,6 +22,7 @@ fn composition() -> Graph {
                 "sawed",
                 "lowpass(sample(0.3*saw(220*t)), cutoff=900, q=0.8)\n",
             ),
+            ("blip", "crop(sin(2*pi*440*t)*exp(0 - 8*t), 0s, 0.25s)\n"),
         ],
     )
 }
@@ -49,6 +50,29 @@ fn opened(g: &Graph, target: &str, live: bool) -> RefCell<Stream> {
         stream.go_live();
     }
     RefCell::new(stream)
+}
+
+/// A live stream over `target` with no end asked.
+fn endless(g: &Graph, target: &str) -> RefCell<Stream> {
+    let config = StreamConfig {
+        block: BLOCK,
+        render: RenderConfig::at(RATE),
+    };
+    let mut stream = Stream::open(g, &expr(target), config, None, &NoStore)
+        .now()
+        .unwrap_or_else(|e| panic!("{e}"));
+    stream.go_live();
+    RefCell::new(stream)
+}
+
+/// A term added at its landing, answered its handle.
+fn landing(stream: &RefCell<Stream>, g: &Graph, term: &str) -> sva_engine::Handle {
+    let build =
+        |_: &Stream| Ok::<_, EngineError>(Change::Add(g.clone(), expr(term), Placed::Landing));
+    let Ok(Changed::Added(note)) = change(stream, build, &NoStore).now() else {
+        panic!("an add answers its handle");
+    };
+    note
 }
 
 fn add(stream: &RefCell<Stream>, g: &Graph, term: &str) {
@@ -174,4 +198,38 @@ fn a_term_placed_at_its_landing_keeps_its_time_across_a_skip() {
     let want = whole(&g, &format!("@slow(t - {BLOCK}sp)"), at + BLOCK);
     assert_eq!(heard, want[at..]);
     assert_eq!(stream.borrow().landed(note), Some(BLOCK as i64));
+}
+
+/// A live stream with nothing sounding never ends: a read anywhere ahead plays full frames of
+/// silence there.
+#[test]
+fn a_silent_live_stream_reads_full_frames_of_zeros() {
+    let g = composition();
+    let stream = endless(&g, "@notes");
+    assert_eq!(read(&stream, 0), vec![0.0; BLOCK]);
+    let far = 30 * RATE as usize + 17;
+    assert_eq!(read(&stream, far), vec![0.0; BLOCK]);
+    assert_eq!(stream.borrow().position(), (far + BLOCK) as i64);
+    assert_eq!(stream.borrow().end(), None);
+}
+
+/// Once its last note ended, a live stream read far ahead moves there, and a note added then
+/// lands where it stands and plays from its attack.
+#[test]
+fn a_note_added_after_a_silent_skip_lands_there_with_its_attack() {
+    let g = composition();
+    let stream = endless(&g, "@notes");
+    landing(&stream, &g, "@blip");
+    for block in 0..9 {
+        read(&stream, block * BLOCK);
+    }
+    assert_eq!(stream.borrow().counts().terms, 0, "the note ended");
+    let far = 30 * RATE as usize + 17;
+    assert_eq!(read(&stream, far), vec![0.0; BLOCK]);
+    let note = landing(&stream, &g, "@blip");
+    let at = far + BLOCK;
+    assert_eq!(stream.borrow().landed(note), Some(at as i64));
+    let attack = whole(&g, "@blip", BLOCK);
+    assert!(attack.iter().any(|v| *v != 0.0));
+    assert_eq!(read(&stream, at), attack, "the attack is whole");
 }

@@ -231,7 +231,8 @@ impl Stream {
             self.dropped.push(table.values[at].name.clone());
         }
         self.late += usize::from(self.driver.at > issued);
-        self.driver.replace(table, range.end);
+        let last = self.last(range.end);
+        self.driver.replace(table, last);
         self.driver.recording.found(hits);
         self.shell = shell;
         self.graph = prospect.graph;
@@ -308,9 +309,19 @@ impl Stream {
     }
 
     /// An edited node with no state there, or one a read skips past, starts silent there,
-    /// never computing its past, and is named in `dropped`; a formula reads on exactly.
+    /// never computing its past, and is named in `dropped`; a formula reads on exactly. Silent,
+    /// it plays on.
     pub fn go_live(&mut self) {
         self.live = true;
+        let last = self.last(self.driver.last());
+        self.driver.bound(last);
+    }
+
+    fn last(&self, range_end: i64) -> i64 {
+        match self.live {
+            true => self.config.render.range.end.unwrap_or(i64::MAX),
+            false => range_end,
+        }
     }
 
     /// The latest nodes a live edit started silent, of `counts().dropped`.

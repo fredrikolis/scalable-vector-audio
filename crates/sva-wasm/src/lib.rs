@@ -634,7 +634,7 @@ fn answered(rendered: &Rendered, asked: &[Asked]) -> Result<JsValue, JsValue> {
 /// A target block by block, reading `@notes` as the sum of its terms, as `@hall(t, x=@notes)`.
 /// A key-up replaces a term with one whose release is a number. A term leaves with its handle
 /// once the stream passes its support. An edit lands at the first block boundary
-/// after the store answered it; `read` and every getter answer meanwhile.
+/// once the store answered it; `read` and getters answer meanwhile.
 #[wasm_bindgen]
 pub struct Stream {
     edits: Edits,
@@ -657,7 +657,7 @@ impl Drop for Stream {
 }
 
 impl Edits {
-    /// Refused where the page freed the stream meanwhile: what it did there no one hears.
+    /// Refused where the page freed the stream meanwhile: no one hears what it did.
     fn answered<T>(&self, done: Result<T, CliError>) -> Result<T, JsValue> {
         if self.freed.get() {
             let message = "the stream was freed while this edit was in flight".to_string();
@@ -739,7 +739,8 @@ fn promised<T: Into<JsValue>>(
 impl Stream {
     /// Writes frames from sample `at` into `out` (a SharedArrayBuffer view too) interleaved,
     /// `out[i * channels + c]`, and returns how many: `out.length / channels`, fewer at the end.
-    /// A later `at` skips; live, what needed the span starts silent, in `stats().dropped`.
+    /// A later `at` skips; live, what needed the span starts silent, in `stats().dropped`; only
+    /// `until` ends it.
     pub fn read(&self, at: f64, out: &js_sys::Float32Array) -> Result<usize, JsValue> {
         if !(at.is_finite() && at >= 0.0 && at.fract() == 0.0) {
             return Err(refuse(

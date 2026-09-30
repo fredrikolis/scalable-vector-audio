@@ -105,6 +105,11 @@ impl Driver {
 
     pub(super) fn replace(&mut self, table: Table, last: i64) {
         self.table = table;
+        self.bound(last);
+    }
+
+    /// Ends at `last`, unless `until` already stopped it.
+    pub(super) fn bound(&mut self, last: i64) {
         self.last = last;
         if self.stop.is_none() {
             self.end = None;

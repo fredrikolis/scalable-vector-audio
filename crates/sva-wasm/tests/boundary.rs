@@ -795,6 +795,23 @@ fn a_live_stream_reads_past_its_position_to_skip_there() {
     );
 }
 
+/// A live stream past everything it plays never ends: a read far ahead fills `out` with
+/// silence there, the stream stands past it, and an add lands where it stands.
+#[wasm_bindgen_test]
+fn a_silent_live_stream_reads_whole_frames_of_zeros_and_lands_an_add_there() {
+    let held = page();
+    let live = options(&[("live", JsValue::TRUE)]);
+    let stream = now(held.stream("@notes", BLOCK, live))
+        .unwrap_or_else(|e| unreachable!("it streams: {}", as_text(&e)));
+    let far = 8000 * 30 + 17;
+    assert_eq!(read_at(&stream, far), vec![0.0; BLOCK]);
+    assert_eq!(stream.position(), (far + BLOCK) as f64);
+    assert_eq!(stream.end(), None);
+    let note = now(stream.add("@partials/one", None))
+        .unwrap_or_else(|e| unreachable!("added: {}", as_text(&e)));
+    assert_eq!(stream.landed(note), Some((far + BLOCK) as f64));
+}
+
 /// What a page asks every second is cheap: `counts` crosses as whole numbers, no blip left in
 /// the sum once each ended, and `stats` lists only a stream's latest lookups, however long it
 /// played, counting all it made.
