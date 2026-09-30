@@ -27,10 +27,6 @@ pub(super) struct Driver {
     pub(super) work: Work,
     pub(super) recording: Recording,
     pub(super) spill: Option<Spill>,
-    /// A live driver starts silent what is not ready when read, never stalling on it.
-    pub(super) live: bool,
-    /// Each value it started silent.
-    pub(super) dropped: Vec<String>,
 }
 
 pub struct Block {
@@ -101,8 +97,6 @@ impl Driver {
             },
             recording,
             spill: None,
-            live: false,
-            dropped: Vec::new(),
         }
     }
 
@@ -150,12 +144,6 @@ impl Driver {
                 .table
                 .history(window, self.block as i64, &mut self.recording)?;
             self.priced(&history);
-        }
-        let ahead = (window, self.last);
-        let ahead = self.table.ahead(ahead, self.live, &mut self.recording)?;
-        self.priced(&ahead.pulled);
-        for at in ahead.dropped {
-            self.dropped.push(self.table.values[at].name.clone());
         }
         let asked = self.spill.as_ref().map(|_| self.table.demand(window));
         let pulled = self.table.pull(window, &mut self.recording)?;

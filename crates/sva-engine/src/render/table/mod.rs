@@ -1,6 +1,5 @@
 // Concern: the one table of values, keyed by identity and step, that renders, streams, prices and logs read | Non-concern: typing, readings off samples | IO: (Typing, roots) -> Table, samples
 
-mod ahead;
 mod demand;
 pub(crate) mod edit;
 mod eval;

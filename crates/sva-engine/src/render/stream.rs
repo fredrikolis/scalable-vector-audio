@@ -191,7 +191,6 @@ impl Stream {
     /// The next block, cut where the stream ends; `None` from there on.
     pub fn next_block(&mut self) -> Result<Option<Block>, EngineError> {
         let block = self.driver.next_block()?;
-        self.dropped.append(&mut self.driver.dropped);
         self.prune();
         Ok(block)
     }
@@ -199,7 +198,6 @@ impl Stream {
     /// An edited node with no state there starts silent, never computing its past.
     pub fn go_live(&mut self) {
         self.live = true;
-        self.driver.live = true;
     }
 
     /// Each node a live edit started silent.
