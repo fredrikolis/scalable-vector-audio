@@ -821,12 +821,33 @@ fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
     assert!(field(&whole, "waves").is_null());
 }
 
-/// What a page hands `open`: a directory handle held in memory, as the origin-private file
-/// system answers one. A missing name rejects as `NotFoundError`, a write lands on close, and a
-/// file moves into another directory whole.
+/// What a page hands `open`: an in-memory directory handle. A missing name rejects as
+/// `NotFoundError`, a write lands on close, a file moves whole. Each call installs a fresh origin's
+/// `navigator.locks`: exclusive, queued, releasable; no shared mode, `steal`, `signal` or 2nd page.
 fn fake_directory() -> JsValue {
     js_sys::Function::new_no_args(
         r#"
+        const held = new Map();
+        const locks = {
+            async request(name, ...rest) {
+                const callback = rest[rest.length - 1];
+                const options = rest.length > 1 ? rest[0] : {};
+                if (options.ifAvailable && held.has(name)) return callback(null);
+                while (held.has(name)) await held.get(name);
+                const lock = { name, mode: "exclusive" };
+                let release;
+                held.set(name, new Promise((r) => { release = r; }));
+                try { return await callback(lock); }
+                finally { held.delete(name); release(); }
+            },
+            async query() {
+                return { held: [...held.keys()].map((name) => ({ name, mode: "exclusive" })), pending: [] };
+            },
+        };
+        if (typeof globalThis.navigator !== "object" || globalThis.navigator === null) {
+            Object.defineProperty(globalThis, "navigator", { value: {}, configurable: true, writable: true });
+        }
+        Object.defineProperty(globalThis.navigator, "locks", { value: locks, configurable: true });
         const missing = () => Object.assign(new Error("missing"), { name: "NotFoundError" });
         const directory = () => {
             const files = new Map();
