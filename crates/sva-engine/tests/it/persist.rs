@@ -1484,3 +1484,62 @@ fn stores_sharing_a_directory_each_persist_what_they_warmed() {
         assert_eq!(stats(&hit).lookups[0].outcome, Outcome::Hit);
     }
 }
+
+/// A live stream adding a term that reads a stored value at a moving index plays the stored
+/// samples, bit for bit as a storeless exact stream, and names nothing dropped: nothing it
+/// started silent is ever read.
+#[test]
+fn a_moving_index_read_of_a_stored_value_drops_nothing() {
+    let looped = "crop(lowpass(sample(saw(110*t)), cutoff=900, q=0.7), 0s, 0.1s)\n";
+    let graph = graph_of(
+        "moving-stored",
+        &[("looped", looped), ("warm", "@looped(t)\n")],
+    );
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    now(render_through(
+        &graph,
+        "warm",
+        RenderConfig::seconds(RATE, 0.1),
+        &store,
+    ))
+    .expect("warmed");
+    now(store.persist()).expect("persisted");
+    let loop_term = term("crop(@looped[idx((t - 2048sp) % 800sp)], 2048sp, inf)");
+    let heard = |live: bool, player: Option<&Store<Memory>>| {
+        let stream = match player {
+            Some(player) => notes(&graph, 6_000, player),
+            None => notes(&graph, 6_000, &NoStore),
+        };
+        if live {
+            stream.borrow_mut().go_live();
+        }
+        let mut heard = Vec::new();
+        for _ in 0..4 {
+            let block = next(&mut stream.borrow_mut())
+                .expect("a block")
+                .expect("a block");
+            heard.extend(block.plane(0).iter().map(|v| v.to_bits()));
+        }
+        match player {
+            Some(player) => now(added(&stream, &graph, &loop_term, player)),
+            None => now(added(&stream, &graph, &loop_term, &NoStore)),
+        }
+        .expect("added");
+        heard.extend(played(&stream));
+        let dropped: Vec<String> = stream
+            .borrow()
+            .dropped()
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        (heard, dropped, store_hits(&stream))
+    };
+    let (cold, _, _) = heard(false, None);
+    let player = opened(&memory, u64::MAX);
+    let (warm, dropped, hits) = heard(true, Some(&player));
+    assert!(cold.iter().any(|b| *b != 0), "silence tests nothing");
+    assert!(warm == cold, "the stored samples, bit for bit");
+    assert!(dropped.is_empty(), "{dropped:?}");
+    assert_eq!(hits, ["looped"], "the store answers it");
+}

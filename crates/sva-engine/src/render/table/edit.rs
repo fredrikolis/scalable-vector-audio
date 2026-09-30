@@ -50,6 +50,11 @@ pub(crate) fn carried(new: &mut Table, old: Table, now: i64, live: bool) -> Vec<
             let there = here.map(|n| map.at(n));
             local[read] = local[read].max(there);
         }
+        for (slot, reach) in indexed(&new.values[at]) {
+            let read = new.values[at].reads[slot];
+            let there = here.map(|n| reach.map_or(i64::MIN, |(least, _)| n.saturating_add(least)));
+            local[read] = local[read].max(there);
+        }
         if let Kind::Stored { .. } = new.values[at].kind {
             for read in new.values[at].reads.clone() {
                 local[read] = local[read].max(here);
@@ -96,6 +101,24 @@ fn reads(value: &Value) -> Vec<(usize, sva_samples::Map)> {
             } = leaf
             {
                 out.push((at.0 as usize, *map));
+            }
+        });
+    }
+    out
+}
+
+/// Each index read of `value`'s program, by slot, and its reach where bounded.
+fn indexed(value: &Value) -> Vec<(usize, Option<(i64, i64)>)> {
+    let mut out = Vec::new();
+    if let Kind::Program(program) = &value.kind {
+        leaves(&program.renderer, &mut |leaf| {
+            if let NodeRenderer::Indexed {
+                slot: Slot::Read(at),
+                reach,
+                ..
+            } = leaf
+            {
+                out.push((at.0 as usize, *reach));
             }
         });
     }

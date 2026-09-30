@@ -738,3 +738,36 @@ fn a_note_added_under_a_silent_master_lands() {
     blocks(&stream, 1);
     assert_eq!(stream.borrow().counts().terms, 0, "the note ended");
 }
+
+/// A term added live reading a stateful value at a moving index reads samples of it that only
+/// later instants ask: none is past, so the value is computed whole, bit for bit, and nothing
+/// is dropped.
+#[test]
+fn a_live_term_reading_a_stateful_value_at_a_moving_index_computes_it_whole() {
+    let g = graph_of(
+        "moving",
+        &[(
+            "looped",
+            "crop(lowpass(sample(saw(110*t)), cutoff=900, q=0.7), 0s, 0.1s)\n",
+        )],
+    );
+    let term = format!(
+        "crop(@looped[idx((t - {0}sp) % 800sp)], {0}sp, inf)",
+        8 * BLOCK
+    );
+    let stream = opened(&g, "@notes", None);
+    stream.borrow_mut().go_live();
+    let mut heard = blocks(&stream, 4);
+    added(&stream, &g, &expr(&term), &NoStore)
+        .now()
+        .unwrap_or_else(|e| panic!("{e}"));
+    heard.extend(blocks(&stream, 16));
+    assert!(
+        stream.borrow().dropped().is_empty(),
+        "{:?}",
+        stream.borrow().dropped()
+    );
+    let mut whole_g = g.clone();
+    assert!(whole_g.define("final", expr(&term)));
+    assert_eq!(heard, whole(&whole_g, "final", heard.len()));
+}
