@@ -10,6 +10,7 @@ use sva_samples::{Buffer, Extent};
 
 use super::drive::{Block, Driver};
 use super::frontier::{Frontier, Known};
+use super::table::support::Supports;
 use super::table::{Table, edit};
 use super::terms::{Handle, NOTES, Terms, placed};
 use super::{Ends, Render, RenderConfig, range_of, through};
@@ -102,11 +103,11 @@ impl Stream {
         cache: Option<&Cache>,
         store: &impl Through,
     ) -> Result<Stream, EngineError> {
-        let mut terms = Terms::default();
+        let terms = Terms::default();
         let (mut known, epoch) = (Known::new(), store.epoch());
         let render = &blocked(&config)?.render;
         let walk = async |found: &mut Frontier<'_>| found.walked(&mut known, store).await;
-        let mut found = shelled(graph, target, &mut terms, render, walk).await?;
+        let mut found = shelled(graph, target, &terms, render, walk).await?;
         let mut met = Met::default();
         for (key, hit) in known.into_iter().filter(|(_, found)| found.is_some()) {
             met.noted(key, &hit, epoch, store);
@@ -164,8 +165,8 @@ impl Stream {
                 (graph, self.expr.clone(), terms, Changed::Held(true))
             }
             Change::Remove(handle) => {
-                let (cut, rate) = (self.driver.at, self.shell.rate());
-                let terms = self.terms.removed(handle, cut, rate);
+                let at = self.driver.at as f64 / f64::from(self.shell.rate());
+                let terms = self.terms.removed(handle, at);
                 let terms = terms.ok_or(Changed::Held(false))?;
                 (
                     self.graph.clone(),
@@ -283,21 +284,29 @@ impl Stream {
         }
     }
 
-    /// Retires every term whose value no later block reads.
+    /// Retires every term whose support lies wholly before the first sample of `notes` the
+    /// root's window from now on asks, as a render's demand finds it.
     fn prune(&mut self) {
-        let (table, shell) = (&self.driver.table, &self.shell);
-        let future = (self.driver.at < self.driver.last())
-            .then(|| table.demand(sva_samples::Extent::new(self.driver.at, self.driver.last())));
-        let gone = |id| {
-            table.of(id).is_some_and(|at| {
-                !table.values[at].evaluated.is_empty()
-                    && future
-                        .as_ref()
-                        .is_none_or(|needs| needs[at].hold.is_empty())
-            })
+        let (table, tys) = (&self.driver.table, &self.shell.tys);
+        let (now, last) = (self.driver.at, self.driver.last());
+        let asked = match tys.id(NOTES).and_then(|notes| table.of(notes)) {
+            Some(notes) if now < last => {
+                let needs = table.demand(Extent::new(now, last));
+                needs[notes].hold.iter().next().map(|asked| asked.start)
+            }
+            Some(_) => None,
+            None => Some(i64::MIN),
         };
-        let named = |leaf| crate::refs::identity(&shell.tys, leaf).ok();
-        if self.terms.prune(self.driver.at, &gone, &named) {
+        let supports = Supports::new(tys);
+        let gone = |handle: Handle| {
+            let id = tys.id(&handle.node());
+            id.is_some_and(|id| asked.is_none_or(|from| supports.of(id).end <= from))
+        };
+        let named = |handle: Handle| {
+            let id = tys.id(&handle.node())?;
+            crate::refs::identity(tys, id).ok()
+        };
+        if self.terms.prune(&gone, &named) {
             self.generation += 1;
         }
     }
@@ -310,11 +319,6 @@ impl Stream {
             .id(node)
             .and_then(|id| table.of(id))
             .map_or(Vec::new(), |at| table.values[at].evaluated.clone())
-    }
-
-    /// The values its table holds, which an edit's cost grows with.
-    pub fn values(&self) -> usize {
-        self.driver.table.values.len()
     }
 
     pub fn landed(&self, handle: Handle) -> Option<i64> {
@@ -399,7 +403,7 @@ pub async fn change<E: From<EngineError>>(
     let issued = stream.borrow().driver.at;
     loop {
         let change = build(&stream.borrow())?;
-        let mut prospect = match stream.borrow().prospect(change) {
+        let prospect = match stream.borrow().prospect(change) {
             Ok(prospect) => prospect,
             Err(answer) => return Ok(answer),
         };
@@ -418,7 +422,7 @@ pub async fn change<E: From<EngineError>>(
         };
         let (graph, target) = (&prospect.graph, &prospect.target);
         let config = &prospect.render;
-        let mut shelled = shelled(graph, target, &mut prospect.terms, config, walk).await?;
+        let mut shelled = shelled(graph, target, &prospect.terms, config, walk).await?;
         let standing = (prospect.generation, prospect.landing);
         loop {
             for (key, samples) in &fetched {
@@ -481,9 +485,10 @@ fn wrapped(graph: &Graph, target: &Expr, terms: &Terms) -> Result<Graph, EngineE
         }));
     }
     let own = terms.is_empty() && graph.defines(NOTES);
-    let sum = (!own).then(|| (NOTES, terms.sum()));
-    for (name, body) in std::iter::once((STREAMED, target.clone())).chain(sum) {
-        if !wrapped.define(name, body) {
+    let sum = (!own).then(|| (NOTES.to_string(), terms.sum()));
+    let defined = std::iter::once((STREAMED.to_string(), target.clone()));
+    for (name, body) in defined.chain(sum).chain(terms.nodes()) {
+        if !wrapped.define(&name, body) {
             return Err(refusal(format!(
                 "this composition already has a node named `{name}`"
             )));
@@ -496,7 +501,7 @@ fn wrapped(graph: &Graph, target: &Expr, terms: &Terms) -> Result<Graph, EngineE
 async fn shelled(
     graph: &Graph,
     target: &Expr,
-    terms: &mut Terms,
+    terms: &Terms,
     config: &RenderConfig,
     walk: impl AsyncFnOnce(&mut Frontier<'_>),
 ) -> Result<Shelled, EngineError> {
@@ -508,13 +513,14 @@ async fn shelled(
     let mut found = Frontier::from((&instances, &order), &keys, &root, (config, true));
     if !terms.is_empty() {
         found.unstored(reading(&order, &instances.instance_of(NOTES)?));
+        found.unstored(terms.handles().map(Handle::node));
     }
     walk(&mut found).await;
     let mut tys = typing::infer_over(&instances, &order.within(&found.visited), &BTreeMap::new())?;
     let id = tys
         .id(&root)
         .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;
-    terms.typed(&instances, &mut tys);
+    terms.name(&mut tys);
     let prefixes: BTreeMap<NodeId, Arc<Stored>> = std::mem::take(&mut found.stored)
         .into_iter()
         .map(|(path, stored)| (tys.id(&path).expect("a walked node is typed"), stored))

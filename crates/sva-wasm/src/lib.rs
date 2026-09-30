@@ -632,8 +632,8 @@ fn answered(rendered: &Rendered, asked: &[Asked]) -> Result<JsValue, JsValue> {
 
 /// A target block by block, reading `@notes` as the sum of its terms, as `@hall(t, x=@notes)`.
 /// A key-up replaces a term with one whose release is a number. A term leaves with its handle
-/// once its node ends, bar the last. An edit lands at the first block boundary after the store
-/// answered it; `next` and every getter answer meanwhile.
+/// once the stream passes its support, bar the last. An edit lands at the first block boundary
+/// after the store answered it; `next` and every getter answer meanwhile.
 #[wasm_bindgen]
 pub struct Stream {
     edits: Edits,

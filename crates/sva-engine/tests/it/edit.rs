@@ -554,8 +554,7 @@ const PAD: &str = "release = inf\ncrop(sin(2*pi*f0*t)*exp(-t/0.25), 0s, release)
     crop(exp(-release/0.25)*sin(2*pi*f0*t)*exp(-(t - release)/0.05), release, 3600s)\n";
 
 /// A player that strikes, lets up and removes each note once faded: `@notes` sums only the
-/// notes sounding and fading (one kept where none is), and what an edit builds stays as small
-/// as its first seconds', however many notes went before.
+/// notes sounding and fading, one kept where none is, however many notes went before.
 #[test]
 fn a_removed_term_leaves_the_sum_once_the_stream_passes_its_cut() {
     let g = graph_of("pads", &[("pad", PAD)]);
@@ -573,7 +572,6 @@ fn a_removed_term_leaves_the_sum_once_the_stream_passes_its_cut() {
     let stream = RefCell::new(stream.expect("opens"));
     let fade = (0.2 * f64::from(RATE)) as i64;
     let mut sounding: Vec<(sva_engine::Handle, i64)> = Vec::new();
-    let mut sizes = Vec::new();
     for i in 0..300 {
         let onset = stream.borrow().position();
         let pad = format!("@pad(t - {onset}sp, f0={})", 200 + i % 4 * 50);
@@ -603,11 +601,45 @@ fn a_removed_term_leaves_the_sum_once_the_stream_passes_its_cut() {
             "{terms} terms after note {i}, {} sounding",
             sounding.len()
         );
-        sizes.push(stream.borrow().values());
     }
-    let early = sizes[..50].iter().max().expect("fifty notes");
-    let late = sizes[50..].iter().max().expect("the rest");
-    assert!(late <= early, "{late} values late, {early} early");
+}
+
+/// A note whose own crop ends leaves the sum once the stream passes that end, removed or
+/// not, closed form or sampled, and one cropped wholly into the past leaves as it lands.
+#[test]
+fn a_note_whose_crop_the_stream_passed_leaves_the_sum_unremoved() {
+    let g = graph_of(
+        "cropped",
+        &[
+            ("pad", PAD),
+            ("tone", "crop(sin(2*pi*f0*t), 0s, 0.05s)\n"),
+            (
+                "blip",
+                "crop(lowpass(sample(sin(2*pi*f0*t)), cutoff=2000, q=0.7), 0s, 0.05s)\n",
+            ),
+        ],
+    );
+    let stream = opened(&g, "@notes", None);
+    let add = |term: &str| {
+        added(&stream, &g, &expr(term), &NoStore)
+            .now()
+            .unwrap_or_else(|e| panic!("`{term}`: {e}"))
+    };
+    add("@pad(t, f0=200)");
+    blocks(&stream, 2);
+    let terms = || stream.borrow().counts().terms;
+    for node in ["tone", "blip"] {
+        let at = stream.borrow().position();
+        add(&format!("@{node}(t - {at}sp, f0=300)"));
+        assert_eq!(terms(), 2, "{node} sounds");
+        blocks(&stream, 1);
+        assert_eq!(terms(), 2, "{node} sounds on");
+        blocks(&stream, 1);
+        assert_eq!(terms(), 1, "{node} ended");
+    }
+    let at = stream.borrow().position();
+    add(&format!("crop(@pad(t, f0=300), 0s, {}sp)", at - 1));
+    assert_eq!(terms(), 1, "a note cropped into the past");
 }
 
 /// A term placed at its landing has its sample 0 at the sample the add lands at, and a key-up

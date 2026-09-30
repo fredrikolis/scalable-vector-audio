@@ -1,18 +1,23 @@
-// Concern: a stream's note sum, one term per handle, each term that ended kept only as its identity | Non-concern: when a value ends (table/), rebuilding nodes | IO: (Expr) -> Handle; (ended) -> ()
+// Concern: a stream's note sum, one node per term, each retired term kept as its identity | Non-concern: when a term's support ends (stream.rs), rebuilding nodes | IO: (Expr) -> Handle; (gone) -> ()
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use sva_ast::{Arg, BinOp, ByteSpan, Expr, Literal};
-use sva_formula::{Hash, NodeId};
+use sva_ast::{Address, Arg, BinOp, ByteSpan, Expr, Literal};
+use sva_formula::Hash;
 
-use crate::instantiate::Instances;
-use crate::typing::{SumSlot, Typing, Value};
+use crate::typing::{SumSlot, Typing};
 
 /// The node a stream defines as the sum of its terms, for its expression to read as `@notes`.
 pub const NOTES: &str = "notes";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Handle(pub u32);
+
+impl Handle {
+    pub(super) fn node(self) -> String {
+        format!("{NOTES}#{}", self.0)
+    }
+}
 
 /// Every stream draws from one count, so a handle names one term of one stream.
 static HANDLES: AtomicU32 = AtomicU32::new(0);
@@ -23,11 +28,6 @@ struct Term {
     expr: Expr,
     /// False once removed: it plays on, cut there, under no handle.
     addressed: bool,
-    leaf: Option<NodeId>,
-    ends: Option<NodeId>,
-    /// The sample a removal cut it at.
-    cut: Option<i64>,
-    /// The sample its add landed at.
     landed: i64,
 }
 
@@ -75,6 +75,14 @@ impl Terms {
         self.live().map(|t| &t.expr)
     }
 
+    pub(super) fn nodes(&self) -> impl Iterator<Item = (String, Expr)> {
+        self.live().map(|t| (t.handle.node(), t.expr.clone()))
+    }
+
+    pub(super) fn handles(&self) -> impl Iterator<Item = Handle> {
+        self.live().map(|t| t.handle)
+    }
+
     pub(super) fn added(&self, expr: Expr) -> (Terms, Handle) {
         let mut next = self.clone();
         let handle = Handle(HANDLES.fetch_add(1, Ordering::Relaxed));
@@ -82,9 +90,6 @@ impl Terms {
             handle,
             expr,
             addressed: true,
-            leaf: None,
-            ends: None,
-            cut: None,
             landed: 0,
         }));
         (next, handle)
@@ -108,13 +113,12 @@ impl Terms {
     pub(super) fn replaced(&self, handle: Handle, expr: impl FnOnce(i64) -> Expr) -> Option<Terms> {
         let mut next = self.clone();
         let term = next.held(handle)?;
-        (term.expr, term.leaf, term.ends) = (expr(term.landed), None, None);
+        term.expr = expr(term.landed);
         Some(next)
     }
 
-    /// The term cut at sample `cut` of the sum's own clock.
-    pub(super) fn removed(&self, handle: Handle, cut: i64, rate: u32) -> Option<Terms> {
-        let at = cut as f64 / f64::from(rate);
+    /// The term cropped at `at` seconds on the sum's own clock.
+    pub(super) fn removed(&self, handle: Handle, at: f64) -> Option<Terms> {
         let mut next = self.clone();
         let term = next.held(handle)?;
         let never = Expr::Bin(
@@ -129,87 +133,56 @@ impl Terms {
                 Arg::Pos(never),
                 Arg::Pos(Expr::Lit(Literal::Num(at))),
             ],
-            span: ByteSpan { start: 0, end: 0 },
+            span: SPAN,
         };
-        (term.addressed, term.leaf, term.ends, term.cut) = (false, None, None, Some(cut));
+        term.addressed = false;
         Some(next)
     }
 
     pub(super) fn sum(&self) -> Expr {
-        self.exprs()
-            .cloned()
+        self.live()
+            .map(|t| Expr::Ref {
+                path: t.handle.node(),
+                arg: Box::new(Expr::Var("t".to_string())),
+                binds: Vec::new(),
+                address: Address::Time,
+                span: SPAN,
+            })
             .reduce(|sum, t| Expr::Bin(BinOp::Add, Box::new(sum), Box::new(t)))
             .unwrap_or(Expr::Lit(Literal::Num(0.0)))
     }
 
-    /// Each term's own node down the lowered sum's spine, none where the lowering merged it;
-    /// where each has one, `notes` is named by its slots.
-    pub(super) fn typed(&mut self, inst: &Instances, tys: &mut Typing) {
-        let Some(notes) = inst.instance_of(NOTES).ok().and_then(|path| tys.id(&path)) else {
+    /// `notes` named by its slots, a retired term by the identity it had.
+    pub(super) fn name(&self, tys: &mut Typing) {
+        let Some(notes) = tys.id(NOTES) else {
             return;
         };
-        let mut at = match tys.value(notes) {
-            Value::Read {
-                source,
-                at: crate::typing::When::At(time),
-                ..
-            } if *time == crate::time::Affine::NOW => Some(*source),
-            _ => Some(notes),
-        };
-        let count = self.live().count();
-        let mut leaves = vec![None; count];
-        for k in (0..count).rev() {
-            let Some(id) = at else {
-                break;
-            };
-            match (k, tys.value(id)) {
-                (0, _) => (leaves[0], at) = (Some(id), None),
-                (_, Value::Op { name, args }) if name == "+" && args.len() == 2 => {
-                    (leaves[k], at) = (Some(args[1]), Some(args[0]));
-                }
-                _ => at = None,
-            }
-        }
-        for (term, leaf) in self.live_mut().zip(leaves) {
-            term.leaf = leaf;
-            term.ends = leaf.map(|id| match tys.value(id) {
-                Value::Read { source, .. } => *source,
-                _ => id,
-            });
-        }
-        let slots = self
-            .slots
-            .iter()
-            .map(|s| match s {
-                Slot::Live(t) => t.leaf.map(SumSlot::Node),
-                Slot::Retired(h) => Some(SumSlot::Retired(*h)),
-            })
-            .collect::<Option<Vec<_>>>();
-        if let Some(slots) = slots {
+        let slots = self.slots.iter().map(|s| match s {
+            Slot::Live(t) => tys.id(&t.handle.node()).map(SumSlot::Node),
+            Slot::Retired(h) => Some(SumSlot::Retired(*h)),
+        });
+        if let Some(slots) = slots.collect::<Option<Vec<_>>>() {
             tys.name_sum(notes, slots);
         }
     }
 
-    /// Retires every term whose node has ended or whose cut `now` has passed, bar the last
-    /// where all have, so what reads `notes` keeps its shape and its identity; one with no node
-    /// of its own just goes. True where any went.
+    /// Retires every term `gone` names, bar the last where all are, so what reads `notes`
+    /// keeps its shape, each as the identity `named` gives it. True where any went.
     pub(super) fn prune(
         &mut self,
-        now: i64,
-        ended: &dyn Fn(NodeId) -> bool,
-        named: &dyn Fn(NodeId) -> Option<Hash>,
+        gone: &dyn Fn(Handle) -> bool,
+        named: &dyn Fn(Handle) -> Option<Hash>,
     ) -> bool {
         let live = self.live().count();
-        let gone = |t: &Term| t.cut.is_some_and(|cut| cut <= now) || t.ends.is_some_and(ended);
-        let keep = match self.live().all(gone) {
+        let keep = match self.live().all(|t| gone(t.handle)) {
             true => self.live().last().map(|t| t.handle),
             false => None,
         };
         self.slots = std::mem::take(&mut self.slots)
             .into_iter()
             .filter_map(|slot| match slot {
-                Slot::Live(t) if gone(&t) && Some(t.handle) != keep => {
-                    t.leaf.and_then(named).map(Slot::Retired)
+                Slot::Live(t) if gone(t.handle) && Some(t.handle) != keep => {
+                    named(t.handle).map(Slot::Retired)
                 }
                 other => Some(other),
             })
@@ -217,6 +190,8 @@ impl Terms {
         self.live().count() != live
     }
 }
+
+const SPAN: ByteSpan = ByteSpan { start: 0, end: 0 };
 
 /// `expr` with its sample 0 at sample `at` of the stream: every `t` in it read `at` earlier.
 pub(super) fn placed(expr: &Expr, at: i64) -> Expr {
