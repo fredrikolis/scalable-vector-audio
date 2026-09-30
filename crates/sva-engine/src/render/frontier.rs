@@ -7,7 +7,7 @@ use sva_formula::Hash;
 use sva_samples::Extent;
 
 use super::{RenderConfig, default_end, default_start};
-use crate::cache::{Backend, Lookup, Outcome, PayloadKind, Store, Stored};
+use crate::cache::{Lookup, Outcome, PayloadKind, Stored, Through};
 use crate::instantiate::Instances;
 use crate::query::Representation;
 use crate::schedule::Order;
@@ -50,7 +50,7 @@ impl<'w> Frontier<'w> {
     }
 
     /// A hit ends the walk down its branch; a miss goes on into every node it reads.
-    pub(crate) async fn walk<B: Backend>(&mut self, store: &Store<B>) {
+    pub(crate) async fn walk(&mut self, store: &impl Through) {
         while let Some(step) = self.stack.pop() {
             let path = match step {
                 Step::Close(path) => {

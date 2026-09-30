@@ -26,13 +26,7 @@ pub async fn render_through<B: Backend>(
     let instances = instantiate::instantiate(graph, target, config.rate)?;
     let root = instances.instance_of(target)?;
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&root))?;
-    let keys: BTreeMap<String, Hash> = crate::source::identities(graph, &instances, &order)
-        .into_iter()
-        .map(|(path, identity)| {
-            let key = crate::cache::node_key(identity, config.rate, &config.profile);
-            (path, key)
-        })
-        .collect();
+    let keys = keys(graph, &instances, &order, &config);
     let mut found = frontier::Frontier::from((&instances, &order), &keys, &root, &config);
     let (mut held, typed) = loop {
         found.walk(store).await;
@@ -47,7 +41,10 @@ pub async fn render_through<B: Backend>(
             .collect();
         let typed = tys.lowered().to_vec();
         let held = planned_over(&instances, (tys, id), config.clone(), &bounds)?;
-        let short = short(&held);
+        let short = match (&held.table, held.range) {
+            (Some(table), Some(range)) => short(table, range),
+            _ => Vec::new(),
+        };
         if short.is_empty() {
             break (held, typed);
         }
@@ -93,11 +90,24 @@ pub async fn render_through<B: Backend>(
     Ok(held)
 }
 
-/// Each stored node whose samples miss some its readers ask.
-fn short(held: &Render) -> Vec<String> {
-    let (Some(table), Some(range)) = (&held.table, held.range) else {
-        return Vec::new();
-    };
+/// Each instance's store key: its source identity at the render's rate and profile.
+pub(crate) fn keys(
+    graph: &Graph,
+    instances: &instantiate::Instances,
+    order: &schedule::Order,
+    config: &RenderConfig,
+) -> BTreeMap<String, Hash> {
+    crate::source::identities(graph, instances, order)
+        .into_iter()
+        .map(|(path, identity)| {
+            let key = crate::cache::node_key(identity, config.rate, &config.profile);
+            (path, key)
+        })
+        .collect()
+}
+
+/// Each stored node whose samples miss some its readers ask over `range`.
+pub(crate) fn short(table: &Table, range: sva_samples::Extent) -> Vec<String> {
     let needs = table.demand(range);
     table
         .values

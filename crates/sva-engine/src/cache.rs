@@ -8,7 +8,8 @@ mod store;
 
 pub(crate) use persist::node_key;
 pub use persist::{
-    Backend, DEFAULT_STORE_BYTES, Persisted, STORE_VERSION, Store, Stored, VERSION_NAME,
+    Backend, DEFAULT_STORE_BYTES, NoStore, Persisted, STORE_VERSION, Store, Stored, Through,
+    VERSION_NAME,
 };
 pub(crate) use stats::Recording;
 pub use stats::{CacheStats, Lookup, Outcome};

@@ -98,6 +98,10 @@ impl Recording {
         }
     }
 
+    pub(crate) fn found(&mut self, lookups: Vec<Lookup>) {
+        self.lookups.extend(lookups);
+    }
+
     pub(crate) fn reach(&mut self, at: i64) {
         self.reached.push((at, self.lookups.len()));
     }

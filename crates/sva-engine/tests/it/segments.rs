@@ -1,9 +1,10 @@
 // Concern: proves a released note reads the held note's run up to its release and computes only the rest, bit for bit | Non-concern: the store's cap (stores.rs) | IO: (a store, renders) -> samples, work
 
-use crate::fixtures::graph_of;
+use crate::fixtures::{Now, graph_of};
 use sva_ast::Graph;
 use sva_engine::{
-    Cache, CacheStats, Outcome, PayloadKind, Range, RenderConfig, Stream, StreamConfig, render,
+    Cache, CacheStats, NoStore, Outcome, PayloadKind, Range, RenderConfig, Stream, StreamConfig,
+    render,
 };
 
 const RATE: u32 = 8_000;
@@ -57,7 +58,9 @@ fn streamed(g: &Graph, target: &str, cache: Option<&Cache>) -> (Vec<f64>, u128, 
         },
     };
     let target = sva_ast::parse_expr(target).expect("a target");
-    let mut stream = Stream::open(g, &target, config, cache).unwrap_or_else(|e| panic!("{e}"));
+    let mut stream = Stream::open(g, &target, config, cache, &NoStore)
+        .now()
+        .unwrap_or_else(|e| panic!("{e}"));
     let mut heard = Vec::new();
     while let Some(block) = stream.next_block().unwrap_or_else(|e| panic!("{e}")) {
         heard.extend_from_slice(block.plane(0));

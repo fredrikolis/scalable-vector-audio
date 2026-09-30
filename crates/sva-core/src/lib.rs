@@ -42,7 +42,8 @@ pub use sva_engine::{Handle, QuietTail, Stream, Until};
 
 pub use sva_engine::{Answer, Extent, Label, Output, Representation};
 pub use sva_engine::{
-    Backend, Cache, CachePolicy, DEFAULT_STORE_BYTES, Persisted, PrunePolicy, Store,
+    Backend, Cache, CachePolicy, DEFAULT_STORE_BYTES, NoStore, Persisted, PrunePolicy, Store,
+    Through,
 };
 
 pub const ROOT: &str = "master";
@@ -266,7 +267,7 @@ pub fn quiet_tails(job: &Job) -> Result<Vec<QuietTail>, CliError> {
     Ok(found.into_iter().filter(|t| t.file != PROBE).collect())
 }
 
-pub fn stream(job: &Job, block: usize) -> Result<Stream, CliError> {
+pub async fn stream(job: &Job<'_>, block: usize, store: &impl Through) -> Result<Stream, CliError> {
     let (graph, config) = settle(job)?;
     let target = graph
         .expr(PROBE)
@@ -276,37 +277,51 @@ pub fn stream(job: &Job, block: usize) -> Result<Stream, CliError> {
         block,
         render: config,
     };
-    Stream::open(&graph, &target, config, job.cache)
+    Stream::open(&graph, &target, config, job.cache, store)
+        .await
         .map_err(|e| CliError::Engine(as_written(e, job.target)))
 }
 
 /// `target`, an expression over `source` with no interval of its own, in place of what
 /// `stream` plays from its next block on.
-pub fn edit(stream: &mut Stream, source: &dyn Source, target: &str) -> Result<(), CliError> {
+pub async fn edit(
+    stream: &mut Stream,
+    source: &dyn Source,
+    target: &str,
+    store: &impl Through,
+) -> Result<(), CliError> {
     let (graph, expr) = streamed(stream, source, target)?;
     stream
-        .edit(&graph, &expr)
+        .edit(&graph, &expr, store)
+        .await
         .map_err(|e| CliError::Engine(as_written(e, target)))
 }
 
 /// `term` summed into the stream's `@notes` from its next block on.
-pub fn add(stream: &mut Stream, source: &dyn Source, term: &str) -> Result<Handle, CliError> {
+pub async fn add(
+    stream: &mut Stream,
+    source: &dyn Source,
+    term: &str,
+    store: &impl Through,
+) -> Result<Handle, CliError> {
     let (graph, expr) = streamed(stream, source, term)?;
     stream
-        .add(&graph, &expr)
+        .add(&graph, &expr, store)
+        .await
         .map_err(|e| CliError::Engine(as_written(e, term)))
 }
 
 /// False where the stream no longer holds `handle`.
-pub fn replace(
+pub async fn replace(
     stream: &mut Stream,
     source: &dyn Source,
-    handle: Handle,
-    term: &str,
+    (handle, term): (Handle, &str),
+    store: &impl Through,
 ) -> Result<bool, CliError> {
     let (graph, expr) = streamed(stream, source, term)?;
     stream
-        .replace(&graph, handle, &expr)
+        .replace(&graph, (handle, &expr), store)
+        .await
         .map_err(|e| CliError::Engine(as_written(e, term)))
 }
 

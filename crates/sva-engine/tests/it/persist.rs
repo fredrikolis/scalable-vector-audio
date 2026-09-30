@@ -1,4 +1,4 @@
-// Concern: proves a store answers a render from its root down, stages until persist, wipes on a new version, keeps a budget | Non-concern: any real medium | IO: (a composition, a fake backend) -> stats
+// Concern: proves a store answers a render or a stream from its root down, stages until persist, keeps a version and a budget | Non-concern: any real medium | IO: (composition, fake backend) -> hits
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,8 +8,8 @@ use std::task::{Context, Poll, Waker};
 use crate::fixtures::{graph_of, samples};
 use sva_ast::Graph;
 use sva_engine::{
-    Backend, CacheStats, Hash, Outcome, Render, RenderConfig, STORE_VERSION, Store, VERSION_NAME,
-    render, render_through,
+    Backend, CacheStats, Hash, NoStore, Outcome, Range, Render, RenderConfig, STORE_VERSION, Store,
+    Stream, StreamConfig, VERSION_NAME, render, render_through,
 };
 
 const SECONDS: f64 = 0.05;
@@ -514,4 +514,72 @@ fn a_persist_that_fails_leaves_every_value_it_did_not_commit_staged() {
     let done = now(store.persist()).expect("persisted");
     assert_eq!(done.written, 3, "x, y and master were still staged");
     assert_eq!(memory.entries().len(), 3);
+}
+
+/// A note one worker rendered and persisted, a stream in another answers from the store: the
+/// term stands as its samples under the loop that reads it, bit for bit the cold stream.
+#[test]
+fn a_stream_reads_a_note_another_store_over_its_directory_persisted() {
+    let graph = graph_of(
+        "streamed",
+        &[
+            (
+                "blip",
+                "crop(lowpass(sample(sin(2*pi*f0*t)), cutoff=2000, q=0.7), 0s, 0.1s)\n",
+            ),
+            ("echo", "x + 0.5*self[idx(t - 0.05s)]\n"),
+            ("warm", "@blip(t, f0=200)\n"),
+        ],
+    );
+    let memory = Memory::default();
+    let (renderer, player) = (opened(&memory, u64::MAX), opened(&memory, u64::MAX));
+    now(render_through(
+        &graph,
+        "warm",
+        RenderConfig::seconds(RATE, 0.1),
+        &renderer,
+    ))
+    .expect("a render");
+    now(renderer.persist()).expect("persisted");
+
+    let expr = |text: &str| sva_ast::parse_expr(text).expect("an expression");
+    let config = StreamConfig {
+        block: 256,
+        render: RenderConfig {
+            range: Range {
+                start: Some(0),
+                end: Some(RATE.into()),
+            },
+            ..RenderConfig::at(RATE)
+        },
+    };
+    let (master, term) = (expr("@echo(t, x=@notes)"), expr("@blip(t - 512sp, f0=200)"));
+    let cold = now(Stream::open(
+        &graph,
+        &master,
+        config.clone(),
+        None,
+        &NoStore,
+    ));
+    let mut cold = cold.expect("a stream");
+    let mut warm = now(Stream::open(&graph, &master, config, None, &player)).expect("a stream");
+    now(cold.add(&graph, &term, &NoStore)).expect("added");
+    now(warm.add(&graph, &term, &player)).expect("added");
+    for _ in 0..(RATE / 256) {
+        let (cold, warm) = (
+            cold.next_block().expect("a block"),
+            warm.next_block().expect("a block"),
+        );
+        assert_eq!(
+            warm.map(|b| b.plane(0).to_vec()),
+            cold.map(|b| b.plane(0).to_vec())
+        );
+    }
+    let hits = warm
+        .stats()
+        .lookups
+        .into_iter()
+        .filter(|l| l.store == Some(true));
+    let hits: Vec<String> = hits.map(|l| l.node).collect();
+    assert_eq!(hits, ["blip(f0=200)"], "{:?}", warm.stats());
 }

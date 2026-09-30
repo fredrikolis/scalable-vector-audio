@@ -1,8 +1,8 @@
 // Concern: proves a stream's blocks are the samples a whole render writes, bit for bit, or it refuses | Non-concern: one machine's own blocks (sva-samples) | IO: (a composition, bindings) -> blocks
 
-use crate::fixtures::graph_of;
+use crate::fixtures::{Now, graph_of};
 use sva_ast::Graph;
-use sva_engine::{Range, RenderConfig, Stream, StreamConfig, render};
+use sva_engine::{NoStore, Range, RenderConfig, Stream, StreamConfig, render};
 
 const RATE: u32 = 8_000;
 
@@ -95,7 +95,9 @@ fn config(block: usize, range: Range) -> StreamConfig {
 
 fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Vec<f64> {
     let config = config(block, four());
-    let mut stream = Stream::open(g, &at(target), config, None).unwrap_or_else(|e| panic!("{e}"));
+    let mut stream = Stream::open(g, &at(target), config, None, &NoStore)
+        .now()
+        .unwrap_or_else(|e| panic!("{e}"));
     let mut out = Vec::with_capacity(samples + block);
     while out.len() < samples {
         let block = stream.next_block().unwrap_or_else(|e| panic!("{e}"));
@@ -200,8 +202,15 @@ fn a_streamed_synth_voice_is_the_whole_render_bit_for_bit_in_blocks_of_any_size(
 fn an_open_stream_ends_where_its_support_does() {
     let g = composition();
     for target in ["clipped", "decayed"] {
-        let mut stream =
-            Stream::open(&g, &at(target), config(441, Range::default()), None).expect("opens");
+        let mut stream = Stream::open(
+            &g,
+            &at(target),
+            config(441, Range::default()),
+            None,
+            &NoStore,
+        )
+        .now()
+        .expect("opens");
         let mut heard = Vec::new();
         while let Some(block) = stream.next_block().expect("a block") {
             heard.extend_from_slice(block.plane(0));
@@ -235,7 +244,8 @@ fn a_stream_from_a_later_start_is_the_whole_render_over_the_same_range() {
             whole(&g, target, (start + samples) as usize)[start as usize..],
             "{target}: a late start trims the output alone"
         );
-        let mut stream = Stream::open(&g, &at(target), self::config(777, range), None)
+        let mut stream = Stream::open(&g, &at(target), self::config(777, range), None, &NoStore)
+            .now()
             .unwrap_or_else(|e| panic!("{target}: {e}"));
         let mut heard = Vec::new();
         while let Some(block) = stream.next_block().expect("a block") {
@@ -268,8 +278,15 @@ fn an_open_stream_whose_support_never_ends_streams_on_while_pulled() {
     let g = composition();
     for target in ["held", "tone", "bar", "damped"] {
         let block = secs(0.1);
-        let mut stream = Stream::open(&g, &at(target), config(block, Range::default()), None)
-            .unwrap_or_else(|e| panic!("{target}: {e}"));
+        let mut stream = Stream::open(
+            &g,
+            &at(target),
+            config(block, Range::default()),
+            None,
+            &NoStore,
+        )
+        .now()
+        .unwrap_or_else(|e| panic!("{target}: {e}"));
         let mut heard = Vec::new();
         for _ in 0..30 {
             let block = stream.next_block().expect("a block").expect("no end");
@@ -292,8 +309,9 @@ fn a_closed_stream_ends_at_its_range() {
         start: Some(0),
         end: Some(1_000),
     };
-    let mut stream =
-        Stream::open(&g, &at("tone"), config(256, range), None).expect("a closed range opens");
+    let mut stream = Stream::open(&g, &at("tone"), config(256, range), None, &NoStore)
+        .now()
+        .expect("a closed range opens");
     let mut heard = 0;
     while let Some(block) = stream.next_block().expect("a block") {
         heard += block.len();
@@ -345,7 +363,9 @@ fn streamed_at(g: &Graph, target: &str, rate: u32, block: usize, samples: usize)
             ..RenderConfig::at(rate)
         },
     };
-    let mut stream = Stream::open(g, &at(target), config, None).unwrap_or_else(|e| panic!("{e}"));
+    let mut stream = Stream::open(g, &at(target), config, None, &NoStore)
+        .now()
+        .unwrap_or_else(|e| panic!("{e}"));
     let mut out = Vec::with_capacity(samples + block);
     while out.len() < samples {
         let block = stream
@@ -399,7 +419,8 @@ fn a_filter_read_at_a_moving_time_refuses_whole_and_streamed() {
         panic!("a filter has no value at a time that moves");
     };
     assert_eq!(whole.code(), "type.stateful_warp", "{whole}");
-    let Err(streamed) = Stream::open(&g, &at("warped"), config(256, four()), None) else {
+    let Err(streamed) = Stream::open(&g, &at("warped"), config(256, four()), None, &NoStore).now()
+    else {
         panic!("a filter streams no value at a time that moves");
     };
     assert_eq!(streamed.code(), "type.stateful_warp", "{streamed}");

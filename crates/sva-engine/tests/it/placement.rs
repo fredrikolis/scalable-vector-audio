@@ -1,8 +1,10 @@
 // Concern: proves a placed read shares its node's one value: computed once, pruned, folded, snapped to a sample | Non-concern: what a value holds | IO: (a composition) -> evaluated segments, onsets
 
-use crate::fixtures::graph_of;
+use crate::fixtures::{Now, graph_of};
 use sva_ast::{Graph, PerBar};
-use sva_engine::{Extent, Outcome, Range, RenderConfig, Stream, StreamConfig, identity, render};
+use sva_engine::{
+    Extent, NoStore, Outcome, Range, RenderConfig, Stream, StreamConfig, identity, render,
+};
 
 const RATE: u32 = 44_100;
 
@@ -114,7 +116,9 @@ fn streamed(
         },
     };
     let at = sva_ast::parse_expr(target).expect("a target");
-    let mut stream = Stream::open(g, &at, config, None).expect("it streams");
+    let mut stream = Stream::open(g, &at, config, None, &NoStore)
+        .now()
+        .expect("it streams");
     while let Some(block) = stream.next_block().expect("a block") {
         each(block.start(), block.plane(0));
     }

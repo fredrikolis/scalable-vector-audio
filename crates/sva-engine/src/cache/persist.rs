@@ -85,6 +85,25 @@ pub trait Backend: Sized {
     fn rename(&self, name: &str, to: &Self) -> impl Future<Output = Result<(), String>>;
 }
 
+/// What a stream looks a node up in before typing it: a store, or nothing at all.
+pub trait Through {
+    fn lookup(&self, key: Hash) -> impl Future<Output = Option<Stored>>;
+}
+
+impl<B: Backend> Through for Store<B> {
+    fn lookup(&self, key: Hash) -> impl Future<Output = Option<Stored>> {
+        Store::lookup(self, key)
+    }
+}
+
+pub struct NoStore;
+
+impl Through for NoStore {
+    async fn lookup(&self, _: Hash) -> Option<Stored> {
+        None
+    }
+}
+
 #[derive(Default)]
 struct Index {
     held: HashMap<Hash, (u64, u64)>,

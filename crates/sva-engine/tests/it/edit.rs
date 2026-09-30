@@ -1,8 +1,10 @@
 // Concern: proves an edit plays the whole render of the edited expression where nothing before now moved, and carries changed state | Non-concern: the blocks before it | IO: (a stream, exprs) -> blocks
 
-use crate::fixtures::graph_of;
+use crate::fixtures::{Now, graph_of};
 use sva_ast::Graph;
-use sva_engine::{Cache, Outcome, PayloadKind, Range, RenderConfig, Stream, StreamConfig, render};
+use sva_engine::{
+    Cache, NoStore, Outcome, PayloadKind, Range, RenderConfig, Stream, StreamConfig, render,
+};
 
 const RATE: u32 = 8_000;
 const BLOCK: usize = 256;
@@ -87,12 +89,15 @@ fn opened(g: &Graph, text: &str, cache: Option<&Cache>) -> Stream {
 
 fn opened_at(rate: u32, g: &Graph, text: &str, cache: Option<&Cache>) -> Stream {
     let end = Some(4 * i64::from(rate));
-    Stream::open(g, &expr(text), config_at(rate, end), cache).unwrap_or_else(|e| panic!("{e}"))
+    Stream::open(g, &expr(text), config_at(rate, end), cache, &NoStore)
+        .now()
+        .unwrap_or_else(|e| panic!("{e}"))
 }
 
 fn edit(stream: &mut Stream, g: &Graph, text: &str) {
     stream
-        .edit(g, &expr(text))
+        .edit(g, &expr(text), &NoStore)
+        .now()
         .unwrap_or_else(|e| panic!("`{text}`: {e}"));
 }
 
@@ -214,13 +219,14 @@ fn a_note_past_its_end_leaves_the_sum_and_its_echo_rings_on() {
     let b = format!("@blip(t - {}sp, f0=300)", 8 * BLOCK);
     let added = |stream: &mut Stream, term: &str| {
         stream
-            .add(&g, &expr(term))
+            .add(&g, &expr(term), &NoStore)
+            .now()
             .unwrap_or_else(|e| panic!("`{term}`: {e}"))
     };
     let (held_a, held_b) = (added(&mut stream, &a), added(&mut stream, &b));
     let mut heard = blocks(&mut stream, 20);
     assert_eq!(
-        stream.remove(held_a).ok(),
+        stream.remove(held_a, &NoStore).now().ok(),
         Some(false),
         "the first note ended"
     );
@@ -228,7 +234,7 @@ fn a_note_past_its_end_leaves_the_sum_and_its_echo_rings_on() {
     let c = format!("@blip(t - {}sp, f0=250)", 30 * BLOCK);
     added(&mut stream, &c);
     assert_eq!(
-        stream.remove(held_b).ok(),
+        stream.remove(held_b, &NoStore).now().ok(),
         Some(false),
         "the second note ended"
     );
@@ -253,14 +259,19 @@ fn a_term_removed_while_it_sounds_is_cut_where_the_stream_stands() {
     let mut stream = opened(&g, "@echo(t, x=@notes)", None);
     let mut added = |term: &str| {
         stream
-            .add(&g, &expr(term))
+            .add(&g, &expr(term), &NoStore)
+            .now()
             .unwrap_or_else(|e| panic!("`{term}`: {e}"))
     };
     let first = added(&format!("@blip(t - {BLOCK}sp, f0=200)"));
     added(&format!("@blip(t - {}sp, f0=300)", 4 * BLOCK));
     let mut heard = blocks(&mut stream, 6);
-    assert_eq!(stream.remove(first).ok(), Some(true));
-    assert_eq!(stream.remove(first).ok(), Some(false), "a removed handle");
+    assert_eq!(stream.remove(first, &NoStore).now().ok(), Some(true));
+    assert_eq!(
+        stream.remove(first, &NoStore).now().ok(),
+        Some(false),
+        "a removed handle"
+    );
     let held: Vec<String> = stream.exprs().skip(1).map(sva_ast::render_expr).collect();
     heard.extend(blocks(&mut stream, 30));
 
@@ -334,7 +345,9 @@ fn a_long_session_holds_no_more_than_its_first_seconds() {
             ..RenderConfig::at(rate)
         },
     };
-    let mut stream = Stream::open(&g, &expr("@echo(t, x=0)"), config, None).expect("opens");
+    let mut stream = Stream::open(&g, &expr("@echo(t, x=0)"), config, None, &NoStore)
+        .now()
+        .expect("opens");
     let (every, kept) = (8 * 256, 2 * i64::from(rate));
     let mut onsets: Vec<i64> = Vec::new();
     let mut held = Vec::new();
@@ -424,9 +437,15 @@ fn added_under(master: &dyn Fn(&str) -> String) {
     stream.go_live();
     let a = format!("@blip(t - {BLOCK}sp, f0=200)");
     let b = format!("@blip(t - {}sp, f0=300)", 8 * BLOCK);
-    stream.add(&g, &expr(&a)).unwrap_or_else(|e| panic!("{e}"));
+    stream
+        .add(&g, &expr(&a), &NoStore)
+        .now()
+        .unwrap_or_else(|e| panic!("{e}"));
     let mut heard = blocks(&mut stream, 8);
-    stream.add(&g, &expr(&b)).unwrap_or_else(|e| panic!("{e}"));
+    stream
+        .add(&g, &expr(&b), &NoStore)
+        .now()
+        .unwrap_or_else(|e| panic!("{e}"));
     heard.extend(blocks(&mut stream, 12));
     assert!(stream.dropped().is_empty(), "{:?}", stream.dropped());
 

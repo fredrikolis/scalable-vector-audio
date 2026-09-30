@@ -1,6 +1,20 @@
 // Concern: proves a render writes the same bits shared or apart, whole or streamed, over random trees of shifts, crops and loops | Non-concern: one node's arithmetic | IO: (a seed) -> three renders
 
+use crate::cache::NoStore;
 use crate::render::{Range, RenderConfig, Stream, StreamConfig, render, render_apart};
+
+/// Nothing to wait on over no store: one poll finishes it.
+fn now<F: Future>(future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    let waker = std::task::Waker::noop();
+    match future
+        .as_mut()
+        .poll(&mut std::task::Context::from_waker(waker))
+    {
+        std::task::Poll::Ready(out) => out,
+        std::task::Poll::Pending => panic!("a stream over no store never waits"),
+    }
+}
 
 const RATE: u32 = 8_000;
 const LEN: i64 = 2_400;
@@ -156,7 +170,7 @@ fn a_tree_is_the_same_bits_shared_or_apart_whole_or_streamed() {
             render: config(),
         };
         let at = sva_ast::parse_expr("@root").expect("a ref");
-        let mut stream = Stream::open(&g, &at, stream, None).expect("it streams");
+        let mut stream = now(Stream::open(&g, &at, stream, None, &NoStore)).expect("it streams");
         let mut heard = Vec::new();
         while let Some(block) = stream.next_block().expect("a block") {
             heard.extend_from_slice(block.plane(0));

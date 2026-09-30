@@ -12,6 +12,23 @@ use sva_engine::Render;
 
 static RUN: AtomicU32 = AtomicU32::new(0);
 
+/// A future with nothing to wait on, as a stream over no store: one poll finishes it.
+pub trait Now: Future + Sized {
+    fn now(self) -> Self::Output {
+        let mut future = std::pin::pin!(self);
+        let waker = std::task::Waker::noop();
+        match future
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(waker))
+        {
+            std::task::Poll::Ready(out) => out,
+            std::task::Poll::Pending => panic!("a future over no store never waits"),
+        }
+    }
+}
+
+impl<F: Future> Now for F {}
+
 pub fn dir_of(name: &str, files: &[(&str, &str)]) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "sva-engine-{name}-{:x}-{}",

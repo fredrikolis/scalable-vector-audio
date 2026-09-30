@@ -27,8 +27,8 @@ pub use bindings::Binding;
 pub use cache::log::cache_log;
 pub use cache::{
     Backend, Cache, CachePolicy, CacheStats, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY,
-    DEFAULT_STORE_BYTES, Hash, Lookup, Outcome, PayloadKind, Persisted, PrunePolicy, STORE_VERSION,
-    Store, Stored, VERSION_NAME,
+    DEFAULT_STORE_BYTES, Hash, Lookup, NoStore, Outcome, PayloadKind, Persisted, PrunePolicy,
+    STORE_VERSION, Store, Stored, Through, VERSION_NAME,
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
