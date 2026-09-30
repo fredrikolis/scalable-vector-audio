@@ -249,8 +249,8 @@ fn a_note_past_its_end_leaves_the_sum_and_its_echo_rings_on() {
     assert_eq!(heard, want);
 }
 
-/// A term removed while it sounds is cut where the stream stands: what it played stays, and
-/// the stream is the whole render of the terms it holds, the cut one among them.
+/// A term removed while it sounds is cut where the stream stands and leaves the sum there:
+/// what it played stays, echo and all, and the stream is the whole render of it cut there.
 #[test]
 fn a_term_removed_while_it_sounds_is_cut_where_the_stream_stands() {
     let g = composition(1.0);
@@ -260,8 +260,12 @@ fn a_term_removed_while_it_sounds_is_cut_where_the_stream_stands() {
             .now()
             .unwrap_or_else(|e| panic!("`{term}`: {e}"))
     };
-    let first = add(&format!("@blip(t - {BLOCK}sp, f0=200)"));
-    add(&format!("@blip(t - {}sp, f0=300)", 4 * BLOCK));
+    let (a, b) = (
+        format!("@blip(t - {BLOCK}sp, f0=200)"),
+        format!("@blip(t - {}sp, f0=300)", 4 * BLOCK),
+    );
+    let first = add(&a);
+    add(&b);
     let mut heard = blocks(&stream, 6);
     assert_eq!(removed(&stream, first, &NoStore).now().ok(), Some(true));
     assert_eq!(
@@ -269,16 +273,12 @@ fn a_term_removed_while_it_sounds_is_cut_where_the_stream_stands() {
         Some(false),
         "a removed handle"
     );
-    let held: Vec<String> = stream
-        .borrow()
-        .exprs()
-        .skip(1)
-        .map(sva_ast::render_expr)
-        .collect();
+    assert_eq!(stream.borrow().terms(), 1, "the cut term left the sum");
     heard.extend(blocks(&stream, 30));
 
+    let cut = (6 * BLOCK) as f64 / f64::from(RATE);
     let mut whole_g = g.clone();
-    let last = format!("@echo(t, x={})", held.join(" + "));
+    let last = format!("@echo(t, x=crop({a}, -inf, {cut}s) + {b})");
     assert!(whole_g.define("final", expr(&last)));
     assert_eq!(heard, whole(&whole_g, "final", heard.len()), "{last}");
 }
@@ -542,4 +542,65 @@ fn key_up_at_a_whole_sample_opens_a_clamped_damper_ramp_at_zero() {
     assert!(replaced, "the held note is still sounding");
     heard.extend(blocks(&live, after / BLOCK));
     assert_eq!(heard, want, "replaced live");
+}
+
+/// A pad held until `release`, then fading, its support running on to the hour.
+const PAD: &str = "release = inf\ncrop(sin(2*pi*f0*t)*exp(-t/0.25), 0s, release) + \
+    crop(exp(-release/0.25)*sin(2*pi*f0*t)*exp(-(t - release)/0.05), release, 3600s)\n";
+
+/// A player that strikes, lets up and removes each note once faded: `@notes` sums only the
+/// notes sounding and fading (one kept where none is), and what an edit builds stays as small
+/// as its first seconds', however many notes went before.
+#[test]
+fn a_removed_term_leaves_the_sum_once_the_stream_passes_its_cut() {
+    let g = graph_of("pads", &[("pad", PAD)]);
+    let config = StreamConfig {
+        block: BLOCK,
+        render: RenderConfig {
+            range: Range {
+                start: Some(0),
+                end: Some(3_600 * i64::from(RATE)),
+            },
+            ..RenderConfig::at(RATE)
+        },
+    };
+    let stream = Stream::open(&g, &expr("@notes"), config, None, &NoStore).now();
+    let stream = RefCell::new(stream.expect("opens"));
+    let fade = (0.2 * f64::from(RATE)) as i64;
+    let mut sounding: Vec<(sva_engine::Handle, i64)> = Vec::new();
+    let mut sizes = Vec::new();
+    for i in 0..300 {
+        let onset = stream.borrow().position();
+        let pad = format!("@pad(t - {onset}sp, f0={})", 200 + i % 4 * 50);
+        let note = added(&stream, &g, &expr(&pad), &NoStore)
+            .now()
+            .unwrap_or_else(|e| panic!("{e}"));
+        blocks(&stream, 2);
+        let up = stream.borrow().position();
+        let released = format!(
+            "@pad(t - {onset}sp, f0={}, release={}sp)",
+            200 + i % 4 * 50,
+            up - onset
+        );
+        let held = replaced(&stream, &g, (note, &expr(&released)), &NoStore).now();
+        assert_eq!(held.ok(), Some(true), "note {i} is held");
+        sounding.push((note, up + fade));
+        blocks(&stream, 2);
+        let now = stream.borrow().position();
+        while sounding.first().is_some_and(|(_, ends)| *ends <= now) {
+            let (gone, _) = sounding.remove(0);
+            let removed = removed(&stream, gone, &NoStore).now().ok();
+            assert_eq!(removed, Some(true), "note {i}'s predecessor");
+        }
+        let terms = stream.borrow().terms();
+        assert!(
+            terms <= sounding.len().max(1),
+            "{terms} terms after note {i}, {} sounding",
+            sounding.len()
+        );
+        sizes.push(stream.borrow().values());
+    }
+    let early = sizes[..50].iter().max().expect("fifty notes");
+    let late = sizes[50..].iter().max().expect("the rest");
+    assert!(late <= early, "{late} values late, {early} early");
 }

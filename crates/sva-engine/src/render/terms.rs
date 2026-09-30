@@ -20,6 +20,8 @@ struct Term {
     addressed: bool,
     leaf: Option<NodeId>,
     ends: Option<NodeId>,
+    /// The sample a removal cut it at.
+    cut: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -49,6 +51,10 @@ impl Terms {
         })
     }
 
+    pub(super) fn count(&self) -> usize {
+        self.live().count()
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.live().next().is_none()
     }
@@ -67,6 +73,7 @@ impl Terms {
             addressed: true,
             leaf: None,
             ends: None,
+            cut: None,
         }));
         (next, handle)
     }
@@ -81,8 +88,9 @@ impl Terms {
         Some(next)
     }
 
-    /// The term cut at `at` seconds on the sum's own clock.
-    pub(super) fn removed(&self, handle: Handle, at: f64) -> Option<Terms> {
+    /// The term cut at sample `cut` of the sum's own clock.
+    pub(super) fn removed(&self, handle: Handle, cut: i64, rate: u32) -> Option<Terms> {
+        let at = cut as f64 / f64::from(rate);
         let mut next = self.clone();
         let term = next
             .live_mut()
@@ -101,7 +109,7 @@ impl Terms {
             ],
             span: ByteSpan { start: 0, end: 0 },
         };
-        (term.addressed, term.leaf, term.ends) = (false, None, None);
+        (term.addressed, term.leaf, term.ends, term.cut) = (false, None, None, Some(cut));
         Some(next)
     }
 
@@ -160,16 +168,17 @@ impl Terms {
         }
     }
 
-    /// Retires every term whose node has ended, bar the last where all have, so what reads
-    /// `notes` keeps its shape and its identity; one with no node of its own just goes. True
-    /// where any went.
+    /// Retires every term whose node has ended or whose cut `now` has passed, bar the last
+    /// where all have, so what reads `notes` keeps its shape and its identity; one with no node
+    /// of its own just goes. True where any went.
     pub(super) fn prune(
         &mut self,
+        now: i64,
         ended: &dyn Fn(NodeId) -> bool,
         named: &dyn Fn(NodeId) -> Option<Hash>,
     ) -> bool {
         let live = self.live().count();
-        let gone = |t: &Term| t.ends.is_some_and(ended);
+        let gone = |t: &Term| t.cut.is_some_and(|cut| cut <= now) || t.ends.is_some_and(ended);
         let keep = match self.live().all(gone) {
             true => self.live().last().map(|t| t.handle),
             false => None,

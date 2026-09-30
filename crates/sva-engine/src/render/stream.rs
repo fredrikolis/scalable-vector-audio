@@ -142,8 +142,9 @@ impl Stream {
                 (graph, self.expr.clone(), terms, Changed::Held(true))
             }
             Change::Remove(handle) => {
-                let at = self.driver.at as f64 / f64::from(self.shell.rate());
-                let terms = self.terms.removed(handle, at).ok_or(Changed::Held(false))?;
+                let (cut, rate) = (self.driver.at, self.shell.rate());
+                let terms = self.terms.removed(handle, cut, rate);
+                let terms = terms.ok_or(Changed::Held(false))?;
                 (
                     self.graph.clone(),
                     self.expr.clone(),
@@ -255,7 +256,7 @@ impl Stream {
             })
         };
         let named = |leaf| crate::refs::identity(&shell.tys, leaf).ok();
-        if self.terms.prune(&gone, &named) {
+        if self.terms.prune(self.driver.at, &gone, &named) {
             self.generation += 1;
         }
     }
@@ -268,6 +269,16 @@ impl Stream {
             .id(node)
             .and_then(|id| table.of(id))
             .map_or(Vec::new(), |at| table.values[at].evaluated.clone())
+    }
+
+    /// The terms `@notes` sums, sounding or cut but not yet passed.
+    pub fn terms(&self) -> usize {
+        self.terms.count()
+    }
+
+    /// The values its table holds, which an edit's cost grows with.
+    pub fn values(&self) -> usize {
+        self.driver.table.values.len()
     }
 
     pub fn position(&self) -> i64 {
