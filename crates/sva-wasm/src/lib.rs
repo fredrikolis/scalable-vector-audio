@@ -8,7 +8,7 @@ mod opfs;
 
 pub use opfs::DirectoryHandle;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use sva_core::{
@@ -407,11 +407,13 @@ impl Composition {
         if options.live {
             inner.go_live();
         }
-        Ok(Stream {
-            inner: RefCell::new(inner),
-            source: self.inner.clone(),
+        let edits = Edits {
+            inner: Rc::new(RefCell::new(inner)),
+            source: Rc::new(self.inner.clone()),
             store: self.persistent.clone(),
-        })
+            freed: Rc::default(),
+        };
+        Ok(Stream { edits })
     }
 
     #[wasm_bindgen(getter)]
@@ -471,8 +473,9 @@ impl Composition {
     }
 }
 
-fn placement(options: &JsValue) -> Result<Placed, JsValue> {
-    Ok(options_of(options, &["at"])?.at.unwrap_or(Placed::Written))
+fn placement(options: Option<JsValue>) -> Result<Placed, JsValue> {
+    let options = options.unwrap_or(JsValue::UNDEFINED);
+    Ok(options_of(&options, &["at"])?.at.unwrap_or(Placed::Written))
 }
 
 /// A warm over a store that would not open: readings, where asked, are a render's over none.
@@ -633,9 +636,101 @@ fn answered(rendered: &Rendered, asked: &[Asked]) -> Result<JsValue, JsValue> {
 /// answered it; `next` and every getter answer meanwhile.
 #[wasm_bindgen]
 pub struct Stream {
-    inner: RefCell<sva_core::Stream>,
-    source: sva_ast::Composition,
+    edits: Edits,
+}
+
+/// What an edit in flight holds: never the page's object, which the page may free meanwhile.
+#[derive(Clone)]
+struct Edits {
+    inner: Rc<RefCell<sva_core::Stream>>,
+    source: Rc<sva_ast::Composition>,
     store: Page,
+    freed: Rc<Cell<bool>>,
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        self.edits.freed.set(true);
+    }
+}
+
+impl Edits {
+    /// Refused where the page freed the stream meanwhile: what it did there no one hears.
+    fn answered<T>(&self, done: Result<T, CliError>) -> Result<T, JsValue> {
+        if self.freed.get() {
+            let message = "the stream was freed while this edit was in flight".to_string();
+            let diagnostic = Diagnostic::new("wasm.stream_freed", message.clone())
+                .helped("make the edit on the stream that replaced it");
+            return Err(crossed("conflict", &message, &[diagnostic]));
+        }
+        done.map_err(|e| thrown(&e))
+    }
+}
+
+/// The futures behind the page's promises, holding no borrow of the stream.
+impl Stream {
+    pub fn edit(&self, expr: &str) -> impl Future<Output = Result<(), JsValue>> + 'static {
+        let (edits, expr) = (self.edits.clone(), expr.to_string());
+        async move {
+            let edited = sva_core::edit(&edits.inner, &*edits.source, &expr, &edits.store).await;
+            edits.answered(edited)
+        }
+    }
+
+    pub fn add(
+        &self,
+        term: &str,
+        options: Option<JsValue>,
+    ) -> impl Future<Output = Result<u32, JsValue>> + 'static {
+        let (edits, term) = (self.edits.clone(), term.to_string());
+        async move {
+            let at = placement(options)?;
+            let (inner, source) = (&edits.inner, &*edits.source);
+            let added = sva_core::add(inner, source, (&term, at), &edits.store).await;
+            edits.answered(added.map(|handle| handle.0))
+        }
+    }
+
+    pub fn replace(
+        &self,
+        handle: u32,
+        term: &str,
+        options: Option<JsValue>,
+    ) -> impl Future<Output = Result<bool, JsValue>> + 'static {
+        let (edits, term) = (self.edits.clone(), term.to_string());
+        async move {
+            let replaced = (Handle(handle), term.as_str(), placement(options)?);
+            let (inner, source) = (&edits.inner, &*edits.source);
+            let replaced = sva_core::replace(inner, source, replaced, &edits.store).await;
+            edits.answered(replaced)
+        }
+    }
+
+    pub fn remove(&self, handle: u32) -> impl Future<Output = Result<bool, JsValue>> + 'static {
+        let edits = self.edits.clone();
+        async move {
+            let removed = sva_core::remove(&edits.inner, Handle(handle), &edits.store).await;
+            edits.answered(removed)
+        }
+    }
+
+    pub fn fetch(&self) -> impl Future<Output = ()> + 'static {
+        let edits = self.edits.clone();
+        async move {
+            let wanted = edits.inner.borrow().wanted();
+            for (stored, over) in wanted {
+                if let Some(samples) = edits.store.read(&stored, over).await {
+                    edits.inner.borrow_mut().took(stored.key, &samples);
+                }
+            }
+        }
+    }
+}
+
+fn promised<T: Into<JsValue>>(
+    done: impl Future<Output = Result<T, JsValue>> + 'static,
+) -> js_sys::Promise {
+    wasm_bindgen_futures::future_to_promise(async move { done.await.map(Into::into) })
 }
 
 #[wasm_bindgen]
@@ -643,7 +738,7 @@ impl Stream {
     /// Writes the next block into `out`, component `c` from `c * block`, and returns the
     /// samples each component took: `block`, fewer where silence ends inside it, `0` after.
     pub fn next(&self, out: &mut [f32]) -> Result<usize, JsValue> {
-        let inner = &mut self.inner.borrow_mut();
+        let inner = &mut self.edits.inner.borrow_mut();
         let (width, block) = (inner.width(), inner.config().block);
         if out.len() < width * block {
             return Err(refuse(
@@ -668,67 +763,67 @@ impl Stream {
         Ok(held.len())
     }
 
-    /// `expr` in place of the target.
-    pub async fn edit(&self, expr: &str) -> Result<(), JsValue> {
-        let edited = sva_core::edit(&self.inner, &self.source, expr, &self.store).await;
-        edited.map_err(|e| thrown(&e))
+    /// `expr` in place of the target. Each edit's promise rejects as a `conflict` where the
+    /// page frees the stream first.
+    #[wasm_bindgen(js_name = edit, unchecked_return_type = "Promise<void>")]
+    pub fn edit_promise(&self, expr: String) -> js_sys::Promise {
+        let edited = self.edit(&expr);
+        promised(async move { edited.await.map(|()| JsValue::UNDEFINED) })
     }
 
     /// `term` summed into `@notes`. `options.at`: `"written"` (the stream's `t`) or
     /// `"landing"`, its sample 0 the sample it lands at.
-    pub async fn add(&self, term: &str, options: JsValue) -> Result<u32, JsValue> {
-        let at = placement(&options)?;
-        let added = sva_core::add(&self.inner, &self.source, (term, at), &self.store).await;
-        added.map(|handle| handle.0).map_err(|e| thrown(&e))
+    #[wasm_bindgen(js_name = add, unchecked_return_type = "Promise<number>")]
+    pub fn add_promise(&self, term: String, options: Option<JsValue>) -> js_sys::Promise {
+        promised(self.add(&term, options))
     }
 
     /// False where `handle` is gone. `"landing"`: where its add landed.
-    pub async fn replace(
+    #[wasm_bindgen(js_name = replace, unchecked_return_type = "Promise<boolean>")]
+    pub fn replace_promise(
         &self,
         handle: u32,
-        term: &str,
-        options: JsValue,
-    ) -> Result<bool, JsValue> {
-        let replaced = (Handle(handle), term, placement(&options)?);
-        let replaced = sva_core::replace(&self.inner, &self.source, replaced, &self.store).await;
-        replaced.map_err(|e| thrown(&e))
+        term: String,
+        options: Option<JsValue>,
+    ) -> js_sys::Promise {
+        promised(self.replace(handle, &term, options))
     }
 
     pub fn landed(&self, handle: u32) -> Option<f64> {
-        let landed = self.inner.borrow().landed(Handle(handle));
+        let landed = self.edits.inner.borrow().landed(Handle(handle));
         landed.map(|at| at as f64)
     }
 
-    pub async fn remove(&self, handle: u32) -> Result<bool, JsValue> {
-        let removed = sva_core::remove(&self.inner, Handle(handle), &self.store).await;
-        removed.map_err(|e| thrown(&e))
+    #[wasm_bindgen(js_name = remove, unchecked_return_type = "Promise<boolean>")]
+    pub fn remove_promise(&self, handle: u32) -> js_sys::Promise {
+        promised(self.remove(handle))
     }
 
     /// Reads the stored samples the next second of blocks plays, as the stream plays on.
-    pub async fn fetch(&self) {
-        let wanted = self.inner.borrow().wanted();
-        for (stored, over) in wanted {
-            if let Some(samples) = self.store.read(&stored, over).await {
-                self.inner.borrow_mut().took(stored.key, &samples);
-            }
-        }
+    #[wasm_bindgen(js_name = fetch, unchecked_return_type = "Promise<void>")]
+    pub fn fetch_promise(&self) -> js_sys::Promise {
+        let fetched = self.fetch();
+        promised(async move {
+            fetched.await;
+            Ok(JsValue::UNDEFINED)
+        })
     }
 
     /// `{ samples, priced_flops, waves }` since it opened.
     pub fn work(&self) -> Result<JsValue, JsValue> {
-        parse(&work_json(&self.inner.borrow().work()))
+        parse(&work_json(&self.edits.inner.borrow().work()))
     }
 
     /// Each list the latest; its `pagination.count` counts all.
     pub fn stats(&self) -> Result<JsValue, JsValue> {
-        let inner = self.inner.borrow();
+        let inner = self.edits.inner.borrow();
         let made = inner.counts().dropped;
         parse(&stream_stats_json(&inner.stats(), (&inner.dropped(), made)))
     }
 
     /// `late`: edits landed past where issued.
     pub fn counts(&self) -> Result<JsValue, JsValue> {
-        let counts = self.inner.borrow().counts();
+        let counts = self.edits.inner.borrow().counts();
         let out = js_sys::Object::new();
         for (key, value) in [
             ("dropped", counts.dropped),
@@ -742,31 +837,31 @@ impl Stream {
 
     #[wasm_bindgen(getter)]
     pub fn held_bytes(&self) -> f64 {
-        self.inner.borrow().held_bytes() as f64
+        self.edits.inner.borrow().held_bytes() as f64
     }
 
     #[wasm_bindgen(getter)]
     pub fn channels(&self) -> usize {
-        self.inner.borrow().width()
+        self.edits.inner.borrow().width()
     }
 
     #[wasm_bindgen(getter)]
     pub fn sample_rate(&self) -> u32 {
-        self.inner.borrow().config().render.rate
+        self.edits.inner.borrow().config().render.rate
     }
 
     #[wasm_bindgen(getter)]
     pub fn block(&self) -> usize {
-        self.inner.borrow().config().block
+        self.edits.inner.borrow().config().block
     }
 
     #[wasm_bindgen(getter)]
     pub fn position(&self) -> f64 {
-        self.inner.borrow().position() as f64
+        self.edits.inner.borrow().position() as f64
     }
 
     #[wasm_bindgen(getter)]
     pub fn end(&self) -> Option<f64> {
-        self.inner.borrow().end().map(|end| end as f64)
+        self.edits.inner.borrow().end().map(|end| end as f64)
     }
 }

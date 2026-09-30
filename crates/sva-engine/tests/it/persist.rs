@@ -1254,6 +1254,7 @@ fn a_live_stream_plays_on_while_its_edits_await_a_slow_store() {
     let shared = notes_over(&graph, &player, true);
     let (mut specs, mut landed, mut handles) = (Vec::<Spec>::new(), Vec::new(), Vec::new());
     let (mut pending, mut heard, mut waited) = (Vec::<(usize, Pending)>::new(), Vec::new(), 0);
+    let mut added = BTreeMap::new();
     let mut k = 0;
     while k < 20 || !pending.is_empty() {
         if k < 20 {
@@ -1273,6 +1274,7 @@ fn a_live_stream_plays_on_while_its_edits_await_a_slow_store() {
                 Poll::Ready(done) => {
                     if let Changed::Added(handle) = done.expect("an edit") {
                         handles.push(handle);
+                        added.insert(handle, edit);
                     }
                     landed.push((heard.len(), edit));
                 }
@@ -1289,11 +1291,17 @@ fn a_live_stream_plays_on_while_its_edits_await_a_slow_store() {
 
     let at_once = opened(&memory, u64::MAX);
     let reference = notes_over(&graph, &at_once, false);
-    let mut expected = Vec::new();
+    let (mut expected, mut ours) = (Vec::new(), BTreeMap::new());
     for n in 0..heard.len() {
         for (_, edit) in landed.iter().filter(|(at, _)| *at == n) {
-            let build = |_: &Stream| Ok::<_, EngineError>(changed_by(&graph, specs[*edit]));
-            now(change(&reference, build, &at_once)).expect("an edit");
+            let (at, f0, replaced) = specs[*edit];
+            let replaced = replaced.map(|live| ours[&added[&live]]);
+            let build = |_: &Stream| Ok::<_, EngineError>(changed_by(&graph, (at, f0, replaced)));
+            if let Changed::Added(handle) =
+                now(change(&reference, build, &at_once)).expect("an edit")
+            {
+                ours.insert(*edit, handle);
+            }
         }
         let block = reference.borrow_mut().next_block().expect("a block");
         let block = block.expect("a block");

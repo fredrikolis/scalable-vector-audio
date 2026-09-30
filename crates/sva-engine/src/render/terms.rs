@@ -1,5 +1,7 @@
 // Concern: a stream's note sum, one term per handle, each term that ended kept only as its identity | Non-concern: when a value ends (table/), rebuilding nodes | IO: (Expr) -> Handle; (ended) -> ()
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use sva_ast::{Arg, BinOp, ByteSpan, Expr, Literal};
 use sva_formula::{Hash, NodeId};
 
@@ -11,6 +13,9 @@ pub const NOTES: &str = "notes";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Handle(pub u32);
+
+/// Every stream draws from one count, so a handle names one term of one stream.
+static HANDLES: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone)]
 struct Term {
@@ -40,7 +45,6 @@ enum Slot {
 
 #[derive(Clone, Default)]
 pub(super) struct Terms {
-    next: u32,
     slots: Vec<Slot>,
 }
 
@@ -73,8 +77,7 @@ impl Terms {
 
     pub(super) fn added(&self, expr: Expr) -> (Terms, Handle) {
         let mut next = self.clone();
-        let handle = Handle(next.next);
-        next.next += 1;
+        let handle = Handle(HANDLES.fetch_add(1, Ordering::Relaxed));
         next.slots.push(Slot::Live(Term {
             handle,
             expr,
