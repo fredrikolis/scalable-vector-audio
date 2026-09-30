@@ -1146,3 +1146,48 @@ async fn a_warm_answers_no_samples_and_readings_only_when_asked() {
         .await;
     refused_as(refused.err(), "wasm.bad_argument");
 }
+
+/// FNV-1a over every component's f64 bits, little-endian: a native `sva-cli render '@master([0,
+/// 0.1s])' --representation samples --rate 8000` over `mixed()`'s nodes hashes to this. The
+/// native build is scalar, so simd128 may vectorise but never fuse or reassociate.
+const NATIVE_BITS: u64 = 0xb439_d354_438c_dfd3;
+
+/// No `sin` in the source: wasm's libm and the native one differ in the last bit, scalar or not.
+fn mixed() -> Composition {
+    let mut held = Composition::new(None);
+    held.insert("osc", "sample(40*t*(0.1 - t)) + 0.3*sample(rand(t))\n");
+    held.insert("tone", "lowpass(@osc, cutoff=800, q=0.7)\n");
+    held.insert("echo", "0.7*@tone + 0.5*self[idx(t) - 37]\n");
+    held.insert(
+        "mix",
+        "0.5*@echo - 0.25*highpass(@tone, cutoff=200, q=0.7)/(2 + @osc)\n",
+    );
+    held.insert("master", "join(@mix, @tone)*(1 + @osc) - @echo\n");
+    held
+}
+
+#[wasm_bindgen_test]
+fn filters_sums_gains_and_a_loop_render_the_native_bits() {
+    let asked = Some(vec!["samples".to_string()]);
+    let one = mixed()
+        .rendered("@master([0, 0.1s])", asked, options(&[]))
+        .unwrap_or_else(|_| unreachable!("`master` renders"));
+    let read = field(&readings(&one), "representations");
+    let components = items(&field(&field(&read, "samples"), "value"), "components");
+    assert_eq!(components.length(), 2);
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for component in components.iter() {
+        let values = js_sys::Array::from(&field(&field(&component, "values"), "items"));
+        assert_eq!(values.length(), 800, "the whole reading, under the cap");
+        for v in values.iter() {
+            let bits = v.as_f64().unwrap_or_else(|| unreachable!("a number"));
+            for b in bits.to_le_bytes() {
+                hash = (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+    }
+    assert_eq!(
+        hash, NATIVE_BITS,
+        "the wasm render's bits are the native ones"
+    );
+}

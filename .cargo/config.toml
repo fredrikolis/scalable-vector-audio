@@ -1,0 +1,4 @@
+# Concern: the target features every wasm32 build compiles with | Non-concern: native targets' flags | IO: none
+# simd128 alone: relaxed-simd admits fused multiply-add, which changes the bits.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

@@ -100,6 +100,50 @@ fn each(out: &mut [f64], (from, w): (i64, usize), f: &mut Sample) -> Result<(), 
     Ok(())
 }
 
+/// An operand's samples over the block, and its width.
+type Operand<'a> = (&'a [f64], usize);
+
+/// `out` folded with `a` component by component, a mono `a` spread across `out`'s width. Whole
+/// slices where the widths agree, so the loop vectorises; each value sees the same operations
+/// in the same order either way.
+fn fold(out: &mut [f64], w: usize, (a, aw): Operand, f: impl Fn(f64, f64) -> f64) {
+    match aw == w {
+        true => out.iter_mut().zip(a).for_each(|(o, &x)| *o = f(*o, x)),
+        false => {
+            for (s, v) in out.chunks_exact_mut(w).zip(a.chunks_exact(aw)) {
+                for (c, o) in s.iter_mut().enumerate() {
+                    *o = f(*o, part(v, c));
+                }
+            }
+        }
+    }
+}
+
+/// `f` of `a` and `b` into `out`, as `fold` spreads and vectorises.
+fn binary(
+    out: &mut [f64],
+    w: usize,
+    (a, aw): Operand,
+    (b, bw): Operand,
+    f: impl Fn(f64, f64) -> f64,
+) {
+    match aw == w && bw == w {
+        true => {
+            for ((o, &x), &y) in out.iter_mut().zip(a).zip(b) {
+                *o = f(x, y);
+            }
+        }
+        false => {
+            let pairs = a.chunks_exact(aw).zip(b.chunks_exact(bw));
+            for (s, (u, v)) in out.chunks_exact_mut(w).zip(pairs) {
+                for (c, o) in s.iter_mut().enumerate() {
+                    *o = f(part(u, c), part(v, c));
+                }
+            }
+        }
+    }
+}
+
 fn fill(
     p: &Program,
     slot: usize,
@@ -116,6 +160,10 @@ fn fill(
         let s = args[k];
         let w = p.widths[s];
         &done[offsets[s] + i * w..][..w]
+    };
+    let operand = |s: usize| {
+        let w = p.widths[s];
+        (&done[offsets[s]..][..w * len], w)
     };
     match op {
         Op::Const(v) => {
@@ -175,33 +223,28 @@ fn fill(
             }
             Ok(())
         }),
-        Op::Add(_) | Op::Mul(_) => {
-            let product = matches!(op, Op::Mul(_));
-            for (i, s) in out.chunks_exact_mut(w).enumerate() {
-                for (c, v) in s.iter_mut().enumerate() {
-                    *v = (0..args.len()).fold(
-                        f64::from(u8::from(product)),
-                        |acc, k| match product {
-                            true => acc * part(arg(k, i), c),
-                            false => acc + part(arg(k, i), c),
-                        },
-                    );
-                }
+        Op::Add(_) => {
+            out.fill(0.0);
+            for &s in args {
+                fold(out, w, operand(s), |acc, a| acc + a);
+            }
+            Ok(())
+        }
+        Op::Mul(_) => {
+            out.fill(1.0);
+            for &s in args {
+                fold(out, w, operand(s), |acc, a| acc * a);
             }
             Ok(())
         }
         Op::Sub | Op::Div | Op::Pow | Op::Zip(_) => {
-            for (i, s) in out.chunks_exact_mut(w).enumerate() {
-                for (c, v) in s.iter_mut().enumerate() {
-                    let (a, b) = (part(arg(0, i), c), part(arg(1, i), c));
-                    *v = match op {
-                        Op::Sub => a - b,
-                        Op::Div => a / b,
-                        Op::Pow => a.powf(b),
-                        Op::Zip(f) => f.apply(a, b),
-                        _ => unreachable!("the arm's own guard"),
-                    };
-                }
+            let (a, b) = (operand(args[0]), operand(args[1]));
+            match op {
+                Op::Sub => binary(out, w, a, b, |a, b| a - b),
+                Op::Div => binary(out, w, a, b, |a, b| a / b),
+                Op::Pow => binary(out, w, a, b, f64::powf),
+                Op::Zip(f) => binary(out, w, a, b, |a, b| f.apply(a, b)),
+                _ => unreachable!("the arm's own guard"),
             }
             Ok(())
         }

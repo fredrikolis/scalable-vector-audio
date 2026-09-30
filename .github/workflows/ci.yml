@@ -51,4 +51,5 @@ jobs:
       - uses: jetli/wasm-pack-action@v0.4.0
         with:
           version: "latest"
-      - run: wasm-pack test --node crates/sva-wasm
+      # Optimised, as npm ships it: simd128 (.cargo/config.toml) vectorises only there.
+      - run: wasm-pack test --release --node crates/sva-wasm
