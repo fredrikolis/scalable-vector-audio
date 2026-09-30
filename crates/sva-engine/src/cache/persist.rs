@@ -55,6 +55,8 @@ pub trait Through {
     fn lookup(&self, key: Hash) -> impl Future<Output = Option<Stored>>;
     /// Whole chunks holding `over`; `None` where they are gone or corrupt.
     fn read(&self, stored: &Stored, over: Extent) -> impl Future<Output = Option<Vec<Buffer>>>;
+    /// Moves on whenever this holder stages or commits.
+    fn epoch(&self) -> u64;
 }
 
 impl<B: Backend> Through for Store<B> {
@@ -64,6 +66,10 @@ impl<B: Backend> Through for Store<B> {
 
     fn read(&self, stored: &Stored, over: Extent) -> impl Future<Output = Option<Vec<Buffer>>> {
         Store::read(self, stored, over)
+    }
+
+    fn epoch(&self) -> u64 {
+        *locked(&self.epoch)
     }
 }
 
@@ -76,6 +82,10 @@ impl Through for NoStore {
 
     async fn read(&self, _: &Stored, _: Extent) -> Option<Vec<Buffer>> {
         None
+    }
+
+    fn epoch(&self) -> u64 {
+        0
     }
 }
 
@@ -95,6 +105,7 @@ pub struct Store<B> {
     index: Mutex<Index>,
     staged: Mutex<BTreeMap<Hash, Staged>>,
     written: Mutex<u64>,
+    epoch: Mutex<u64>,
 }
 
 enum Committed {
@@ -143,6 +154,7 @@ impl<B: Backend> Store<B> {
             index: Mutex::new(index),
             staged: Mutex::new(BTreeMap::new()),
             written: Mutex::new(0),
+            epoch: Mutex::new(0),
         })
     }
 
@@ -267,6 +279,7 @@ impl<B: Backend> Store<B> {
         let name = staged_name(key, META);
         self.staging.put(&name, &codec::entry(stored, &[])).await?;
         locked(&self.staged).entry(key).or_default().meta = true;
+        *locked(&self.epoch) += 1;
         Ok(())
     }
 
@@ -274,6 +287,12 @@ impl<B: Backend> Store<B> {
     /// its files have, so a failed write leaves every later one staged, as does a commit over
     /// an open entry. An open entry past budget stays for the next persist.
     pub async fn persist(&self) -> Result<Persisted, String> {
+        let done = self.committed_all().await;
+        *locked(&self.epoch) += 1;
+        done
+    }
+
+    async fn committed_all(&self) -> Result<Persisted, String> {
         let _held = self.backend.lock().await?;
         let mut done = Persisted::default();
         let keys: Vec<Hash> = locked(&self.staged).keys().copied().collect();

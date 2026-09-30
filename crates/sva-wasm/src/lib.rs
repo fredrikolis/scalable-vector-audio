@@ -241,6 +241,10 @@ impl Through for Page {
             None => None,
         }
     }
+
+    fn epoch(&self) -> u64 {
+        self.store().map_or(0, Through::epoch)
+    }
 }
 
 fn unstored(why: String) -> JsValue {

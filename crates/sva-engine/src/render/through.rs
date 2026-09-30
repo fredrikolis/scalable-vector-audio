@@ -71,12 +71,13 @@ async fn through<B: Backend>(
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&root))?;
     let keys = keys(graph, &instances, &order, &config);
     let mut found = frontier::Frontier::from((&instances, &order), &keys, &root, (&config, false));
-    found.walk(store).await;
+    let mut known = frontier::Known::new();
+    found.walked(&mut known, store).await;
     if keep == Keep::Nothing && found.stored.contains_key(&root) {
         return Ok(Reached::Held(found.lookups));
     }
     let (mut held, typed) = loop {
-        found.walk(store).await;
+        found.walked(&mut known, store).await;
         let tys = typing::infer_over(&instances, &order.within(&found.visited), &found.stored)?;
         let id = tys
             .id(&root)
@@ -90,7 +91,7 @@ async fn through<B: Backend>(
         let mut held = planned_over(&instances, (tys, id), config.clone(), &bounds)?;
         let short = match (&mut held.table, held.range) {
             (Some(table), Some(range)) => {
-                load(table, store, range).await;
+                load(table, store, range, &BTreeSet::new()).await;
                 short(table, range)
             }
             _ => Vec::new(),
@@ -159,10 +160,18 @@ pub(crate) fn keys(
         .collect()
 }
 
-/// What `window` asks of each stored value's samples, read off `store`; what it cannot read
-/// stays short.
-pub(crate) async fn load(table: &mut Table, store: &impl Through, window: sva_samples::Extent) {
+/// What `window` asks of each stored value's samples but those under `skip`, read off `store`;
+/// what it cannot read stays short.
+pub(crate) async fn load(
+    table: &mut Table,
+    store: &impl Through,
+    window: sva_samples::Extent,
+    skip: &BTreeSet<Hash>,
+) {
     for (stored, over) in table.wants(window) {
+        if skip.contains(&stored.key) {
+            continue;
+        }
         if let Some(samples) = store.read(&stored, over).await {
             table.took(stored.key, samples);
         }

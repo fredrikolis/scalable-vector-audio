@@ -976,27 +976,128 @@ fn head_of(entry: &[u8]) -> usize {
     8 + u64::from_le_bytes(entry[..8].try_into().expect("eight bytes")) as usize
 }
 
-/// Adding a note the store does not hold reads no sample: the notes already sounding are
-/// looked up again, header alone, and the new one's lookup finds nothing.
+/// A composition whose `string` a worker warmed at each of `hz` over the whole stream and
+/// persisted, and each warm's new entries.
+fn warmed_notes(name: &str, hz: &[&str]) -> (Graph, Memory, Vec<BTreeSet<String>>) {
+    let mut nodes = vec![("string".to_string(), HELD.to_string())];
+    nodes.extend(
+        hz.iter()
+            .map(|f| (format!("warm{f}"), format!("@string(t, f0={f})\n"))),
+    );
+    let nodes: Vec<(&str, &str)> = nodes
+        .iter()
+        .map(|(n, t)| (n.as_str(), t.as_str()))
+        .collect();
+    let graph = graph_of(name, &nodes);
+    let memory = Memory::default();
+    let mut entries = Vec::new();
+    for f in hz {
+        let store = opened(&memory, u64::MAX);
+        let config = RenderConfig {
+            range: Range {
+                start: Some(0),
+                end: Some(8_000),
+            },
+            ..RenderConfig::at(RATE)
+        };
+        let before: BTreeSet<String> = memory.entries().into_iter().collect();
+        now(render_through(&graph, &format!("warm{f}"), config, &store)).expect("a render");
+        now(store.persist()).expect("persisted");
+        let after = memory.entries().into_iter();
+        entries.push(after.filter(|e| !before.contains(e)).collect());
+    }
+    (graph, memory, entries)
+}
+
+fn taken(memory: &Memory) -> Vec<(String, usize)> {
+    std::mem::take(&mut *memory.reads.lock().unwrap())
+}
+
+/// A stream looks each stored note up once: a note it has not met reads that note's entry
+/// alone, and once met, adding or replacing it again, or any note met before, reads nothing.
 #[test]
-fn adding_a_note_the_store_lacks_reads_no_sample_bytes() {
-    let (graph, memory) = warmed("unstored", 2_000);
+fn a_stream_reads_each_stored_notes_header_once() {
+    let (graph, memory, entries) = warmed_notes("met", &["261.63", "392"]);
+    let player = opened(&memory, u64::MAX);
+    let mut stream = notes(&graph, 8_000, &player);
+    let c = now(stream.add(&graph, &term(STRIKE), &player)).expect("added");
+    stream.next_block().expect("a block");
+    taken(&memory);
+
+    let g = "@string(t - 700sp, f0=392)";
+    let g = now(stream.add(&graph, &term(g), &player)).expect("added");
+    let reads = taken(&memory);
+    assert!(!reads.is_empty(), "the unmet note is looked up");
+    for (name, _) in &reads {
+        assert!(
+            entries[1].contains(name),
+            "{name} is no entry of the unmet note"
+        );
+    }
+    stream.next_block().expect("a block");
+    taken(&memory);
+
+    let fade =
+        |at: &str, of: &str| format!("{of} * (1 - step(t - {at})*(1 - exp(-(t - {at})/0.15s)))");
+    let again = [
+        STRIKE,
+        "@string(t - 900sp, f0=392)",
+        "@string(t - 1000sp, f0=261.63)",
+    ];
+    for (k, note) in again.iter().enumerate() {
+        now(stream.add(&graph, &term(note), &player)).expect("added");
+        let released = (c, &term(&fade(&format!("{}sp", 1100 + k), STRIKE)));
+        assert!(now(stream.replace(&graph, released, &player)).expect("replaced"));
+        let released = fade(&format!("{}sp", 1100 + k), "@string(t - 700sp, f0=392)");
+        assert!(now(stream.replace(&graph, (g, &term(&released)), &player)).expect("replaced"));
+        stream.next_block().expect("a block");
+    }
+    assert_eq!(taken(&memory), [], "every note here was met");
+    assert!(!store_hits(&stream).is_empty());
+}
+
+fn warm_into(graph: &Graph, store: &Store<Memory>) {
+    let mut warmed = graph.clone();
+    let warm = sva_ast::parse_expr("@string(t, f0=261.63)").expect("an expression");
+    assert!(warmed.define("warm", warm));
+    let config = RenderConfig::seconds(RATE, SECONDS);
+    now(render_through(&warmed, "warm", config, store)).expect("a render");
+}
+
+/// A note a stream met as missing is asked for again, so one another holder persists while it
+/// plays is found.
+#[test]
+fn a_stream_finds_a_note_another_holder_persisted_after_it_missed_it() {
+    let (graph, memory, _) = warmed_notes("persisted-later", &[]);
     let player = opened(&memory, u64::MAX);
     let mut stream = notes(&graph, 8_000, &player);
     now(stream.add(&graph, &term(STRIKE), &player)).expect("added");
-    stream.next_block().expect("a block");
-    memory.reads.lock().unwrap().clear();
+    assert_eq!(store_hits(&stream), Vec::<String>::new());
+    let other = opened(&memory, u64::MAX);
+    warm_into(&graph, &other);
+    now(other.persist()).expect("persisted");
+    now(stream.add(&graph, &term(STRIKE), &player)).expect("added");
+    assert_eq!(store_hits(&stream), ["string(f0=261.63, release=inf)"]);
+}
 
-    now(stream.add(&graph, &term("@string(t - 700sp, f0=392)"), &player)).expect("added");
-    let reads = memory.reads.lock().unwrap().clone();
-    assert!(!reads.is_empty(), "the add looked the store up");
-    for (name, bytes) in &reads {
-        let span = memory.bytes(name).map_or(0, |entry| head_of(&entry));
-        assert!(
-            *bytes <= span,
-            "{name}: {bytes} bytes read, past its {span}-byte header"
-        );
-    }
+/// A hit met while staged is asked for again once its store commits it, as its samples moved.
+#[test]
+fn a_stream_asks_again_for_a_hit_its_store_committed() {
+    let (graph, memory, _) = warmed_notes("committed-later", &[]);
+    let player = opened(&memory, u64::MAX);
+    warm_into(&graph, &player);
+    let mut stream = notes(&graph, 8_000, &player);
+    now(stream.add(&graph, &term(STRIKE), &player)).expect("added");
+    taken(&memory);
+    now(stream.add(&graph, &term(STRIKE), &player)).expect("added");
+    assert_eq!(taken(&memory), [], "a hit met once is not asked again");
+    now(player.persist()).expect("persisted");
+    taken(&memory);
+    now(stream.add(&graph, &term(STRIKE), &player)).expect("added");
+    assert!(
+        !taken(&memory).is_empty(),
+        "the committed note is asked for"
+    );
 }
 
 /// A target that only crops or moves a stored node is stored as that node's samples, not a

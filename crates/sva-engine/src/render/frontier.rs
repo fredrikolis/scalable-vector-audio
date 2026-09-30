@@ -12,6 +12,8 @@ use crate::instantiate::Instances;
 use crate::query::Representation;
 use crate::schedule::Order;
 
+pub(crate) type Known = BTreeMap<Hash, Option<Arc<Stored>>>;
+
 pub(crate) struct Frontier<'w> {
     order: &'w Order,
     keys: &'w BTreeMap<String, Hash>,
@@ -55,8 +57,9 @@ impl<'w> Frontier<'w> {
         }
     }
 
-    /// A hit ends the walk down its branch, or streaming, the lookups; a miss walks on.
-    pub(crate) async fn walk(&mut self, store: &impl Through) {
+    /// A hit ends the walk down its branch, or streaming, the lookups; a miss walks on. It
+    /// pauses at the first key `known` lacks, answering it.
+    pub(crate) fn walk(&mut self, known: &Known) -> Option<Hash> {
         while let Some(step) = self.stack.pop() {
             let (path, look) = match step {
                 Step::Close(path, looked) => {
@@ -67,22 +70,32 @@ impl<'w> Frontier<'w> {
                     }
                     continue;
                 }
-                Step::Visit(path, true) if self.unlooked.remove(&path) => (path, true),
-                Step::Visit(path, _) if self.visited.contains(&path) => continue,
                 Step::Visit(path, look) => (path, look),
             };
+            let relook = look && self.unlooked.contains(&path);
+            if !relook && self.visited.contains(&path) {
+                continue;
+            }
+            let key = self.keys[&path];
+            let found = match look && !self.pinned.contains(&path) {
+                true => match known.get(&key) {
+                    Some(found) => found.clone(),
+                    None => {
+                        self.stack.push(Step::Visit(path, look));
+                        return Some(key);
+                    }
+                },
+                false => None,
+            };
+            self.unlooked.remove(&path);
             let late = !self.visited.insert(path.clone());
             if !look {
                 self.unlooked.insert(path.clone());
             }
-            if look
-                && !self.pinned.contains(&path)
-                && let Some(hit) = store.lookup(self.keys[&path]).await
-                && answers(&hit, path == self.root && !self.streaming, self.config)
-            {
-                self.lookups
-                    .push(noted(&path, self.keys[&path], Outcome::Hit));
-                self.stored.insert(path.clone(), Arc::new(hit));
+            let root = path == self.root && !self.streaming;
+            if let Some(hit) = found.filter(|hit| answers(hit, root, self.config)) {
+                self.lookups.push(noted(&path, key, Outcome::Hit));
+                self.stored.insert(path.clone(), hit);
                 if self.streaming && !late {
                     self.opened(path, false);
                 }
@@ -93,6 +106,18 @@ impl<'w> Frontier<'w> {
                 false => self.opened(path, look),
             }
         }
+        None
+    }
+
+    pub(crate) async fn walked(&mut self, known: &mut Known, store: &impl Through) {
+        while let Some(key) = self.walk(known) {
+            known.insert(key, store.lookup(key).await.map(Arc::new));
+        }
+    }
+
+    /// Nodes no store can hold, never looked up.
+    pub(crate) fn unstored(&mut self, paths: impl IntoIterator<Item = String>) {
+        self.pinned.extend(paths);
     }
 
     /// A hit whose samples fall short of what its readers ask, walked on into as a miss.

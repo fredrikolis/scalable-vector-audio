@@ -1085,14 +1085,14 @@ async fn a_call_on_a_stream_mid_edit_is_refused() {
     let dir = fake_directory();
     let held = over_store(&dir).await;
     let stream = held
-        .stream("@master([0, 1s])", BLOCK, options(&[]))
+        .stream("@notes([0, 1s])", BLOCK, options(&[]))
         .await
         .unwrap_or_else(|e| unreachable!("it streams: {}", as_text(&e)));
     let mut add = std::pin::pin!(stream.add("@master"));
     let first = add.as_mut().poll(&mut Context::from_waker(Waker::noop()));
     assert!(
         first.is_pending(),
-        "the store's lookup awaits the directory"
+        "the lookup of a node the stream has not met awaits the directory"
     );
     let mut out = vec![0.0f32; BLOCK];
     refused_as(stream.next(&mut out).err(), "wasm.stream_busy");

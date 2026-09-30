@@ -1,6 +1,6 @@
 // Concern: opens a target as a stream over a store, editing it and its terms live | Non-concern: pulling its blocks, what an edit carries on | IO: (Graph, target) -> Stream; (expr) -> Handle, bool
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use sva_ast::{Expr, Graph};
@@ -8,7 +8,7 @@ use sva_formula::NodeId;
 use sva_samples::Extent;
 
 use super::drive::{Block, Driver};
-use super::frontier::Frontier;
+use super::frontier::{Frontier, Known};
 use super::table::{Table, edit};
 use super::terms::{Handle, NOTES, Terms};
 use super::{Ends, Render, RenderConfig, range_of, through};
@@ -28,9 +28,9 @@ pub struct StreamConfig {
 }
 
 /// A target rendered block by block off one table. The target may read `@notes`, the sum of
-/// the terms added under handles; an edit to it or to a term plays from the next block on.
-/// Opening and each edit look `store` up first: a node it answers plays from its samples, its
-/// own value computing what they miss.
+/// the terms added under handles; an edit plays from the next block on. A node the store
+/// answers plays from its samples. A hit is looked up once; a node reading the stream's own
+/// note sum never, as no store holds one.
 pub struct Stream {
     config: StreamConfig,
     shell: Render,
@@ -38,8 +38,28 @@ pub struct Stream {
     graph: Graph,
     expr: Expr,
     terms: Terms,
+    met: Met,
     live: bool,
     dropped: Vec<String>,
+}
+
+/// Each hit the stream met: a header holds until its own store moves the samples; any holder
+/// may fill a miss.
+#[derive(Default)]
+struct Met {
+    epoch: u64,
+    known: Known,
+}
+
+impl Met {
+    fn over(&mut self, store: &impl Through) -> &mut Known {
+        if store.epoch() != self.epoch {
+            self.known.clear();
+            self.epoch = store.epoch();
+        }
+        self.known.retain(|_, found| found.is_some());
+        &mut self.known
+    }
 }
 
 struct Shelled {
@@ -58,10 +78,12 @@ impl Stream {
         store: &impl Through,
     ) -> Result<Stream, EngineError> {
         let mut terms = Terms::default();
+        let mut met = Met::default();
         let render = &blocked(&config)?.render;
-        let mut found = shelled(graph, target, &mut terms, render, store).await?;
+        let known = met.over(store);
+        let mut found = shelled(graph, target, &mut terms, render, known, store).await?;
         let next = ahead(found.range.start, render.rate);
-        through::load(&mut found.table, store, next).await;
+        through::load(&mut found.table, store, next, &BTreeSet::new()).await;
         let mut recording = Recording::over(cache, config.render.cache_policy);
         recording.found(found.hits);
         let driver = Driver::new(
@@ -75,6 +97,7 @@ impl Stream {
             graph: graph.clone(),
             expr: target.clone(),
             terms,
+            met,
             live: false,
             dropped: Vec::new(),
             driver,
@@ -139,7 +162,7 @@ impl Stream {
     }
 
     /// Values of the same identity carry on; a changed stateful one takes its predecessor's
-    /// state; the rest start now.
+    /// state; the rest start now. It reads only the samples of stored values it brings in.
     async fn rebuilt(
         &mut self,
         graph: &Graph,
@@ -149,7 +172,15 @@ impl Stream {
     ) -> Result<(), EngineError> {
         let mut render = self.config.render.clone();
         render.range.start = Some(self.driver.start);
-        let found = shelled(graph, &target, &mut terms, &render, store).await?;
+        let found = shelled(
+            graph,
+            &target,
+            &mut terms,
+            &render,
+            self.met.over(store),
+            store,
+        )
+        .await?;
         let Shelled {
             shell,
             range,
@@ -157,8 +188,15 @@ impl Stream {
             hits,
         } = found;
         let old = std::mem::replace(&mut self.driver.table, Table::empty());
+        let sounding = old.stored_keys();
         let dropped = edit::carried(&mut table, old, self.driver.at, self.live);
-        through::load(&mut table, store, ahead(self.driver.at, render.rate)).await;
+        through::load(
+            &mut table,
+            store,
+            ahead(self.driver.at, render.rate),
+            &sounding,
+        )
+        .await;
         self.dropped
             .extend(dropped.into_iter().map(|at| table.values[at].name.clone()));
         self.driver.replace(table, range.end);
@@ -175,7 +213,7 @@ impl Stream {
     /// computed, or, live, started silent where not ready.
     pub async fn fetch(&mut self, store: &impl Through) {
         let next = ahead(self.driver.at, self.config.render.rate);
-        through::load(&mut self.driver.table, store, next).await;
+        through::load(&mut self.driver.table, store, next, &BTreeSet::new()).await;
     }
 
     /// What `fetch` reads, for a caller reading it as the stream plays.
@@ -299,12 +337,13 @@ fn wrapped(graph: &Graph, target: &Expr, terms: &Terms) -> Result<Graph, EngineE
     Ok(wrapped)
 }
 
-/// The wrapped graph typed whole, each node `store` answers standing on its samples.
+/// The wrapped graph typed whole, each node the store answers standing on its samples.
 async fn shelled(
     graph: &Graph,
     target: &Expr,
     terms: &mut Terms,
     config: &RenderConfig,
+    known: &mut Known,
     store: &impl Through,
 ) -> Result<Shelled, EngineError> {
     let wrapped = wrapped(graph, target, terms)?;
@@ -313,7 +352,10 @@ async fn shelled(
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&root))?;
     let keys = through::keys(&wrapped, &instances, &order, config);
     let mut found = Frontier::from((&instances, &order), &keys, &root, (config, true));
-    found.walk(store).await;
+    if !terms.is_empty() {
+        found.unstored(reading(&order, &instances.instance_of(NOTES)?));
+    }
+    found.walked(known, store).await;
     let mut tys = typing::infer_over(&instances, &order.within(&found.visited), &BTreeMap::new())?;
     let id = tys
         .id(&root)
@@ -335,6 +377,25 @@ async fn shelled(
         table,
         hits,
     })
+}
+
+/// `path` and every node reading it, however far down.
+fn reading(order: &schedule::Order, path: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::from([path.to_string()]);
+    loop {
+        let more: Vec<String> = order
+            .groups
+            .iter()
+            .flatten()
+            .filter(|node| !out.contains(*node))
+            .filter(|node| order.deps(node).iter().any(|read| out.contains(read)))
+            .cloned()
+            .collect();
+        if more.is_empty() {
+            return out;
+        }
+        out.extend(more);
+    }
 }
 
 fn refusal(what: String) -> EngineError {

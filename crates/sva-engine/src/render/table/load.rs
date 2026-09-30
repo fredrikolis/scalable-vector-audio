@@ -1,5 +1,6 @@
 // Concern: which stored samples a window asks that no stored value holds yet, and laying them in | Non-concern: reading them off a store | IO: (Table, window) -> wants; (key, samples) -> ()
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use sva_formula::Hash;
@@ -28,6 +29,14 @@ impl Table {
             }
         }
         out
+    }
+
+    pub(crate) fn stored_keys(&self) -> BTreeSet<Hash> {
+        let stored = self.values.iter().filter_map(|value| match &value.kind {
+            Kind::Stored(stored) => Some(stored.key),
+            _ => None,
+        });
+        stored.collect()
     }
 
     pub(crate) fn took(&mut self, key: Hash, samples: Vec<Buffer>) {
