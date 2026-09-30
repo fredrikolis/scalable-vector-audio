@@ -8,9 +8,9 @@ mod stats;
 mod store;
 mod stored;
 
+pub use codec::STORE_FORMAT;
 pub use persist::{
-    Backend, DEFAULT_STORE_BYTES, INDEX_NAME, NoStore, Persisted, STORE_FORMAT, Store, Stored,
-    Through,
+    Backend, DEFAULT_STORE_BYTES, INDEX_NAME, NoStore, Persisted, Store, Stored, Through,
 };
 pub(crate) use stats::Recording;
 pub use stats::{CacheStats, Lookup, Outcome};

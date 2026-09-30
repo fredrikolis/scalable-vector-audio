@@ -1,4 +1,4 @@
-// Concern: writes one stored node value and one staged run of its samples as bytes, and reads them back | Non-concern: where the bytes live or when | IO: (Stored or Buffer) <-> bytes, a corrupt one None
+// Concern: one stored node value, tagged with the store's format, and one staged run, as bytes and back | Non-concern: where the bytes live or when | IO: (Stored or Buffer) <-> bytes, a bad one None
 
 use sva_formula::Codomain;
 use sva_samples::{
@@ -10,7 +10,15 @@ use sva_formula::Hash;
 use super::Stored;
 use super::stored::{Laid, Samples};
 
-const ENTRY: &[u8; 4] = b"SVAh";
+/// Bumped by, and only by, a change to a stored value's bytes.
+pub const STORE_FORMAT: u32 = 6;
+
+/// Every entry opens with its format, so one another format wrote is never read as a value,
+/// even where a wipe left it.
+fn entry_tag() -> Vec<u8> {
+    [&b"SVAh"[..], &STORE_FORMAT.to_le_bytes()].concat()
+}
+
 const STAGED_RUN: &[u8; 4] = b"SVAc";
 
 /// Samples per chunk of a run: what one checksum covers, and the least a read loads. Samples
@@ -54,7 +62,7 @@ pub(crate) fn entry(stored: &Stored, runs: &[Buffer]) -> Vec<u8> {
 }
 
 fn header(stored: &Stored, laid: &[Laid]) -> Vec<u8> {
-    let mut out = ENTRY.to_vec();
+    let mut out = entry_tag();
     word(&mut out, stored.key.0);
     word(&mut out, stored.key.1);
     labelled(&mut out, &stored.label);
@@ -104,7 +112,7 @@ pub(crate) fn head_len(first: &[u8]) -> Option<usize> {
 /// truncated, corrupt or foreign header is `None`, never a partial value.
 pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Stored, u64)> {
     let span = head_len(bytes)?;
-    let mut r = Reader(opened(bytes.get(8..span)?, ENTRY)?);
+    let mut r = Reader(opened(bytes.get(8..span)?, &entry_tag())?);
     let key = Hash(r.word()?, r.word()?);
     let label = r.label()?;
     let width = r.byte()?;
@@ -250,7 +258,7 @@ fn sealed(mut out: Vec<u8>) -> Vec<u8> {
 }
 
 /// The body past `magic`, where the checksum holds.
-fn opened<'b>(bytes: &'b [u8], magic: &[u8; 4]) -> Option<&'b [u8]> {
+fn opened<'b>(bytes: &'b [u8], magic: &[u8]) -> Option<&'b [u8]> {
     let body = bytes.len().checked_sub(8)?;
     let (body, sum) = bytes.split_at(body);
     (checksum(body).to_le_bytes() == sum && body.starts_with(magic)).then(|| &body[magic.len()..])

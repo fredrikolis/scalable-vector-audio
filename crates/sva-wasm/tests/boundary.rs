@@ -1179,11 +1179,8 @@ fn task(work: impl Future<Output = Result<JsValue, JsValue>> + 'static) -> js_sy
     wasm_bindgen_futures::future_to_promise(work)
 }
 
-/// Four workers warm and one renders the same sound, each over its own store on one directory
-/// an older format left, all at once: every open wipes or waits, every persist commits whole,
-/// and none of them fails.
-#[wasm_bindgen_test]
-async fn workers_opening_one_aged_directory_at_once_each_warm_render_and_persist() {
+/// A directory holding the values of `over_store`'s render, under an older format's index.
+async fn aged_directory() -> JsValue {
     let dir = fake_directory();
     let first = over_store(&dir).await;
     stored_render(&first).await;
@@ -1191,8 +1188,13 @@ async fn workers_opening_one_aged_directory_at_once_each_warm_render_and_persist
         .persist()
         .await
         .unwrap_or_else(|e| unreachable!("persisted: {}", as_text(&e)));
-    let values = values_in(&dir);
     aged(&dir);
+    dir
+}
+
+/// Four workers warm and one renders the same sound, each over its own store on `dir`, all at
+/// once, and each persists.
+async fn workers(dir: &JsValue) {
     let workers: js_sys::Array = (0..5)
         .map(|n| {
             let dir = dir.clone();
@@ -1214,6 +1216,15 @@ async fn workers_opening_one_aged_directory_at_once_each_warm_render_and_persist
     wasm_bindgen_futures::JsFuture::from(js_sys::Promise::all(&workers))
         .await
         .unwrap_or_else(|e| unreachable!("every worker succeeds: {}", as_text(&e)));
+}
+
+/// On one directory an older format left, every open wipes or waits, every persist commits
+/// whole, and no worker fails.
+#[wasm_bindgen_test]
+async fn workers_opening_one_aged_directory_at_once_each_warm_render_and_persist() {
+    let dir = aged_directory().await;
+    let values = values_in(&dir);
+    workers(&dir).await;
     assert_eq!(values_in(&dir), values, "each value stored once, whole");
     let warm = stored_render(&over_store(&dir).await).await;
     assert_eq!(
@@ -1222,6 +1233,51 @@ async fn workers_opening_one_aged_directory_at_once_each_warm_render_and_persist
         "{}",
         as_text(&warm)
     );
+}
+
+/// An entry another holder keeps open is left by the wipe and by every commit over it, and no
+/// worker fails; once it closes, the next persist writes it.
+#[wasm_bindgen_test]
+async fn an_entry_open_elsewhere_fails_no_worker_and_the_next_persist_writes_it() {
+    let dir = aged_directory().await;
+    let files: js_sys::Map = field(&dir, "files").into();
+    let name = files
+        .keys()
+        .into_iter()
+        .filter_map(|name| name.ok()?.as_string())
+        .find(|name| name != "index")
+        .unwrap_or_else(|| unreachable!("a value's file"));
+    let handle = js_call(&dir, "getFileHandle", &[name.clone().into()]).await;
+    let writable = js_call(&handle, "createWritable", &[]).await;
+    workers(&dir).await;
+    assert!(files.has(&name.clone().into()), "open, so left");
+    js_call(&writable, "close", &[]).await;
+
+    let held = over_store(&dir).await;
+    let cold = stored_render(&held).await;
+    assert!(field(&cold, "computed").as_f64() > Some(0.0));
+    held.persist()
+        .await
+        .unwrap_or_else(|e| unreachable!("persisted: {}", as_text(&e)));
+    let warm = stored_render(&over_store(&dir).await).await;
+    assert_eq!(
+        field(&warm, "computed").as_f64(),
+        Some(0.0),
+        "{}",
+        as_text(&warm)
+    );
+}
+
+/// `of.method(...args)`, awaited.
+async fn js_call(of: &JsValue, method: &str, args: &[JsValue]) -> JsValue {
+    let method: js_sys::Function = field(of, method).into();
+    let args: js_sys::Array = args.iter().collect();
+    let promise = method
+        .apply(of, &args)
+        .unwrap_or_else(|_| unreachable!("`{method:?}` answers"));
+    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(promise))
+        .await
+        .unwrap_or_else(|e| unreachable!("it settles: {}", as_text(&e)))
 }
 
 /// FNV-1a over every component's f64 bits, little-endian: a native `sva-cli render '@master([0,

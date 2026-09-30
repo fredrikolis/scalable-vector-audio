@@ -1,6 +1,6 @@
 // Concern: proves a store answers a render or a stream from its root down, stages until persist, keeps a version and a budget | Non-concern: any real medium | IO: (composition, fake backend) -> hits
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
@@ -17,7 +17,8 @@ const RATE: u32 = 8_000;
 
 /// One map of names; each staging area's names sit under its own prefix, where `list` never looks.
 /// While `refusing` is up, every rename fails. `reads` logs each read: the name and the bytes it
-/// answered.
+/// answered. A name in `open` is another holder's, so, as in OPFS, it is neither removed nor
+/// moved onto.
 #[derive(Clone, Default)]
 struct Memory {
     held: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
@@ -26,6 +27,7 @@ struct Memory {
     reads: Arc<Mutex<Vec<(String, usize)>>>,
     lists: Arc<AtomicUsize>,
     locked: Arc<AtomicBool>,
+    open: Arc<Mutex<BTreeSet<String>>>,
 }
 
 /// The fake's lock, released when dropped.
@@ -69,6 +71,10 @@ impl Memory {
     fn set(&self, name: &str, bytes: Vec<u8>) {
         self.held.lock().unwrap().insert(self.at(name), bytes);
     }
+
+    fn opened(&self, name: &str) -> bool {
+        self.open.lock().unwrap().contains(&self.at(name))
+    }
 }
 
 impl Backend for Memory {
@@ -110,9 +116,12 @@ impl Backend for Memory {
         Ok(())
     }
 
-    async fn delete(&self, name: &str) -> Result<(), String> {
+    async fn delete(&self, name: &str) -> Result<bool, String> {
+        if self.opened(name) {
+            return Ok(false);
+        }
         self.held.lock().unwrap().remove(&self.at(name));
-        Ok(())
+        Ok(true)
     }
 
     async fn list(&self) -> Result<Vec<(String, u64)>, String> {
@@ -136,14 +145,17 @@ impl Backend for Memory {
         })
     }
 
-    async fn rename(&self, name: &str, to: &Memory) -> Result<(), String> {
+    async fn rename(&self, name: &str, to: &Memory) -> Result<bool, String> {
         if self.refusing.load(Ordering::Relaxed) {
             return Err("the medium refused".to_string());
+        }
+        if self.opened(name) || to.opened(name) {
+            return Ok(false);
         }
         let mut held = self.held.lock().unwrap();
         let bytes = held.remove(&self.at(name)).ok_or("nothing staged")?;
         held.insert(to.at(name), bytes);
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -304,7 +316,7 @@ fn opening_a_store_reads_its_index_alone() {
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
-const PINNED: (u32, u64) = (5, 14712008217718854089);
+const PINNED: (u32, u64) = (6, 1468596604244681492);
 
 /// A change to how a value is encoded, or to what the engine computes for any construct here,
 /// fails this until `STORE_FORMAT` is bumped and the digest pinned again: rows, a filter, a
@@ -652,6 +664,45 @@ fn a_persist_that_fails_leaves_every_value_it_did_not_commit_staged() {
     let done = now(store.persist()).expect("persisted");
     assert_eq!(done.written, 3, "x, y and master were still staged");
     assert_eq!(memory.entries().len(), 3);
+}
+
+/// Entries another holder has open, as another worker's OPFS handle holds them: a persist
+/// neither commits over nor evicts them, and fails at nothing; once they close, the next one does
+/// both.
+#[test]
+fn a_persist_skips_entries_another_holder_has_open_and_the_next_retries_them() {
+    let names = {
+        let memory = Memory::default();
+        let store = opened(&memory, u64::MAX);
+        rendered(&two_voices("held", 330), &store);
+        now(store.persist()).expect("persisted");
+        memory.entries()
+    };
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    rendered(&two_voices("held", 330), &store);
+    memory.open.lock().unwrap().extend(names.iter().cloned());
+    let done = now(store.persist()).expect("an open entry is no failure");
+    assert_eq!((done.written, memory.entries().len()), (0, 0));
+    memory.open.lock().unwrap().clear();
+    let done = now(store.persist()).expect("persisted");
+    assert_eq!(done.written, names.len(), "each stayed staged");
+
+    let memory = Memory::default();
+    let (_, one) = persisted_tone(&memory, u64::MAX, 100);
+    let old = memory.entries();
+    memory.open.lock().unwrap().extend(old.iter().cloned());
+    let store = opened(&memory, one / 2);
+    rendered(&tone("tone-200", 200), &store);
+    now(store.persist()).expect("an open entry is no failure");
+    let kept = |name: &String| memory.bytes(name).is_some();
+    assert!(old.iter().all(kept), "open, so kept past the budget");
+    memory.open.lock().unwrap().clear();
+    now(store.persist()).expect("persisted");
+    assert!(
+        !old.iter().any(kept),
+        "closed, so the next persist evicts it"
+    );
 }
 
 /// A note one worker rendered and persisted, a stream in another answers from the store: the

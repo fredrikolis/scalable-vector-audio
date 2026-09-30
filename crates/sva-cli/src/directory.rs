@@ -38,7 +38,12 @@ impl Directory {
             };
             if free {
                 let path = entry.path();
-                std::fs::remove_dir_all(&path).map_err(|e| failed("remove", &path, e))?;
+                match std::fs::remove_dir_all(&path) {
+                    Err(e) if !busy(&e) => {
+                        return Err(failed("remove", &path, e));
+                    }
+                    _ => {}
+                }
             }
         }
         Ok(())
@@ -50,6 +55,13 @@ const STAGING: &str = ".staging-";
 const LOCK: &str = ".lock";
 
 static WRITES: AtomicU64 = AtomicU64::new(0);
+
+/// Another process has the file open where its system refuses to remove or replace one then:
+/// `EBUSY`, or on Windows a sharing or lock violation.
+fn busy(e: &std::io::Error) -> bool {
+    e.kind() == ErrorKind::ResourceBusy
+        || cfg!(windows) && matches!(e.raw_os_error(), Some(32 | 33))
+}
 
 fn failed(what: &str, path: &Path, e: std::io::Error) -> String {
     format!("could not {what} `{}`: {e}", path.display())
@@ -107,11 +119,12 @@ impl Backend for Directory {
         std::fs::rename(&temp, &path).map_err(|e| failed("rename onto", &path, e))
     }
 
-    async fn delete(&self, name: &str) -> Result<(), String> {
+    async fn delete(&self, name: &str) -> Result<bool, String> {
         let path = self.path.join(name);
         match std::fs::remove_file(&path) {
+            Err(e) if busy(&e) => Ok(false),
             Err(e) if e.kind() != ErrorKind::NotFound => Err(failed("delete", &path, e)),
-            _ => Ok(()),
+            _ => Ok(true),
         }
     }
 
@@ -151,9 +164,14 @@ impl Backend for Directory {
         })
     }
 
-    async fn rename(&self, name: &str, to: &Directory) -> Result<(), String> {
+    async fn rename(&self, name: &str, to: &Directory) -> Result<bool, String> {
         std::fs::create_dir_all(&to.path).map_err(|e| failed("create", &to.path, e))?;
         let (from, onto) = (self.path.join(name), to.path.join(name));
-        std::fs::rename(&from, &onto).map_err(|e| failed("rename onto", &onto, e))
+        match std::fs::rename(&from, &onto) {
+            Err(e) if busy(&e) => Ok(false),
+            moved => moved
+                .map(|()| true)
+                .map_err(|e| failed("rename onto", &onto, e)),
+        }
     }
 }

@@ -6,15 +6,13 @@ use std::sync::{Mutex, MutexGuard};
 use sva_formula::Hash;
 use sva_samples::{Buffer, Extent};
 
+use super::codec::{self, STORE_FORMAT};
 use super::index::{Index, key_of, name_of};
+use super::joined;
 use super::stored::Samples;
 pub use super::stored::Stored;
-use super::{codec, joined};
 
 pub const DEFAULT_STORE_BYTES: u64 = 2 << 30;
-
-/// Bumped by, and only by, a change to a stored value's bytes.
-pub const STORE_FORMAT: u32 = 5;
 
 fn version() -> String {
     format!("sva store format {STORE_FORMAT}")
@@ -29,9 +27,8 @@ const META: &str = "meta";
 
 /// Named bytes. A `put` is whole or absent: no reader sees half of one.
 pub trait Backend: Sized {
-    /// Held until dropped.
     type Lock;
-    /// The one exclusive lock over these names, shared by every store over them, awaited.
+    /// The one exclusive lock over these names, shared by every store over them.
     fn lock(&self) -> impl Future<Output = Result<Self::Lock, String>>;
     fn get(&self, name: &str) -> impl Future<Output = Result<Option<Vec<u8>>, String>>;
     /// At most `len` bytes from `from` on, fewer where the name ends sooner.
@@ -42,14 +39,15 @@ pub trait Backend: Sized {
         len: u64,
     ) -> impl Future<Output = Result<Option<Vec<u8>>, String>>;
     fn put(&self, name: &str, bytes: &[u8]) -> impl Future<Output = Result<(), String>>;
-    fn delete(&self, name: &str) -> impl Future<Output = Result<(), String>>;
+    /// False where another holder has `name` open, so it stays.
+    fn delete(&self, name: &str) -> impl Future<Output = Result<bool, String>>;
     /// Each name, with its size in bytes.
     fn list(&self) -> impl Future<Output = Result<Vec<(String, u64)>, String>>;
-    /// An area beside these names that no other store writes and `list` never names; asked
-    /// under `lock`.
+    /// An area beside these names that no other store writes and `list` never names.
     fn staging(&self) -> impl Future<Output = Result<Self, String>>;
-    /// `name` moved from here into `to` in one step, over whatever `to` held under it.
-    fn rename(&self, name: &str, to: &Self) -> impl Future<Output = Result<(), String>>;
+    /// `name` moved from here into `to` in one step, over whatever `to` held under it; as
+    /// `delete`, false where either is open.
+    fn rename(&self, name: &str, to: &Self) -> impl Future<Output = Result<bool, String>>;
 }
 
 /// A store, or nothing, that a render looks a node up in and reads its samples from.
@@ -97,6 +95,12 @@ pub struct Store<B> {
     index: Mutex<Index>,
     staged: Mutex<BTreeMap<Hash, Staged>>,
     written: Mutex<u64>,
+}
+
+enum Committed {
+    Moved { bytes: u64 },
+    Busy,
+    Dropped,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -267,7 +271,8 @@ impl<B: Backend> Store<B> {
     }
 
     /// A value staged without its meta is dropped. A key leaves the staging record only once
-    /// its files have, so a failed write leaves every later one staged.
+    /// its files have, so a failed write leaves every later one staged, as does a commit over
+    /// an open entry. An open entry past budget stays for the next persist.
     pub async fn persist(&self) -> Result<Persisted, String> {
         let _held = self.backend.lock().await?;
         let mut done = Persisted::default();
@@ -276,9 +281,13 @@ impl<B: Backend> Store<B> {
             let Some(held) = locked(&self.staged).get(&key).cloned() else {
                 continue;
             };
-            if let Some(bytes) = self.committed(key, &held).await? {
-                locked(&self.index).touch(key, bytes);
-                done.written += 1;
+            match self.committed(key, &held).await? {
+                Committed::Busy => continue,
+                Committed::Moved { bytes } => {
+                    locked(&self.index).touch(key, bytes);
+                    done.written += 1;
+                }
+                Committed::Dropped => {}
             }
             for (chunk, _) in &held.chunks {
                 self.staging.delete(chunk).await?;
@@ -296,33 +305,38 @@ impl<B: Backend> Store<B> {
             if self.bytes() <= self.max_bytes {
                 break;
             }
-            self.backend.delete(&name_of(key)).await?;
-            locked(&self.index).forget(key);
-            done.evicted += 1;
+            if self.backend.delete(&name_of(key)).await? {
+                locked(&self.index).forget(key);
+                done.evicted += 1;
+            }
         }
         let text = locked(&self.index).text(&version());
         self.backend.put(INDEX_NAME, text.as_bytes()).await?;
         Ok(done)
     }
 
-    /// `key`'s staged value moved whole into the store, and its size; none past budget.
-    async fn committed(&self, key: Hash, held: &Staged) -> Result<Option<u64>, String> {
+    /// `key`'s staged value moved whole into the store; none past budget.
+    async fn committed(&self, key: Hash, held: &Staged) -> Result<Committed, String> {
         let whole = match held.meta {
             true => self.staged_value_of(key, held).await?,
             false => None,
         };
         let whole = whole.filter(|(stored, runs)| !runs.is_empty() || stored.refers());
         let Some((stored, runs)) = whole else {
-            return Ok(None);
+            return Ok(Committed::Dropped);
         };
         let bytes = codec::entry(&stored, &runs);
         if bytes.len() as u64 > self.max_bytes {
-            return Ok(None);
+            return Ok(Committed::Dropped);
         }
         let name = name_of(key);
         self.staging.put(&name, &bytes).await?;
-        self.staging.rename(&name, &self.backend).await?;
-        Ok(Some(bytes.len() as u64))
+        Ok(match self.staging.rename(&name, &self.backend).await? {
+            true => Committed::Moved {
+                bytes: bytes.len() as u64,
+            },
+            false => Committed::Busy,
+        })
     }
 
     async fn staged_value_of(

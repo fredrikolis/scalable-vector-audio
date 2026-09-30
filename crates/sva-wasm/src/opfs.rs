@@ -91,8 +91,20 @@ fn why(e: JsValue) -> String {
         .unwrap_or_else(|| format!("{e:?}"))
 }
 
+fn named(e: &JsValue) -> Option<String> {
+    field(e, "name").as_string()
+}
+
 fn missing(e: &JsValue) -> bool {
-    field(e, "name").as_string().as_deref() == Some("NotFoundError")
+    named(e).as_deref() == Some("NotFoundError")
+}
+
+/// What OPFS rejects a removal or a move with while another holder has the file open.
+fn busy(e: &JsValue) -> bool {
+    matches!(
+        named(e).as_deref(),
+        Some("NoModificationAllowedError" | "InvalidModificationError")
+    )
 }
 
 async fn settled<T: JsCast>(promise: Promise) -> Result<T, JsValue> {
@@ -175,7 +187,7 @@ impl Opfs {
         js_sys::Reflect::set(&options, &"recursive".into(), &true.into()).map_err(why)?;
         for name in stale {
             match settled::<JsValue>(self.dir.remove_tree(&name, &options)).await {
-                Err(e) if !missing(&e) => return Err(why(e)),
+                Err(e) if !missing(&e) && !busy(&e) => return Err(why(e)),
                 _ => {}
             }
         }
@@ -242,10 +254,11 @@ impl Backend for Opfs {
         Ok(())
     }
 
-    async fn delete(&self, name: &str) -> Result<(), String> {
+    async fn delete(&self, name: &str) -> Result<bool, String> {
         match settled::<JsValue>(self.dir.remove_entry(name)).await {
+            Err(e) if busy(&e) => Ok(false),
             Err(e) if !missing(&e) => Err(why(e)),
-            _ => Ok(()),
+            _ => Ok(true),
         }
     }
 
@@ -283,14 +296,14 @@ impl Backend for Opfs {
         })
     }
 
-    async fn rename(&self, name: &str, to: &Opfs) -> Result<(), String> {
+    async fn rename(&self, name: &str, to: &Opfs) -> Result<bool, String> {
         let handle = self
             .handle(name, false)
             .await?
             .ok_or_else(|| format!("`{name}` is not staged"))?;
-        settled::<JsValue>(handle.move_into(&to.dir, name))
-            .await
-            .map_err(why)?;
-        Ok(())
+        match settled::<JsValue>(handle.move_into(&to.dir, name)).await {
+            Err(e) if busy(&e) => Ok(false),
+            moved => moved.map(|_| true).map_err(why),
+        }
     }
 }
