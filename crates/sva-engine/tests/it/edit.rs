@@ -393,3 +393,56 @@ fn a_shifted_term_reads_and_extends_the_run_its_node_holds_in_the_store() {
         warm.stats()
     );
 }
+
+const COMB: &str = "delay = 0.0297\ng = 0.8\nx + g*self[idx(t - delay)]\n";
+const ALLPASS: &str = "delay = 1/300\ng = 0.7\n@comb(t - delay, x=x, delay=delay, g=g) - g*@comb(t, x=x, delay=delay, g=g)\n";
+const HALL: &str = "size = 1\ndecay = 0.8\n@allpass(t, x=@allpass(t, x=0.25*(@comb(t, x=x, \
+    delay=0.0297*size, g=decay) + @comb(t, x=x, delay=0.0371*size, g=decay)), delay=2/300, g=0.7), \
+    delay=1/300, g=0.7)\n";
+const SPACE: &str = "mix = 0.3\ndry = x\n(1 - mix)*x + mix*@hall(t, x=dry, size=1, decay=0.8)\n";
+
+fn reverb() -> Graph {
+    graph_of(
+        "reverb",
+        &[
+            ("comb", COMB),
+            ("allpass", ALLPASS),
+            ("hall", HALL),
+            ("space", SPACE),
+            (
+                "blip",
+                "crop(lowpass(sample(sin(2*pi*f0*t)), cutoff=2000, q=0.7), 0s, 0.4s)\n",
+            ),
+        ],
+    )
+}
+
+/// Two notes under a master, the second added live: the stream is the whole render of both,
+/// nothing dropped. A reader reading two values through one map (the dry signal beside the
+/// room, parallel combs) carries each on from its own.
+fn added_under(master: &dyn Fn(&str) -> String) {
+    let g = reverb();
+    let mut stream = opened(&g, &master("@notes"), None);
+    stream.go_live();
+    let a = format!("@blip(t - {BLOCK}sp, f0=200)");
+    let b = format!("@blip(t - {}sp, f0=300)", 8 * BLOCK);
+    stream.add(&g, &expr(&a)).unwrap_or_else(|e| panic!("{e}"));
+    let mut heard = blocks(&mut stream, 8);
+    stream.add(&g, &expr(&b)).unwrap_or_else(|e| panic!("{e}"));
+    heard.extend(blocks(&mut stream, 12));
+    assert!(stream.dropped().is_empty(), "{:?}", stream.dropped());
+
+    let mut whole_g = g.clone();
+    assert!(whole_g.define("final", expr(&master(&format!("{a} + {b}")))));
+    assert_eq!(heard, whole(&whole_g, "final", heard.len()));
+}
+
+#[test]
+fn a_note_added_under_a_reverb_keeps_its_tail_ringing() {
+    added_under(&|x| format!("@space(t, x=sample({x}), dry=sample({x}), mix=0.3)"));
+}
+
+#[test]
+fn a_note_added_under_parallel_combs_reads_each_comb_s_own_past() {
+    added_under(&|x| format!("@hall(t, x=sample({x}))"));
+}

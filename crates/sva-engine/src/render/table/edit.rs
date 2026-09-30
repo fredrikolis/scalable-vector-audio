@@ -100,7 +100,7 @@ fn reads(value: &Value) -> Vec<(usize, sva_samples::Map)> {
 /// An old value's reads, and each read's slot and map.
 type Shape = (Vec<usize>, Vec<(usize, sva_samples::Map)>);
 
-/// The old values each carried reader of `at` read through the map it reads `at` through.
+/// The old values each carried reader of `at` read through the same map, same slot first.
 fn predecessors(
     new: &Table,
     old: &[Shape],
@@ -108,7 +108,7 @@ fn predecessors(
     at: usize,
     kept: &[usize],
 ) -> Vec<usize> {
-    let mut out = Vec::new();
+    let mut ranked = Vec::new();
     for (reader, was) in paired.iter().enumerate().skip(at + 1) {
         let Some((before, theirs)) = was.map(|w| &old[w]) else {
             continue;
@@ -119,10 +119,17 @@ fn predecessors(
             }
             for (their, their_map) in theirs {
                 let read = before[*their];
-                if *their_map == map && !kept.contains(&read) && !out.contains(&read) {
-                    out.push(read);
+                if *their_map == map && !kept.contains(&read) {
+                    ranked.push((*their != slot, read));
                 }
             }
+        }
+    }
+    ranked.sort_by_key(|(elsewhere, _)| *elsewhere);
+    let mut out = Vec::new();
+    for (_, read) in ranked {
+        if !out.contains(&read) {
+            out.push(read);
         }
     }
     out
