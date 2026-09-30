@@ -8,7 +8,7 @@ use std::task::{Context, Poll, Waker};
 use crate::fixtures::{graph_of, samples};
 use sva_ast::Graph;
 use sva_engine::{
-    Backend, CacheStats, Hash, NoStore, Outcome, Range, Render, RenderConfig, STORE_VERSION, Store,
+    Backend, CacheStats, Hash, NoStore, Outcome, Range, Render, RenderConfig, STORE_FORMAT, Store,
     Stream, StreamConfig, VERSION_NAME, render, render_through,
 };
 
@@ -207,11 +207,81 @@ fn a_store_another_version_wrote_is_wiped_on_open() {
     memory.set(VERSION_NAME, b"sva-engine 0.0.0 format 0".to_vec());
     let reopened = opened(&memory, u64::MAX);
     assert_eq!(memory.names(), vec![VERSION_NAME.to_string()]);
-    assert_eq!(
-        memory.bytes(VERSION_NAME),
-        Some(STORE_VERSION.as_bytes().to_vec())
-    );
+    assert_eq!(memory.bytes(VERSION_NAME), Some(format_only()));
     assert_eq!(reopened.bytes(), 0);
+}
+
+/// The version file as every build at this format writes it, whatever its engine version or
+/// sources: the bytes a store in a user's browser keeps across releases.
+fn format_only() -> Vec<u8> {
+    format!("sva store format {STORE_FORMAT}").into_bytes()
+}
+
+/// A store another build wrote at this format, as a release that changes no stored value
+/// finds it, opens with every entry.
+#[test]
+fn a_store_survives_a_build_change_that_keeps_its_format() {
+    let memory = Memory::default();
+    let graph = two_voices("build", 330);
+    let store = opened(&memory, u64::MAX);
+    let cold = rendered(&graph, &store);
+    now(store.persist()).expect("persisted");
+    memory.set(VERSION_NAME, format_only());
+    let entries = memory.entries();
+
+    let warm = rendered(&graph, &opened(&memory, u64::MAX));
+    assert_eq!(memory.entries(), entries, "nothing was wiped");
+    assert_eq!(stats(&warm).computed(), 0, "{:?}", stats(&warm));
+    assert_eq!(bits(&cold), bits(&warm));
+}
+
+/// The format a digest of these values' stored bytes was pinned under, and the digest.
+const PINNED: (u32, u64) = (3, 6023739010022230036);
+
+/// A change to how a value is encoded, or to what the engine computes for any construct here,
+/// fails this until `STORE_FORMAT` is bumped and the digest pinned again: rows, a filter, a
+/// shifted read, a loop, a solver under a min-and-max ramp, a pointwise form and noise.
+#[test]
+fn what_a_store_writes_changes_only_with_its_format() {
+    let damped = "chaigne_askenfelt(261.63, damper_r=0.1*crop(max(0, min(1, (t - 0.02s)/0.03s)), \
+        0.02s, inf))\n";
+    let graph = graph_of(
+        "pinned",
+        &[
+            ("x", "sample(sin(2*pi*220*t))*0.5\n"),
+            (
+                "f",
+                "lowpass(sample(sin(2*pi*220*t)) + sample(sin(2*pi*3000*t))*0.3, cutoff=800)\n",
+            ),
+            ("echo", "@x + 0.5*self[idx(t - 0.01s)]\n"),
+            ("s", damped),
+            (
+                "chirp",
+                "sample(sin(2*pi*(200 + 900*t)*t))*step(t - 0.01s)\n",
+            ),
+            ("hiss", "lowpass(noise(7, period=0.25), cutoff=1000)*0.1\n"),
+            (
+                "master",
+                "@echo*0.5 + @f(t - 0.01s) + @s*0.25 + @chirp*0.2 + @hiss\n",
+            ),
+        ],
+    );
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    rendered(&graph, &store);
+    now(store.persist()).expect("persisted");
+    let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
+    for name in memory.entries() {
+        let bytes = memory.bytes(&name).expect("an entry");
+        for b in name.bytes().chain(bytes) {
+            digest = (digest ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    assert_eq!(
+        (STORE_FORMAT, digest),
+        PINNED,
+        "stored bytes changed: bump STORE_FORMAT and pin the new digest"
+    );
 }
 
 #[test]

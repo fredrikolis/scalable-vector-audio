@@ -57,13 +57,12 @@ pub(crate) fn node_key(identity: Hash, rate: u32, profile: &sva_samples::Profile
 
 pub const DEFAULT_STORE_BYTES: u64 = 2 << 30;
 
-pub const STORE_VERSION: &str = concat!(
-    "sva-engine ",
-    env!("CARGO_PKG_VERSION"),
-    " build ",
-    env!("SVA_ENGINE_BUILD"),
-    " format 2"
-);
+/// Bumped by, and only by, a change to a stored value's bytes.
+pub const STORE_FORMAT: u32 = 3;
+
+fn version() -> String {
+    format!("sva store format {STORE_FORMAT}")
+}
 
 pub const VERSION_NAME: &str = "version";
 
@@ -78,8 +77,7 @@ pub trait Backend: Sized {
     fn delete(&self, name: &str) -> impl Future<Output = Result<(), String>>;
     /// Every name held, with its size in bytes.
     fn list(&self) -> impl Future<Output = Result<Vec<(String, u64)>, String>>;
-    /// An area of its own beside this one's names, which no other store writes and `list`
-    /// never names.
+    /// An area beside these names that no other store writes and `list` never names.
     fn staging(&self) -> impl Future<Output = Result<Self, String>>;
     /// `name` moved from here into `to` in one step, over whatever `to` held under it.
     fn rename(&self, name: &str, to: &Self) -> impl Future<Output = Result<(), String>>;
@@ -158,9 +156,9 @@ struct Staged {
     meta: bool,
 }
 
-/// Node values under their keys. A render reads through it and spills what it computes to the
-/// staging area; only `persist` changes the store, committing each staged value whole by
-/// rename, least recently used going first past the budget.
+/// Node values under their keys. A render reads through it and spills to the staging area;
+/// only `persist` changes the store, committing each staged value whole by rename and evicting
+/// the least recently used past the budget.
 pub struct Store<B> {
     backend: B,
     staging: B,
@@ -191,16 +189,16 @@ fn locked<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl<B: Backend> Store<B> {
-    /// A store another version wrote is emptied first.
+    /// A store of another format is emptied first.
     pub async fn open(backend: B, max_bytes: u64) -> Result<Store<B>, String> {
-        let version = backend.get(VERSION_NAME).await?;
-        if version.as_deref() != Some(STORE_VERSION.as_bytes()) {
+        let version = version();
+        if backend.get(VERSION_NAME).await?.as_deref() != Some(version.as_bytes()) {
             for (name, _) in backend.list().await? {
                 if key_of(&name).is_some() || name == RECENCY_NAME || name == VERSION_NAME {
                     backend.delete(&name).await?;
                 }
             }
-            backend.put(VERSION_NAME, STORE_VERSION.as_bytes()).await?;
+            backend.put(VERSION_NAME, version.as_bytes()).await?;
         }
         let order = backend.get(RECENCY_NAME).await?.unwrap_or_default();
         let order = String::from_utf8_lossy(&order);
@@ -275,7 +273,7 @@ impl<B: Backend> Store<B> {
         Some(stored)
     }
 
-    /// One run of `key`'s samples, out of memory and into the staging area.
+    /// One run of `key`'s samples, moved into the staging area.
     pub(crate) async fn stage(&self, key: Hash, samples: &Buffer) -> Result<(), String> {
         let n = {
             let mut written = locked(&self.written);
