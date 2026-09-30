@@ -24,7 +24,7 @@ pub use collapse::{
 pub use error::{CollapseError, SampleError};
 pub use filters::{Automation, AutomationFrame, FilterSite, FilterTrace};
 pub use frames::Frames;
-pub use label::{Cost, Detail, Dropped, Label, Rule, Source};
+pub use label::{Cost, Detail, Dropped, Label, Pruned, Rule, Source};
 pub use machine::renderer::{
     Between, Binary, BufId, Formula, Grid, Index, Map, NodeRenderer, Round, Site, SiteId, Slot,
     Unary, Wrap,

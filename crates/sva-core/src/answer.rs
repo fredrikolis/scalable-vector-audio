@@ -5,7 +5,8 @@ use std::path::Path;
 use sva_engine::{
     Alias, AliasBand, Answer, Arguments, BandCrest, BandTrack, Bands, Binding, Buffer, CacheStats,
     Cost, Crest, Detail, EnvelopeFrame, FormantFrame, Label, LedgerEntry, Loudness, LoudnessFrame,
-    Outcome, Output, PayloadKind, Source, SpectralSum, Spectrum, StereoFrame, StereoImage, Work,
+    Outcome, Output, PayloadKind, Pruned, Source, SpectralSum, Spectrum, StereoFrame, StereoImage,
+    Work,
 };
 
 use crate::json::{NONE, capped, escape, latest, list, num};
@@ -459,7 +460,11 @@ pub fn label_json(label: &Label) -> String {
         Some(Cost { flops, budget }) => format!(", \"flops\": {flops}, \"flop_budget\": {budget}"),
         None => format!(", \"flops\": {NONE}, \"flop_budget\": {NONE}"),
     };
-    let cost = format!("{cost}, \"moved_s\": {}", maybe(label.moved));
+    let pruned = label.pruned.as_ref().map_or(NONE.to_string(), pruned_json);
+    let cost = format!(
+        "{cost}, \"moved_s\": {}, \"pruned\": {pruned}",
+        maybe(label.moved)
+    );
     format!(
         "{{ \"source\": \"{}\", \"profile\": \"{}\", \"rate\": {}, \"rule\": \"{}\"{detail}{cost} }}",
         match label.source {
@@ -470,6 +475,15 @@ pub fn label_json(label: &Label) -> String {
         label.rate,
         escape(label.rule().as_str())
     )
+}
+
+/// The level a term under which, for good, was taken as zero, and each node cut at the sample
+/// it is zero from.
+pub fn pruned_json(pruned: &Pruned) -> String {
+    let cuts = list(&pruned.cuts, |(node, from)| {
+        format!("{{ \"node\": \"{}\", \"from\": {from} }}", escape(node))
+    });
+    format!("{{ \"db\": {}, \"cuts\": {cuts} }}", num(pruned.db))
 }
 
 /// Whole counts every one; `waves` is null where a node's go uncounted.
@@ -487,11 +501,20 @@ pub fn stats_json(stats: &CacheStats) -> String {
     stats_with(stats, "")
 }
 
-/// `stats_json` over a stream's latest lookups, and `dropped`: the latest nodes its live edits
-/// started silent. Each list's `pagination.count` counts all it made.
-pub fn stream_stats_json(stats: &CacheStats, (dropped, made): (&[&str], usize)) -> String {
+/// `stats_json` over a stream's latest lookups, `dropped`: the latest nodes its live edits
+/// started silent, and `pruned`: where its table prunes. Each list's `pagination.count` counts
+/// all it made.
+pub fn stream_stats_json(
+    stats: &CacheStats,
+    (dropped, made): (&[&str], usize),
+    pruned: &Pruned,
+) -> String {
     let dropped = latest(dropped, made, |name| format!("\"{}\"", escape(name)));
-    stats_with(stats, &format!(", \"dropped\": {dropped}"))
+    let pruned = pruned_json(pruned);
+    stats_with(
+        stats,
+        &format!(", \"dropped\": {dropped}, \"pruned\": {pruned}"),
+    )
 }
 
 fn stats_with(stats: &CacheStats, extra: &str) -> String {

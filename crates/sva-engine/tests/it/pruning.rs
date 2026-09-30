@@ -220,8 +220,8 @@ fn a_count_prices_the_render_it_names() {
     assert_eq!(tree.total, held.work().priced_flops);
 }
 
-/// An open range ends where its root is exactly zero from: a ramp past its foot, and a decay
-/// where the engine's own `exp` underflows it.
+/// With pruning off, an open range ends where its root is exactly zero from: a ramp past its
+/// foot, and a decay where the engine's own `exp` underflows it.
 #[test]
 fn a_ramp_and_a_decay_end_where_they_are_exactly_zero() {
     let g = graph_of(
@@ -231,9 +231,15 @@ fn a_ramp_and_a_decay_end_where_they_are_exactly_zero() {
             ("ramp", "sample(max(0, 1 - t/2))\n"),
         ],
     );
-    let open = |target: &str| {
-        render(&g, target, RenderConfig::at(RATE), None).unwrap_or_else(|e| panic!("{e}"))
+    let exact = RenderConfig {
+        profile: sva_engine::Profile {
+            prune_db: f64::NEG_INFINITY,
+            ..sva_engine::PSYCHOACOUSTIC_V1
+        },
+        ..RenderConfig::at(RATE)
     };
+    let open =
+        |target: &str| render(&g, target, exact.clone(), None).unwrap_or_else(|e| panic!("{e}"));
     let ramp = open("ramp");
     assert_eq!(ramp.range.expect("a range").end, 2 * i64::from(RATE));
 

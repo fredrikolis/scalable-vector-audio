@@ -39,17 +39,17 @@ pub use query::{Answer, Ask, DEFAULT_FRAME_SECS, Output, Representation};
 pub use refs::{identity, nodes_in, spectral_sum_of, symbolic_hash};
 pub use render::until::{Cmp, Term};
 pub use render::{
-    Block, Change, Changed, Counts, Handle, LATEST, NOTES, Placed, QUIET_AFTER_SECS, QUIET_LEVEL,
-    QuietTail, Range, Render, RenderConfig, STREAMED, Stream, StreamConfig, Until, answer,
-    answer_buffer, change, plan, quiet_tails, render, render_through, sketch_atom, warm,
+    Block, Change, Changed, Counts, Handle, LATEST, NOTES, Placed, Range, Render, RenderConfig,
+    STREAMED, Stream, StreamConfig, Until, answer, answer_buffer, change, plan, render,
+    render_through, sketch_atom, warm,
 };
 pub use schedule::{Order, Schedule, schedule_from};
 pub use sva_formula::{C64, Codomain, Held, Line, NodeId, SpectralSum, Ty, Var};
 pub use sva_samples::{
     Alias, AliasBand, BAND_COUNT, BandCrest, BandTrack, Bands, Buffer, Cost, Crest, Detail,
     EnvelopeFrame, Extent, FormantFrame, Frames, Label, LedgerEntry, Loudness, LoudnessFrame,
-    MAX_PINNED_FRAME, PSYCHOACOUSTIC_V1, PitchFrame, Profile, Rule, SignalKind, Source, Spectrum,
-    StereoFrame, StereoImage, measure_alias, pinned_frame,
+    MAX_PINNED_FRAME, PSYCHOACOUSTIC_V1, PitchFrame, Profile, Pruned, Rule, SignalKind, Source,
+    Spectrum, StereoFrame, StereoImage, measure_alias, pinned_frame,
 };
 pub use trace::{Traced, Up, trace};
 pub use typing::{Typing, Value, When};

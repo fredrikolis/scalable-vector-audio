@@ -7,10 +7,17 @@ use sva_engine::{RenderConfig, render};
 
 const RATE: u32 = 8_000;
 
+/// Pruning off: an echo is held to its recurrence to half a step, far under the prune level.
 fn rendered(files: &[(&str, &str)], root: &str, secs: f64) -> Vec<f64> {
     let g = graph_of(root, files);
-    let held = render(&g, root, RenderConfig::seconds(RATE, secs), None)
-        .unwrap_or_else(|e| panic!("{root}: {e}"));
+    let config = RenderConfig {
+        profile: sva_samples::Profile {
+            prune_db: f64::NEG_INFINITY,
+            ..sva_samples::PSYCHOACOUSTIC_V1
+        },
+        ..RenderConfig::seconds(RATE, secs)
+    };
+    let held = render(&g, root, config, None).unwrap_or_else(|e| panic!("{root}: {e}"));
     let id = held.id(root).expect("the root");
     held.output(id).expect("a buffer").plane(0).to_vec()
 }

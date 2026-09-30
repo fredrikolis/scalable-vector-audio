@@ -1,16 +1,13 @@
 // Concern: the `--help` page, each flag's default printed from its own constant | Non-concern: parsing those flags (args/), the JSON a subcommand answers (output.rs) | IO: () -> the page
 
 use sva_core::{DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, DEFAULT_STORE_BYTES};
-use sva_engine::{
-    DEFAULT_FRAME_SECS, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1, QUIET_AFTER_SECS, QUIET_LEVEL,
-};
+use sva_engine::{DEFAULT_FRAME_SECS, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1};
 
 /// Read off the constants the parser itself defaults to, so a printed default cannot drift
 /// from the one a render actually uses.
 pub fn help_text() -> String {
     let budget = PSYCHOACOUSTIC_V1.flop_budget;
     let bits = PSYCHOACOUSTIC_V1.precision_bits;
-    let quiet = 20.0 * QUIET_LEVEL.log10();
     let store_gb = DEFAULT_STORE_BYTES >> 30;
     format!(
         r#"USAGE:
@@ -43,9 +40,15 @@ RENDER:
   a `crop`.
 
   Every node is computed over its support met with what reads it, and nowhere
-  else: outside its support a node is exactly zero. A closed interval renders
+  else: outside its support a node is exactly zero. One exception: a node whose
+  proven magnitude bound stays under the profile's prune level (-120 dBFS) from
+  a sample on is zero from there, with every branch only it keeps alive, and
+  a stream's term leaves `@notes` there; a node with no such bound (a held
+  sine, a loop) never is. The label's `pruned` states the level as `db` and
+  each node cut, `from` the sample it is zero from. A closed interval renders
   exactly its length; an open one ends where the root's support does, at a
-  crop's end, or at the exact underflow of an `exp` a crop opens. An open interval over a root whose support never ends (a held
+  crop's end, at the prune point, or at the exact underflow of an `exp` a crop
+  opens. An open interval over a root whose support never ends (a held
   sine, a physical solver) refuses as `render.no_end`. A short-time transform
   reads its input whole, and refuses one with no end as
   `engine.unbounded_extent`.
@@ -148,17 +151,10 @@ LINT:
   sva-cli lint ['<expression>'] [--format <json|text>]
 
   Checks the current directory without rendering a sample. With no target it
-  checks every file under its own rules, types every entry point, which types
-  every file it reaches, and checks the tails under every entry point a render
-  can take. With a target, in render's grammar, it checks the files that target
-  reaches, and prints the interval a render of it reads. Either refuses a type
-  error as `render` does.
-
-  `quiet-tail` names a file some instance of which is proven under {quiet:.1}
-  dBFS, half a 24-bit step, from a second T on, while its extent runs on more
-  than {QUIET_AFTER_SECS}s past T, or never ends. The proof reads the file's own
-  closed form, its atoms or its formula, and nothing it reads; a solver, a
-  filter and a loop are never named. Crop it at T, or accept the error.
+  checks every file under its own rules, and types every entry point, which
+  types every file it reaches. With a target, in render's grammar, it checks
+  the files that target reaches, and prints the interval a render of it reads.
+  Either refuses a type error as `render` does.
 
   Every check prints one `data.diagnostics` item. `warning` exits 0, `error`
   exits non-zero, so branch on the verdict and never on whether the array is
@@ -175,8 +171,6 @@ LINT:
            literal-sample-rate   a written rate where `sp` belongs
            arity                 a builtin called without an argument it reads,
                                  or with one it does not, as `rand(seed=k)`
-           quiet-tail            computed well past where it is under the
-                                 output's resolution
   warning  grid-rows-per-bar     a TSV grid's row count does not divide evenly
                                  into its filename's bar span
            key-is-not-a-pitch    `variables/key` holds neither a note name nor

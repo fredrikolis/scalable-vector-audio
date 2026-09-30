@@ -98,6 +98,13 @@ pub struct Cost {
     pub budget: u128,
 }
 
+/// The level a render prunes at, and the sample each node it cut is zero from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pruned {
+    pub db: f64,
+    pub cuts: Vec<(String, i64)>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Label {
     pub source: Source,
@@ -107,6 +114,7 @@ pub struct Label {
     pub cost: Option<Cost>,
     /// The most seconds a read was moved to land on a whole sample.
     pub moved: Option<f64>,
+    pub pruned: Option<Pruned>,
 }
 
 impl Label {
@@ -120,6 +128,7 @@ impl Label {
             },
             cost: None,
             moved: None,
+            pruned: None,
         }
     }
 
@@ -131,6 +140,7 @@ impl Label {
             detail,
             cost: None,
             moved: None,
+            pruned: None,
         }
     }
 

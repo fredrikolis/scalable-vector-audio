@@ -8,6 +8,7 @@ mod casts;
 mod echoes;
 mod edit;
 mod extents;
+mod faded;
 mod fixtures;
 mod flops;
 mod grid;

@@ -48,6 +48,8 @@ pub(crate) struct Table {
     profile: Profile,
     /// The most seconds any read was moved to land on a whole sample: half a sample at most.
     pub(crate) moved: f64,
+    /// Each node pruned under the profile's level, and the sample it is zero from.
+    pub(crate) cuts: Vec<(String, i64)>,
 }
 
 impl Table {
@@ -121,7 +123,7 @@ impl Table {
         (fine, bounds, prefixes): (i128, &BTreeSet<NodeId>, &BTreeMap<NodeId, Arc<Stored>>),
         apart: bool,
     ) -> Result<Table, EngineError> {
-        let supports = Supports::new(tys);
+        let supports = Supports::new(tys, profile);
         let mut building = Building {
             tys,
             supports: &supports,
@@ -146,6 +148,10 @@ impl Table {
             .collect::<Result<Vec<_>, _>>()?;
         let target = aliased(&building.values, root);
         let places = places(&building.values, target, profile);
+        let cuts = supports.cuts().into_iter();
+        let cuts = cuts
+            .map(|(id, at)| (tys.name(id).to_string(), at))
+            .collect();
         Ok(Table {
             values: building.values,
             nodes: building.nodes,
@@ -155,6 +161,7 @@ impl Table {
             places,
             profile: *profile,
             moved: building.moved,
+            cuts,
         })
     }
 
@@ -188,6 +195,15 @@ impl Table {
             places: Vec::new(),
             profile: sva_samples::PSYCHOACOUSTIC_V1,
             moved: 0.0,
+            cuts: Vec::new(),
+        }
+    }
+
+    /// The level it pruned at and each node it cut.
+    pub(crate) fn pruned(&self) -> sva_samples::Pruned {
+        sva_samples::Pruned {
+            db: self.profile.prune_db,
+            cuts: self.cuts.clone(),
         }
     }
 

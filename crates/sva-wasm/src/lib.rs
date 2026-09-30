@@ -814,11 +814,16 @@ impl Stream {
         parse(&work_json(&self.edits.inner.borrow().work()))
     }
 
-    /// Each list the latest; its `pagination.count` counts all.
+    /// Each list the latest; its `pagination.count` counts all. `pruned`: the level a term under
+    /// which for good leaves the sum, and each node cut, at the sample it is zero from.
     pub fn stats(&self) -> Result<JsValue, JsValue> {
         let inner = self.edits.inner.borrow();
         let made = inner.counts().dropped;
-        parse(&stream_stats_json(&inner.stats(), (&inner.dropped(), made)))
+        parse(&stream_stats_json(
+            &inner.stats(),
+            (&inner.dropped(), made),
+            &inner.pruned(),
+        ))
     }
 
     /// `late`: edits landed past where issued.

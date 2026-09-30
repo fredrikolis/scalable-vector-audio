@@ -11,7 +11,7 @@ use super::Stored;
 use super::stored::{Laid, Samples};
 
 /// Bumped by, and only by, a change to a stored value's bytes.
-pub const STORE_FORMAT: u32 = 6;
+pub const STORE_FORMAT: u32 = 7;
 
 /// Every entry opens with its format, so one another format wrote is never read as a value,
 /// even where a wipe left it.
@@ -325,6 +325,18 @@ fn labelled(out: &mut Vec<u8>, label: &Label) {
         }
     }
     float(out, label.moved);
+    match &label.pruned {
+        None => out.push(0),
+        Some(pruned) => {
+            out.push(1);
+            word(out, pruned.db.to_bits());
+            word(out, pruned.cuts.len() as u64);
+            for (node, at) in &pruned.cuts {
+                text(out, node);
+                word(out, *at as u64);
+            }
+        }
+    }
 }
 
 fn detailed(out: &mut Vec<u8>, detail: &Detail) {
@@ -476,6 +488,18 @@ impl Reader<'_> {
             _ => return None,
         };
         let moved = self.float()?;
+        let pruned = match self.byte()? {
+            0 => None,
+            1 => {
+                let db = f64::from_bits(self.word()?);
+                let count = usize::try_from(self.word()?).ok()?;
+                let cuts = (0..count)
+                    .map(|_| Some((self.text()?.to_string(), self.word()? as i64)))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(sva_samples::Pruned { db, cuts })
+            }
+            _ => return None,
+        };
         Some(Label {
             source,
             profile,
@@ -483,6 +507,7 @@ impl Reader<'_> {
             detail,
             cost,
             moved,
+            pruned,
         })
     }
 

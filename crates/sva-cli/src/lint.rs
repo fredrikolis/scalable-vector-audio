@@ -1,13 +1,11 @@
 // Concern: what a composition can be told about itself without rendering a sample | Non-concern: rendering, or judging how it sounds | IO: (dir[, target]) -> Vec<Finding> or CliError
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use sva_ast::parse_doc_comment;
 use sva_ast::{Graph, Source, ref_spans};
-use sva_core::{CliError, Job, LintCode, LintViolation, QuietTail, Severity, lint_diagnostic};
+use sva_core::{CliError, Job, LintCode, LintViolation, Severity, lint_diagnostic};
 use sva_core::{Diagnostic, prepared, refuse_unresolved_bars, settled};
-use sva_engine::QUIET_LEVEL;
 
 /// These ride a `success` envelope; a refusal raises [`sva_core::CliError::LintRefused`].
 pub struct Finding {
@@ -38,9 +36,8 @@ pub struct LintReport {
     pub interval: Option<(f64, f64)>,
 }
 
-/// With no target, every file's own rules, and every entry point's types and the tails under
-/// it; with one, those of each file it reaches, the interval a render of it reads and the tails
-/// under it.
+/// With no target, every file's own rules and every entry point's types; with one, those of
+/// each file it reaches and the interval a render of it reads.
 pub fn lint(dir: &Path, target: Option<&str>) -> Result<LintReport, CliError> {
     let source = sva_ast::Dir::at(dir);
     match target {
@@ -53,19 +50,12 @@ pub fn lint(dir: &Path, target: Option<&str>) -> Result<LintReport, CliError> {
 /// whole is left to the render that refuses it. A lint violation refuses before a type does.
 fn lint_files(source: &dyn Source, graph: Graph) -> Result<LintReport, CliError> {
     refuse_unresolved_bars(&graph)?;
-    let mut violations = lint_violations(source, &graph);
-    let mut tails = Vec::new();
-    for root in crate::trace::entry_points(&graph) {
-        let target = format!("@{root}");
-        let job = Job::over(source, &target);
-        if violations.is_empty() {
-            sva_core::types(&job)?;
-        }
-        if let Ok(found) = sva_core::quiet_tails(&job) {
-            tails.extend(found);
+    let violations = lint_violations(source, &graph);
+    if violations.is_empty() {
+        for root in crate::trace::entry_points(&graph) {
+            sva_core::types(&Job::over(source, &format!("@{root}")))?;
         }
     }
-    violations.extend(quiet_tail(tails));
     verdict(graph.paths().count(), violations, per_file(&graph), None)
 }
 
@@ -109,7 +99,7 @@ fn lint_reaching(source: &dyn Source, target: &str) -> Result<LintReport, CliErr
     let roots: Vec<&str> = held.iter().map(String::as_str).collect();
     let graph = settled(sva_ast::load_reaching(source, &roots))?;
     refuse_unresolved_bars(&graph)?;
-    let mut violations = lint_violations(source, &graph);
+    let violations = lint_violations(source, &graph);
     let mut interval = None;
     if violations.is_empty() {
         let job = Job::over(source, target);
@@ -118,7 +108,6 @@ fn lint_reaching(source: &dyn Source, target: &str) -> Result<LintReport, CliErr
         interval = render
             .range
             .map(|r| (r.start_secs(render.config.rate), r.end as f64 / rate));
-        violations.extend(quiet_tail(sva_core::quiet_tails(&job)?));
     }
     verdict(
         graph.paths().count(),
@@ -126,51 +115,6 @@ fn lint_reaching(source: &dyn Source, target: &str) -> Result<LintReport, CliErr
         per_file(&graph),
         interval,
     )
-}
-
-/// One error per file, over every instance of it proven under the output's resolution more
-/// than a second before its extent ends.
-fn quiet_tail(tails: Vec<QuietTail>) -> Vec<LintViolation> {
-    let mut instances: BTreeMap<String, QuietTail> = BTreeMap::new();
-    for tail in tails {
-        match instances.get_mut(&tail.instance) {
-            Some(held) => held.runs_to = held.runs_to.max(tail.runs_to),
-            None => {
-                instances.insert(tail.instance.clone(), tail);
-            }
-        }
-    }
-    let mut files: BTreeMap<String, Vec<QuietTail>> = BTreeMap::new();
-    for tail in instances.into_values() {
-        files.entry(tail.file.clone()).or_default().push(tail);
-    }
-    let secs = |t: f64| format!("{}s", (t * 1000.0).ceil() / 1000.0);
-    let db = 20.0 * QUIET_LEVEL.log10();
-    files
-        .into_iter()
-        .map(|(file, held)| {
-            let from = held.iter().map(|t| t.quiet_from).fold(0.0, f64::max);
-            let to = held.iter().map(|t| t.runs_to).fold(0.0, f64::max);
-            let runs = match to.is_finite() {
-                true => format!("its extent runs to {}", secs(to)),
-                false => "its extent never ends".to_string(),
-            };
-            let count = match held.len() {
-                1 => String::new(),
-                n => format!(" in each of its {n} instances"),
-            };
-            LintViolation {
-                code: LintCode::QuietTail,
-                severity: Severity::Error,
-                subject: file.clone(),
-                message: format!(
-                    "`{file}` is under {db:.1} dBFS from {} on{count}, yet {runs}",
-                    secs(from)
-                ),
-                line: None,
-            }
-        })
-        .collect()
 }
 
 /// A row count tiles a span as a subdivision of a bar or as whole bars; both count.

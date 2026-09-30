@@ -43,6 +43,7 @@ pub struct Stream {
     graph: Graph,
     expr: Expr,
     terms: Terms,
+    ends: BTreeMap<Handle, i64>,
     met: Met,
     generation: u64,
     live: bool,
@@ -127,6 +128,7 @@ impl Stream {
             graph: graph.clone(),
             expr: target.clone(),
             terms,
+            ends: BTreeMap::new(),
             met,
             generation: 0,
             live: false,
@@ -238,6 +240,10 @@ impl Stream {
         if let Changed::Added(handle) = prospect.answer {
             self.terms.land(handle, self.driver.at);
         }
+        let supports = Supports::new(&self.shell.tys, &self.shell.config.profile);
+        let tys = &self.shell.tys;
+        let end = |handle: Handle| Some((handle, supports.of(tys.id(&handle.node())?).end));
+        self.ends = self.terms.handles().filter_map(end).collect();
         self.generation += 1;
         self.prune();
     }
@@ -284,8 +290,8 @@ impl Stream {
         }
     }
 
-    /// Retires every term whose support lies wholly before the first sample of `notes` the
-    /// root's window from now on asks, as a render's demand finds it.
+    /// Retires every term whose support, pruned as a render prunes it, lies wholly before the
+    /// first sample of `notes` the root's window from now on asks, as a render's demand finds it.
     fn prune(&mut self) {
         let (table, tys) = (&self.driver.table, &self.shell.tys);
         let (now, last) = (self.driver.at, self.driver.last());
@@ -297,10 +303,10 @@ impl Stream {
             Some(_) => None,
             None => Some(i64::MIN),
         };
-        let supports = Supports::new(tys);
+        let ends = &self.ends;
         let gone = |handle: Handle| {
-            let id = tys.id(&handle.node());
-            id.is_some_and(|id| asked.is_none_or(|from| supports.of(id).end <= from))
+            let end = ends.get(&handle);
+            end.is_some_and(|end| asked.is_none_or(|from| *end <= from))
         };
         let named = |handle: Handle| {
             let id = tys.id(&handle.node())?;
@@ -319,6 +325,10 @@ impl Stream {
             .id(node)
             .and_then(|id| table.of(id))
             .map_or(Vec::new(), |at| table.values[at].evaluated.clone())
+    }
+
+    pub fn pruned(&self) -> sva_samples::Pruned {
+        self.driver.table.pruned()
     }
 
     pub fn landed(&self, handle: Handle) -> Option<i64> {

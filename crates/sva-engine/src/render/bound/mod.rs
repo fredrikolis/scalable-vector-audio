@@ -8,9 +8,8 @@ use sva_formula::spectral_sum::atom::SpectralAtom;
 use sva_formula::spectral_sum::sup::sup_from;
 use sva_formula::{NodeId, Var};
 use sva_samples::collapse::plan::summed_bounds;
-use sva_samples::{Audible, truncate_spectral_sum, truncate_written};
+use sva_samples::{Audible, Profile, truncate_spectral_sum, truncate_written};
 
-use crate::render::RenderConfig;
 use crate::typing::{Typing, Value};
 use range::{OP, Range, TRANSFORM_OPS};
 
@@ -24,23 +23,23 @@ enum Form {
 }
 
 impl Tail {
-    pub(crate) fn of(tys: &Typing, config: &RenderConfig, id: NodeId) -> Option<Tail> {
-        Tail::within(tys, config, id, &mut BTreeSet::new())
+    pub(crate) fn of(tys: &Typing, (profile, rate): (&Profile, u32), id: NodeId) -> Option<Tail> {
+        Tail::within(tys, (profile, rate), id, &mut BTreeSet::new())
     }
 
     fn within(
         tys: &Typing,
-        config: &RenderConfig,
+        (profile, rate): (&Profile, u32),
         id: NodeId,
         open: &mut BTreeSet<NodeId>,
     ) -> Option<Tail> {
-        let band = Audible::of(&config.profile, config.rate);
+        let band = Audible::of(profile, rate);
         // A series no line reaches falls to the written form, as the collapse does.
         if tys.ty(id).is_closed_form()
             && let Ok(whole) = crate::refs::spectral_sum_of(tys, id, Var::T)
             && let Ok(sum) = truncate_spectral_sum(&whole, band)
         {
-            let summed = summed_bounds(&whole, &config.profile, config.rate).ok()?;
+            let summed = summed_bounds(&whole, profile, rate).ok()?;
             let atoms = sum
                 .lanes
                 .iter()
@@ -65,7 +64,7 @@ impl Tail {
         open.insert(id).then_some(())?;
         let reads = nodes
             .into_iter()
-            .map(|n| Some((n, Tail::within(tys, config, n, open)?)))
+            .map(|n| Some((n, Tail::within(tys, (profile, rate), n, open)?)))
             .collect::<Option<BTreeMap<_, _>>>();
         open.remove(&id);
         Some(Tail(Form::Written(range, reads?)))

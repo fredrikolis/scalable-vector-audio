@@ -101,9 +101,8 @@ sva-cli lint
 
 `lint` checks every file on its own without rendering a sample, and every finding carries a
 severity. Warnings exit 0. Seven checks exit non-zero: five about a node's doc comment or its
-length, one about a rate written as a number, and `quiet-tail`, a node proven under the 24-bit
-resolution more than a second before its extent ends, which a crop fixes. `sva-cli lint
-'@master'` checks what `master` reaches, and prints the interval a render of it reads.
+length, one about a rate written as a number, and `arity`, a builtin called off its signature.
+`sva-cli lint '@master'` checks what `master` reaches, and prints the interval it reads.
 
 ```
 sva-cli trace master
@@ -126,7 +125,8 @@ sva-cli render '@master' --representation samples=/tmp/song.wav --rate 48000
 `flops` counts the render before running it, 1,243,620 operations here against the profile's
 1e10 budget; a render over that budget refuses, naming the node that dominates. The second
 line writes 48 kHz float over the two seconds `master`'s crop holds. `'@master([0, 1s])'`
-names an interval; with none, a render ends where `master`'s support does.
+names an interval; with none, a render ends where `master`'s support does, a term proven
+under -120 dBFS for good being zero, as the label's `pruned` states.
 `--until 'envelope(t) < -60db'` stops the render at the first frame under -60 dB.
 `ledger` prints rms, peak and clipped per node.
 

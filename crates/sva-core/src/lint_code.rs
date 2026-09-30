@@ -13,7 +13,6 @@ pub enum LintCode {
     LiteralSampleRate,
     Arity,
     KeyIsNotAPitch,
-    QuietTail,
 }
 
 impl LintCode {
@@ -27,7 +26,6 @@ impl LintCode {
         LintCode::LiteralSampleRate,
         LintCode::Arity,
         LintCode::KeyIsNotAPitch,
-        LintCode::QuietTail,
     ];
 
     pub fn code_str(self) -> &'static str {
@@ -41,7 +39,6 @@ impl LintCode {
             LintCode::LiteralSampleRate => "literal-sample-rate",
             LintCode::Arity => "arity",
             LintCode::KeyIsNotAPitch => "key-is-not-a-pitch",
-            LintCode::QuietTail => "quiet-tail",
         }
     }
 
@@ -67,7 +64,6 @@ impl LintCode {
             LintCode::KeyIsNotAPitch => {
                 "hold one note name or a number of hertz in `variables/key`"
             }
-            LintCode::QuietTail => "crop the node where it falls under the resolution",
         }
     }
 }

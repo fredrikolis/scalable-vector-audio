@@ -4,7 +4,6 @@ mod answer;
 pub(crate) mod bound;
 mod drive;
 mod frontier;
-mod quiet;
 mod slots;
 mod stream;
 pub(crate) mod table;
@@ -88,7 +87,6 @@ impl RenderConfig {
 
 pub use answer::{answer, answer_buffer, sketch_atom};
 pub use drive::Block;
-pub use quiet::{QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, quiet_tails};
 pub use stream::{Change, Changed, Counts, LATEST, Placed, STREAMED, Stream, StreamConfig, change};
 pub use terms::{Handle, NOTES};
 pub use through::{render_through, warm};
@@ -146,10 +144,6 @@ impl Render {
 
     pub(crate) fn rate(&self) -> u32 {
         self.config.rate
-    }
-
-    pub(crate) fn grid(&self, id: NodeId) -> sva_samples::Grid {
-        self.tys.grid(id)
     }
 
     /// What its schedule prices: every value once over the range, whatever the store answered.
@@ -346,7 +340,7 @@ pub(crate) enum Ends {
 }
 
 pub(crate) fn range_of(held: &Render, ends: Ends) -> Result<Extent, EngineError> {
-    let support = Supports::new(&held.tys).of(held.root);
+    let support = Supports::new(&held.tys, &held.config.profile).of(held.root);
     let start = held
         .config
         .range
@@ -552,6 +546,7 @@ fn stamp(held: &mut Render) {
     let label = sva_samples::Label {
         rate: held.config.rate,
         moved: held.table.as_ref().map(|table| table.moved),
+        pruned: held.table.as_ref().map(|table| table.pruned()),
         ..label.costing(counted, held.config.flop_budget)
     };
     held.labels.insert(root, label);

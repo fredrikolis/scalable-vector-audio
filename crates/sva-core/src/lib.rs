@@ -39,7 +39,7 @@ use sva_engine::{
     render, render_through,
 };
 
-pub use sva_engine::{Handle, Placed, QuietTail, Stream, Until};
+pub use sva_engine::{Handle, Placed, Stream, Until};
 
 pub use sva_engine::{Answer, Extent, Label, Output, Representation};
 pub use sva_engine::{
@@ -283,14 +283,6 @@ pub fn types(job: &Job) -> Result<(), CliError> {
     sva_engine::types_at(&graph, PROBE, config.rate)
         .map(|_| ())
         .map_err(|e| CliError::Engine(as_written(e, job.target)))
-}
-
-/// The target is no file to crop, so it is not among them.
-pub fn quiet_tails(job: &Job) -> Result<Vec<QuietTail>, CliError> {
-    let (graph, config) = settle(job)?;
-    let found = sva_engine::quiet_tails(&graph, PROBE, config)
-        .map_err(|e| CliError::Engine(as_written(e, job.target)))?;
-    Ok(found.into_iter().filter(|t| t.file != PROBE).collect())
 }
 
 pub async fn stream(job: &Job<'_>, block: usize, store: &impl Through) -> Result<Stream, CliError> {

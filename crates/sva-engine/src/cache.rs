@@ -144,6 +144,7 @@ pub fn value_key(
             width as u64,
             profile.precision_bits as u64,
             profile.ceiling_hz.to_bits(),
+            profile.prune_db.to_bits(),
             0x76_61_6c_75_65_00_00_01,
         ],
     )

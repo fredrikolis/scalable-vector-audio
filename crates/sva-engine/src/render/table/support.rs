@@ -1,31 +1,40 @@
-// Concern: where each node can be nonzero, in whole samples of its own clock | Non-concern: where a reader asks for it (demand.rs) | IO: (NodeId) -> Extent, a state's start
+// Concern: where each node can be nonzero or is pruned, in whole samples of its own clock | Non-concern: where a reader asks for it, deriving a bound | IO: (NodeId) -> Extent, a state's start, cuts
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sva_formula::{Body, C64, Fold, NodeId, Unary, exp_zero_at};
-use sva_samples::{Extent, Grid, Round};
+use sva_samples::{Extent, Grid, Profile, Round};
 
 use crate::cast::Cast;
+use crate::render::bound::Tail;
 use crate::schedule;
 use crate::time::{Affine, Lattice, Q};
 use crate::typing::{Step, Typing, Value, When};
 
 /// Where each node can be nonzero, in samples of its own grid: outside its support a node is
-/// exactly zero. A node is its own clock: a read's shift moves it by whole samples.
+/// zero. A node is its own clock: a read's shift moves it by whole samples.
 pub(crate) struct Supports<'a> {
     tys: &'a Typing,
+    profile: &'a Profile,
     held: RefCell<BTreeMap<NodeId, Extent>>,
     open: RefCell<BTreeSet<NodeId>>,
+    cuts: RefCell<BTreeMap<NodeId, i64>>,
 }
 
 impl<'a> Supports<'a> {
-    pub(crate) fn new(tys: &'a Typing) -> Supports<'a> {
+    pub(crate) fn new(tys: &'a Typing, profile: &'a Profile) -> Supports<'a> {
         Supports {
             tys,
+            profile,
             held: RefCell::default(),
             open: RefCell::default(),
+            cuts: RefCell::default(),
         }
+    }
+
+    pub(crate) fn cuts(&self) -> BTreeMap<NodeId, i64> {
+        self.cuts.borrow().clone()
     }
 
     fn grid(&self, id: NodeId) -> Grid {
@@ -41,11 +50,52 @@ impl<'a> Supports<'a> {
         }
         let found = match schedule::holds_self(self.tys, id, &mut BTreeSet::new()) {
             true => self.looped(id),
-            false => self.fresh(id),
+            false => self.pruned(id, self.fresh(id)),
         };
         self.open.borrow_mut().remove(&id);
         self.held.borrow_mut().insert(id, found);
         found
+    }
+
+    /// The approved exception to exact supports: zero from a sample where its bound over every
+    /// later instant is under the prune level; first such sample where the bound falls
+    /// monotonically. A node with no such bound keeps its exact support.
+    fn pruned(&self, id: NodeId, exact: Extent) -> Extent {
+        if exact.is_empty() {
+            return exact;
+        }
+        let grid = self.grid(id);
+        let Some(tail) = Tail::of(self.tys, (self.profile, grid.rate), id) else {
+            return exact;
+        };
+        let level = self.profile.prune_level();
+        let under = |n: i64| tail.from(grid.instant(n)) < level;
+        let last = exact.end.saturating_sub(1);
+        let from = exact.start.max(0).min(last);
+        let probe = |k: i32| from.saturating_add(grid.count(2f64.powi(k)).ceil() as i64);
+        let far = match exact.end {
+            i64::MAX => (0..40).map(probe).find(|n| under(*n)),
+            _ => under(last).then_some(last),
+        };
+        let Some(far) = far else {
+            return exact;
+        };
+        let (mut no, mut yes) = (from, far);
+        if under(from) {
+            yes = from;
+        }
+        while yes - no > 1 {
+            let mid = no + (yes - no) / 2;
+            match under(mid) {
+                true => yes = mid,
+                false => no = mid,
+            }
+        }
+        self.cuts.borrow_mut().insert(id, yes);
+        match exact.start < yes {
+            true => Extent::new(exact.start, yes),
+            false => Extent::NOWHERE,
+        }
     }
 
     /// A closed form a node wrote inside its own body, as a value of its own on `grid`.

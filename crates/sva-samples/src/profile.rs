@@ -11,6 +11,7 @@ pub struct Profile {
     /// The operation count a render pays without the caller saying so.
     pub flop_budget: u128,
     pub precision_bits: i32,
+    pub prune_db: f64,
 }
 
 pub const PSYCHOACOUSTIC_V1: Profile = Profile {
@@ -22,6 +23,7 @@ pub const PSYCHOACOUSTIC_V1: Profile = Profile {
     band_db: 1.0,
     flop_budget: 10_000_000_000,
     precision_bits: 24,
+    prune_db: -120.0,
 };
 
 impl Profile {
@@ -31,6 +33,10 @@ impl Profile {
 
     pub fn half_lsb(&self) -> f64 {
         2f64.powi(-self.precision_bits)
+    }
+
+    pub fn prune_level(&self) -> f64 {
+        10f64.powf(self.prune_db / 20.0)
     }
 
     pub fn floor(&self, hz: f64) -> f64 {
