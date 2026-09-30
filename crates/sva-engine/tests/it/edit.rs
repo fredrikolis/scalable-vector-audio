@@ -7,6 +7,7 @@ use sva_ast::Graph;
 use sva_engine::{
     Cache, NoStore, Outcome, PayloadKind, Range, RenderConfig, Stream, StreamConfig, render,
 };
+use sva_engine::{Change, Changed, Placed, change};
 
 const RATE: u32 = 8_000;
 const BLOCK: usize = 256;
@@ -607,4 +608,50 @@ fn a_removed_term_leaves_the_sum_once_the_stream_passes_its_cut() {
     let early = sizes[..50].iter().max().expect("fifty notes");
     let late = sizes[50..].iter().max().expect("the rest");
     assert!(late <= early, "{late} values late, {early} early");
+}
+
+/// A term placed at its landing has its sample 0 at the sample the add lands at, and a key-up
+/// placed there too is written from that same sample 0: the stream is the whole render of the
+/// note shifted to where it landed.
+#[test]
+fn a_term_placed_at_its_landing_plays_from_its_sample_zero_there() {
+    let g = graph_of("landing", &[("pad", PAD), ("note", "@pad(t, f0=300)\n")]);
+    let stream = opened(&g, "@notes", None);
+    let mut heard = blocks(&stream, 5);
+    let held = expr("@pad(t, f0=300)");
+    let build = |_: &Stream| {
+        Ok::<_, sva_engine::EngineError>(Change::Add(g.clone(), held.clone(), Placed::Landing))
+    };
+    let Ok(Changed::Added(note)) = change(&stream, build, &NoStore).now() else {
+        panic!("an add answers its handle");
+    };
+    let landed = 5 * BLOCK as i64;
+    assert_eq!(stream.borrow().landed(note), Some(landed));
+    heard.extend(blocks(&stream, 2));
+    let up = expr(&format!("@pad(t, f0=300, release={}sp)", 2 * BLOCK));
+    let build = |_: &Stream| {
+        Ok::<_, sva_engine::EngineError>(Change::Replace(
+            note,
+            g.clone(),
+            up.clone(),
+            Placed::Landing,
+        ))
+    };
+    assert_eq!(
+        change(&stream, build, &NoStore).now().ok(),
+        Some(Changed::Held(true))
+    );
+    heard.extend(blocks(&stream, 8));
+
+    let alone = whole(&g, "note", 2 * BLOCK);
+    assert!(alone.iter().any(|v| *v != 0.0));
+    assert_eq!(
+        heard[5 * BLOCK..7 * BLOCK],
+        alone[..],
+        "the attack is whole"
+    );
+    let mut whole_g = g.clone();
+    let last = format!("@pad(t - {landed}sp, f0=300, release={}sp)", 2 * BLOCK);
+    assert!(whole_g.define("final", expr(&last)));
+    assert_eq!(heard, whole(&whole_g, "final", heard.len()), "{last}");
 }

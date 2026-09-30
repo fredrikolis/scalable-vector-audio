@@ -39,7 +39,7 @@ pub use query::{Answer, Ask, DEFAULT_FRAME_SECS, Output, Representation};
 pub use refs::{identity, nodes_in, spectral_sum_of, symbolic_hash};
 pub use render::until::{Cmp, Term};
 pub use render::{
-    Block, Change, Changed, Counts, Handle, LATEST, NOTES, QUIET_AFTER_SECS, QUIET_LEVEL,
+    Block, Change, Changed, Counts, Handle, LATEST, NOTES, Placed, QUIET_AFTER_SECS, QUIET_LEVEL,
     QuietTail, Range, Render, RenderConfig, STREAMED, Stream, StreamConfig, Until, answer,
     answer_buffer, change, plan, quiet_tails, render, render_through, sketch_atom, warm,
 };

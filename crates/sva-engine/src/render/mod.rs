@@ -89,7 +89,7 @@ impl RenderConfig {
 pub use answer::{answer, answer_buffer, sketch_atom};
 pub use drive::Block;
 pub use quiet::{QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, quiet_tails};
-pub use stream::{Change, Changed, Counts, LATEST, STREAMED, Stream, StreamConfig, change};
+pub use stream::{Change, Changed, Counts, LATEST, Placed, STREAMED, Stream, StreamConfig, change};
 pub use terms::{Handle, NOTES};
 pub use through::{render_through, warm};
 pub use until::Until;

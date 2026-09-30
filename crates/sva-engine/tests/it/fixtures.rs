@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::cell::RefCell;
 
 use sva_ast::{Expr, Graph};
-use sva_engine::{Change, Changed, EngineError, Handle, Render, Stream, Through, change};
+use sva_engine::{Change, Changed, EngineError, Handle, Placed, Render, Stream, Through, change};
 
 static RUN: AtomicU32 = AtomicU32::new(0);
 
@@ -38,7 +38,9 @@ pub async fn added(
     term: &Expr,
     store: &impl Through,
 ) -> Result<Handle, EngineError> {
-    let build = |_: &Stream| Ok::<_, EngineError>(Change::Add(graph.clone(), term.clone()));
+    let build = |_: &Stream| {
+        Ok::<_, EngineError>(Change::Add(graph.clone(), term.clone(), Placed::Written))
+    };
     match change(stream, build, store).await? {
         Changed::Added(handle) => Ok(handle),
         other => panic!("an add answered {other:?}"),
@@ -51,7 +53,14 @@ pub async fn replaced(
     (handle, term): (Handle, &Expr),
     store: &impl Through,
 ) -> Result<bool, EngineError> {
-    let build = |_: &Stream| Ok(Change::Replace(handle, graph.clone(), term.clone()));
+    let build = |_: &Stream| {
+        Ok(Change::Replace(
+            handle,
+            graph.clone(),
+            term.clone(),
+            Placed::Written,
+        ))
+    };
     Ok(change(stream, build, store).await? == Changed::Held(true))
 }
 

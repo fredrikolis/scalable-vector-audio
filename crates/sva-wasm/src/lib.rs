@@ -17,8 +17,8 @@ use sva_core::{
     work_json,
 };
 use sva_engine::{
-    Buffer, Cache, CachePolicy, CacheStats, DEFAULT_STORE_BYTES, Extent, Handle, Hash, PrunePolicy,
-    Store, Stored, Through,
+    Buffer, Cache, CachePolicy, CacheStats, DEFAULT_STORE_BYTES, Extent, Handle, Hash, Placed,
+    PrunePolicy, Store, Stored, Through,
 };
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
@@ -86,6 +86,7 @@ struct Options {
     cache: Option<CachePolicy>,
     live: bool,
     readings: Vec<String>,
+    at: Option<Placed>,
 }
 
 /// `keys` are the options this call reads; any other is refused by name.
@@ -122,6 +123,7 @@ fn options_of(options: &JsValue, keys: &[&str]) -> Result<Options, JsValue> {
                     .ok_or_else(|| refuse("`live` is not a boolean".into(), "pass true or false"))?
             }
             "readings" => held.readings = names(&key, &value)?,
+            "at" => held.at = Some(placed(&text(&key, &value)?)?),
             _ => held.volatile = names(&key, &value)?,
         }
     }
@@ -469,6 +471,10 @@ impl Composition {
     }
 }
 
+fn placement(options: &JsValue) -> Result<Placed, JsValue> {
+    Ok(options_of(options, &["at"])?.at.unwrap_or(Placed::Written))
+}
+
 /// A warm over a store that would not open: readings, where asked, are a render's over none.
 fn unwarmed(job: Job) -> Result<Warmed, CliError> {
     let readings = match job.asked.is_empty() {
@@ -479,6 +485,17 @@ fn unwarmed(job: Job) -> Result<Warmed, CliError> {
         stats: CacheStats::default(),
         readings,
     })
+}
+
+fn placed(name: &str) -> Result<Placed, JsValue> {
+    match name {
+        "written" => Ok(Placed::Written),
+        "landing" => Ok(Placed::Landing),
+        _ => Err(refuse(
+            format!("`{name}` names no placement"),
+            "pass \"written\" or \"landing\"",
+        )),
+    }
 }
 
 fn cache_policy(name: &str) -> Result<CachePolicy, JsValue> {
@@ -657,17 +674,29 @@ impl Stream {
         edited.map_err(|e| thrown(&e))
     }
 
-    /// `term` summed into `@notes`.
-    pub async fn add(&self, term: &str) -> Result<u32, JsValue> {
-        let added = sva_core::add(&self.inner, &self.source, term, &self.store).await;
+    /// `term` summed into `@notes`. `options.at`: `"written"` (the stream's `t`) or
+    /// `"landing"`, its sample 0 the sample it lands at.
+    pub async fn add(&self, term: &str, options: JsValue) -> Result<u32, JsValue> {
+        let at = placement(&options)?;
+        let added = sva_core::add(&self.inner, &self.source, (term, at), &self.store).await;
         added.map(|handle| handle.0).map_err(|e| thrown(&e))
     }
 
-    /// False where the stream no longer holds `handle`.
-    pub async fn replace(&self, handle: u32, term: &str) -> Result<bool, JsValue> {
-        let replaced = (Handle(handle), term);
+    /// False where `handle` is gone. `"landing"`: where its add landed.
+    pub async fn replace(
+        &self,
+        handle: u32,
+        term: &str,
+        options: JsValue,
+    ) -> Result<bool, JsValue> {
+        let replaced = (Handle(handle), term, placement(&options)?);
         let replaced = sva_core::replace(&self.inner, &self.source, replaced, &self.store).await;
         replaced.map_err(|e| thrown(&e))
+    }
+
+    pub fn landed(&self, handle: u32) -> Option<f64> {
+        let landed = self.inner.borrow().landed(Handle(handle));
+        landed.map(|at| at as f64)
     }
 
     pub async fn remove(&self, handle: u32) -> Result<bool, JsValue> {

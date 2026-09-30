@@ -11,7 +11,7 @@ use sva_samples::{Buffer, Extent};
 use super::drive::{Block, Driver};
 use super::frontier::{Frontier, Known};
 use super::table::{Table, edit};
-use super::terms::{Handle, NOTES, Terms};
+use super::terms::{Handle, NOTES, Terms, placed};
 use super::{Ends, Render, RenderConfig, range_of, through};
 use crate::cache::{Cache, CacheStats, Lookup, Outcome, Recording, Stored, Through};
 use crate::error::{Diagnostic, EngineError, Located};
@@ -144,14 +144,22 @@ impl Stream {
     fn prospect(&self, change: Change) -> Result<Prospect, Changed> {
         let mut render = self.config.render.clone();
         render.range.start = Some(self.driver.start);
+        let mut landing = None;
         let (graph, target, terms, answer) = match change {
             Change::Target(graph, target) => (graph, target, self.terms.clone(), Changed::Edited),
-            Change::Add(graph, term) => {
+            Change::Add(graph, term, at) => {
+                let term = match at {
+                    Placed::Written => term,
+                    Placed::Landing => placed(&term, *landing.insert(self.driver.at)),
+                };
                 let (terms, handle) = self.terms.added(term);
                 (graph, self.expr.clone(), terms, Changed::Added(handle))
             }
-            Change::Replace(handle, graph, term) => {
-                let terms = self.terms.replaced(handle, term);
+            Change::Replace(handle, graph, term, at) => {
+                let terms = self.terms.replaced(handle, |landed| match at {
+                    Placed::Written => term,
+                    Placed::Landing => placed(&term, landed),
+                });
                 let terms = terms.ok_or(Changed::Held(false))?;
                 (graph, self.expr.clone(), terms, Changed::Held(true))
             }
@@ -174,18 +182,19 @@ impl Stream {
             answer,
             render,
             generation: self.generation,
+            landing,
         })
     }
 
     /// The stored samples `table` asks over the next second that it brings in and nothing
-    /// holds; `None` where the stream changed since `generation`.
+    /// holds; `None` where the stream changed since `generation` or left `landing`.
     fn wanting(
         &self,
-        generation: u64,
+        (generation, landing): (u64, Option<i64>),
         table: &Table,
         unread: &BTreeSet<Hash>,
     ) -> Option<Vec<(Arc<Stored>, Extent)>> {
-        if generation != self.generation {
+        if generation != self.generation || landing.is_some_and(|at| at != self.driver.at) {
             return None;
         }
         let sounding = self.driver.table.stored_keys();
@@ -225,6 +234,9 @@ impl Stream {
         self.graph = prospect.graph;
         self.expr = prospect.target;
         self.terms = prospect.terms;
+        if let Changed::Added(handle) = prospect.answer {
+            self.terms.land(handle, self.driver.at);
+        }
         self.generation += 1;
         self.prune();
     }
@@ -305,6 +317,10 @@ impl Stream {
         self.driver.table.values.len()
     }
 
+    pub fn landed(&self, handle: Handle) -> Option<i64> {
+        self.terms.landed(handle)
+    }
+
     pub fn position(&self) -> i64 {
         self.driver.at
     }
@@ -338,10 +354,17 @@ impl Stream {
 /// An edit, each with the graph that reaches it and all the stream plays.
 pub enum Change {
     Target(Graph, Expr),
-    Add(Graph, Expr),
-    Replace(Handle, Graph, Expr),
+    Add(Graph, Expr, Placed),
+    Replace(Handle, Graph, Expr, Placed),
     /// A sounding term is cut where the stream stands as the edit is built; what played stays.
     Remove(Handle),
+}
+
+/// Where a term's sample 0 sits: the stream's own, or the sample its add lands at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placed {
+    Written,
+    Landing,
 }
 
 /// A replace or remove answers whether the stream still held its handle.
@@ -359,6 +382,7 @@ struct Prospect {
     answer: Changed,
     render: RenderConfig,
     generation: u64,
+    landing: Option<i64>,
 }
 
 /// `build`'s change, holding the stream only to apply it, between two blocks, once the store
@@ -395,12 +419,12 @@ pub async fn change<E: From<EngineError>>(
         let (graph, target) = (&prospect.graph, &prospect.target);
         let config = &prospect.render;
         let mut shelled = shelled(graph, target, &mut prospect.terms, config, walk).await?;
-        let generation = prospect.generation;
+        let standing = (prospect.generation, prospect.landing);
         loop {
             for (key, samples) in &fetched {
                 shelled.table.took(*key, samples);
             }
-            let wants = stream.borrow().wanting(generation, &shelled.table, &unread);
+            let wants = stream.borrow().wanting(standing, &shelled.table, &unread);
             let Some(wants) = wants else {
                 break;
             };

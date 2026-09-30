@@ -39,7 +39,7 @@ use sva_engine::{
     render, render_through,
 };
 
-pub use sva_engine::{Handle, QuietTail, Stream, Until};
+pub use sva_engine::{Handle, Placed, QuietTail, Stream, Until};
 
 pub use sva_engine::{Answer, Extent, Label, Output, Representation};
 pub use sva_engine::{
@@ -325,16 +325,16 @@ pub async fn edit(
         .map(|_| ())
 }
 
-/// `term` summed into the stream's `@notes`.
+/// `term` summed into the stream's `@notes`, its sample 0 placed `at`.
 pub async fn add(
     stream: &RefCell<Stream>,
     source: &dyn Source,
-    term: &str,
+    (term, at): (&str, Placed),
     store: &impl Through,
 ) -> Result<Handle, CliError> {
     let build = |s: &Stream| {
         let (graph, expr) = streamed(s, source, term)?;
-        Ok(Change::Add(graph, expr))
+        Ok(Change::Add(graph, expr, at))
     };
     match changed(stream, build, Some(term), store).await? {
         Changed::Added(handle) => Ok(handle),
@@ -346,12 +346,12 @@ pub async fn add(
 pub async fn replace(
     stream: &RefCell<Stream>,
     source: &dyn Source,
-    (handle, term): (Handle, &str),
+    (handle, term, at): (Handle, &str, Placed),
     store: &impl Through,
 ) -> Result<bool, CliError> {
     let build = |s: &Stream| {
         let (graph, expr) = streamed(s, source, term)?;
-        Ok(Change::Replace(handle, graph, expr))
+        Ok(Change::Replace(handle, graph, expr, at))
     };
     Ok(changed(stream, build, Some(term), store).await? == Changed::Held(true))
 }

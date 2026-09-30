@@ -10,7 +10,7 @@ use crate::fixtures::{added, graph_of, replaced, samples};
 use sva_ast::Graph;
 use sva_engine::{
     Backend, CacheStats, Change, Changed, EngineError, Handle, Hash, INDEX_NAME, NoStore, Outcome,
-    Range, Render, RenderConfig, STORE_FORMAT, Store, Stream, StreamConfig, change, render,
+    Placed, Range, Render, RenderConfig, STORE_FORMAT, Store, Stream, StreamConfig, change, render,
     render_through, warm,
 };
 
@@ -1209,11 +1209,12 @@ fn changed_by(graph: &Graph, (at, f0, replaced): Spec) -> Change {
     match replaced {
         Some(handle) => {
             let fade = term(&format!("0.5*@string(t - {at}sp, f0={f0})"));
-            Change::Replace(handle, graph.clone(), fade)
+            Change::Replace(handle, graph.clone(), fade, Placed::Written)
         }
         None => Change::Add(
             graph.clone(),
             term(&format!("@string(t - {at}sp, f0={f0})")),
+            Placed::Written,
         ),
     }
 }

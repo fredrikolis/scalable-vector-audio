@@ -720,10 +720,10 @@ fn a_stream_crosses_block_by_block_and_a_replaced_term_releases_it() {
 
     let refusal = |e: JsValue| unreachable!("{}", as_text(&field(&e, "refusal")));
     let gated = opened(&held, "notes");
-    let key = now(gated.add("@gated")).unwrap_or_else(refusal);
+    let key = now(gated.add("@gated", JsValue::UNDEFINED)).unwrap_or_else(refusal);
     assert!(blocks(&gated, 3).iter().any(|v| *v != 0.0));
     let at = gated.position() / 8000.0;
-    let released = now(gated.replace(key, &format!("@gated(t, release={at})")));
+    let released = now(gated.replace(key, &format!("@gated(t, release={at})"), JsValue::UNDEFINED));
     assert_eq!(released.ok(), Some(true));
     assert!(blocks(&gated, 2).iter().all(|v| *v == 0.0));
     assert_eq!(now(gated.remove(key)).ok(), Some(true));
@@ -732,7 +732,10 @@ fn a_stream_crosses_block_by_block_and_a_replaced_term_releases_it() {
         Some(false),
         "a handle removed is held no more"
     );
-    refused_as(now(gated.add("@gated([0, 1s])")).err(), "validation_error");
+    refused_as(
+        now(gated.add("@gated([0, 1s])", JsValue::UNDEFINED)).err(),
+        "validation_error",
+    );
     refused_as(now(gated.edit("@notes([0, 1s])")).err(), "validation_error");
 }
 
@@ -750,7 +753,8 @@ fn a_stream_counts_what_it_did_and_lists_only_its_latest_lookups() {
     for i in 0..300 {
         let at = stream.position();
         let term = format!("@blip(t - {at}sp, f0={})", 100 + i);
-        now(stream.add(&term)).unwrap_or_else(|e| unreachable!("added: {}", as_text(&e)));
+        now(stream.add(&term, JsValue::UNDEFINED))
+            .unwrap_or_else(|e| unreachable!("added: {}", as_text(&e)));
         blocks(&stream, 1);
     }
     let counts = stream
@@ -1078,7 +1082,7 @@ async fn a_stream_reads_a_note_another_worker_persisted() {
             .await
             .unwrap_or_else(|e| unreachable!("it streams: {}", as_text(&e)));
         stream
-            .add("@blip(t - 512sp, f0=200)")
+            .add("@blip(t - 512sp, f0=200)", JsValue::UNDEFINED)
             .await
             .unwrap_or_else(|e| unreachable!("added: {}", as_text(&e)));
         let mut heard_here = blocks(&stream, 8);
@@ -1108,7 +1112,7 @@ async fn a_stream_plays_on_while_its_edits_await_the_store() {
         .stream("@notes([0, 1s])", BLOCK, live)
         .await
         .unwrap_or_else(|e| unreachable!("it streams: {}", as_text(&e)));
-    let mut first = std::pin::pin!(stream.add("@master"));
+    let mut first = std::pin::pin!(stream.add("@master", JsValue::UNDEFINED));
     let polled = first.as_mut().poll(&mut Context::from_waker(Waker::noop()));
     assert!(
         polled.is_pending(),
@@ -1117,7 +1121,7 @@ async fn a_stream_plays_on_while_its_edits_await_the_store() {
     let mut out = vec![0.0f32; BLOCK];
     assert_eq!(stream.next(&mut out).ok(), Some(BLOCK));
     assert_eq!(stream.position(), BLOCK as f64);
-    let mut second = std::pin::pin!(stream.add("@master(t - 0.05s)"));
+    let mut second = std::pin::pin!(stream.add("@master(t - 0.05s)", JsValue::UNDEFINED));
     let _ = second
         .as_mut()
         .poll(&mut Context::from_waker(Waker::noop()));
@@ -1406,5 +1410,52 @@ fn filters_sums_gains_and_a_loop_render_the_native_bits() {
     assert_eq!(
         hash, NATIVE_BITS,
         "the wasm render's bits are the native ones"
+    );
+}
+
+/// A tap's add awaits the store while the stream plays on: placed `at: "landing"`, the note's
+/// sample 0 is the first sample it lands at, so the attack is whole however late it lands.
+#[wasm_bindgen_test]
+async fn an_add_placed_at_landing_plays_its_note_from_sample_zero() {
+    let dir = fake_directory();
+    let held = over_store(&dir).await;
+    let stream = held
+        .stream(
+            "@notes([0, 1s])",
+            BLOCK,
+            options(&[("live", JsValue::TRUE)]),
+        )
+        .await
+        .unwrap_or_else(|e| unreachable!("it streams: {}", as_text(&e)));
+    let placed = |at: &str| {
+        let held = js_sys::Object::new();
+        js_sys::Reflect::set(&held, &"at".into(), &at.into())
+            .unwrap_or_else(|_| unreachable!("an object takes a key"));
+        JsValue::from(held)
+    };
+    let landing = placed("landing");
+    let mut add = std::pin::pin!(stream.add("@master", landing));
+    let polled = add.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+    assert!(polled.is_pending(), "the add awaits the directory");
+    blocks(&stream, 1);
+    let handle = add
+        .await
+        .unwrap_or_else(|e| unreachable!("added: {}", as_text(&e)));
+    let landed = stream.landed(handle);
+    assert_eq!(
+        landed,
+        Some(stream.position()),
+        "it lands at a block's start"
+    );
+    assert!(landed > Some(0.0), "the stream played on while it waited");
+
+    let mut alone = Composition::new(None);
+    alone.insert("master", "sample(sin(2*pi*100*t))*0.5\n");
+    let note = plane(&render(&alone, "master"));
+    assert_eq!(blocks(&stream, 2)[..], note[..2 * BLOCK]);
+    let written = options(&[("at", JsValue::from_str("rather"))]);
+    refused_as(
+        now(stream.add("@master", written)).err(),
+        "validation_error",
     );
 }

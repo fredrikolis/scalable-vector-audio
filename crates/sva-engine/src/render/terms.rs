@@ -22,6 +22,14 @@ struct Term {
     ends: Option<NodeId>,
     /// The sample a removal cut it at.
     cut: Option<i64>,
+    /// The sample its add landed at.
+    landed: i64,
+}
+
+impl Term {
+    fn holds(&self, handle: Handle) -> bool {
+        self.addressed && self.handle == handle
+    }
 }
 
 #[derive(Clone)]
@@ -74,17 +82,30 @@ impl Terms {
             leaf: None,
             ends: None,
             cut: None,
+            landed: 0,
         }));
         (next, handle)
     }
 
-    /// `None` where the stream no longer holds `handle`.
-    pub(super) fn replaced(&self, handle: Handle, expr: Expr) -> Option<Terms> {
+    fn held(&mut self, handle: Handle) -> Option<&mut Term> {
+        self.live_mut().find(|t| t.holds(handle))
+    }
+
+    pub(super) fn landed(&self, handle: Handle) -> Option<i64> {
+        Some(self.live().find(|t| t.holds(handle))?.landed)
+    }
+
+    pub(super) fn land(&mut self, handle: Handle, at: i64) {
+        if let Some(term) = self.held(handle) {
+            term.landed = at;
+        }
+    }
+
+    /// `None` where the stream no longer holds `handle`; `expr` of the sample its add landed at.
+    pub(super) fn replaced(&self, handle: Handle, expr: impl FnOnce(i64) -> Expr) -> Option<Terms> {
         let mut next = self.clone();
-        let term = next
-            .live_mut()
-            .find(|t| t.addressed && t.handle == handle)?;
-        (term.expr, term.leaf, term.ends) = (expr, None, None);
+        let term = next.held(handle)?;
+        (term.expr, term.leaf, term.ends) = (expr(term.landed), None, None);
         Some(next)
     }
 
@@ -92,9 +113,7 @@ impl Terms {
     pub(super) fn removed(&self, handle: Handle, cut: i64, rate: u32) -> Option<Terms> {
         let at = cut as f64 / f64::from(rate);
         let mut next = self.clone();
-        let term = next
-            .live_mut()
-            .find(|t| t.addressed && t.handle == handle)?;
+        let term = next.held(handle)?;
         let never = Expr::Bin(
             BinOp::Sub,
             Box::new(Expr::Lit(Literal::Num(0.0))),
@@ -193,5 +212,56 @@ impl Terms {
             })
             .collect();
         self.live().count() != live
+    }
+}
+
+/// `expr` with its sample 0 at sample `at` of the stream: every `t` in it read `at` earlier.
+pub(super) fn placed(expr: &Expr, at: i64) -> Expr {
+    let moved = |e: &Expr| Box::new(placed(e, at));
+    match expr {
+        Expr::Var(name) if name == "t" && at != 0 => Expr::Bin(
+            BinOp::Sub,
+            Box::new(expr.clone()),
+            Box::new(Expr::Lit(Literal::Samples(at as f64))),
+        ),
+        Expr::Lit(_) | Expr::Var(_) => expr.clone(),
+        Expr::Bin(op, l, r) => Expr::Bin(*op, moved(l), moved(r)),
+        Expr::Call { name, args, span } => Expr::Call {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|arg| match arg {
+                    Arg::Pos(e) => Arg::Pos(placed(e, at)),
+                    Arg::Named(n, e) => Arg::Named(n.clone(), placed(e, at)),
+                })
+                .collect(),
+            span: *span,
+        },
+        Expr::Ref {
+            path,
+            arg,
+            binds,
+            address,
+            span,
+        } => Expr::Ref {
+            path: path.clone(),
+            arg: moved(arg),
+            binds: binds
+                .iter()
+                .map(|(n, e)| (n.clone(), placed(e, at)))
+                .collect(),
+            address: *address,
+            span: *span,
+        },
+        Expr::SelfRef { arg, address, span } => Expr::SelfRef {
+            arg: moved(arg),
+            address: *address,
+            span: *span,
+        },
+        Expr::Indexed { name, arg, span } => Expr::Indexed {
+            name: name.clone(),
+            arg: moved(arg),
+            span: *span,
+        },
     }
 }
