@@ -161,12 +161,14 @@ impl Terms {
     }
 
     /// Retires every term whose node has ended, bar the last where all have, so what reads
-    /// `notes` keeps its shape and its identity; one with no node of its own just goes.
+    /// `notes` keeps its shape and its identity; one with no node of its own just goes. True
+    /// where any went.
     pub(super) fn prune(
         &mut self,
         ended: &dyn Fn(NodeId) -> bool,
         named: &dyn Fn(NodeId) -> Option<Hash>,
-    ) {
+    ) -> bool {
+        let live = self.live().count();
         let gone = |t: &Term| t.ends.is_some_and(ended);
         let keep = match self.live().all(gone) {
             true => self.live().last().map(|t| t.handle),
@@ -181,5 +183,6 @@ impl Terms {
                 other => Some(other),
             })
             .collect();
+        self.live().count() != live
     }
 }

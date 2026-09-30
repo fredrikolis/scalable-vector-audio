@@ -8,7 +8,7 @@ mod opfs;
 
 pub use opfs::DirectoryHandle;
 
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use sva_core::{
@@ -384,7 +384,7 @@ impl Composition {
     }
 
     /// `target` block by block, through this store. `options`: `rate`, `bits`, `until`, `cache`,
-    /// `live`. Opening and every edit look the store on disk up, so each is awaited.
+    /// `live`.
     pub async fn stream(
         &self,
         target: &str,
@@ -405,11 +405,11 @@ impl Composition {
         if options.live {
             inner.go_live();
         }
-        Ok(Stream(RefCell::new(Some(Playing {
-            inner,
+        Ok(Stream {
+            inner: RefCell::new(inner),
             source: self.inner.clone(),
             store: self.persistent.clone(),
-        }))))
+        })
     }
 
     #[wasm_bindgen(getter)]
@@ -612,48 +612,21 @@ fn answered(rendered: &Rendered, asked: &[Asked]) -> Result<JsValue, JsValue> {
 
 /// A target block by block, reading `@notes` as the sum of its terms, as `@hall(t, x=@notes)`.
 /// A key-up replaces a term with one whose release is a number. A term leaves with its handle
-/// once its node ends, bar the last.
+/// once its node ends, bar the last. An edit lands at the first block boundary after the store
+/// answered it; `next` and every getter answer meanwhile.
 #[wasm_bindgen]
-pub struct Stream(RefCell<Option<Playing>>);
-
-struct Playing {
-    inner: sva_core::Stream,
+pub struct Stream {
+    inner: RefCell<sva_core::Stream>,
     source: sva_ast::Composition,
     store: Page,
 }
 
-/// An edit takes the stream out while it awaits the store; any call on it meanwhile is refused.
-fn busy() -> JsValue {
-    let message = "the stream is mid-edit, awaiting its store".to_string();
-    let diagnostic = Diagnostic::new("wasm.stream_busy", message.clone())
-        .helped("await each edit, add, replace or remove before the stream's next call");
-    crossed("validation_error", &message, &[diagnostic])
-}
-
 #[wasm_bindgen]
 impl Stream {
-    fn held(&self) -> Result<RefMut<'_, Playing>, JsValue> {
-        RefMut::filter_map(self.0.borrow_mut(), Option::as_mut).map_err(|_| busy())
-    }
-
-    fn seen(&self) -> Result<Ref<'_, Playing>, JsValue> {
-        Ref::filter_map(self.0.borrow(), Option::as_ref).map_err(|_| busy())
-    }
-
-    async fn edited<T>(
-        &self,
-        edit: impl AsyncFnOnce(&mut Playing) -> Result<T, CliError>,
-    ) -> Result<T, JsValue> {
-        let mut playing = self.0.borrow_mut().take().ok_or_else(busy)?;
-        let done = edit(&mut playing).await;
-        *self.0.borrow_mut() = Some(playing);
-        done.map_err(|e| thrown(&e))
-    }
-
     /// Writes the next block into `out`, component `c` from `c * block`, and returns the
     /// samples each component took: `block`, fewer where silence ends inside it, `0` after.
     pub fn next(&self, out: &mut [f32]) -> Result<usize, JsValue> {
-        let inner = &mut self.held()?.inner;
+        let inner = &mut self.inner.borrow_mut();
         let (width, block) = (inner.width(), inner.config().block);
         if out.len() < width * block {
             return Err(refuse(
@@ -680,94 +653,75 @@ impl Stream {
 
     /// `expr` in place of the target.
     pub async fn edit(&self, expr: &str) -> Result<(), JsValue> {
-        self.edited(async |p: &mut Playing| {
-            sva_core::edit(&mut p.inner, &p.source, expr, &p.store).await
-        })
-        .await
+        let edited = sva_core::edit(&self.inner, &self.source, expr, &self.store).await;
+        edited.map_err(|e| thrown(&e))
     }
 
     /// `term` summed into `@notes`.
     pub async fn add(&self, term: &str) -> Result<u32, JsValue> {
-        self.edited(async |p: &mut Playing| {
-            let handle = sva_core::add(&mut p.inner, &p.source, term, &p.store).await;
-            handle.map(|handle| handle.0)
-        })
-        .await
+        let added = sva_core::add(&self.inner, &self.source, term, &self.store).await;
+        added.map(|handle| handle.0).map_err(|e| thrown(&e))
     }
 
     /// False where the stream no longer holds `handle`.
     pub async fn replace(&self, handle: u32, term: &str) -> Result<bool, JsValue> {
-        self.edited(async |p: &mut Playing| {
-            let replaced = (Handle(handle), term);
-            sva_core::replace(&mut p.inner, &p.source, replaced, &p.store).await
-        })
-        .await
+        let replaced = (Handle(handle), term);
+        let replaced = sva_core::replace(&self.inner, &self.source, replaced, &self.store).await;
+        replaced.map_err(|e| thrown(&e))
     }
 
     pub async fn remove(&self, handle: u32) -> Result<bool, JsValue> {
-        self.edited(async |p: &mut Playing| {
-            let removed = p.inner.remove(Handle(handle), &p.store).await;
-            removed.map_err(CliError::Engine)
-        })
-        .await
+        let removed = sva_core::remove(&self.inner, Handle(handle), &self.store).await;
+        removed.map_err(|e| thrown(&e))
     }
 
-    /// Reads the stored samples the next second of blocks plays, and the stream plays on
-    /// meanwhile. A block reading stored samples not yet read computes them, or, live, starts
-    /// the note silent where its live remainder is not ready.
-    pub async fn fetch(&self) -> Result<(), JsValue> {
-        let (wanted, store) = {
-            let playing = self.seen()?;
-            (playing.inner.wanted(), playing.store.clone())
-        };
+    /// Reads the stored samples the next second of blocks plays, as the stream plays on.
+    pub async fn fetch(&self) {
+        let wanted = self.inner.borrow().wanted();
         for (stored, over) in wanted {
-            let Some(samples) = store.read(&stored, over).await else {
-                continue;
-            };
-            if let Ok(mut playing) = self.held() {
-                playing.inner.took(stored.key, samples);
+            if let Some(samples) = self.store.read(&stored, over).await {
+                self.inner.borrow_mut().took(stored.key, &samples);
             }
         }
-        Ok(())
     }
 
     /// `{ samples, priced_flops, waves }` since it opened.
     pub fn work(&self) -> Result<JsValue, JsValue> {
-        parse(&work_json(&self.seen()?.inner.work()))
+        parse(&work_json(&self.inner.borrow().work()))
     }
 
     pub fn stats(&self) -> Result<JsValue, JsValue> {
-        let inner = &self.seen()?.inner;
+        let inner = self.inner.borrow();
         parse(&stream_stats_json(&inner.stats(), inner.dropped()))
     }
 
     #[wasm_bindgen(getter)]
-    pub fn held_bytes(&self) -> Result<f64, JsValue> {
-        Ok(self.seen()?.inner.held_bytes() as f64)
+    pub fn held_bytes(&self) -> f64 {
+        self.inner.borrow().held_bytes() as f64
     }
 
     #[wasm_bindgen(getter)]
-    pub fn channels(&self) -> Result<usize, JsValue> {
-        Ok(self.seen()?.inner.width())
+    pub fn channels(&self) -> usize {
+        self.inner.borrow().width()
     }
 
     #[wasm_bindgen(getter)]
-    pub fn sample_rate(&self) -> Result<u32, JsValue> {
-        Ok(self.seen()?.inner.config().render.rate)
+    pub fn sample_rate(&self) -> u32 {
+        self.inner.borrow().config().render.rate
     }
 
     #[wasm_bindgen(getter)]
-    pub fn block(&self) -> Result<usize, JsValue> {
-        Ok(self.seen()?.inner.config().block)
+    pub fn block(&self) -> usize {
+        self.inner.borrow().config().block
     }
 
     #[wasm_bindgen(getter)]
-    pub fn position(&self) -> Result<f64, JsValue> {
-        Ok(self.seen()?.inner.position() as f64)
+    pub fn position(&self) -> f64 {
+        self.inner.borrow().position() as f64
     }
 
     #[wasm_bindgen(getter)]
-    pub fn end(&self) -> Result<Option<f64>, JsValue> {
-        Ok(self.seen()?.inner.end().map(|end| end as f64))
+    pub fn end(&self) -> Option<f64> {
+        self.inner.borrow().end().map(|end| end as f64)
     }
 }

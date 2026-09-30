@@ -38,6 +38,12 @@ pub enum CliError {
     LintRefused(Vec<LintViolation>),
 }
 
+impl From<EngineError> for CliError {
+    fn from(e: EngineError) -> CliError {
+        CliError::Engine(e)
+    }
+}
+
 fn engine_error_path(e: &EngineError) -> Option<String> {
     match e {
         EngineError::Binding { node, .. } => Some(node.clone()),

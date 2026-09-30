@@ -1,11 +1,12 @@
-// Concern: opens a target as a stream over a store, editing it and its terms live | Non-concern: pulling its blocks, what an edit carries on | IO: (Graph, target) -> Stream; (expr) -> Handle, bool
+// Concern: opens a target as a stream over a store, editing it and its terms live | Non-concern: pulling its blocks, what an edit carries on | IO: (Graph, target) -> Stream; (Change) -> Changed
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use sva_ast::{Expr, Graph};
-use sva_formula::NodeId;
-use sva_samples::Extent;
+use sva_formula::{Hash, NodeId};
+use sva_samples::{Buffer, Extent};
 
 use super::drive::{Block, Driver};
 use super::frontier::{Frontier, Known};
@@ -28,9 +29,8 @@ pub struct StreamConfig {
 }
 
 /// A target rendered block by block off one table. The target may read `@notes`, the sum of
-/// the terms added under handles; an edit plays from the next block on. A node the store
-/// answers plays from its samples. A hit is looked up once; a node reading the stream's own
-/// note sum never, as no store holds one.
+/// the terms added under handles. A node the store answers plays from its samples. A hit is
+/// looked up once; a node reading the stream's own note sum never, as no store holds one.
 pub struct Stream {
     config: StreamConfig,
     shell: Render,
@@ -39,12 +39,12 @@ pub struct Stream {
     expr: Expr,
     terms: Terms,
     met: Met,
+    generation: u64,
     live: bool,
     dropped: Vec<String>,
 }
 
-/// Each hit the stream met: a header holds until its own store moves the samples; any holder
-/// may fill a miss.
+/// Each hit met: a header holds until its store moves the samples; any holder may fill a miss.
 #[derive(Default)]
 struct Met {
     epoch: u64,
@@ -52,13 +52,25 @@ struct Met {
 }
 
 impl Met {
-    fn over(&mut self, store: &impl Through) -> &mut Known {
+    fn over(&mut self, store: &impl Through) -> &Known {
         if store.epoch() != self.epoch {
             self.known.clear();
             self.epoch = store.epoch();
         }
-        self.known.retain(|_, found| found.is_some());
-        &mut self.known
+        &self.known
+    }
+
+    /// Kept where the store has not changed since `epoch`.
+    fn noted(&mut self, key: Hash, found: &Option<Arc<Stored>>, epoch: u64, store: &impl Through) {
+        self.over(store);
+        if epoch == self.epoch {
+            self.known.insert(key, found.clone());
+        }
+    }
+
+    fn hits(&mut self, store: &impl Through) -> Vec<(Hash, Option<Arc<Stored>>)> {
+        let hits = self.over(store).iter().filter(|(_, found)| found.is_some());
+        hits.map(|(key, found)| (*key, found.clone())).collect()
     }
 }
 
@@ -78,10 +90,14 @@ impl Stream {
         store: &impl Through,
     ) -> Result<Stream, EngineError> {
         let mut terms = Terms::default();
-        let mut met = Met::default();
+        let (mut known, epoch) = (Known::new(), store.epoch());
         let render = &blocked(&config)?.render;
-        let known = met.over(store);
-        let mut found = shelled(graph, target, &mut terms, render, known, store).await?;
+        let walk = async |found: &mut Frontier<'_>| found.walked(&mut known, store).await;
+        let mut found = shelled(graph, target, &mut terms, render, walk).await?;
+        let mut met = Met::default();
+        for (key, hit) in known.into_iter().filter(|(_, found)| found.is_some()) {
+            met.noted(key, &hit, epoch, store);
+        }
         let next = ahead(found.range.start, render.rate);
         through::load(&mut found.table, store, next, &BTreeSet::new()).await;
         let mut recording = Recording::over(cache, config.render.cache_policy);
@@ -98,6 +114,7 @@ impl Stream {
             expr: target.clone(),
             terms,
             met,
+            generation: 0,
             live: false,
             dropped: Vec::new(),
             driver,
@@ -106,107 +123,88 @@ impl Stream {
         })
     }
 
-    pub async fn edit(
-        &mut self,
-        graph: &Graph,
-        target: &Expr,
-        store: &impl Through,
-    ) -> Result<(), EngineError> {
-        let terms = self.terms.clone();
-        self.rebuilt(graph, target.clone(), terms, store).await
-    }
-
-    pub async fn add(
-        &mut self,
-        graph: &Graph,
-        term: &Expr,
-        store: &impl Through,
-    ) -> Result<Handle, EngineError> {
-        let (terms, handle) = self.terms.added(term.clone());
-        self.rebuilt(graph, self.expr.clone(), terms, store).await?;
-        Ok(handle)
-    }
-
-    /// False, and nothing edited, where the stream no longer holds `handle`.
-    pub async fn replace(
-        &mut self,
-        graph: &Graph,
-        (handle, term): (Handle, &Expr),
-        store: &impl Through,
-    ) -> Result<bool, EngineError> {
-        let Some(terms) = self.terms.replaced(handle, term.clone()) else {
-            return Ok(false);
-        };
-        self.rebuilt(graph, self.expr.clone(), terms, store).await?;
-        Ok(true)
-    }
-
-    /// A sounding term is cut where the stream stands, so what it played stays what it was.
-    pub async fn remove(
-        &mut self,
-        handle: Handle,
-        store: &impl Through,
-    ) -> Result<bool, EngineError> {
-        let at = self.driver.at as f64 / f64::from(self.shell.rate());
-        let Some(terms) = self.terms.removed(handle, at) else {
-            return Ok(false);
-        };
-        let graph = self.graph.clone();
-        self.rebuilt(&graph, self.expr.clone(), terms, store)
-            .await?;
-        Ok(true)
-    }
-
     pub fn exprs(&self) -> impl Iterator<Item = &Expr> {
         std::iter::once(&self.expr).chain(self.terms.exprs())
     }
 
-    /// Values of the same identity carry on; a changed stateful one takes its predecessor's
-    /// state; the rest start now. It reads only the samples of stored values it brings in.
-    async fn rebuilt(
-        &mut self,
-        graph: &Graph,
-        target: Expr,
-        mut terms: Terms,
-        store: &impl Through,
-    ) -> Result<(), EngineError> {
+    fn prospect(&self, change: Change) -> Result<Prospect, Changed> {
         let mut render = self.config.render.clone();
         render.range.start = Some(self.driver.start);
-        let found = shelled(
+        let (graph, target, terms, answer) = match change {
+            Change::Target(graph, target) => (graph, target, self.terms.clone(), Changed::Edited),
+            Change::Add(graph, term) => {
+                let (terms, handle) = self.terms.added(term);
+                (graph, self.expr.clone(), terms, Changed::Added(handle))
+            }
+            Change::Replace(handle, graph, term) => {
+                let terms = self.terms.replaced(handle, term);
+                let terms = terms.ok_or(Changed::Held(false))?;
+                (graph, self.expr.clone(), terms, Changed::Held(true))
+            }
+            Change::Remove(handle) => {
+                let at = self.driver.at as f64 / f64::from(self.shell.rate());
+                let terms = self.terms.removed(handle, at).ok_or(Changed::Held(false))?;
+                (
+                    self.graph.clone(),
+                    self.expr.clone(),
+                    terms,
+                    Changed::Held(true),
+                )
+            }
+        };
+        Ok(Prospect {
             graph,
-            &target,
-            &mut terms,
-            &render,
-            self.met.over(store),
-            store,
-        )
-        .await?;
+            target,
+            terms,
+            answer,
+            render,
+            generation: self.generation,
+        })
+    }
+
+    /// The stored samples `table` asks over the next second that it brings in and nothing
+    /// holds; `None` where the stream changed since `generation`.
+    fn wanting(
+        &self,
+        generation: u64,
+        table: &Table,
+        unread: &BTreeSet<Hash>,
+    ) -> Option<Vec<(Arc<Stored>, Extent)>> {
+        if generation != self.generation {
+            return None;
+        }
+        let sounding = self.driver.table.stored_keys();
+        let wants = table.wants(ahead(self.driver.at, self.config.render.rate));
+        let brought = wants.into_iter();
+        let brought =
+            brought.filter(|(s, _)| !sounding.contains(&s.key) && !unread.contains(&s.key));
+        Some(brought.collect())
+    }
+
+    /// Values of the same identity carry on; a changed stateful one takes its predecessor's
+    /// state; the rest start now.
+    fn apply(&mut self, prospect: Prospect, shelled: Shelled, fetched: &[(Hash, Vec<Buffer>)]) {
         let Shelled {
             shell,
             range,
             mut table,
             hits,
-        } = found;
+        } = shelled;
         let old = std::mem::replace(&mut self.driver.table, Table::empty());
-        let sounding = old.stored_keys();
         let dropped = edit::carried(&mut table, old, self.driver.at, self.live);
-        through::load(
-            &mut table,
-            store,
-            ahead(self.driver.at, render.rate),
-            &sounding,
-        )
-        .await;
+        for (key, samples) in fetched {
+            table.took(*key, samples);
+        }
         self.dropped
             .extend(dropped.into_iter().map(|at| table.values[at].name.clone()));
         self.driver.replace(table, range.end);
         self.driver.recording.found(hits);
         self.shell = shell;
-        self.graph = graph.clone();
-        self.expr = target;
-        self.terms = terms;
+        self.graph = prospect.graph;
+        self.expr = prospect.target;
+        self.terms = prospect.terms;
+        self.generation += 1;
         self.prune();
-        Ok(())
     }
 
     /// Loads the stored samples the next second reads; a block reading one not loaded has it
@@ -222,7 +220,7 @@ impl Stream {
         self.driver.table.wants(next)
     }
 
-    pub fn took(&mut self, key: sva_formula::Hash, samples: Vec<sva_samples::Buffer>) {
+    pub fn took(&mut self, key: Hash, samples: &[Buffer]) {
         self.driver.table.took(key, samples);
     }
 
@@ -256,8 +254,10 @@ impl Stream {
                         .is_none_or(|needs| needs[at].hold.is_empty())
             })
         };
-        self.terms
-            .prune(&gone, &|leaf| crate::refs::identity(&shell.tys, leaf).ok());
+        let named = |leaf| crate::refs::identity(&shell.tys, leaf).ok();
+        if self.terms.prune(&gone, &named) {
+            self.generation += 1;
+        }
     }
 
     /// Every segment of its own clock the stream computed of `node`'s value, in order.
@@ -297,6 +297,99 @@ impl Stream {
 
     pub fn config(&self) -> &StreamConfig {
         &self.config
+    }
+}
+
+/// An edit, each with the graph that reaches it and all the stream plays.
+pub enum Change {
+    Target(Graph, Expr),
+    Add(Graph, Expr),
+    Replace(Handle, Graph, Expr),
+    /// A sounding term is cut where the stream stands as the edit is built; what played stays.
+    Remove(Handle),
+}
+
+/// A replace or remove answers whether the stream still held its handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Changed {
+    Edited,
+    Added(Handle),
+    Held(bool),
+}
+
+struct Prospect {
+    graph: Graph,
+    target: Expr,
+    terms: Terms,
+    answer: Changed,
+    render: RenderConfig,
+    generation: u64,
+}
+
+/// `build`'s change, holding the stream only to apply it, between two blocks, once the store
+/// answered what it brings in: an exact stream pulled only once its edit is done plays it where
+/// it was issued. `build` runs again whenever the stream changed under it.
+pub async fn change<E: From<EngineError>>(
+    stream: &RefCell<Stream>,
+    mut build: impl FnMut(&Stream) -> Result<Change, E>,
+    store: &impl Through,
+) -> Result<Changed, E> {
+    let mut local = Met::default();
+    let mut fetched: Vec<(Hash, Vec<Buffer>)> = Vec::new();
+    let (mut unread, mut asked) = (BTreeSet::new(), Vec::<(Hash, Extent)>::new());
+    loop {
+        let change = build(&stream.borrow())?;
+        let mut prospect = match stream.borrow().prospect(change) {
+            Ok(prospect) => prospect,
+            Err(answer) => return Ok(answer),
+        };
+        for (key, hit) in stream.borrow_mut().met.hits(store) {
+            local.noted(key, &hit, store.epoch(), store);
+        }
+        let walk = async |found: &mut Frontier<'_>| {
+            while let Some(key) = found.walk(local.over(store)) {
+                let epoch = store.epoch();
+                let found = store.lookup(key).await.map(Arc::new);
+                if found.is_some() {
+                    stream.borrow_mut().met.noted(key, &found, epoch, store);
+                }
+                local.noted(key, &found, epoch, store);
+            }
+        };
+        let (graph, target) = (&prospect.graph, &prospect.target);
+        let config = &prospect.render;
+        let mut shelled = shelled(graph, target, &mut prospect.terms, config, walk).await?;
+        let generation = prospect.generation;
+        loop {
+            for (key, samples) in &fetched {
+                shelled.table.took(*key, samples);
+            }
+            let wants = stream.borrow().wanting(generation, &shelled.table, &unread);
+            let Some(wants) = wants else {
+                break;
+            };
+            if wants.is_empty() {
+                let answer = prospect.answer;
+                stream.borrow_mut().apply(prospect, shelled, &fetched);
+                return Ok(answer);
+            }
+            for (stored, over) in wants {
+                let again = asked
+                    .iter()
+                    .any(|(key, e)| *key == stored.key && !e.intersect(over).is_empty());
+                asked.push((stored.key, over));
+                let read = match again {
+                    false => store.read(&stored, over).await,
+                    true => None,
+                };
+                match read {
+                    Some(samples) => fetched.push((stored.key, samples)),
+                    None => {
+                        unread.insert(stored.key);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -343,8 +436,7 @@ async fn shelled(
     target: &Expr,
     terms: &mut Terms,
     config: &RenderConfig,
-    known: &mut Known,
-    store: &impl Through,
+    walk: impl AsyncFnOnce(&mut Frontier<'_>),
 ) -> Result<Shelled, EngineError> {
     let wrapped = wrapped(graph, target, terms)?;
     let instances = instantiate::instantiate(&wrapped, STREAMED, config.rate)?;
@@ -355,7 +447,7 @@ async fn shelled(
     if !terms.is_empty() {
         found.unstored(reading(&order, &instances.instance_of(NOTES)?));
     }
-    found.walked(known, store).await;
+    walk(&mut found).await;
     let mut tys = typing::infer_over(&instances, &order.within(&found.visited), &BTreeMap::new())?;
     let id = tys
         .id(&root)

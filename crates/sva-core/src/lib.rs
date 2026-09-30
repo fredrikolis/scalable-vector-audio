@@ -30,12 +30,13 @@ pub use target::{Edge, Target, target};
 pub use tempo::{Tempo, refuse_unresolved_bars, resolved as tempo};
 pub use until::until;
 
+use std::cell::RefCell;
 use std::path::Path;
 
 use sva_ast::{Dir, Graph, Refusal, Source};
 use sva_engine::{
-    Ask, DEFAULT_SAMPLE_RATE, EngineError, Range, RenderConfig, StreamConfig, render,
-    render_through,
+    Ask, Change, Changed, DEFAULT_SAMPLE_RATE, EngineError, Range, RenderConfig, StreamConfig,
+    render, render_through,
 };
 
 pub use sva_engine::{Handle, QuietTail, Stream, Until};
@@ -308,46 +309,74 @@ pub async fn stream(job: &Job<'_>, block: usize, store: &impl Through) -> Result
 }
 
 /// `target`, an expression over `source` with no interval of its own, in place of what
-/// `stream` plays from its next block on.
+/// `stream` plays. Each edit here is `sva_engine::change`'s: the stream plays on meanwhile.
 pub async fn edit(
-    stream: &mut Stream,
+    stream: &RefCell<Stream>,
     source: &dyn Source,
     target: &str,
     store: &impl Through,
 ) -> Result<(), CliError> {
-    let (graph, expr) = streamed(stream, source, target)?;
-    stream
-        .edit(&graph, &expr, store)
+    let build = |s: &Stream| {
+        let (graph, expr) = streamed(s, source, target)?;
+        Ok(Change::Target(graph, expr))
+    };
+    changed(stream, build, Some(target), store)
         .await
-        .map_err(|e| CliError::Engine(as_written(e, target)))
+        .map(|_| ())
 }
 
-/// `term` summed into the stream's `@notes` from its next block on.
+/// `term` summed into the stream's `@notes`.
 pub async fn add(
-    stream: &mut Stream,
+    stream: &RefCell<Stream>,
     source: &dyn Source,
     term: &str,
     store: &impl Through,
 ) -> Result<Handle, CliError> {
-    let (graph, expr) = streamed(stream, source, term)?;
-    stream
-        .add(&graph, &expr, store)
-        .await
-        .map_err(|e| CliError::Engine(as_written(e, term)))
+    let build = |s: &Stream| {
+        let (graph, expr) = streamed(s, source, term)?;
+        Ok(Change::Add(graph, expr))
+    };
+    match changed(stream, build, Some(term), store).await? {
+        Changed::Added(handle) => Ok(handle),
+        _ => unreachable!("an add answers its handle"),
+    }
 }
 
 /// False where the stream no longer holds `handle`.
 pub async fn replace(
-    stream: &mut Stream,
+    stream: &RefCell<Stream>,
     source: &dyn Source,
     (handle, term): (Handle, &str),
     store: &impl Through,
 ) -> Result<bool, CliError> {
-    let (graph, expr) = streamed(stream, source, term)?;
-    stream
-        .replace(&graph, (handle, &expr), store)
-        .await
-        .map_err(|e| CliError::Engine(as_written(e, term)))
+    let build = |s: &Stream| {
+        let (graph, expr) = streamed(s, source, term)?;
+        Ok(Change::Replace(handle, graph, expr))
+    };
+    Ok(changed(stream, build, Some(term), store).await? == Changed::Held(true))
+}
+
+/// False where the stream no longer holds `handle`.
+pub async fn remove(
+    stream: &RefCell<Stream>,
+    handle: Handle,
+    store: &impl Through,
+) -> Result<bool, CliError> {
+    let build = |_: &Stream| Ok(Change::Remove(handle));
+    Ok(changed(stream, build, None, store).await? == Changed::Held(true))
+}
+
+async fn changed(
+    stream: &RefCell<Stream>,
+    build: impl FnMut(&Stream) -> Result<Change, CliError>,
+    text: Option<&str>,
+    store: &impl Through,
+) -> Result<Changed, CliError> {
+    let changed = sva_engine::change(stream, build, store).await;
+    changed.map_err(|e| match (e, text) {
+        (CliError::Engine(e), Some(text)) => CliError::Engine(as_written(e, text)),
+        (e, _) => e,
+    })
 }
 
 /// `text` with no interval, and a graph reaching it and all the stream plays.

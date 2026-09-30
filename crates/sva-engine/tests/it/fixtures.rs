@@ -7,8 +7,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use sva_ast::Graph;
-use sva_engine::Render;
+use std::cell::RefCell;
+
+use sva_ast::{Expr, Graph};
+use sva_engine::{Change, Changed, EngineError, Handle, Render, Stream, Through, change};
 
 static RUN: AtomicU32 = AtomicU32::new(0);
 
@@ -28,6 +30,49 @@ pub trait Now: Future + Sized {
 }
 
 impl<F: Future> Now for F {}
+
+/// Each stream edit a suite makes, through `change` as a page's would.
+pub async fn added(
+    stream: &RefCell<Stream>,
+    graph: &Graph,
+    term: &Expr,
+    store: &impl Through,
+) -> Result<Handle, EngineError> {
+    let build = |_: &Stream| Ok::<_, EngineError>(Change::Add(graph.clone(), term.clone()));
+    match change(stream, build, store).await? {
+        Changed::Added(handle) => Ok(handle),
+        other => panic!("an add answered {other:?}"),
+    }
+}
+
+pub async fn replaced(
+    stream: &RefCell<Stream>,
+    graph: &Graph,
+    (handle, term): (Handle, &Expr),
+    store: &impl Through,
+) -> Result<bool, EngineError> {
+    let build = |_: &Stream| Ok(Change::Replace(handle, graph.clone(), term.clone()));
+    Ok(change(stream, build, store).await? == Changed::Held(true))
+}
+
+pub async fn removed(
+    stream: &RefCell<Stream>,
+    handle: Handle,
+    store: &impl Through,
+) -> Result<bool, EngineError> {
+    let build = |_: &Stream| Ok(Change::Remove(handle));
+    Ok(change(stream, build, store).await? == Changed::Held(true))
+}
+
+pub async fn edited(
+    stream: &RefCell<Stream>,
+    graph: &Graph,
+    target: &Expr,
+    store: &impl Through,
+) -> Result<(), EngineError> {
+    let build = |_: &Stream| Ok(Change::Target(graph.clone(), target.clone()));
+    change(stream, build, store).await.map(|_| ())
+}
 
 pub fn dir_of(name: &str, files: &[(&str, &str)]) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(

@@ -1,6 +1,8 @@
 // Concern: proves an edit plays the whole render of the edited expression where nothing before now moved, and carries changed state | Non-concern: the blocks before it | IO: (a stream, exprs) -> blocks
 
-use crate::fixtures::{Now, graph_of};
+use std::cell::RefCell;
+
+use crate::fixtures::{Now, added, edited, graph_of, removed, replaced};
 use sva_ast::Graph;
 use sva_engine::{
     Cache, NoStore, Outcome, PayloadKind, Range, RenderConfig, Stream, StreamConfig, render,
@@ -83,28 +85,29 @@ fn expr(text: &str) -> sva_ast::Expr {
     sva_ast::parse_expr(text).unwrap_or_else(|e| panic!("`{text}`: {}", e.message))
 }
 
-fn opened(g: &Graph, text: &str, cache: Option<&Cache>) -> Stream {
+fn opened(g: &Graph, text: &str, cache: Option<&Cache>) -> RefCell<Stream> {
     opened_at(RATE, g, text, cache)
 }
 
-fn opened_at(rate: u32, g: &Graph, text: &str, cache: Option<&Cache>) -> Stream {
+fn opened_at(rate: u32, g: &Graph, text: &str, cache: Option<&Cache>) -> RefCell<Stream> {
     let end = Some(4 * i64::from(rate));
-    Stream::open(g, &expr(text), config_at(rate, end), cache, &NoStore)
-        .now()
-        .unwrap_or_else(|e| panic!("{e}"))
+    let opened = Stream::open(g, &expr(text), config_at(rate, end), cache, &NoStore).now();
+    RefCell::new(opened.unwrap_or_else(|e| panic!("{e}")))
 }
 
-fn edit(stream: &mut Stream, g: &Graph, text: &str) {
-    stream
-        .edit(g, &expr(text), &NoStore)
+fn edit(stream: &RefCell<Stream>, g: &Graph, text: &str) {
+    edited(stream, g, &expr(text), &NoStore)
         .now()
         .unwrap_or_else(|e| panic!("`{text}`: {e}"));
 }
 
-fn blocks(stream: &mut Stream, count: usize) -> Vec<f64> {
+fn blocks(stream: &RefCell<Stream>, count: usize) -> Vec<f64> {
     let mut out = Vec::with_capacity(count * BLOCK);
     for _ in 0..count {
-        let block = stream.next_block().unwrap_or_else(|e| panic!("{e}"));
+        let block = stream
+            .borrow_mut()
+            .next_block()
+            .unwrap_or_else(|e| panic!("{e}"));
         out.extend_from_slice(block.expect("a stream with no end").plane(0));
     }
     out
@@ -131,21 +134,17 @@ fn released_at(target: &str, whole_target: &str, k: usize) {
 fn released_at_rate(rate: u32, target: &str, whole_target: &str, k: usize) {
     let release = k as f64 / f64::from(rate);
     let g = composition(release);
-    let mut held = opened_at(rate, &g, &format!("@{target}(t)"), None);
-    let mut heard = blocks(&mut held, k / BLOCK);
-    let mut released = opened_at(rate, &g, &format!("@{target}(t)"), None);
-    blocks(&mut released, k / BLOCK);
-    edit(
-        &mut released,
-        &g,
-        &format!("@{target}(t, release={release})"),
-    );
-    heard.extend(blocks(&mut released, 8));
+    let held = opened_at(rate, &g, &format!("@{target}(t)"), None);
+    let mut heard = blocks(&held, k / BLOCK);
+    let released = opened_at(rate, &g, &format!("@{target}(t)"), None);
+    blocks(&released, k / BLOCK);
+    edit(&released, &g, &format!("@{target}(t, release={release})"));
+    heard.extend(blocks(&released, 8));
 
     let want = whole_at(rate, &g, whole_target, heard.len());
     assert_ne!(
         want[k + 2 * BLOCK..],
-        blocks(&mut held, 8)[2 * BLOCK..],
+        blocks(&held, 8)[2 * BLOCK..],
         "{target}: the damper did nothing"
     );
     assert_eq!(heard, want, "{target} at {rate}");
@@ -189,14 +188,14 @@ fn a_note_pressed_and_released_mid_stream_is_the_whole_render_of_the_last_edit()
     let last = format!("{released} + @pluck(t - {t2}sp, f0=440)");
     let g = composition(1.0);
     let echoed = |x: &str| format!("@echo(t, x={x})");
-    let mut stream = opened(&g, &echoed(first), None);
-    let mut heard = blocks(&mut stream, t0 / BLOCK);
-    edit(&mut stream, &g, &echoed(&pressed));
-    heard.extend(blocks(&mut stream, (t1 - t0) / BLOCK));
-    edit(&mut stream, &g, &echoed(&released));
-    heard.extend(blocks(&mut stream, (t2 - t1) / BLOCK));
-    edit(&mut stream, &g, &echoed(&last));
-    heard.extend(blocks(&mut stream, 16));
+    let stream = opened(&g, &echoed(first), None);
+    let mut heard = blocks(&stream, t0 / BLOCK);
+    edit(&stream, &g, &echoed(&pressed));
+    heard.extend(blocks(&stream, (t1 - t0) / BLOCK));
+    edit(&stream, &g, &echoed(&released));
+    heard.extend(blocks(&stream, (t2 - t1) / BLOCK));
+    edit(&stream, &g, &echoed(&last));
+    heard.extend(blocks(&stream, 16));
 
     let mut whole_g = g.clone();
     assert!(whole_g.define("final", expr(&echoed(&last))));
@@ -214,31 +213,30 @@ fn a_note_pressed_and_released_mid_stream_is_the_whole_render_of_the_last_edit()
 #[test]
 fn a_note_past_its_end_leaves_the_sum_and_its_echo_rings_on() {
     let g = composition(1.0);
-    let mut stream = opened(&g, "@echo(t, x=@notes)", None);
+    let stream = opened(&g, "@echo(t, x=@notes)", None);
     let a = format!("@blip(t - {BLOCK}sp, f0=200)");
     let b = format!("@blip(t - {}sp, f0=300)", 8 * BLOCK);
-    let added = |stream: &mut Stream, term: &str| {
-        stream
-            .add(&g, &expr(term), &NoStore)
+    let add = |term: &str| {
+        added(&stream, &g, &expr(term), &NoStore)
             .now()
             .unwrap_or_else(|e| panic!("`{term}`: {e}"))
     };
-    let (held_a, held_b) = (added(&mut stream, &a), added(&mut stream, &b));
-    let mut heard = blocks(&mut stream, 20);
+    let (held_a, held_b) = (add(&a), add(&b));
+    let mut heard = blocks(&stream, 20);
     assert_eq!(
-        stream.remove(held_a, &NoStore).now().ok(),
+        removed(&stream, held_a, &NoStore).now().ok(),
         Some(false),
         "the first note ended"
     );
-    heard.extend(blocks(&mut stream, 10));
+    heard.extend(blocks(&stream, 10));
     let c = format!("@blip(t - {}sp, f0=250)", 30 * BLOCK);
-    added(&mut stream, &c);
+    add(&c);
     assert_eq!(
-        stream.remove(held_b, &NoStore).now().ok(),
+        removed(&stream, held_b, &NoStore).now().ok(),
         Some(false),
         "the second note ended"
     );
-    heard.extend(blocks(&mut stream, 30));
+    heard.extend(blocks(&stream, 30));
 
     let mut whole_g = g.clone();
     assert!(whole_g.define("final", expr(&format!("@echo(t, x={a} + {b} + {c})"))));
@@ -256,24 +254,28 @@ fn a_note_past_its_end_leaves_the_sum_and_its_echo_rings_on() {
 #[test]
 fn a_term_removed_while_it_sounds_is_cut_where_the_stream_stands() {
     let g = composition(1.0);
-    let mut stream = opened(&g, "@echo(t, x=@notes)", None);
-    let mut added = |term: &str| {
-        stream
-            .add(&g, &expr(term), &NoStore)
+    let stream = opened(&g, "@echo(t, x=@notes)", None);
+    let add = |term: &str| {
+        added(&stream, &g, &expr(term), &NoStore)
             .now()
             .unwrap_or_else(|e| panic!("`{term}`: {e}"))
     };
-    let first = added(&format!("@blip(t - {BLOCK}sp, f0=200)"));
-    added(&format!("@blip(t - {}sp, f0=300)", 4 * BLOCK));
-    let mut heard = blocks(&mut stream, 6);
-    assert_eq!(stream.remove(first, &NoStore).now().ok(), Some(true));
+    let first = add(&format!("@blip(t - {BLOCK}sp, f0=200)"));
+    add(&format!("@blip(t - {}sp, f0=300)", 4 * BLOCK));
+    let mut heard = blocks(&stream, 6);
+    assert_eq!(removed(&stream, first, &NoStore).now().ok(), Some(true));
     assert_eq!(
-        stream.remove(first, &NoStore).now().ok(),
+        removed(&stream, first, &NoStore).now().ok(),
         Some(false),
         "a removed handle"
     );
-    let held: Vec<String> = stream.exprs().skip(1).map(sva_ast::render_expr).collect();
-    heard.extend(blocks(&mut stream, 30));
+    let held: Vec<String> = stream
+        .borrow()
+        .exprs()
+        .skip(1)
+        .map(sva_ast::render_expr)
+        .collect();
+    heard.extend(blocks(&stream, 30));
 
     let mut whole_g = g.clone();
     let last = format!("@echo(t, x={})", held.join(" + "));
@@ -292,23 +294,28 @@ fn a_live_edit_starts_a_node_with_no_state_silent_and_names_it() {
     render(&g, "string", RenderConfig::seconds(RATE, 0.5), Some(&cache)).expect("a render");
     let held = "@echo(t, x=@pluck(t, f0=523.25))";
     let released = "@echo(t, x=@pluck(t, f0=523.25, release=0.1))";
-    let (mut exact, mut live) = (
+    let (exact, live) = (
         opened(&g, held, Some(&cache)),
         opened(&g, held, Some(&cache)),
     );
-    live.go_live();
-    let before = blocks(&mut live, 8);
-    assert_eq!(before, blocks(&mut exact, 8));
-    edit(&mut exact, &g, released);
-    edit(&mut live, &g, released);
-    assert!(exact.dropped().is_empty());
-    assert_eq!(live.dropped().len(), 1, "{:?}", live.dropped());
-    assert!(
-        live.dropped()[0].starts_with("pluck("),
+    live.borrow_mut().go_live();
+    let before = blocks(&live, 8);
+    assert_eq!(before, blocks(&exact, 8));
+    edit(&exact, &g, released);
+    edit(&live, &g, released);
+    assert!(exact.borrow().dropped().is_empty());
+    assert_eq!(
+        live.borrow().dropped().len(),
+        1,
         "{:?}",
-        live.dropped()
+        live.borrow().dropped()
     );
-    assert_ne!(blocks(&mut live, 4), blocks(&mut exact, 4));
+    assert!(
+        live.borrow().dropped()[0].starts_with("pluck("),
+        "{:?}",
+        live.borrow().dropped()
+    );
+    assert_ne!(blocks(&live, 4), blocks(&exact, 4));
 }
 
 /// A constant moved inside a loop is a changed node read where its predecessor was: it takes
@@ -316,11 +323,11 @@ fn a_live_edit_starts_a_node_with_no_state_silent_and_names_it() {
 #[test]
 fn a_constant_moved_inside_a_loop_keeps_its_tail_ringing() {
     let g = composition(1.0);
-    let mut stream = opened(&g, "@echo(t, x=sample(@burst), feedback=0.35)", None);
+    let stream = opened(&g, "@echo(t, x=sample(@burst), feedback=0.35)", None);
     let k = 13 * BLOCK;
-    let mut heard = blocks(&mut stream, k / BLOCK);
-    edit(&mut stream, &g, "@echo(t, x=sample(@burst), feedback=0.5)");
-    heard.extend(blocks(&mut stream, 12));
+    let mut heard = blocks(&stream, k / BLOCK);
+    edit(&stream, &g, "@echo(t, x=sample(@burst), feedback=0.5)");
+    heard.extend(blocks(&stream, 12));
     let delay = RATE as usize / 4;
     assert!(heard[k..].iter().any(|v| *v != 0.0), "the tail rings on");
     for n in k..heard.len() {
@@ -345,14 +352,13 @@ fn a_long_session_holds_no_more_than_its_first_seconds() {
             ..RenderConfig::at(rate)
         },
     };
-    let mut stream = Stream::open(&g, &expr("@echo(t, x=0)"), config, None, &NoStore)
-        .now()
-        .expect("opens");
+    let stream = Stream::open(&g, &expr("@echo(t, x=0)"), config, None, &NoStore).now();
+    let stream = RefCell::new(stream.expect("opens"));
     let (every, kept) = (8 * 256, 2 * i64::from(rate));
     let mut onsets: Vec<i64> = Vec::new();
     let mut held = Vec::new();
-    while stream.position() < 60 * i64::from(rate) {
-        let now = stream.position();
+    while stream.borrow().position() < 60 * i64::from(rate) {
+        let now = stream.borrow().position();
         if now % every == 0 {
             onsets.retain(|onset| now - onset < kept);
             onsets.push(now);
@@ -360,14 +366,11 @@ fn a_long_session_holds_no_more_than_its_first_seconds() {
                 .iter()
                 .map(|at| format!("@blip(t - {at}sp, f0={})", 200 + at % 7 * 50))
                 .collect();
-            edit(
-                &mut stream,
-                &g,
-                &format!("@echo(t, x={})", notes.join(" + ")),
-            );
+            edit(&stream, &g, &format!("@echo(t, x={})", notes.join(" + ")));
         }
-        stream.next_block().expect("a block").expect("no end");
-        held.push(stream.held_bytes());
+        let block = stream.borrow_mut().next_block().expect("a block");
+        block.expect("no end");
+        held.push(stream.borrow().held_bytes());
     }
     let seconds = |s: usize| s * rate as usize / 256;
     let first = held[..seconds(10)].iter().max().expect("ten seconds");
@@ -383,27 +386,32 @@ fn a_shifted_term_reads_and_extends_the_run_its_node_holds_in_the_store() {
     let g = composition(1.0);
     let cache = Cache::new();
     render(&g, "string", RenderConfig::seconds(RATE, 0.2), Some(&cache)).expect("a render");
-    let runs = |stream: &Stream, outcome: Outcome| {
-        let stats = stream.stats();
+    let runs = |stream: &RefCell<Stream>, outcome: Outcome| {
+        let stats = stream.borrow().stats();
         let lookups = stats.lookups.iter();
         lookups
             .filter(|l| l.kind == PayloadKind::Run && l.outcome == outcome)
             .count()
     };
     let later = "@echo(t, x=@pluck(t - 2000sp, f0=523.25))";
-    let (mut cold, mut warm) = (opened(&g, later, None), opened(&g, later, Some(&cache)));
-    assert_eq!(blocks(&mut warm, 20), blocks(&mut cold, 20));
-    edit(&mut warm, &g, "@echo(t, x=0)");
-    assert_eq!(runs(&warm, Outcome::Extended), 1, "{:?}", warm.stats());
+    let (cold, warm) = (opened(&g, later, None), opened(&g, later, Some(&cache)));
+    assert_eq!(blocks(&warm, 20), blocks(&cold, 20));
+    edit(&warm, &g, "@echo(t, x=0)");
+    assert_eq!(
+        runs(&warm, Outcome::Extended),
+        1,
+        "{:?}",
+        warm.borrow().stats()
+    );
 
     let twice = "@pluck(t - 1000sp, f0=523.25) + @pluck(t - 3000sp, f0=523.25)";
-    let (mut cold, mut warm) = (opened(&g, twice, None), opened(&g, twice, Some(&cache)));
-    assert_eq!(blocks(&mut warm, 16), blocks(&mut cold, 16));
+    let (cold, warm) = (opened(&g, twice, None), opened(&g, twice, Some(&cache)));
+    assert_eq!(blocks(&warm, 16), blocks(&cold, 16));
     assert_eq!(
         runs(&warm, Outcome::Hit),
         2,
         "the store answers the first read and the second reuses it: {:?}",
-        warm.stats()
+        warm.borrow().stats()
     );
 }
 
@@ -433,21 +441,23 @@ fn reverb() -> Graph {
 /// Two notes under a master, the second added live: the whole render of both, nothing dropped.
 fn added_under(master: &dyn Fn(&str) -> String) {
     let g = reverb();
-    let mut stream = opened(&g, &master("@notes"), None);
-    stream.go_live();
+    let stream = opened(&g, &master("@notes"), None);
+    stream.borrow_mut().go_live();
     let a = format!("@blip(t - {BLOCK}sp, f0=200)");
     let b = format!("@blip(t - {}sp, f0=300)", 8 * BLOCK);
-    stream
-        .add(&g, &expr(&a), &NoStore)
+    added(&stream, &g, &expr(&a), &NoStore)
         .now()
         .unwrap_or_else(|e| panic!("{e}"));
-    let mut heard = blocks(&mut stream, 8);
-    stream
-        .add(&g, &expr(&b), &NoStore)
+    let mut heard = blocks(&stream, 8);
+    added(&stream, &g, &expr(&b), &NoStore)
         .now()
         .unwrap_or_else(|e| panic!("{e}"));
-    heard.extend(blocks(&mut stream, 12));
-    assert!(stream.dropped().is_empty(), "{:?}", stream.dropped());
+    heard.extend(blocks(&stream, 12));
+    assert!(
+        stream.borrow().dropped().is_empty(),
+        "{:?}",
+        stream.borrow().dropped()
+    );
 
     let mut whole_g = g.clone();
     assert!(whole_g.define("final", expr(&master(&format!("{a} + {b}")))));
@@ -472,21 +482,26 @@ fn a_loop_edited_to_read_further_back_than_it_kept_steps_again_or_starts_silent(
     let g = reverb();
     let comb = |delay: f64| format!("@comb(t, x=sample(@blip(t, f0=200)), delay={delay})");
     let k = 4 * BLOCK;
-    let mut exact = opened(&g, &comb(0.0297), None);
-    let mut heard = blocks(&mut exact, k / BLOCK);
-    edit(&mut exact, &g, &comb(0.0371));
-    heard.extend(blocks(&mut exact, 8));
+    let exact = opened(&g, &comb(0.0297), None);
+    let mut heard = blocks(&exact, k / BLOCK);
+    edit(&exact, &g, &comb(0.0371));
+    heard.extend(blocks(&exact, 8));
     let mut whole_g = g.clone();
     assert!(whole_g.define("final", expr(&comb(0.0371))));
     let want = whole(&whole_g, "final", heard.len());
     assert_eq!(heard[k..], want[k..]);
 
-    let mut live = opened(&g, &comb(0.0297), None);
-    live.go_live();
-    blocks(&mut live, k / BLOCK);
-    edit(&mut live, &g, &comb(0.0371));
-    blocks(&mut live, 8);
-    assert_eq!(live.dropped().len(), 1, "{:?}", live.dropped());
+    let live = opened(&g, &comb(0.0297), None);
+    live.borrow_mut().go_live();
+    blocks(&live, k / BLOCK);
+    edit(&live, &g, &comb(0.0371));
+    blocks(&live, 8);
+    assert_eq!(
+        live.borrow().dropped().len(),
+        1,
+        "{:?}",
+        live.borrow().dropped()
+    );
 }
 
 /// With no note playing, `@notes` is the number zero, and the loops over it type.
@@ -513,20 +528,18 @@ fn key_up_at_a_whole_sample_opens_a_clamped_damper_ramp_at_zero() {
     assert!(whole_g.define("released", expr(&released)));
     let want = whole_at(rate, &whole_g, "released", k + after);
 
-    let mut stream = opened_at(rate, &g, &released, None);
-    assert_eq!(blocks(&mut stream, (k + after) / BLOCK), want, "streamed");
+    let stream = opened_at(rate, &g, &released, None);
+    assert_eq!(blocks(&stream, (k + after) / BLOCK), want, "streamed");
 
-    let mut live = opened_at(rate, &g, "@notes", None);
-    let note = live
-        .add(&g, &expr(held), &NoStore)
+    let live = opened_at(rate, &g, "@notes", None);
+    let note = added(&live, &g, &expr(held), &NoStore)
         .now()
         .unwrap_or_else(|e| panic!("{e}"));
-    let mut heard = blocks(&mut live, k / BLOCK);
-    let replaced = live
-        .replace(&g, (note, &expr(&released)), &NoStore)
+    let mut heard = blocks(&live, k / BLOCK);
+    let replaced = replaced(&live, &g, (note, &expr(&released)), &NoStore)
         .now()
         .unwrap_or_else(|e| panic!("{e}"));
     assert!(replaced, "the held note is still sounding");
-    heard.extend(blocks(&mut live, after / BLOCK));
+    heard.extend(blocks(&live, after / BLOCK));
     assert_eq!(heard, want, "replaced live");
 }

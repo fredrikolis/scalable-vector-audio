@@ -1,15 +1,17 @@
 // Concern: proves a store answers a render or a stream from its root down, stages until persist, keeps a version and a budget | Non-concern: any real medium | IO: (composition, fake backend) -> hits
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
-use crate::fixtures::{graph_of, samples};
+use crate::fixtures::{added, graph_of, replaced, samples};
 use sva_ast::Graph;
 use sva_engine::{
-    Backend, CacheStats, Hash, INDEX_NAME, NoStore, Outcome, Range, Render, RenderConfig,
-    STORE_FORMAT, Store, Stream, StreamConfig, render, render_through, warm,
+    Backend, CacheStats, Change, Changed, EngineError, Handle, Hash, INDEX_NAME, NoStore, Outcome,
+    Range, Render, RenderConfig, STORE_FORMAT, Store, Stream, StreamConfig, change, render,
+    render_through, warm,
 };
 
 const SECONDS: f64 = 0.05;
@@ -772,14 +774,15 @@ fn a_stream_reads_a_note_another_store_over_its_directory_persisted() {
         None,
         &NoStore,
     ));
-    let mut cold = cold.expect("a stream");
-    let mut warm = now(Stream::open(&graph, &master, config, None, &player)).expect("a stream");
-    now(cold.add(&graph, &term, &NoStore)).expect("added");
-    now(warm.add(&graph, &term, &player)).expect("added");
+    let cold = RefCell::new(cold.expect("a stream"));
+    let warm = now(Stream::open(&graph, &master, config, None, &player));
+    let warm = RefCell::new(warm.expect("a stream"));
+    now(added(&cold, &graph, &term, &NoStore)).expect("added");
+    now(added(&warm, &graph, &term, &player)).expect("added");
     for _ in 0..(RATE / 256) {
         let (cold, warm) = (
-            cold.next_block().expect("a block"),
-            warm.next_block().expect("a block"),
+            cold.borrow_mut().next_block().expect("a block"),
+            warm.borrow_mut().next_block().expect("a block"),
         );
         assert_eq!(
             warm.map(|b| b.plane(0).to_vec()),
@@ -787,12 +790,13 @@ fn a_stream_reads_a_note_another_store_over_its_directory_persisted() {
         );
     }
     let hits = warm
+        .borrow()
         .stats()
         .lookups
         .into_iter()
         .filter(|l| l.store == Some(true));
     let hits: Vec<String> = hits.map(|l| l.node).collect();
-    assert_eq!(hits, ["blip(f0=200)"], "{:?}", warm.stats());
+    assert_eq!(hits, ["blip(f0=200)"], "{:?}", warm.borrow().stats());
 }
 
 /// A string held until `release`, never released here.
@@ -821,7 +825,7 @@ fn warmed(name: &str, stored: i64) -> (Graph, Memory) {
 
 const STRIKE: &str = "@string(t - 512sp, f0=261.63)";
 
-fn notes(graph: &Graph, end: i64, store: &impl sva_engine::Through) -> Stream {
+fn notes(graph: &Graph, end: i64, store: &impl sva_engine::Through) -> RefCell<Stream> {
     let config = StreamConfig {
         block: 256,
         render: RenderConfig {
@@ -833,23 +837,23 @@ fn notes(graph: &Graph, end: i64, store: &impl sva_engine::Through) -> Stream {
         },
     };
     let master = sva_ast::parse_expr("@notes").expect("an expression");
-    now(Stream::open(graph, &master, config, None, store)).expect("a stream")
+    RefCell::new(now(Stream::open(graph, &master, config, None, store)).expect("a stream"))
 }
 
 fn term(text: &str) -> sva_ast::Expr {
     sva_ast::parse_expr(text).expect("an expression")
 }
 
-fn played(stream: &mut Stream) -> Vec<u64> {
+fn played(stream: &RefCell<Stream>) -> Vec<u64> {
     let mut heard = Vec::new();
-    while let Some(block) = stream.next_block().expect("a block") {
+    while let Some(block) = stream.borrow_mut().next_block().expect("a block") {
         heard.extend(block.plane(0).iter().map(|v| v.to_bits()));
     }
     heard
 }
 
-fn store_hits(stream: &Stream) -> Vec<String> {
-    let hits = stream.stats().lookups.into_iter();
+fn store_hits(stream: &RefCell<Stream>) -> Vec<String> {
+    let hits = stream.borrow().stats().lookups.into_iter();
     hits.filter(|l| l.store == Some(true))
         .map(|l| l.node)
         .collect()
@@ -864,28 +868,32 @@ fn a_stream_plays_a_stored_held_note_from_its_samples() {
     let player = opened(&memory, u64::MAX);
     let mut heard = Vec::new();
     for store in [None, Some(&player)] {
-        let mut stream = match store {
+        let stream = match store {
             Some(store) => notes(&graph, 2_000, store),
             None => notes(&graph, 2_000, &NoStore),
         };
         let handle = match store {
-            Some(store) => now(stream.add(&graph, &term(STRIKE), store)),
-            None => now(stream.add(&graph, &term(STRIKE), &NoStore)),
+            Some(store) => now(added(&stream, &graph, &term(STRIKE), store)),
+            None => now(added(&stream, &graph, &term(STRIKE), &NoStore)),
         };
         let handle = handle.expect("added");
         let mut blocks = Vec::new();
         for _ in 0..4 {
-            let block = stream.next_block().expect("a block").expect("a block");
+            let block = stream
+                .borrow_mut()
+                .next_block()
+                .expect("a block")
+                .expect("a block");
             blocks.extend(block.plane(0).iter().map(|v| v.to_bits()));
         }
         let keyed = (handle, &term(&fade));
         let replaced = match store {
-            Some(store) => now(stream.replace(&graph, keyed, store)),
-            None => now(stream.replace(&graph, keyed, &NoStore)),
+            Some(store) => now(replaced(&stream, &graph, keyed, store)),
+            None => now(replaced(&stream, &graph, keyed, &NoStore)),
         };
         assert!(replaced.expect("replaced"));
-        blocks.extend(played(&mut stream));
-        heard.push((blocks, stream.stats().lookups));
+        blocks.extend(played(&stream));
+        heard.push((blocks, stream.borrow().stats().lookups));
     }
     let (cold, warm) = (&heard[0], &heard[1]);
     assert!(cold.0.iter().any(|b| *b != 0), "silence tests nothing");
@@ -918,16 +926,24 @@ fn a_stream_plays_a_stored_held_note_from_its_samples() {
 #[test]
 fn an_exact_stream_computes_a_held_note_past_what_the_store_holds() {
     let (graph, memory) = warmed("held-longer", 2_000);
-    let mut cold = notes(&graph, 8_000, &NoStore);
-    now(cold.add(&graph, &term(STRIKE), &NoStore)).expect("added");
-    let cold = played(&mut cold);
+    let cold = notes(&graph, 8_000, &NoStore);
+    now(added(&cold, &graph, &term(STRIKE), &NoStore)).expect("added");
+    let cold = played(&cold);
     let player = opened(&memory, u64::MAX);
-    let mut warm = notes(&graph, 8_000, &player);
-    now(warm.add(&graph, &term(STRIKE), &player)).expect("added");
-    let first = warm.next_block().expect("a block").expect("a block");
-    assert_eq!(warm.work().priced_flops, 0, "the first block is stored");
+    let warm = notes(&graph, 8_000, &player);
+    now(added(&warm, &graph, &term(STRIKE), &player)).expect("added");
+    let first = warm
+        .borrow_mut()
+        .next_block()
+        .expect("a block")
+        .expect("a block");
+    assert_eq!(
+        warm.borrow().work().priced_flops,
+        0,
+        "the first block is stored"
+    );
     let mut heard: Vec<u64> = first.plane(0).iter().map(|v| v.to_bits()).collect();
-    heard.extend(played(&mut warm));
+    heard.extend(played(&warm));
     assert!(heard == cold, "the stored samples, then the computed ones");
     assert!(!store_hits(&warm).is_empty());
 }
@@ -936,15 +952,19 @@ const LATE: &str = "@string(t - 512sp, f0=261.63)";
 
 /// Four blocks in, adds the late note and plays on.
 fn late(graph: &Graph, live: bool, store: &impl sva_engine::Through) -> (Vec<u64>, Vec<String>) {
-    let mut stream = notes(graph, 8_000, store);
+    let stream = notes(graph, 8_000, store);
     if live {
-        stream.go_live();
+        stream.borrow_mut().go_live();
     }
     for _ in 0..4 {
-        stream.next_block().expect("a block").expect("a block");
+        stream
+            .borrow_mut()
+            .next_block()
+            .expect("a block")
+            .expect("a block");
     }
-    now(stream.add(graph, &term(LATE), store)).expect("added");
-    (played(&mut stream), stream.dropped().to_vec())
+    now(added(&stream, graph, &term(LATE), store)).expect("added");
+    (played(&stream), stream.borrow().dropped().to_vec())
 }
 
 /// A live stream adding a held note after it began plays the stored samples, then drops what
@@ -1019,13 +1039,13 @@ fn taken(memory: &Memory) -> Vec<(String, usize)> {
 fn a_stream_reads_each_stored_notes_header_once() {
     let (graph, memory, entries) = warmed_notes("met", &["261.63", "392"]);
     let player = opened(&memory, u64::MAX);
-    let mut stream = notes(&graph, 8_000, &player);
-    let c = now(stream.add(&graph, &term(STRIKE), &player)).expect("added");
-    stream.next_block().expect("a block");
+    let stream = notes(&graph, 8_000, &player);
+    let c = now(added(&stream, &graph, &term(STRIKE), &player)).expect("added");
+    stream.borrow_mut().next_block().expect("a block");
     taken(&memory);
 
     let g = "@string(t - 700sp, f0=392)";
-    let g = now(stream.add(&graph, &term(g), &player)).expect("added");
+    let g = now(added(&stream, &graph, &term(g), &player)).expect("added");
     let reads = taken(&memory);
     assert!(!reads.is_empty(), "the unmet note is looked up");
     for (name, _) in &reads {
@@ -1034,7 +1054,7 @@ fn a_stream_reads_each_stored_notes_header_once() {
             "{name} is no entry of the unmet note"
         );
     }
-    stream.next_block().expect("a block");
+    stream.borrow_mut().next_block().expect("a block");
     taken(&memory);
 
     let fade =
@@ -1045,12 +1065,12 @@ fn a_stream_reads_each_stored_notes_header_once() {
         "@string(t - 1000sp, f0=261.63)",
     ];
     for (k, note) in again.iter().enumerate() {
-        now(stream.add(&graph, &term(note), &player)).expect("added");
+        now(added(&stream, &graph, &term(note), &player)).expect("added");
         let released = (c, &term(&fade(&format!("{}sp", 1100 + k), STRIKE)));
-        assert!(now(stream.replace(&graph, released, &player)).expect("replaced"));
+        assert!(now(replaced(&stream, &graph, released, &player)).expect("replaced"));
         let released = fade(&format!("{}sp", 1100 + k), "@string(t - 700sp, f0=392)");
-        assert!(now(stream.replace(&graph, (g, &term(&released)), &player)).expect("replaced"));
-        stream.next_block().expect("a block");
+        assert!(now(replaced(&stream, &graph, (g, &term(&released)), &player)).expect("replaced"));
+        stream.borrow_mut().next_block().expect("a block");
     }
     assert_eq!(taken(&memory), [], "every note here was met");
     assert!(!store_hits(&stream).is_empty());
@@ -1070,13 +1090,13 @@ fn warm_into(graph: &Graph, store: &Store<Memory>) {
 fn a_stream_finds_a_note_another_holder_persisted_after_it_missed_it() {
     let (graph, memory, _) = warmed_notes("persisted-later", &[]);
     let player = opened(&memory, u64::MAX);
-    let mut stream = notes(&graph, 8_000, &player);
-    now(stream.add(&graph, &term(STRIKE), &player)).expect("added");
+    let stream = notes(&graph, 8_000, &player);
+    now(added(&stream, &graph, &term(STRIKE), &player)).expect("added");
     assert_eq!(store_hits(&stream), Vec::<String>::new());
     let other = opened(&memory, u64::MAX);
     warm_into(&graph, &other);
     now(other.persist()).expect("persisted");
-    now(stream.add(&graph, &term(STRIKE), &player)).expect("added");
+    now(added(&stream, &graph, &term(STRIKE), &player)).expect("added");
     assert_eq!(store_hits(&stream), ["string(f0=261.63, release=inf)"]);
 }
 
@@ -1086,18 +1106,199 @@ fn a_stream_asks_again_for_a_hit_its_store_committed() {
     let (graph, memory, _) = warmed_notes("committed-later", &[]);
     let player = opened(&memory, u64::MAX);
     warm_into(&graph, &player);
-    let mut stream = notes(&graph, 8_000, &player);
-    now(stream.add(&graph, &term(STRIKE), &player)).expect("added");
+    let stream = notes(&graph, 8_000, &player);
+    now(added(&stream, &graph, &term(STRIKE), &player)).expect("added");
     taken(&memory);
-    now(stream.add(&graph, &term(STRIKE), &player)).expect("added");
+    now(added(&stream, &graph, &term(STRIKE), &player)).expect("added");
     assert_eq!(taken(&memory), [], "a hit met once is not asked again");
     now(player.persist()).expect("persisted");
     taken(&memory);
-    now(stream.add(&graph, &term(STRIKE), &player)).expect("added");
+    now(added(&stream, &graph, &term(STRIKE), &player)).expect("added");
     assert!(
         !taken(&memory).is_empty(),
         "the committed note is asked for"
     );
+}
+
+/// `Memory` whose every read answers only on its `delay`th poll, waking itself between.
+#[derive(Clone)]
+struct Slow {
+    memory: Memory,
+    delay: usize,
+}
+
+async fn later(polls: usize) {
+    let mut left = polls;
+    std::future::poll_fn(|cx| match left {
+        0 => Poll::Ready(()),
+        _ => {
+            left -= 1;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    })
+    .await
+}
+
+impl Backend for Slow {
+    type Lock = Held;
+
+    async fn lock(&self) -> Result<Held, String> {
+        self.memory.lock().await
+    }
+
+    async fn get(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
+        later(self.delay).await;
+        self.memory.get(name).await
+    }
+
+    async fn get_range(&self, name: &str, from: u64, len: u64) -> Result<Option<Vec<u8>>, String> {
+        later(self.delay).await;
+        self.memory.get_range(name, from, len).await
+    }
+
+    async fn put(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        self.memory.put(name, bytes).await
+    }
+
+    async fn delete(&self, name: &str) -> Result<bool, String> {
+        self.memory.delete(name).await
+    }
+
+    async fn list(&self) -> Result<Vec<(String, u64)>, String> {
+        self.memory.list().await
+    }
+
+    async fn staging(&self) -> Result<Slow, String> {
+        let memory = self.memory.staging().await?;
+        Ok(Slow { memory, ..*self })
+    }
+
+    async fn rename(&self, name: &str, to: &Slow) -> Result<bool, String> {
+        self.memory.rename(name, &to.memory).await
+    }
+}
+
+/// Polled until it is done: every wait here wakes itself.
+fn settled<F: Future>(future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    loop {
+        let polled = future
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()));
+        if let Poll::Ready(out) = polled {
+            return out;
+        }
+    }
+}
+
+type Pending<'s> = std::pin::Pin<Box<dyn Future<Output = Result<Changed, EngineError>> + 's>>;
+
+/// Edit `k`: at an onset, a note, and the handle it replaces, if any.
+type Spec = (i64, &'static str, Option<Handle>);
+
+fn changed_by(graph: &Graph, (at, f0, replaced): Spec) -> Change {
+    match replaced {
+        Some(handle) => {
+            let fade = term(&format!("0.5*@string(t - {at}sp, f0={f0})"));
+            Change::Replace(handle, graph.clone(), fade)
+        }
+        None => Change::Add(
+            graph.clone(),
+            term(&format!("@string(t - {at}sp, f0={f0})")),
+        ),
+    }
+}
+
+fn notes_over(graph: &Graph, store: &impl sva_engine::Through, live: bool) -> RefCell<Stream> {
+    let config = StreamConfig {
+        block: 256,
+        render: RenderConfig {
+            range: Range {
+                start: Some(0),
+                end: Some(8_000),
+            },
+            ..RenderConfig::at(RATE)
+        },
+    };
+    let stream = settled(Stream::open(graph, &term("@notes"), config, None, store));
+    let mut stream = stream.expect("a stream");
+    if live {
+        stream.go_live();
+    }
+    RefCell::new(stream)
+}
+
+/// A live stream edited once a block, adds of stored notes and replaces of sounding ones, over
+/// a store whose every read takes several polls: every block comes when asked, each edit lands
+/// while the stream plays on, and what it plays is, bit for bit, an exact stream taking each
+/// edit where it landed.
+#[test]
+fn a_live_stream_plays_on_while_its_edits_await_a_slow_store() {
+    let hz = ["261.63", "293.66", "329.63", "349.23", "392"];
+    let (graph, memory, _) = warmed_notes("slow", &hz);
+    let slow = Slow {
+        memory: memory.clone(),
+        delay: 3,
+    };
+    let player = settled(Store::open(slow, u64::MAX)).expect("the store opens");
+    let shared = notes_over(&graph, &player, true);
+    let (mut specs, mut landed, mut handles) = (Vec::<Spec>::new(), Vec::new(), Vec::new());
+    let (mut pending, mut heard, mut waited) = (Vec::<(usize, Pending)>::new(), Vec::new(), 0);
+    let mut k = 0;
+    while k < 20 || !pending.is_empty() {
+        if k < 20 {
+            let at = shared.borrow().position() + 64;
+            let replaced = handles.pop().filter(|_| k % 2 == 1);
+            specs.push((at, hz[k % hz.len()], replaced));
+            let (spec, graph) = (specs[k], &graph);
+            let build = move |_: &Stream| Ok::<_, EngineError>(changed_by(graph, spec));
+            pending.push((k, Box::pin(change(&shared, build, &player))));
+        }
+        let mut left = Vec::new();
+        for (edit, mut future) in pending.drain(..) {
+            match future
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+            {
+                Poll::Ready(done) => {
+                    if let Changed::Added(handle) = done.expect("an edit") {
+                        handles.push(handle);
+                    }
+                    landed.push((heard.len(), edit));
+                }
+                Poll::Pending => left.push((edit, future)),
+            }
+        }
+        waited += left.len();
+        pending = left;
+        let block = shared.borrow_mut().next_block().expect("a block");
+        heard.push(block.expect("a block when asked").plane(0).to_vec());
+        k += 1;
+    }
+    assert!(waited > 0, "some edit awaited the store across a block");
+
+    let at_once = opened(&memory, u64::MAX);
+    let reference = notes_over(&graph, &at_once, false);
+    let mut expected = Vec::new();
+    for n in 0..heard.len() {
+        for (_, edit) in landed.iter().filter(|(at, _)| *at == n) {
+            let build = |_: &Stream| Ok::<_, EngineError>(changed_by(&graph, specs[*edit]));
+            now(change(&reference, build, &at_once)).expect("an edit");
+        }
+        let block = reference.borrow_mut().next_block().expect("a block");
+        let block = block.expect("a block");
+        expected.push(block.plane(0).to_vec());
+    }
+    assert!(
+        heard.iter().flatten().any(|v| *v != 0.0),
+        "silence tests nothing"
+    );
+    assert!(
+        heard == expected,
+        "the slow store's live stream plays what the exact one does"
+    );
+    assert!(!store_hits(&shared).is_empty());
 }
 
 /// A target that only crops or moves a stored node is stored as that node's samples, not a

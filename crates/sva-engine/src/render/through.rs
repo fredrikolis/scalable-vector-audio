@@ -173,7 +173,7 @@ pub(crate) async fn load(
             continue;
         }
         if let Some(samples) = store.read(&stored, over).await {
-            table.took(stored.key, samples);
+            table.took(stored.key, &samples);
         }
     }
 }

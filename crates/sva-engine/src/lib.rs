@@ -38,9 +38,9 @@ pub use query::{Answer, Ask, DEFAULT_FRAME_SECS, Output, Representation};
 pub use refs::{identity, nodes_in, spectral_sum_of, symbolic_hash};
 pub use render::until::{Cmp, Term};
 pub use render::{
-    Block, Handle, NOTES, QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, Range, Render, RenderConfig,
-    STREAMED, Stream, StreamConfig, Until, answer, answer_buffer, plan, quiet_tails, render,
-    render_through, sketch_atom, warm,
+    Block, Change, Changed, Handle, NOTES, QUIET_AFTER_SECS, QUIET_LEVEL, QuietTail, Range, Render,
+    RenderConfig, STREAMED, Stream, StreamConfig, Until, answer, answer_buffer, change, plan,
+    quiet_tails, render, render_through, sketch_atom, warm,
 };
 pub use schedule::{Order, Schedule, schedule_from};
 pub use sva_formula::{C64, Codomain, Held, Line, NodeId, SpectralSum, Ty, Var};

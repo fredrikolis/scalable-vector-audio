@@ -39,7 +39,7 @@ impl Table {
         stored.collect()
     }
 
-    pub(crate) fn took(&mut self, key: Hash, samples: Vec<Buffer>) {
+    pub(crate) fn took(&mut self, key: Hash, samples: &[Buffer]) {
         for value in &mut self.values {
             let Kind::Stored(stored) = &value.kind else {
                 continue;
@@ -49,7 +49,7 @@ impl Table {
             }
             let lacks = value.covers();
             let lacks = lacks.minus(&value.holding());
-            for part in &samples {
+            for part in samples {
                 for e in lacks.intersect(part.extent()).iter() {
                     value.hold(part.over(e, part.extent()));
                 }
