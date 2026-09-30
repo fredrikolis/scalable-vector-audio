@@ -494,3 +494,39 @@ fn a_loop_edited_to_read_further_back_than_it_kept_steps_again_or_starts_silent(
 fn a_reverb_over_the_bare_note_sum_opens_with_no_notes_and_plays_them() {
     added_under(&|x| format!("@space(t, x={x}, dry={x}, mix=0.3)"));
 }
+
+/// piano4's damper: the fitted value times a ramp clamped to [0, 1] that opens at `release`.
+const PIANO4: &str = "release = inf\nvel = 0.5\n0.0014822 * chaigne_askenfelt(f0, vel=1 + 5*vel, \
+    damper_r=0.1*pow(262/f0, 2)*min(1, max(0, 1 + 17.312340490667562*log(1318.5102276514797/f0)))\
+    *crop(max(0, min(1, (t - release)/0.03)), release, inf))\n";
+
+/// Key-up at a whole `sp` sample is the instant the ramp opens: the clamp holds it at zero
+/// there, so the solver takes it, whole, streamed, and replaced live on a held term alike.
+#[test]
+fn key_up_at_a_whole_sample_opens_a_clamped_damper_ramp_at_zero() {
+    let rate = 48_000;
+    let (k, after) = (12 * BLOCK, 4 * BLOCK);
+    let g = graph_of("key-up-sp", &[("piano4", PIANO4)]);
+    let held = "@piano4(t, f0=293.6648, vel=0.7087)";
+    let released = format!("@piano4(t, f0=293.6648, vel=0.7087, release={k}sp)");
+    let mut whole_g = g.clone();
+    assert!(whole_g.define("released", expr(&released)));
+    let want = whole_at(rate, &whole_g, "released", k + after);
+
+    let mut stream = opened_at(rate, &g, &released, None);
+    assert_eq!(blocks(&mut stream, (k + after) / BLOCK), want, "streamed");
+
+    let mut live = opened_at(rate, &g, "@notes", None);
+    let note = live
+        .add(&g, &expr(held), &NoStore)
+        .now()
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut heard = blocks(&mut live, k / BLOCK);
+    let replaced = live
+        .replace(&g, (note, &expr(&released)), &NoStore)
+        .now()
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(replaced, "the held note is still sounding");
+    heard.extend(blocks(&mut live, after / BLOCK));
+    assert_eq!(heard, want, "replaced live");
+}

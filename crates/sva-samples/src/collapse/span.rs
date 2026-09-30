@@ -3,6 +3,8 @@
 use sva_formula::Lane;
 
 use super::Extent;
+use super::active::between;
+use crate::Grid;
 
 /// Where every atom is windowed, the lane is zero outside their union.
 pub(super) fn nonzero(lane: &Lane, extent: Extent, rate: u32) -> Vec<(usize, usize)> {
@@ -30,17 +32,13 @@ pub(super) fn windows(lane: &Lane, rate: u32) -> Option<Vec<(i64, i64)>> {
     if !lane.is_finite_sum() || lane.atoms.iter().any(|a| a.ind.is_none()) {
         return None;
     }
-    let edge = |secs: f64| {
-        (secs * f64::from(rate))
-            .ceil()
-            .clamp(i64::MIN as f64, i64::MAX as f64) as i64
-    };
+    let grid = Grid::of(rate);
     let mut spans: Vec<(i64, i64)> = lane
         .atoms
         .iter()
         .filter_map(|a| {
             let window = a.ind?;
-            let (from, to) = (edge(window.l.value()), edge(window.r.value()));
+            let (from, to) = between(window.l.value(), window.r.value(), |n| grid.instant(n));
             (from < to).then_some((from, to))
         })
         .collect();

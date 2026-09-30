@@ -7,6 +7,7 @@ use sva_formula::{Body, ClosedForm, Lane, Line, SpectralSum, Var, normalize_clos
 use super::active::{self, Window};
 use super::truncate::Audible;
 use super::{Extent, atoms, lines, point, truncate};
+use crate::Grid;
 use crate::error::CollapseError;
 use crate::label::Rule;
 use crate::profile::Profile;
@@ -199,25 +200,24 @@ fn point_plan(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Plan, C
     })
 }
 
-/// The nodes every component's evaluation walks over the samples `[from, to)` of a grid `step`
-/// apart.
-pub fn point_flops(f: &Body, step: f64, span: Window) -> u128 {
+/// The nodes every component's evaluation walks over the samples `[from, to)` of `grid`.
+pub fn point_flops(f: &Body, grid: Grid, span: Window) -> u128 {
     let width = point::width_of(f, &point::NoRefs).max(1);
-    (0..width).map(|c| point_work(f, c, step, span).0).sum()
+    (0..width).map(|c| point_work(f, c, grid, span).0).sum()
 }
 
-/// One component's `(nodes, waves)` over the samples `[from, to)` of a grid `step` apart, as
+/// One component's `(nodes, waves)` over the samples `[from, to)` of `grid`, as
 /// `point::eval_body` walks them: a run is priced by its Horner steps and turns its lines,
 /// every other node is one, and a crop's operand counts only at the instants its window holds.
-pub fn point_work(f: &Body, component: usize, step: f64, span: Window) -> (u128, u128) {
-    let clock = Clock::grid(step);
+pub fn point_work(f: &Body, component: usize, grid: Grid, span: Window) -> (u128, u128) {
+    let clock = Clock::grid(grid);
     let Some(parts) = summed(f) else {
         return walked(f, component, &clock, span);
     };
     let n = (i128::from(span.1) - i128::from(span.0)).max(0) as u128;
     parts
         .iter()
-        .zip(addend_windows(&parts, step))
+        .zip(addend_windows(&parts, grid))
         .fold((n, 0), |held, (part, live)| {
             let (priced, waves) = walked(&part.body, component, &clock, active::meet(span, live));
             (held.0 + priced, held.1 + waves)
@@ -245,15 +245,15 @@ pub(super) fn summed(f: &Body) -> Option<Vec<&Part>> {
 }
 
 /// Outside its own window an addend is exact zero.
-pub(super) fn addend_windows(parts: &[&Part], step: f64) -> Vec<Window> {
+pub(super) fn addend_windows(parts: &[&Part], grid: Grid) -> Vec<Window> {
     parts
         .iter()
-        .map(|part| live_window(&part.body, step))
+        .map(|part| live_window(&part.body, grid))
         .collect()
 }
 
-pub(super) fn live_window(f: &Body, step: f64) -> Window {
-    live(f, &Clock::grid(step), active::OPEN)
+pub(super) fn live_window(f: &Body, grid: Grid) -> Window {
+    live(f, &Clock::grid(grid), active::OPEN)
 }
 
 /// A crop's open window, met through products and shifts, as `point::eval_body` zeroes them.
@@ -271,21 +271,21 @@ fn live(f: &Body, clock: &Clock, span: Window) -> Window {
 /// The instant a subterm is read at, from the grid's index: `None` once a warp moves it.
 #[derive(Clone)]
 struct Clock {
-    step: f64,
+    grid: Grid,
     shifts: Option<Vec<f64>>,
 }
 
 impl Clock {
-    fn grid(step: f64) -> Clock {
+    fn grid(grid: Grid) -> Clock {
         Clock {
-            step,
+            grid,
             shifts: Some(Vec::new()),
         }
     }
 
     fn shifted(&self, by: f64) -> Clock {
         Clock {
-            step: self.step,
+            grid: self.grid,
             shifts: self
                 .shifts
                 .as_ref()
@@ -295,7 +295,7 @@ impl Clock {
 
     fn warped(&self) -> Clock {
         Clock {
-            step: self.step,
+            grid: self.grid,
             shifts: None,
         }
     }
@@ -311,7 +311,7 @@ impl Clock {
         else {
             return span;
         };
-        let at = |n: i64| shifts.iter().fold(n as f64 * self.step, |t, by| t - by);
+        let at = |n: i64| shifts.iter().fold(self.grid.instant(n), |t, by| t - by);
         let (l, r) = (l.value(), r.value());
         let (mut from, mut to) = active::meet(span, active::between(l, r, at));
         let shut = |n: i64| point::crop_gain(at(n), l, r, *rise, *fall) == 0.0;
@@ -484,12 +484,12 @@ pub(super) fn kept_lines(
 
 fn lane_plan(lane: &Lane, rate: u32, extent: Extent, len: usize) -> LanePlan {
     let bins = lines::bins(extent.span_secs(rate), rate);
-    let step = 1.0 / f64::from(rate);
+    let grid = Grid::of(rate);
     let spans = super::span::absolute(lane, extent, rate);
     let sweep = LanePlan::Sweep {
         atoms: lane.atoms.len(),
         samples: spans.iter().map(|(from, to)| (to - from) as usize).sum(),
-        evaluated: active::evaluated(&active::windows(lane, step), &spans),
+        evaluated: active::evaluated(&active::windows(lane, grid), &spans),
     };
     let Some(found) = lines::grouped(lane) else {
         return sweep;
@@ -502,7 +502,7 @@ fn lane_plan(lane: &Lane, rate: u32, extent: Extent, len: usize) -> LanePlan {
                 false => lines::split(&held, bins, rate),
             };
             let live = match bounded(&placed, &summed, bins) {
-                true => active::window(&factor, step),
+                true => active::window(&factor, grid),
                 false => active::OPEN,
             };
             Group {
@@ -609,11 +609,11 @@ impl Plan {
     /// Outside it every sample is +0.0 and inside each is its own instant's, so a run over it
     /// alone holds the same bits; a row reading the whole extent at once answers all of it.
     pub fn nonzero(&self, rate: u32, extent: Extent) -> Extent {
-        let step = 1.0 / f64::from(rate);
+        let grid = Grid::of(rate);
         let lane = |lane: &Lane, taken: &LanePlan| -> Option<Option<Window>> {
             match taken {
                 LanePlan::Sweep { .. } if lane.modal.is_empty() => Some(active::hull(
-                    &active::windows(lane, step),
+                    &active::windows(lane, grid),
                     &super::span::absolute(lane, extent, rate),
                 )),
                 LanePlan::Grouped { groups, .. } if groups.iter().all(|g| g.placed.is_empty()) => {
@@ -690,11 +690,9 @@ impl Plan {
             Plan::Spectrum(_) => transform_flops(len),
             Plan::Lines(found) => found.flops(len),
             Plan::Sampled(held) => held.lanes.iter().map(|lane| lane.flops()).sum(),
-            Plan::Point { written, .. } => point_flops(
-                &written.body,
-                1.0 / f64::from(rate),
-                (extent.start, extent.end),
-            ),
+            Plan::Point { written, .. } => {
+                point_flops(&written.body, Grid::of(rate), (extent.start, extent.end))
+            }
             Plan::Added(parts) => parts.iter().map(|part| part.flops(rate, extent)).sum(),
         }
     }
@@ -712,7 +710,7 @@ impl Plan {
                 let finer = oversample as i64;
                 point_flops(
                     &written.body,
-                    1.0 / (f64::from(rate) * oversample as f64),
+                    Grid::finer(rate, oversample),
                     (extent.start * finer, extent.end * finer),
                 )
             }

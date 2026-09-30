@@ -10,14 +10,16 @@ pub mod series;
 use crate::closed_form::{Edge, Var};
 use crate::modal;
 use crate::refusal::{AtomSketch, Factor, Left, LeftReason};
-use crate::spectral_sum::atom::{Exp, Factors, Gauss, Indicator, Pole, Singular, SpectralAtom};
+use crate::spectral_sum::atom::{
+    Exp, Factors, Gauss, Indicator, Pole, Poly, Singular, SpectralAtom,
+};
 use crate::spectral_sum::merge::simplify;
 use crate::spectral_sum::{Lane, SpectralSum};
 use class::{blocked_pair, over_pole_order};
 
-/// Every hash feeds this first, so a bump retires each entry written before it. 3: a crop
-/// hashes its shoulders, and the Gaussian row centres its image.
-pub const TABLE_VERSION: u64 = 3;
+/// Every hash feeds this first, so a bump retires each entry written before it. 4: a
+/// polynomial keeps the instant it is read from, and a sample is read at its exact instant.
+pub const TABLE_VERSION: u64 = 4;
 
 /// The families this table duals.
 pub const FAMILIES: [(&str, &str); 5] = [
@@ -136,7 +138,7 @@ fn expanded(lane: &Lane) -> Result<Vec<SpectralAtom>, Left> {
 
 fn factors_of(a: &SpectralAtom) -> class::Factors {
     class::Factors {
-        poly: a.poly > 0,
+        poly: !a.poly.is_one(),
         exp: a.exp.is_some(),
         gauss: a.gauss.is_some(),
         ind: a.ind.is_some(),
@@ -146,7 +148,16 @@ fn factors_of(a: &SpectralAtom) -> class::Factors {
     }
 }
 
+/// Each family's row reads powers of the free variable from the origin.
 pub fn dual_atom(a: &SpectralAtom) -> Result<Vec<SpectralAtom>, Left> {
+    let mut out = Vec::new();
+    for from_origin in a.flattened() {
+        out.extend(dual_from_origin(&from_origin)?);
+    }
+    Ok(out)
+}
+
+fn dual_from_origin(a: &SpectralAtom) -> Result<Vec<SpectralAtom>, Left> {
     let a = &flattened(a)?;
     if let Some(reason) = over_pole_order(a.pole.map_or(0, |p| p.order)) {
         return Err(Left::new(a.origin, AtomSketch::of(Factor::Pole), reason));
@@ -187,7 +198,7 @@ fn reflect_atom(a: &SpectralAtom) -> SpectralAtom {
     }
     let f = a.factors();
     let poles = f.pole.map_or(0, |p| p.order);
-    let sign = if (usize::from(a.poly) + usize::from(poles)) % 2 == 0 {
+    let sign = if (usize::from(a.poly.degree) + usize::from(poles)) % 2 == 0 {
         1.0
     } else {
         -1.0
@@ -195,7 +206,10 @@ fn reflect_atom(a: &SpectralAtom) -> SpectralAtom {
     SpectralAtom::new(
         a.c.scale(sign),
         Factors {
-            poly: a.poly,
+            poly: Poly {
+                at: -f.poly.at,
+                ..f.poly
+            },
             exp: f.exp.map(|e| Exp {
                 sigma: -e.sigma,
                 omega: -e.omega,

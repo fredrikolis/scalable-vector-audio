@@ -5,7 +5,9 @@ use crate::closed_form::{Body, Edge, Fold, Part, Series, Unary, Var};
 use crate::complex::C64;
 use crate::origin::Origin;
 use crate::refusal::{AtomSketch, Factor, Left, LeftReason};
-use crate::spectral_sum::atom::{Exp, Factors, Gauss, Indicator, Pole, Singular, SpectralAtom};
+use crate::spectral_sum::atom::{
+    Exp, Factors, Gauss, Indicator, Pole, Poly, Singular, SpectralAtom,
+};
 use crate::spectral_sum::merge::simplify;
 use crate::spectral_sum::{Lane, SpectralSum};
 
@@ -193,14 +195,14 @@ pub fn affine_atoms(n: &SpectralSum) -> Option<(C64, C64)> {
         return None;
     }
     let (mut a, mut b) = (C64::ZERO, C64::ZERO);
-    for atom in &lane.atoms {
+    for atom in lane.atoms.iter().flat_map(SpectralAtom::flattened) {
         if atom.is_delta() || atom.exp.is_some() || atom.gauss.is_some() {
             return None;
         }
         if atom.ind.is_some() || atom.pole.is_some() {
             return None;
         }
-        match atom.poly {
+        match atom.poly.degree {
             0 => b = b + atom.c,
             1 => a = a + atom.c,
             _ => return None,
@@ -213,7 +215,7 @@ pub fn shift(n: SpectralSum, by: f64) -> Result<SpectralSum, Left> {
     let mut lanes = Vec::with_capacity(n.lanes.len());
     for lane in n.lanes {
         let lane = lane.expanded();
-        let mut out = Lane::of(lane.atoms.iter().flat_map(|a| shift_atom(a, by)).collect());
+        let mut out = Lane::of(lane.atoms.iter().map(|a| shift_atom(a, by)).collect());
         simplify(&mut out);
         for s in &lane.series {
             out.series.push(shift_series(s, by)?);
@@ -242,19 +244,22 @@ fn shift_series(s: &Series, by: f64) -> Result<Series, Left> {
     })
 }
 
-/// `x -> x - by` in every factor; the polynomial is the only one that splits, binomially.
-fn shift_atom(atom: &SpectralAtom, by: f64) -> Vec<SpectralAtom> {
+/// `x -> x - by` in every factor, each keeping the instant it is read from.
+fn shift_atom(atom: &SpectralAtom, by: f64) -> SpectralAtom {
     if let Singular::Delta { at, order } = atom.sing {
-        return vec![SpectralAtom::new(
+        return SpectralAtom::new(
             atom.c,
             Factors::NONE,
             Singular::Delta { at: at + by, order },
             atom.origin,
-        )];
+        );
     }
     let f = atom.factors();
     let moved = Factors {
-        poly: 0,
+        poly: Poly {
+            at: f.poly.at + by,
+            ..f.poly
+        },
         exp: f.exp.map(|e| Exp { mu: e.mu + by, ..e }),
         gauss: f.gauss.map(|g| Gauss { mu: g.mu + by, ..g }),
         ind: f.ind.map(|i| Indicator {
@@ -270,19 +275,7 @@ fn shift_atom(atom: &SpectralAtom, by: f64) -> Vec<SpectralAtom> {
     if let Some(e) = f.exp {
         c = c * C64::new(0.0, -e.omega * by).exp();
     }
-    let mut out = Vec::with_capacity(usize::from(atom.poly) + 1);
-    let mut binomial = 1.0f64;
-    for k in (0..=atom.poly).rev() {
-        let power = f64::from(atom.poly - k);
-        out.push(SpectralAtom::new(
-            c.scale(binomial * (-by).powf(power)),
-            Factors { poly: k, ..moved },
-            Singular::Regular,
-            atom.origin,
-        ));
-        binomial = binomial * f64::from(k) / (power + 1.0);
-    }
-    out
+    SpectralAtom::new(c, moved, Singular::Regular, atom.origin)
 }
 
 pub fn derive(n: SpectralSum) -> Result<SpectralSum, Left> {

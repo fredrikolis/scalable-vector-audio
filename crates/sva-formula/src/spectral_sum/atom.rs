@@ -35,6 +35,30 @@ impl Exp {
     }
 }
 
+/// `(t - at)^degree`: a line keeps the instant it is zero at, where a window opening reads it
+/// as exactly zero.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Poly {
+    pub degree: u16,
+    pub at: f64,
+}
+
+impl Poly {
+    pub const ONE: Poly = Poly { degree: 0, at: 0.0 };
+
+    pub fn power(degree: u16) -> Poly {
+        Poly { degree, at: 0.0 }
+    }
+
+    pub fn is_one(self) -> bool {
+        self.degree == 0
+    }
+
+    pub fn value(self, x: f64) -> f64 {
+        (x - self.at).powi(i32::from(self.degree))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Gauss {
     pub a: f64,
@@ -63,7 +87,7 @@ pub enum Singular {
 /// The five smooth factors beside the amplitude, absent where `None`.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Factors {
-    pub poly: u16,
+    pub poly: Poly,
     pub exp: Option<Exp>,
     pub gauss: Option<Gauss>,
     pub ind: Option<Indicator>,
@@ -73,7 +97,7 @@ pub struct Factors {
 #[derive(Clone, Copy, Debug)]
 pub struct SpectralAtom {
     pub c: C64,
-    pub poly: u16,
+    pub poly: Poly,
     pub exp: Option<Exp>,
     pub gauss: Option<Gauss>,
     pub ind: Option<Indicator>,
@@ -89,7 +113,7 @@ pub struct SpectralAtomKey {
     pole: (u8, u64, u64, u16, bool),
     ind: (u8, Edge, Edge),
     gauss: (u8, u64, u64),
-    poly: u16,
+    poly: (u16, u64),
     exp: (u8, u64, u64, u64),
 }
 
@@ -148,7 +172,7 @@ impl Indicator {
 
 impl Factors {
     pub const NONE: Factors = Factors {
-        poly: 0,
+        poly: Poly::ONE,
         exp: None,
         gauss: None,
         ind: None,
@@ -157,7 +181,7 @@ impl Factors {
 
     pub fn poly(n: u16) -> Factors {
         Factors {
-            poly: n,
+            poly: Poly::power(n),
             ..Factors::NONE
         }
     }
@@ -169,7 +193,13 @@ impl SpectralAtom {
     pub fn new(c: C64, factors: Factors, sing: Singular, origin: Origin) -> SpectralAtom {
         let atom = SpectralAtom {
             c,
-            poly: factors.poly,
+            poly: match factors.poly.degree {
+                0 => Poly::ONE,
+                _ => Poly {
+                    at: f64::from_bits(canonical(factors.poly.at)),
+                    ..factors.poly
+                },
+            },
             exp: factors
                 .exp
                 .filter(|e| e.sigma != 0.0 || e.omega != 0.0)
@@ -183,6 +213,7 @@ impl SpectralAtom {
             sing: Singular::Regular,
             origin,
         };
+        assert!(atom.poly.at.is_finite());
         if let Some(e) = atom.exp {
             assert!(e.sigma.is_finite() && e.omega.is_finite() && e.mu.is_finite());
         }
@@ -209,7 +240,7 @@ impl SpectralAtom {
                 };
                 SpectralAtom {
                     c: weight,
-                    poly: 0,
+                    poly: Poly::ONE,
                     exp: None,
                     gauss: None,
                     ind: None,
@@ -229,7 +260,7 @@ impl SpectralAtom {
     }
 
     pub fn is_bare(&self) -> bool {
-        self.poly == 0
+        self.poly.is_one()
             && self.exp.is_none()
             && self.gauss.is_none()
             && self.ind.is_none()
@@ -250,6 +281,28 @@ impl SpectralAtom {
         }
     }
 
+    /// `(t - at)^n` written out in powers of `t`.
+    pub fn flattened(&self) -> Vec<SpectralAtom> {
+        let poly = self.poly;
+        if poly.at == 0.0 {
+            return vec![*self];
+        }
+        let mut binomial = 1.0;
+        let mut out = Vec::with_capacity(usize::from(poly.degree) + 1);
+        for k in (0..=poly.degree).rev() {
+            let power = i32::from(poly.degree - k);
+            out.push(self.with(
+                self.c.scale(binomial * (-poly.at).powi(power)),
+                Factors {
+                    poly: Poly::power(k),
+                    ..self.factors()
+                },
+            ));
+            binomial = binomial * f64::from(k) / f64::from(poly.degree - k + 1);
+        }
+        out
+    }
+
     pub fn with(&self, c: C64, factors: Factors) -> SpectralAtom {
         SpectralAtom::new(c, factors, self.sing, self.origin)
     }
@@ -259,8 +312,8 @@ impl SpectralAtom {
             return Some(C64::ZERO);
         }
         let mut v = self.c;
-        if self.poly > 0 {
-            v = v * C64::real(x).powi(u32::from(self.poly));
+        if !self.poly.is_one() {
+            v = v.scale(self.poly.value(x));
         }
         if let Some(e) = self.exp {
             v = v * C64::new(e.sigma * (x - e.mu), e.omega * x).exp();
@@ -293,11 +346,15 @@ impl SpectralAtom {
         }
         let f = self.factors();
         let mut out = Vec::new();
-        if self.poly > 0 {
+        let poly = self.poly;
+        if poly.degree > 0 {
             out.push(self.with(
-                self.c.scale(f64::from(self.poly)),
+                self.c.scale(f64::from(poly.degree)),
                 Factors {
-                    poly: self.poly - 1,
+                    poly: Poly {
+                        degree: poly.degree - 1,
+                        ..poly
+                    },
                     ..f
                 },
             ));
@@ -306,14 +363,15 @@ impl SpectralAtom {
             out.push(self.with(self.c * C64::new(e.sigma, e.omega), f));
         }
         if let Some(g) = self.gauss {
-            out.push(self.with(
-                self.c.scale(-2.0 * g.a),
-                Factors {
-                    poly: self.poly + 1,
-                    ..f
+            let raised = Poly {
+                degree: poly.degree + 1,
+                at: match poly.degree {
+                    0 => 0.0,
+                    _ => poly.at,
                 },
-            ));
-            out.push(self.with(self.c.scale(2.0 * g.a * g.mu), f));
+            };
+            out.push(self.with(self.c.scale(-2.0 * g.a), Factors { poly: raised, ..f }));
+            out.push(self.with(self.c.scale(2.0 * g.a * (g.mu - raised.at)), f));
         }
         if let Some(p) = self.pole {
             out.push(self.with(
@@ -391,14 +449,14 @@ impl SpectralAtom {
             pole,
             ind,
             gauss,
-            poly: self.poly,
+            poly: (self.poly.degree, canonical(self.poly.at)),
             exp,
         }
     }
 
     pub fn present(&self) -> Vec<Factor> {
         let mut out = Vec::new();
-        if self.poly > 0 {
+        if !self.poly.is_one() {
             out.push(Factor::Polynomial);
         }
         if self.exp.is_some() {

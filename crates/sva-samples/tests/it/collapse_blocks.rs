@@ -132,7 +132,7 @@ fn a_point_sampled_sum_reads_each_term_only_inside_its_crop() {
     let written = notes(8, gap, width);
     let planes = rows(8).planes(0, len(8)).expect("samples");
     for (n, v) in planes[0].iter().enumerate() {
-        let t = n as f64 * (1.0 / f64::from(RATE));
+        let t = n as f64 / f64::from(RATE);
         let want = sva_samples::eval_written_at(&written, 0, t, &NoNodes).expect("a value");
         assert_eq!(v.to_bits(), want.re.to_bits(), "sample {n}");
     }

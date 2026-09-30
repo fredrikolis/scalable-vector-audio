@@ -118,7 +118,7 @@ fn on_grid(kept: &[Vec<Line>], n: usize, rate: u32) -> usize {
 
 /// `c * exp(i*omega*t)` and nothing else; every other factor is another row.
 fn as_line(a: &SpectralAtom) -> Option<Line> {
-    if a.poly > 0
+    if !a.poly.is_one()
         || a.gauss.is_some()
         || a.ind.is_some()
         || a.pole.is_some()

@@ -24,16 +24,16 @@ pub fn sup_from(atom: &SpectralAtom, t: f64) -> Option<f64> {
         return Some(0.0);
     }
     let (sigma, mu) = atom.exp.map_or((0.0, 0.0), |e| (e.sigma, e.mu));
-    let p = f64::from(atom.poly);
+    let (p, from) = (f64::from(atom.poly.degree), atom.poly.at);
     let ln = |s: f64| {
         let grown = match sigma == 0.0 {
             true => 0.0,
             false => sigma * (s - mu),
         };
-        let power = match (p == 0.0, s == 0.0) {
+        let power = match (p == 0.0, s == from) {
             (true, _) => 0.0,
             (false, true) => f64::NEG_INFINITY,
-            (false, false) => p * s.abs().ln(),
+            (false, false) => p * (s - from).abs().ln(),
         };
         match grown.is_infinite() {
             true => grown,
@@ -42,7 +42,7 @@ pub fn sup_from(atom: &SpectralAtom, t: f64) -> Option<f64> {
     };
     let mut top = ln(lo).max(ln(hi));
     if p > 0.0 && sigma != 0.0 {
-        let stationary = -p / sigma;
+        let stationary = from - p / sigma;
         if stationary >= lo && stationary < hi {
             top = top.max(ln(stationary));
         }
@@ -71,7 +71,7 @@ pub fn fate(atom: &SpectralAtom) -> Fate {
         return Fate::Decays;
     }
     let sigma = atom.exp.map_or(0.0, |e| e.sigma);
-    let power = i32::from(atom.poly) - atom.pole.map_or(0, |p| i32::from(p.order));
+    let power = i32::from(atom.poly.degree) - atom.pole.map_or(0, |p| i32::from(p.order));
     match (sigma.total_cmp(&0.0), power.cmp(&0)) {
         (std::cmp::Ordering::Less, _) => Fate::Decays,
         (std::cmp::Ordering::Greater, _) => Fate::Grows,

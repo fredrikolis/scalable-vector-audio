@@ -2,6 +2,7 @@
 
 use sva_formula::{Body, ClosedForm, SpectralSum};
 
+use crate::Grid;
 use crate::error::CollapseError;
 
 use super::active::{self, Window};
@@ -14,7 +15,7 @@ pub(super) fn sampled_spectral_sum(
     extent: Extent,
     len: usize,
 ) -> Result<Vec<Vec<f64>>, CollapseError> {
-    let step = 1.0 / f64::from(rate);
+    let grid = Grid::of(rate);
     let mut planes = Vec::with_capacity(sum.lanes.len());
     for (lane, taken) in sum.lanes.iter().zip(lanes) {
         if let plan::LanePlan::Grouped { groups, bins } = taken {
@@ -22,10 +23,10 @@ pub(super) fn sampled_spectral_sum(
             continue;
         }
         let mut plane = vec![0.0; len];
-        let windows = active::windows(lane, step);
+        let windows = active::windows(lane, grid);
         for (from, to) in span::nonzero(lane, extent, rate) {
             let over = (extent.start + from as i64, extent.start + to as i64);
-            active::sweep(lane, &windows, over, step, &mut plane[from..to])?;
+            active::sweep(lane, &windows, over, grid, &mut plane[from..to])?;
         }
         planes.push(plane);
     }
@@ -42,7 +43,7 @@ fn under_a_window(
     len: usize,
 ) -> Result<Vec<f64>, CollapseError> {
     let mut plane = vec![0.0; len];
-    let step = 1.0 / f64::from(rate);
+    let grid = Grid::of(rate);
     for group in groups {
         let mut held = lines::transformed(&group.placed, extent, bins, rate, len);
         let live = extent.intersect(Extent::new(group.live.0, group.live.1));
@@ -55,7 +56,8 @@ fn under_a_window(
         };
         lines::add_direct(&mut held[from..to], &group.summed, live, rate);
         for (at, value) in held.into_iter().enumerate().take(to).skip(from) {
-            plane[at] += value * point::eval_atom(&group.factor, extent.instant(at, 1, step))?.re;
+            plane[at] +=
+                value * point::eval_atom(&group.factor, grid.instant(extent.start + at as i64))?.re;
         }
     }
     Ok(plane)
@@ -69,29 +71,29 @@ pub(super) fn sampled_body(
     len: usize,
     scale: usize,
 ) -> Result<Vec<f64>, CollapseError> {
-    let step = 1.0 / (f64::from(rate) * scale as f64);
+    let grid = Grid::finer(rate, scale);
     let from = extent.start * scale as i64;
     let windows =
-        plan::summed(&form.body).map_or_else(Vec::new, |parts| plan::addend_windows(&parts, step));
+        plan::summed(&form.body).map_or_else(Vec::new, |parts| plan::addend_windows(&parts, grid));
     written(
         &form.body,
         &windows,
         component,
         (from, from + len as i64),
-        step,
+        grid,
     )
 }
 
-/// Samples `[from, to)` of a grid `step` apart of one component of a written form. A sum
+/// Samples `[from, to)` of `grid` of one component of a written form. A sum
 /// visits each addend only inside its window from `plan::addend_windows`.
 pub(super) fn written(
     body: &Body,
     windows: &[Window],
     component: usize,
     (from, to): Window,
-    step: f64,
+    grid: Grid,
 ) -> Result<Vec<f64>, CollapseError> {
-    let at = |n: i64| n as f64 * step;
+    let at = |n: i64| grid.instant(n);
     let Some(parts) = plan::summed(body) else {
         return (from..to)
             .map(|n| Ok(point::eval_body(body, component, at(n), &point::NoRefs)?.re))

@@ -26,7 +26,7 @@ pub fn tail_db(n: &SpectralSum, ceiling: f64) -> Option<f64> {
 }
 
 fn sinc_dual(a: &SpectralAtom) -> bool {
-    a.poly == 0
+    a.poly.is_one()
         && a.gauss.is_none()
         && a.pole.is_none()
         && matches!(a.sing, Singular::Regular)

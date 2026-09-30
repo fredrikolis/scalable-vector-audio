@@ -270,7 +270,7 @@ pub struct BoreSite {
     excite_index: usize,
     pulse_amp: f64,
     pulse_width: f64,
-    dt: f64,
+    sr: f64,
     sample_index: u64,
 }
 
@@ -284,7 +284,7 @@ impl BoreSite {
             excite_index,
             pulse_amp: params.pulse_amp,
             pulse_width: params.pulse_width,
-            dt: 1.0 / sr,
+            sr,
             sample_index: 0,
         }
     }
@@ -292,16 +292,16 @@ impl BoreSite {
 
 impl BoreSite {
     fn advance(&mut self) -> f64 {
-        let t = self.sample_index as f64 * self.dt;
+        let (t, dt) = (self.sample_index as f64 / self.sr, 1.0 / self.sr);
         let source = crate::physics::raised_cosine_pulse(t, self.pulse_amp, self.pulse_width);
 
         let duct = &mut self.duct;
         let n = duct.n;
-        let rho_c2_dt = self.dt * RHO0_KG_M3 * C0_M_S * C0_M_S;
+        let rho_c2_dt = dt * RHO0_KG_M3 * C0_M_S * C0_M_S;
 
         for l in 0..n {
             let dpsi_dz = (duct.psi[l + 1] - duct.psi[l]) / duct.dz;
-            let rhs = duct.v[l] - self.dt * dpsi_dz / RHO0_KG_M3;
+            let rhs = duct.v[l] - dt * dpsi_dz / RHO0_KG_M3;
             duct.v[l] = duct.loss_v[l].close_out(rhs, &mut duct.loss_v_state[l], 0.0, 0.0);
         }
 
@@ -338,7 +338,7 @@ impl BoreSite {
         }
 
         for (hole, &(node, _, hist)) in duct.toneholes.iter_mut().zip(&hole_prep) {
-            hole.commit(duct.psi[node], hist, self.dt);
+            hole.commit(duct.psi[node], hist, dt);
         }
 
         {

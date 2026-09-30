@@ -234,7 +234,7 @@ pub struct BotteldoorenSite {
     listener_index: usize,
     pulse_amp: f64,
     pulse_width: f64,
-    dt: f64,
+    sr: f64,
     sample_index: u64,
 }
 
@@ -267,7 +267,7 @@ impl BotteldoorenSite {
             listener_index,
             pulse_amp: params.pulse_amp,
             pulse_width: params.pulse_width,
-            dt: 1.0 / sr,
+            sr,
             sample_index: 0,
         }
     }
@@ -276,7 +276,7 @@ impl BotteldoorenSite {
 impl BotteldoorenSite {
     /// Rigid walls fall out of [`laplacian`]'s own mirroring.
     fn advance(&mut self) -> f64 {
-        let t = self.sample_index as f64 * self.dt;
+        let (t, dt) = (self.sample_index as f64 / self.sr, 1.0 / self.sr);
         let source = crate::physics::raised_cosine_pulse(t, self.pulse_amp, self.pulse_width);
 
         let grid = &mut self.grid;
@@ -298,7 +298,7 @@ impl BotteldoorenSite {
 
         if source != 0.0 {
             // 3D analog of the membrane's dt^2/(sigma*h^2): h^3 this grid's per-node volume.
-            let injection = (self.dt * self.dt / (grid.rho0 * grid.h.powi(3))) * source;
+            let injection = (dt * dt / (grid.rho0 * grid.h.powi(3))) * source;
             for (&node, &w) in self
                 .source_patch
                 .nodes

@@ -5,7 +5,7 @@ use std::f64::consts::{PI, TAU};
 use crate::complex::C64;
 use crate::origin::Origin;
 use crate::refusal::{AtomSketch, Factor, Left, LeftReason};
-use crate::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom};
+use crate::spectral_sum::atom::{Exp, Factors, Poly, Singular, SpectralAtom};
 use crate::table::exponential::line_row;
 use crate::table::indicator::signum;
 
@@ -16,14 +16,14 @@ pub(crate) fn row(a: &SpectralAtom) -> Result<Vec<SpectralAtom>, Left> {
     let m = pole.order;
     let mut out = Vec::new();
     let mut binomial = 1.0f64;
-    for j in 0..=a.poly {
-        let weight = a.c * pole.at.powi(u32::from(a.poly - j)).scale(binomial);
+    for j in 0..=a.poly.degree {
+        let weight = a.c * pole.at.powi(u32::from(a.poly.degree - j)).scale(binomial);
         if j < m {
             out.extend(residue_row(weight, pole.at, m - j, pole.pv, f0, a.origin)?);
         } else {
             out.extend(polynomial_row(weight, pole.at, j - m, f0, a.origin));
         }
-        binomial = binomial * f64::from(a.poly - j) / f64::from(j + 1);
+        binomial = binomial * f64::from(a.poly.degree - j) / f64::from(j + 1);
     }
     Ok(out)
 }
@@ -89,7 +89,7 @@ fn residue_row(
             out.push(SpectralAtom::new(
                 c,
                 Factors {
-                    poly: i,
+                    poly: Poly::power(i),
                     exp: Some(Exp {
                         sigma: alpha.re,
                         omega: alpha.im,
@@ -116,7 +116,7 @@ fn polynomial_row(w: C64, p: C64, d: u16, f0: f64, origin: Origin) -> Vec<Spectr
             out.extend(line_row(&SpectralAtom::new(
                 c,
                 Factors {
-                    poly: i,
+                    poly: Poly::power(i),
                     exp: Some(Exp::at(0.0, TAU * f0)),
                     ..Factors::NONE
                 },

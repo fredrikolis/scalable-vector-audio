@@ -4,6 +4,7 @@ use sva_formula::spectral_sum::atom::{Gauss, SpectralAtom};
 use sva_formula::{Lane, exp_zero_at};
 
 use super::point;
+use crate::Grid;
 use crate::error::CollapseError;
 
 pub(crate) type Window = (i64, i64);
@@ -14,27 +15,26 @@ const REACH: i64 = 1 << 62;
 
 const FINITE: f64 = 1e300;
 
-fn at(n: i64, step: f64) -> f64 {
-    n as f64 * step
-}
-
 /// Outside it `smooth_at` is exactly zero: its indicator, or a factor the engine's own `exp`
 /// underflows while every other factor stays finite.
-pub(crate) fn window(a: &SpectralAtom, step: f64) -> Window {
+pub(crate) fn window(a: &SpectralAtom, grid: Grid) -> Window {
     if a.is_delta() {
         return OPEN;
     }
     let mut held = OPEN;
     if let Some(ind) = a.ind {
-        held = meet(held, between(ind.l.value(), ind.r.value(), |n| at(n, step)));
+        held = meet(
+            held,
+            between(ind.l.value(), ind.r.value(), |n| grid.instant(n)),
+        );
     }
-    if a.pole.is_some() || !reaches_finite(a, step) {
+    if a.pole.is_some() || !reaches_finite(a, grid) {
         return held;
     }
     let zero = exp_zero_at();
     let exp = a.exp.filter(|e| e.sigma != 0.0);
     if let Some(e) = exp {
-        let dead = |n: i64| e.sigma * (at(n, step) - e.mu) <= zero;
+        let dead = |n: i64| e.sigma * (grid.instant(n) - e.mu) <= zero;
         held = meet(
             held,
             match e.sigma < 0.0 {
@@ -45,28 +45,31 @@ pub(crate) fn window(a: &SpectralAtom, step: f64) -> Window {
     }
     if let Some(g) = a.gauss {
         let grows = |n: i64, rising: bool| {
-            exp.is_some_and(|e| (e.sigma > 0.0) == rising || e.sigma * (at(n, step) - e.mu) > 700.0)
+            exp.is_some_and(|e| {
+                (e.sigma > 0.0) == rising || e.sigma * (grid.instant(n) - e.mu) > 700.0
+            })
         };
-        held = meet(held, gaussian(g, step, zero, &grows));
+        held = meet(held, gaussian(g, grid, zero, &grows));
     }
     held
 }
 
-fn gaussian(g: Gauss, step: f64, zero: f64, grows: &dyn Fn(i64, bool) -> bool) -> Window {
+fn gaussian(g: Gauss, grid: Grid, zero: f64, grows: &dyn Fn(i64, bool) -> bool) -> Window {
     let dead = |n: i64| {
-        let x = at(n, step);
+        let x = grid.instant(n);
         -g.a * (x - g.mu) * (x - g.mu) <= zero
     };
-    let centre = start(|n| at(n, step) >= g.mu).clamp(-REACH, REACH);
+    let centre = start(|n| grid.instant(n) >= g.mu).clamp(-REACH, REACH);
     let right = first_in(centre, REACH, dead).filter(|n| !grows(*n, true));
     let left =
         first_in(-REACH, centre, |n| !dead(n)).filter(|n| *n > -REACH && !grows(n - 1, false));
     (left.unwrap_or(i64::MIN), right.unwrap_or(i64::MAX))
 }
 
-fn reaches_finite(a: &SpectralAtom, step: f64) -> bool {
-    let farthest = (i64::MAX as f64) * step.abs();
-    (a.c.re.abs() + a.c.im.abs()) * farthest.powi(i32::from(a.poly)) < FINITE
+fn reaches_finite(a: &SpectralAtom, grid: Grid) -> bool {
+    let farthest = grid.instant(i64::MAX);
+    (a.c.re.abs() + a.c.im.abs()) * (farthest + a.poly.at.abs()).powi(i32::from(a.poly.degree))
+        < FINITE
 }
 
 /// The indices whose instant, increasing in the index, lies in `[l, r)`.
@@ -116,8 +119,8 @@ fn end(holds: impl Fn(i64) -> bool) -> i64 {
     }
 }
 
-pub(crate) fn windows(lane: &Lane, step: f64) -> Vec<Window> {
-    lane.atoms.iter().map(|a| window(a, step)).collect()
+pub(crate) fn windows(lane: &Lane, grid: Grid) -> Vec<Window> {
+    lane.atoms.iter().map(|a| window(a, grid)).collect()
 }
 
 /// Samples `[from, to)` of one lane into `out`, each summed in lane order over the atoms
@@ -126,11 +129,11 @@ pub(crate) fn sweep(
     lane: &Lane,
     windows: &[Window],
     span: Window,
-    step: f64,
+    grid: Grid,
     out: &mut [f64],
 ) -> Result<(), CollapseError> {
     sweep_by(windows, span, out, |m, live| {
-        Ok(point::eval_among(lane, live, at(m, step))?.re)
+        Ok(point::eval_among(lane, live, grid.instant(m))?.re)
     })
 }
 

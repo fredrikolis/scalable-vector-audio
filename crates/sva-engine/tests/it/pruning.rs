@@ -241,8 +241,8 @@ fn a_ramp_and_a_decay_end_where_they_are_exactly_zero() {
     let end = decay.range.expect("a range").end;
     let sum = &sva_engine::spectral_sum_of(&decay.tys, decay.root, sva_engine::Var::T)
         .expect("a decay's sum");
-    let step = 1.0 / f64::from(RATE);
-    let at = |n: i64| sva_samples::eval_spectral_sum_at(sum, 0, n as f64 * step).expect("a value");
+    let rate = f64::from(RATE);
+    let at = |n: i64| sva_samples::eval_spectral_sum_at(sum, 0, n as f64 / rate).expect("a value");
     let last = (0..end).rev().find(|n| !at(*n).is_zero()).expect("a sound");
     assert!(end - last < i64::from(RATE), "{last} {end}");
     assert!((end..end + i64::from(RATE)).all(|n| at(n).is_zero()));

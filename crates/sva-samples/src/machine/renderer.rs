@@ -239,6 +239,15 @@ impl Grid {
         Grid { rate, a: 1, d: 1 }
     }
 
+    /// `scale` samples to each of `rate`'s, as an alias reference reads it.
+    pub fn finer(rate: u32, scale: usize) -> Grid {
+        Grid {
+            rate,
+            a: 1,
+            d: scale as i128,
+        }
+    }
+
     pub fn is_rate(&self) -> bool {
         (self.a, self.d) == (1, 1)
     }
@@ -256,10 +265,6 @@ impl Grid {
         }
         let num = self.a.saturating_mul(i128::from(n));
         num as f64 / self.d.saturating_mul(i128::from(self.rate)) as f64
-    }
-
-    pub fn stepped(&self, n: i64) -> f64 {
-        self.position(n) * (1.0 / f64::from(self.rate))
     }
 
     pub fn position(&self, n: i64) -> f64 {

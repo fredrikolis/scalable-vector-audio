@@ -3,7 +3,7 @@
 use std::f64::consts::{PI, TAU};
 
 use crate::complex::C64;
-use crate::spectral_sum::atom::{Exp, Factors, Gauss, Singular, SpectralAtom};
+use crate::spectral_sum::atom::{Exp, Factors, Gauss, Poly, Singular, SpectralAtom};
 
 /// Duals to a Gaussian of width `pi^2/a`, centred where the carrier put it, times the
 /// Hermite lift.
@@ -24,8 +24,8 @@ pub(crate) fn row(a: &SpectralAtom) -> Vec<SpectralAtom> {
     .exp();
     let amplitude = a.c * bulk * C64::real((PI / g.a).sqrt());
 
-    let raised = hermite(a.poly, image_alpha, -2.0 * width);
-    let lift = C64::new(0.0, 1.0 / TAU).powi(u32::from(a.poly));
+    let raised = hermite(a.poly.degree, image_alpha, -2.0 * width);
+    let lift = C64::new(0.0, 1.0 / TAU).powi(u32::from(a.poly.degree));
     raised
         .into_iter()
         .enumerate()
@@ -34,7 +34,7 @@ pub(crate) fn row(a: &SpectralAtom) -> Vec<SpectralAtom> {
             SpectralAtom::new(
                 amplitude * lift * c,
                 Factors {
-                    poly: u16::try_from(k).expect("a Hermite degree fits a u16"),
+                    poly: Poly::power(u16::try_from(k).expect("a Hermite degree fits a u16")),
                     exp: Some(Exp::at(0.0, image_alpha.im)),
                     gauss: Some(Gauss { a: width, mu }),
                     ..Factors::NONE

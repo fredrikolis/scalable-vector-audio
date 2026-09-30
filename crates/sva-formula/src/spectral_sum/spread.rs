@@ -35,7 +35,7 @@ fn moved(
     by: &SpectralAtom,
     held: Option<Indicator>,
 ) -> Result<Series, Left> {
-    if by.poly > 0
+    if !by.poly.is_one()
         || by.gauss.is_some()
         || by.pole.is_some()
         || !matches!(by.sing, Singular::Regular)
@@ -127,8 +127,15 @@ fn atom_at(a: &SpectralAtom, at: &Body) -> Option<Body> {
         return None;
     }
     let mut out = Body::Const(a.c);
-    if a.poly > 0 {
-        out = product(out, Body::Pow(Part::bare(at.clone()), i32::from(a.poly)));
+    if !a.poly.is_one() {
+        let from = match a.poly.at {
+            0.0 => at.clone(),
+            by => Body::Add(vec![
+                Part::bare(at.clone()),
+                Part::bare(Body::Const(C64::real(-by))),
+            ]),
+        };
+        out = product(out, Body::Pow(Part::bare(from), i32::from(a.poly.degree)));
     }
     if let Some(e) = a.exp {
         let rate = Body::Const(C64::new(e.sigma, e.omega));

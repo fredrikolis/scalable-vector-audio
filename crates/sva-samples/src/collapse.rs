@@ -16,6 +16,7 @@ mod truncate;
 
 use sva_formula::{Body, C64, ClosedForm, SpectralSum, Var, normalize_closed_form};
 
+use crate::Grid;
 use crate::buffer::Buffer;
 use crate::error::CollapseError;
 use crate::label::{Detail, Label, Rule, Source};
@@ -137,12 +138,6 @@ impl Extent {
 
     pub fn span_secs(&self, rate: u32) -> f64 {
         self.len() as f64 / f64::from(rate)
-    }
-
-    /// Sample `i` read `scale` times finer: the grid's own index times the step, so every
-    /// span of the grid reads one instant alike.
-    pub fn instant(&self, i: usize, scale: usize, step: f64) -> f64 {
-        (self.start * scale as i64 + i as i64) as f64 * step
     }
 }
 
@@ -490,14 +485,12 @@ fn spectral_sum_alias(
     len: usize,
     planes: &[Vec<f64>],
 ) -> Result<f64, CollapseError> {
-    let step = 1.0 / (f64::from(rate) * ALIAS_OVERSAMPLE as f64);
+    let finer = Grid::finer(rate, ALIAS_OVERSAMPLE);
+    let from = extent.start * ALIAS_OVERSAMPLE as i64;
     let mut scored = Vec::with_capacity(planes.len());
     for (c, base) in planes.iter().enumerate() {
         let high: Vec<f64> = (0..len * ALIAS_OVERSAMPLE)
-            .map(|i| {
-                point::eval_spectral_sum(sum, c, extent.instant(i, ALIAS_OVERSAMPLE, step))
-                    .map(|v| v.re)
-            })
+            .map(|i| point::eval_spectral_sum(sum, c, finer.instant(from + i as i64)).map(|v| v.re))
             .collect::<Result<_, _>>()?;
         scored.push(one_component(base, &high, rate, extent));
     }

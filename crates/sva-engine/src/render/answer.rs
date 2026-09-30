@@ -307,7 +307,7 @@ fn line_of(var: Var, a: &SpectralAtom) -> Option<Line> {
     match (var, a.sing) {
         (Var::F, Singular::Delta { at, order: 0 }) => Some(Line::bare(at, a.c)),
         (Var::T, Singular::Regular) => {
-            if a.poly > 0 || a.gauss.is_some() || a.ind.is_some() || a.pole.is_some() {
+            if !a.poly.is_one() || a.gauss.is_some() || a.ind.is_some() || a.pole.is_some() {
                 return None;
             }
             match a.exp {
@@ -324,7 +324,7 @@ fn line_of(var: Var, a: &SpectralAtom) -> Option<Line> {
 /// What gave this atom a width; a turning exponential is the line itself and never among it.
 fn widening(a: &SpectralAtom) -> Vec<&'static str> {
     let mut held = Vec::new();
-    if a.poly > 0 {
+    if !a.poly.is_one() {
         held.push("a polynomial");
     }
     if a.exp.is_some_and(|e| e.sigma != 0.0) {

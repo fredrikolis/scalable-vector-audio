@@ -152,7 +152,8 @@ impl<'a> Sink<'a> {
     /// `Origin` is excluded: two spellings from different files must hash alike.
     fn atom(&mut self, a: &SpectralAtom) {
         self.c64(a.c);
-        self.u64(u64::from(a.poly));
+        self.u64(u64::from(a.poly.degree));
+        self.f64(a.poly.at);
         match a.exp {
             None => self.byte(0),
             Some(e) => {

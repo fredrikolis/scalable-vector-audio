@@ -388,8 +388,8 @@ fn crossing(from: f64, to: f64, holds: impl Fn(f64) -> bool) -> Option<f64> {
     Some(yes)
 }
 
-/// `max(0, v)` with `v` falling in `t` is exactly zero from the first sample every
-/// evaluator reads `v` at or below zero.
+/// `max(0, v)` with `v` falling in `t` is exactly zero from the first sample whose instant
+/// reads `v` at or below zero.
 fn ramp(grid: Grid, parts: &[sva_formula::Part]) -> Extent {
     let v = match parts {
         [a, b] if matches!(*a.body, Body::Const(c) if c.re.to_bits() == 0 && c.im == 0.0) => {
@@ -406,10 +406,7 @@ fn ramp(grid: Grid, parts: &[sva_formula::Part]) -> Extent {
         return Extent::EVERYWHERE;
     }
     let at = |t: f64| sva_samples::eval_written_at(v, 0, t, &Unread).map(|x| x.re);
-    let zero = |n: i64| {
-        let both = [at(grid.instant(n)), at(grid.stepped(n))];
-        both.iter().all(|x| x.as_ref().is_ok_and(|x| *x <= 0.0))
-    };
+    let zero = |n: i64| at(grid.instant(n)).is_ok_and(|x| x <= 0.0);
     let reach = 1i64 << 62;
     match zero(reach) {
         false => Extent::EVERYWHERE,

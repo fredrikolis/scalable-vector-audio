@@ -4,13 +4,28 @@ use crate::closed_form::Edge;
 use crate::complex::C64;
 use crate::rational::partial_fractions;
 use crate::refusal::{AtomSketch, Factor, Left, LeftReason};
-use crate::spectral_sum::atom::{Exp, Factors, Gauss, Pole, Singular, SpectralAtom};
+use crate::spectral_sum::atom::{Exp, Factors, Gauss, Pole, Poly, Singular, SpectralAtom};
 
 /// Empty where the two indicators do not meet; several where two distinct poles partial-
 /// fraction, or where a delta derivative expands by Leibniz.
 pub fn times(a: &SpectralAtom, b: &SpectralAtom) -> Result<Vec<SpectralAtom>, Left> {
     match (a.sing, b.sing) {
-        (Singular::Regular, Singular::Regular) => smooth_times(a, b),
+        (Singular::Regular, Singular::Regular) => match poly_times(a.poly, b.poly) {
+            Some(poly) => smooth_times(a, b, poly),
+            None => {
+                let mut out = Vec::new();
+                for x in a.flattened() {
+                    for y in b.flattened() {
+                        out.extend(smooth_times(
+                            &x,
+                            &y,
+                            poly_times(x.poly, y.poly).expect("both read from the origin"),
+                        )?);
+                    }
+                }
+                Ok(out)
+            }
+        },
         (Singular::Delta { at, order }, Singular::Regular) => leibniz(a, b, at, order),
         (Singular::Regular, Singular::Delta { at, order }) => leibniz(b, a, at, order),
         _ => Err(Left::new(
@@ -36,7 +51,19 @@ fn combine(x: Exp, y: Exp) -> Option<(Exp, C64)> {
     Some((Exp { sigma, omega, mu }, C64::ONE))
 }
 
-fn smooth_times(a: &SpectralAtom, b: &SpectralAtom) -> Result<Vec<SpectralAtom>, Left> {
+/// Two polynomials read from one instant are one; from two instants, neither is kept.
+fn poly_times(x: Poly, y: Poly) -> Option<Poly> {
+    match (x.is_one(), y.is_one()) {
+        (true, _) => Some(y),
+        (_, true) => Some(x),
+        _ => (x.at == y.at).then_some(Poly {
+            degree: x.degree + y.degree,
+            at: x.at,
+        }),
+    }
+}
+
+fn smooth_times(a: &SpectralAtom, b: &SpectralAtom, poly: Poly) -> Result<Vec<SpectralAtom>, Left> {
     let ind = match (a.ind, b.ind) {
         (Some(x), Some(y)) => {
             let met = x.meet(y);
@@ -77,7 +104,7 @@ fn smooth_times(a: &SpectralAtom, b: &SpectralAtom) -> Result<Vec<SpectralAtom>,
     };
 
     let base = Factors {
-        poly: a.poly + b.poly,
+        poly,
         exp,
         gauss,
         ind,

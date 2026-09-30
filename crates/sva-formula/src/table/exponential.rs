@@ -3,9 +3,9 @@
 use std::f64::consts::TAU;
 
 use crate::complex::C64;
-use crate::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom};
+use crate::spectral_sum::atom::{Exp, Factors, Poly, Singular, SpectralAtom};
 
-/// `c*delta^(k)(u - t0)` duals to `c*(2*pi*i*theta)^k * e^{-2*pi*i*theta*t0}`.
+/// `delta^(k)(u-t0)` duals to `(2pi i theta)^k e^{-2pi i theta t0}`.
 pub(crate) fn delta_row(a: &SpectralAtom) -> Vec<SpectralAtom> {
     let Singular::Delta { at, order } = a.sing else {
         return Vec::new();
@@ -13,7 +13,7 @@ pub(crate) fn delta_row(a: &SpectralAtom) -> Vec<SpectralAtom> {
     vec![SpectralAtom::new(
         a.c * C64::new(0.0, TAU).powi(u32::from(order)),
         Factors {
-            poly: order,
+            poly: Poly::power(order),
             exp: Some(Exp::at(0.0, -TAU * at)),
             ..Factors::NONE
         },
@@ -22,16 +22,15 @@ pub(crate) fn delta_row(a: &SpectralAtom) -> Vec<SpectralAtom> {
     )]
 }
 
-/// `c*u^n*e^{i*w*u}` duals to `c*(i/2pi)^n * delta^(n)(theta - w/2pi)`; the caller has
-/// already established that the exponential does not grow.
+/// `u^n e^{iwu}` duals to `(i/2pi)^n delta^(n)(theta - w/2pi)`.
 pub(crate) fn line_row(a: &SpectralAtom) -> Vec<SpectralAtom> {
     let omega = a.exp.map_or(0.0, |e| e.omega);
     vec![SpectralAtom::new(
-        a.c * C64::new(0.0, 1.0 / TAU).powi(u32::from(a.poly)),
+        a.c * C64::new(0.0, 1.0 / TAU).powi(u32::from(a.poly.degree)),
         Factors::NONE,
         Singular::Delta {
             at: omega / TAU,
-            order: a.poly,
+            order: a.poly.degree,
         },
         a.origin,
     )]

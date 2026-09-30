@@ -6,6 +6,7 @@ use super::active::{self, Window};
 use super::lines::{self, Direct};
 use super::truncate::{self, Audible};
 use super::{atoms, plan, point, reaches_no_atom, reading, span, tail};
+use crate::Grid;
 use crate::error::CollapseError;
 use crate::label::{Detail, Label, Rule, Source};
 use crate::machine::tape::Tape;
@@ -101,7 +102,7 @@ impl Rows {
     /// What writing `[from, to)` of every component takes, as `(priced flops, waves)`.
     pub fn work(&self, from: i64, to: i64) -> (u128, u128) {
         (0..self.width).fold((0, 0), |held, c| {
-            let (priced, waves) = worked(&self.row, c, from, to, 1.0 / f64::from(self.rate));
+            let (priced, waves) = worked(&self.row, c, from, to, Grid::of(self.rate));
             (held.0 + priced, held.1 + waves)
         })
     }
@@ -126,7 +127,7 @@ impl Rows {
 
 /// `(priced flops, waves)` one component's row takes over `[from, to)`: a line, a node walked
 /// or an atom inside its spans, a sample each, as a whole render prices them.
-fn worked(row: &Row, c: usize, from: i64, to: i64, step: f64) -> (u128, u128) {
+fn worked(row: &Row, c: usize, from: i64, to: i64, grid: Grid) -> (u128, u128) {
     let n = (to - from) as u128;
     let times = |(priced, waves): (usize, usize), n: u128| (priced as u128 * n, waves as u128 * n);
     match row {
@@ -138,11 +139,11 @@ fn worked(row: &Row, c: usize, from: i64, to: i64, step: f64) -> (u128, u128) {
                 active::evaluated(&windows[c], &inside(spans[c].as_deref(), (from, to)));
             (evaluated, evaluated)
         }
-        Row::Point { written, .. } => plan::point_work(&written.body, c, step, (from, to)),
+        Row::Point { written, .. } => plan::point_work(&written.body, c, grid, (from, to)),
         Row::Added(parts) => parts.iter().fold((0, 0), |held, (part, width, reach)| {
             match (lane(*width, c), active::meet((from, to), *reach)) {
                 (Some(lane), (a, b)) if a < b => {
-                    let (priced, waves) = worked(part, lane, a, b, step);
+                    let (priced, waves) = worked(part, lane, a, b, grid);
                     (held.0 + priced, held.1 + waves)
                 }
                 _ => held,
@@ -202,11 +203,11 @@ fn of_sum(sum: &SpectralSum, rate: u32, profile: &Profile) -> Result<Labelled, C
         .iter()
         .map(|lane| span::windows(lane, rate))
         .collect();
-    let step = 1.0 / f64::from(rate);
+    let grid = Grid::of(rate);
     let windows = truncated
         .lanes
         .iter()
-        .map(|lane| active::windows(lane, step))
+        .map(|lane| active::windows(lane, grid))
         .collect();
     let row = Row::Sweep {
         sum: Box::new(truncated),
@@ -270,7 +271,7 @@ fn point(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelled, Co
     };
     let width = point::width_of(&written.body, &point::NoRefs).max(1);
     let windows = plan::summed(&written.body).map_or_else(Vec::new, |parts| {
-        plan::addend_windows(&parts, 1.0 / f64::from(rate))
+        plan::addend_windows(&parts, Grid::of(rate))
     });
     let row = Row::Point {
         written: Box::new(written),
@@ -312,7 +313,7 @@ fn reach(row: &Row, rate: u32) -> Window {
             written, windows, ..
         } => match plan::summed(&written.body) {
             Some(_) => hull(&mut windows.iter().copied()),
-            None => plan::live_window(&written.body, 1.0 / f64::from(rate)),
+            None => plan::live_window(&written.body, Grid::of(rate)),
         },
         Row::Added(parts) => hull(&mut parts.iter().map(|(.., reach)| *reach)),
     }
@@ -320,7 +321,7 @@ fn reach(row: &Row, rate: u32) -> Window {
 
 /// Each row's arithmetic over `[from, to)`, in its whole-render row's order, so the bits agree.
 fn values(row: &Row, c: usize, (from, to): Window, rate: u32) -> Result<Vec<f64>, CollapseError> {
-    let step = 1.0 / f64::from(rate);
+    let grid = Grid::of(rate);
     let n = (to - from) as usize;
     Ok(match row {
         Row::Lines(lanes) => (from..to)
@@ -340,13 +341,13 @@ fn values(row: &Row, c: usize, (from, to): Window, rate: u32) -> Result<Vec<f64>
             let mut out = vec![0.0; n];
             for (a, b) in inside(spans[c].as_deref(), (from, to)) {
                 let at = (a - from) as usize..(b - from) as usize;
-                active::sweep(&sum.lanes[c], &windows[c], (a, b), step, &mut out[at])?;
+                active::sweep(&sum.lanes[c], &windows[c], (a, b), grid, &mut out[at])?;
             }
             out
         }
         Row::Point {
             written, windows, ..
-        } => reading::written(&written.body, windows, c, (from, to), step)?,
+        } => reading::written(&written.body, windows, c, (from, to), grid)?,
         Row::Added(parts) => {
             let mut sum = vec![0.0; n];
             for (part, held, reach) in parts {

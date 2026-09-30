@@ -44,7 +44,7 @@ fn edge_terms(
     edge: f64,
     sign: C64,
 ) -> Result<Vec<SpectralAtom>, Left> {
-    let n = a.poly;
+    let n = a.poly.degree;
     let mut out = Vec::with_capacity(usize::from(n) + 1);
     let mut falling = 1.0f64;
     for k in 0..=n {
@@ -82,7 +82,7 @@ fn edge_terms(
 
 /// `1[l,inf)` at zero growth: half a delta beside a principal value.
 fn heaviside(a: &SpectralAtom, pole: C64, edge: f64, sign: C64) -> Result<Vec<SpectralAtom>, Left> {
-    if a.poly > 0 {
+    if !a.poly.is_one() {
         return Err(Left::new(
             a.origin,
             AtomSketch::pair(Factor::Polynomial, Factor::Indicator),
