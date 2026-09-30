@@ -16,7 +16,7 @@ const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
 
 /// One map of names; each staging area's names sit under its own prefix, where `list` never looks.
-/// While `refusing` is up, every rename fails. `reads` logs each read: the name and the bytes it
+/// While `refusing` is up, every write and rename fails. `reads` logs each read: the name and the bytes it
 /// answered. A name in `open` is another holder's, so, as in OPFS, it is neither removed nor
 /// moved onto.
 #[derive(Clone, Default)]
@@ -112,6 +112,9 @@ impl Backend for Memory {
     }
 
     async fn put(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        if self.refusing.load(Ordering::Relaxed) {
+            return Err("the medium refused".to_string());
+        }
         self.set(name, bytes.to_vec());
         Ok(())
     }
@@ -664,6 +667,25 @@ fn a_persist_that_fails_leaves_every_value_it_did_not_commit_staged() {
     let done = now(store.persist()).expect("persisted");
     assert_eq!(done.written, 3, "x, y and master were still staged");
     assert_eq!(memory.entries().len(), 3);
+}
+
+/// A medium that refuses every write fails no render and no warm: the render's samples are a
+/// storeless render's, and its stats say why it staged nothing.
+#[test]
+fn a_store_refusing_every_write_fails_no_render_and_no_warm() {
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    memory.refusing.store(true, Ordering::Relaxed);
+    let graph = two_voices("refusing", 330);
+    let through = rendered(&graph, &store);
+    let config = RenderConfig::seconds(RATE, SECONDS);
+    let fresh = render(&graph, "master", config.clone(), None).expect("a render");
+    assert_eq!(samples(&through), samples(&fresh));
+    assert!(stats(&through).unstaged.is_some(), "{:?}", stats(&through));
+    let warmed = now(warm(&graph, "master", config, &store)).expect("a warm");
+    assert!(warmed.unstaged.is_some(), "{warmed:?}");
+    memory.refusing.store(false, Ordering::Relaxed);
+    assert_eq!(now(store.persist()).expect("persisted").written, 0);
 }
 
 /// Entries another holder has open, as another worker's OPFS handle holds them: a persist

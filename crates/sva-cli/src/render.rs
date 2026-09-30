@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use sva_core::{
-    Answer, Asked, CliError, Job, Output, Printed, Report, SAMPLE_LIMIT, Store, cwd, execute,
-    execute_through, query_data,
+    Answer, Asked, CliError, Diagnostic, Job, Output, Printed, Report, SAMPLE_LIMIT, Store, cwd,
+    execute, execute_through, query_data,
 };
 use sva_engine::{
     Buffer, DEFAULT_FRAME_SECS, PSYCHOACOUSTIC_V1, Representation, answer_buffer, cache_log,
@@ -28,19 +28,22 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
             refuse_replacing(dest, args.confirm)?;
         }
     }
-    let Some(store) = crate::store::opened(&args.cache)? else {
-        return answered(args, &dir, &target, None);
-    };
-    let answered = answered(args, &dir, &target, Some(store));
-    let stored = crate::store::persisted(store);
-    answered.and_then(|json| stored.map(|()| json))
+    let mut warnings = Vec::new();
+    let store = crate::store::opened(&args.cache, &mut warnings)?;
+    let answered = answered(args, &dir, &target, store, &mut warnings);
+    if let Some(store) = store {
+        crate::store::persisted(store, &mut warnings);
+    }
+    answered.map(|data| success_envelope(&data, &warnings))
 }
 
+/// The render's `data`.
 fn answered(
     args: &RenderArgs,
     dir: &Path,
     target: &str,
     store: Option<&Store<Directory>>,
+    warnings: &mut Vec<Diagnostic>,
 ) -> Result<String, CliError> {
     let source = sva_ast::Dir::at(dir);
     let logs = std::env::var("SVA_LOG").is_ok_and(|level| level == "debug");
@@ -58,7 +61,12 @@ fn answered(
     };
 
     let rate = rendered.config.rate;
-    if let (true, Some(stats)) = (logs, &rendered.render.cache_stats) {
+    let stats = rendered.render.cache_stats.as_ref();
+    if let Some(why) = stats.and_then(|stats| stats.unstaged.as_deref()) {
+        let message = format!("this render stopped staging what it computed: {why}");
+        warnings.push(crate::store::warning("store.unstaged", message));
+    }
+    if let (true, Some(stats)) = (logs, stats) {
         eprint!("{}", cache_log(stats, rate));
     }
     let bits = rendered.config.profile.precision_bits;
@@ -87,21 +95,18 @@ fn answered(
     }
     let (answers, written) = routed(&args.asked, taken, &framing)?;
 
-    Ok(success_envelope(
-        &query_data(&Report {
-            target: &args.target,
-            rate,
-            bits: Some(bits),
-            interval,
-            profile: rendered.config.profile.name,
-            label: rendered.label(),
-            written: &written,
-            answers: &answers,
-            analyses: &[],
-            limit: Some(SAMPLE_LIMIT),
-        }),
-        &[],
-    ))
+    Ok(query_data(&Report {
+        target: &args.target,
+        rate,
+        bits: Some(bits),
+        interval,
+        profile: rendered.config.profile.name,
+        label: rendered.label(),
+        written: &written,
+        answers: &answers,
+        analyses: &[],
+        limit: Some(SAMPLE_LIMIT),
+    }))
 }
 
 /// What stays in the envelope, and what left it for a file.

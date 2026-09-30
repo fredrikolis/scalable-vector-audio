@@ -9,14 +9,15 @@ use super::table::spill::Spill;
 use super::table::{self, Table};
 use super::{Render, RenderConfig, closed, drive, driving, drove, frontier, planned_over};
 use crate::cache::{Backend, CacheStats, Lookup, Outcome, Recording, Store, Stored, Through};
-use crate::error::{Diagnostic, EngineError, Located};
+use crate::error::EngineError;
 use crate::instantiate;
 use crate::schedule;
 use crate::typing::{self, Typing};
 
 /// `render` through `store`, from the root down: a node the store answers stands as its
 /// samples, and nothing under it is typed, planned or looked up. What the rest computes is
-/// staged beside the store as the render drops it; only `persist` writes the store.
+/// staged beside the store as the render drops it; only `persist` writes the store. A failing
+/// store fails no render: it stages nothing more, and its stats say why.
 pub async fn render_through<B: Backend>(
     graph: &Graph,
     target: &str,
@@ -103,13 +104,15 @@ async fn through<B: Backend>(
     };
     let staging = staging(&held, &keys, &found);
     let mut kept = BTreeSet::new();
+    let mut unstaged = None;
     if let Some(mut driver) = driving(&mut held, Recording::over(None, None))? {
         driver.spill = Some(Spill::over(staging));
-        while spilled(&mut driver, store, &mut kept).await? {}
+        while spilled(&mut driver, store, &mut kept, &mut unstaged).await? {}
         let rest = driver.spill.take().map(|mut s| s.rest(&driver.table));
         for (key, meta) in rest.into_iter().flatten() {
-            store.stage_meta(key, &meta).await.map_err(unstaged)?;
-            kept.insert(key);
+            if staged(&mut unstaged, store.stage_meta(key, &meta)).await {
+                kept.insert(key);
+            }
         }
         drove(&mut held, driver, keep == Keep::Wanted);
     }
@@ -133,6 +136,7 @@ async fn through<B: Backend>(
         reached,
         typed,
         planned: computed,
+        unstaged,
         ..CacheStats::default()
     });
     closed(&mut held)?;
@@ -184,6 +188,7 @@ async fn spilled<B: Backend>(
     driver: &mut drive::Driver,
     store: &Store<B>,
     kept: &mut BTreeSet<Hash>,
+    unstaged: &mut Option<String>,
 ) -> Result<bool, EngineError> {
     let more = driver.pull()?;
     let spill = driver
@@ -191,23 +196,31 @@ async fn spilled<B: Backend>(
         .as_mut()
         .expect("a render through a store spills");
     for (key, samples) in std::mem::take(&mut spill.samples) {
-        store.stage(key, &samples).await.map_err(unstaged)?;
+        staged(unstaged, store.stage(key, &samples)).await;
     }
     for (key, meta) in spill.whole(&driver.table) {
-        store.stage_meta(key, &meta).await.map_err(unstaged)?;
-        kept.insert(key);
+        if staged(unstaged, store.stage_meta(key, &meta)).await {
+            kept.insert(key);
+        }
     }
     Ok(more)
 }
 
-fn unstaged(why: String) -> EngineError {
-    EngineError::refused(Diagnostic {
-        code: "store.unwritable".to_string(),
-        message: format!("what the render computed could not be staged beside the store: {why}"),
-        location: Located::default(),
-        help: "free the store's disk, move it with `--cache <path>`, or pass `--cache none`"
-            .to_string(),
-    })
+/// `stage` done, unless one before it failed.
+async fn staged(
+    unstaged: &mut Option<String>,
+    stage: impl Future<Output = Result<(), String>>,
+) -> bool {
+    if unstaged.is_some() {
+        return false;
+    }
+    match stage.await {
+        Ok(()) => true,
+        Err(why) => {
+            *unstaged = Some(why);
+            false
+        }
+    }
 }
 
 /// A node another may read as its samples alone: samples, and nothing that reads it between

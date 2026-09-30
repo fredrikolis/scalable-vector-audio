@@ -41,6 +41,8 @@ pub struct CacheStats {
     pub reached: Vec<(i64, usize)>,
     pub typed: Vec<String>,
     pub planned: Vec<String>,
+    /// Why a render stopped staging beside its store.
+    pub unstaged: Option<String>,
 }
 
 impl CacheStats {
@@ -117,6 +119,7 @@ impl Recording {
             reached: self.reached.clone(),
             typed: Vec::new(),
             planned: Vec::new(),
+            unstaged: None,
         }
     }
 

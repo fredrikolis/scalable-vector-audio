@@ -13,7 +13,8 @@ use std::rc::Rc;
 
 use sva_core::{
     Asked, CliError, Diagnostic, Job, Printed, Rendered, Report, Representation, SAMPLE_LIMIT,
-    error_envelope, execute, execute_through, query_data, stats_json, stream_stats_json, work_json,
+    Warmed, error_envelope, execute, execute_through, query_data, stats_json, stream_stats_json,
+    work_json,
 };
 use sva_engine::{
     Buffer, Cache, CachePolicy, CacheStats, DEFAULT_STORE_BYTES, Extent, Handle, Hash, PrunePolicy,
@@ -38,6 +39,20 @@ extern "C" {
 
     #[wasm_bindgen(js_namespace = JSON, catch)]
     fn parse(text: &str) -> Result<JsValue, JsValue>;
+
+    #[wasm_bindgen(js_namespace = console)]
+    fn warn(message: &str);
+}
+
+/// A failing store fails no call: why goes to the console, and the call runs as over none.
+fn logged(why: &str) {
+    warn(&format!("sva: {why}"));
+}
+
+fn unstaged(stats: Option<&CacheStats>) {
+    if let Some(why) = stats.and_then(|stats| stats.unstaged.as_deref()) {
+        logged(&format!("staging what this call computed stopped: {why}"));
+    }
 }
 
 /// One crossing for every refusal: `name` is the CLI's own error code and `refusal` the
@@ -194,21 +209,35 @@ pub struct Composition {
     persistent: Page,
 }
 
-/// The store a page opened its composition over, if any: what a render or a stream reads.
+/// The store a page opened its composition over: what a render or a stream reads.
 #[derive(Clone, Default)]
-struct Page(Option<Rc<Store<opfs::Opfs>>>);
+enum Page {
+    #[default]
+    None,
+    Open(Rc<Store<opfs::Opfs>>),
+    Failed,
+}
+
+impl Page {
+    fn store(&self) -> Option<&Store<opfs::Opfs>> {
+        match self {
+            Page::Open(store) => Some(store),
+            Page::None | Page::Failed => None,
+        }
+    }
+}
 
 impl Through for Page {
     async fn lookup(&self, key: Hash) -> Option<Stored> {
-        match &self.0 {
-            Some(store) => Through::lookup(&**store, key).await,
+        match self.store() {
+            Some(store) => Through::lookup(store, key).await,
             None => None,
         }
     }
 
     async fn read(&self, stored: &Stored, over: Extent) -> Option<Vec<Buffer>> {
-        match &self.0 {
-            Some(store) => Through::read(&**store, stored, over).await,
+        match self.store() {
+            Some(store) => Through::read(store, stored, over).await,
             None => None,
         }
     }
@@ -237,23 +266,25 @@ impl Composition {
     }
 
     /// Over the store in `dir`, an origin-private file system directory, or memory alone
-    /// where there is none.
-    pub async fn open(
-        name: Option<String>,
-        dir: Option<DirectoryHandle>,
-    ) -> Result<Composition, JsValue> {
+    /// where there is none or its store will not open.
+    pub async fn open(name: Option<String>, dir: Option<DirectoryHandle>) -> Composition {
         let mut held = Composition::new(name);
         if let Some(dir) = dir {
             let backend = opfs::Opfs { dir };
-            let store = Store::open(backend, DEFAULT_STORE_BYTES).await;
-            held.persistent = Page(Some(Rc::new(store.map_err(unstored)?)));
+            held.persistent = match Store::open(backend, DEFAULT_STORE_BYTES).await {
+                Ok(store) => Page::Open(Rc::new(store)),
+                Err(why) => {
+                    logged(&format!("the store would not open, so none is kept: {why}"));
+                    Page::Failed
+                }
+            };
         }
-        Ok(held)
+        held
     }
 
     /// The only write to the directory `open` was handed: every value computed since the last.
     pub async fn persist(&self) -> Result<usize, JsValue> {
-        let Some(store) = &self.persistent.0 else {
+        let Some(store) = self.persistent.store() else {
             return Ok(0);
         };
         store
@@ -294,13 +325,13 @@ impl Composition {
             volatile: &options.volatile,
             ..Job::over(&self.inner, target)
         };
-        let rendered = match self.persistent.0.as_deref() {
+        let rendered = match self.persistent.store() {
             Some(store) => execute_through(job, store).await,
             None => execute(job),
         };
-        rendered
-            .map(|inner| Rendering { inner, asked })
-            .map_err(|e| thrown(&e))
+        let inner = rendered.map_err(|e| thrown(&e))?;
+        unstaged(inner.render.cache_stats.as_ref());
+        Ok(Rendering { inner, asked })
     }
 
     /// `target` staged as `render` would, until `persist`; `{ stats, representations }`,
@@ -308,12 +339,12 @@ impl Composition {
     /// `flop_budget`, `readings`.
     pub async fn warm(&self, target: &str, options: JsValue) -> Result<JsValue, JsValue> {
         let options = options_of(&options, &["rate", "bits", "flop_budget", "readings"])?;
-        let Some(store) = self.persistent.0.as_deref() else {
+        if let Page::None = self.persistent {
             return Err(refuse(
                 "`warm` stages into a store, and this composition was opened over none".into(),
                 "open it with `Composition.open(name, dir)` over a directory",
             ));
-        };
+        }
         let asked = representations_of(&options.readings)?;
         if let Some(samples) = asked
             .iter()
@@ -331,7 +362,12 @@ impl Composition {
             asked: &asked,
             ..Job::over(&self.inner, target)
         };
-        let warmed = sva_core::warm(job, store).await.map_err(|e| thrown(&e))?;
+        let warmed = match self.persistent.store() {
+            Some(store) => sva_core::warm(job, store).await,
+            None => unwarmed(job),
+        };
+        let warmed = warmed.map_err(|e| thrown(&e))?;
+        unstaged(Some(&warmed.stats));
         let representations = match &warmed.readings {
             Some(read) => answered(read, &asked)?,
             None => JsValue::NULL,
@@ -427,6 +463,18 @@ impl Composition {
     pub fn clear_cache(&self) {
         self.store.clear();
     }
+}
+
+/// A warm over a store that would not open: readings, where asked, are a render's over none.
+fn unwarmed(job: Job) -> Result<Warmed, CliError> {
+    let readings = match job.asked.is_empty() {
+        true => None,
+        false => Some(execute(job)?),
+    };
+    Ok(Warmed {
+        stats: CacheStats::default(),
+        readings,
+    })
 }
 
 fn cache_policy(name: &str) -> Result<CachePolicy, JsValue> {

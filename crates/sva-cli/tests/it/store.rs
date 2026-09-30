@@ -42,6 +42,12 @@ fn values_in(store: &Path) -> usize {
         .unwrap_or(0)
 }
 
+/// The envelope before its `meta`, which differs per run.
+fn data(out: &Output) -> String {
+    let printed = String::from_utf8_lossy(&out.stdout).into_owned();
+    printed[..printed.find("\"meta\"").expect("an envelope")].to_string()
+}
+
 fn shm(name: &str) -> PathBuf {
     let path = Path::new("/dev/shm").join(format!("sva-cli-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
@@ -69,10 +75,6 @@ fn a_store_under_dev_shm_answers_the_next_render_with_every_value() {
     assert_eq!(total(&warm, "miss"), 0, "nothing is computed");
     assert_eq!(total(&warm, "store-miss"), 0);
     assert!(total(&warm, "store-hit") > 0);
-    let data = |out: &Output| {
-        let printed = String::from_utf8_lossy(&out.stdout).into_owned();
-        printed[..printed.find("\"meta\"").expect("an envelope")].to_string()
-    };
     assert_eq!(data(&cold), data(&warm));
     let _ = std::fs::remove_dir_all(&store);
 }
@@ -136,4 +138,33 @@ fn a_staging_area_no_process_holds_is_swept_and_a_held_one_survives() {
     assert!(run(&dir, &args, None).status.success());
     assert!(!stale.exists(), "no process held it");
     assert!(live.exists(), "this test holds it");
+}
+
+/// A cache that cannot be used fails no render: the render answers as with `--cache none`, and
+/// a warning says why it kept nothing.
+#[test]
+fn a_render_over_an_unusable_cache_answers_and_logs_why() {
+    let dir = scratch("store-unusable");
+    put(&dir, "x", "crop(sample(sin(2*pi*220*t)), 0s, 0.05s)*0.5\n");
+    let file = scratch("store-unusable-file").join("not-a-directory");
+    std::fs::write(&file, b"a file").expect("a file");
+    let args = ["@x", "--representation", "loudness", "--cache"];
+    let over: Vec<&str> = args.into_iter().chain([file.to_str().unwrap()]).collect();
+    let none: Vec<&str> = args.into_iter().chain(["none"]).collect();
+    let (failed, bare) = (run(&dir, &over, None), run(&dir, &none, None));
+    assert!(
+        failed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&failed.stdout)
+    );
+    let before = |out: &Output| {
+        let data = data(out);
+        data[..data.find("\"diagnostics\"").expect("diagnostics")].to_string()
+    };
+    assert_eq!(before(&failed), before(&bare));
+    let printed = String::from_utf8_lossy(&failed.stdout);
+    assert!(
+        printed.contains("\"code\": \"store.unusable\", \"severity\": \"warning\""),
+        "{printed}"
+    );
 }

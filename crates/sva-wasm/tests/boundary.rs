@@ -963,9 +963,7 @@ fn values_in(dir: &JsValue) -> usize {
 }
 
 async fn over_store(dir: &JsValue) -> Composition {
-    let mut held = Composition::open(None, Some(dir.clone().into()))
-        .await
-        .unwrap_or_else(|e| unreachable!("the store opens: {}", as_text(&e)));
+    let mut held = Composition::open(None, Some(dir.clone().into())).await;
     held.insert("master", "sample(sin(2*pi*100*t))*0.5\n");
     held
 }
@@ -1199,8 +1197,7 @@ async fn workers(dir: &JsValue) {
         .map(|n| {
             let dir = dir.clone();
             task(async move {
-                let held = Composition::open(None, Some(dir.into())).await?;
-                let mut held = held;
+                let mut held = Composition::open(None, Some(dir.into())).await;
                 held.insert("master", "sample(sin(2*pi*100*t))*0.5\n");
                 match n {
                     0 => drop(
@@ -1266,6 +1263,51 @@ async fn an_entry_open_elsewhere_fails_no_worker_and_the_next_persist_writes_it(
         "{}",
         as_text(&warm)
     );
+}
+
+/// Every call on `dir` and the directories in it rejects from now on, as on a revoked handle.
+fn revoked(dir: &JsValue) {
+    js_sys::Function::new_with_args(
+        "dir",
+        r#"
+        const refuse = async () => { throw Object.assign(new Error("revoked"), { name: "SecurityError" }); };
+        const revoke = (dir) => {
+            for (const name of ["getFileHandle", "getDirectoryHandle", "removeEntry"]) dir[name] = refuse;
+            dir.keys = () => ({ next: refuse });
+            for (const inner of dir.dirs.values()) revoke(inner);
+        };
+        revoke(dir);
+        "#,
+    )
+    .call1(&JsValue::NULL, dir)
+    .unwrap_or_else(|_| unreachable!("the fake revokes"));
+}
+
+async fn channel(held: &Composition) -> Vec<f32> {
+    held.render("@master([0, 0.1s])", None, options(&[]))
+        .await
+        .unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)))
+        .samples(0)
+        .unwrap_or_else(|e| unreachable!("its samples: {}", as_text(&e)))
+}
+
+/// A directory that rejects every call fails no render and no warm, whether it failed after the
+/// store opened or before: each renders a storeless composition's samples.
+#[wasm_bindgen_test]
+async fn a_directory_that_rejects_every_call_fails_no_render_and_no_warm() {
+    let dir = fake_directory();
+    let before = over_store(&dir).await;
+    revoked(&dir);
+    let after = over_store(&dir).await;
+    let mut memory = Composition::new(None);
+    memory.insert("master", "sample(sin(2*pi*100*t))*0.5\n");
+    let bare = channel(&memory).await;
+    for held in [&before, &after] {
+        assert_eq!(channel(held).await, bare);
+        let read = warmed(held, &["envelope"]).await;
+        assert!(!field(&read, "representations").is_null());
+    }
+    assert_eq!(after.persist().await.ok(), Some(0));
 }
 
 /// `of.method(...args)`, awaited.

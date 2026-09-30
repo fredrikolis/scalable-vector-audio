@@ -275,7 +275,8 @@ DEFAULTS:
                        The same objects either way. Default json.
   --cache <path|none>  where the store lives. Default `$XDG_CACHE_HOME/sva`, else
                        `~/.cache/sva`, holding at most {store_gb} GB; `none` keeps
-                       no store.
+                       no store. A store that fails fails no render: it answers
+                       as without one, warned why in `diagnostics`.
   --confirm            replaces a destination that already holds a file. Without
                        it a path already taken refuses as `conflict` and nothing
                        is written.

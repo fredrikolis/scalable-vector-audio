@@ -1,11 +1,11 @@
-// Concern: opens a render's one persistent store and persists it on SIGINT or SIGTERM | Non-concern: the medium (directory.rs), eviction | IO: (CacheAt) -> a Store; (a signal) -> persist, exit
+// Concern: opens a render's one persistent store, persists it on a signal, warns of its failures | Non-concern: the medium (directory.rs), eviction | IO: (CacheAt) -> a Store or none, warnings
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::Thread;
 
-use sva_core::{CliError, DEFAULT_STORE_BYTES, Diagnostic, Store, error_envelope};
+use sva_core::{CliError, DEFAULT_STORE_BYTES, Diagnostic, Severity, Store, error_envelope};
 
 use crate::args::CacheAt;
 use crate::directory::Directory;
@@ -51,34 +51,52 @@ fn platform() -> Result<PathBuf, CliError> {
         })
 }
 
-fn unusable(path: &Path, why: &str) -> CliError {
-    CliError::Io(format!(
-        "the cache at `{}` is unusable: {why}; pass `--cache <path>` elsewhere or `--cache none`",
-        path.display()
-    ))
+/// A store that fails fails no render: the render answers as without it, warned why.
+pub fn warning(code: &str, message: String) -> Diagnostic {
+    Diagnostic::new(code, message)
+        .with_severity(Severity::Warning)
+        .helped("pass `--cache <path>` elsewhere, or `--cache none` to keep no store")
 }
 
-/// The process's one store, opened once; a signal persists it before the process exits.
-pub fn opened(at: &CacheAt) -> Result<Option<&'static Store<Directory>>, CliError> {
+/// The process's one store, opened once; a signal persists it before the process exits. One
+/// that cannot open is none.
+pub fn opened(
+    at: &CacheAt,
+    warnings: &mut Vec<Diagnostic>,
+) -> Result<Option<&'static Store<Directory>>, CliError> {
     let path = match at {
         CacheAt::Off => return Ok(None),
         CacheAt::Path(path) => path.clone(),
         CacheAt::Platform => platform()?,
     };
     let backend = Directory::at(path.clone());
-    let store =
-        wait(Store::open(backend, DEFAULT_STORE_BYTES)).map_err(|why| unusable(&path, &why))?;
-    let store = OPEN.get_or_init(|| store);
-    let mut signals = signal_hook::iterator::Signals::new([
+    let store = match wait(Store::open(backend, DEFAULT_STORE_BYTES)) {
+        Ok(store) => OPEN.get_or_init(|| store),
+        Err(why) => {
+            let message = format!(
+                "the cache at `{}` is unusable, so this render kept none: {why}",
+                path.display()
+            );
+            warnings.push(warning("store.unusable", message));
+            return Ok(None);
+        }
+    };
+    match signal_hook::iterator::Signals::new([
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGTERM,
-    ])
-    .map_err(|e| unusable(&path, &e.to_string()))?;
-    std::thread::spawn(move || {
-        if let Some(signal) = signals.forever().next() {
-            interrupted(store, signal);
+    ]) {
+        Ok(mut signals) => {
+            std::thread::spawn(move || {
+                if let Some(signal) = signals.forever().next() {
+                    interrupted(store, signal);
+                }
+            });
         }
-    });
+        Err(e) => warnings.push(warning(
+            "store.unsignalled",
+            format!("a signal would not have persisted this render: {e}"),
+        )),
+    }
     Ok(Some(store))
 }
 
@@ -98,8 +116,9 @@ fn interrupted(store: &Store<Directory>, signal: i32) -> ! {
 }
 
 /// What a render left in the store's memory, written whatever the render came to.
-pub fn persisted(store: &Store<Directory>) -> Result<(), CliError> {
-    wait(store.persist())
-        .map(|_| ())
-        .map_err(|why| CliError::Io(format!("the render's values could not be stored: {why}")))
+pub fn persisted(store: &Store<Directory>, warnings: &mut Vec<Diagnostic>) {
+    if let Err(why) = wait(store.persist()) {
+        let message = format!("the render's values could not be stored: {why}");
+        warnings.push(warning("store.unwritten", message));
+    }
 }
