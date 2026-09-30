@@ -31,7 +31,14 @@ pub(crate) fn compute(
             Kind::Frames { .. } => frames(value, segment, done)?,
             Kind::Istft => istft(value, segment, done, profile)?,
             Kind::Spectrum(_) => spectrum(value, segment, profile)?,
-            Kind::Stored { .. } => unreachable!("a stored value holds all a reader asks"),
+            Kind::Stored { .. } => {
+                let live = *value
+                    .reads
+                    .first()
+                    .expect("a stored value short of its readers");
+                value.hold(samples_of(done, live, segment));
+                0
+            }
         };
         value.evaluated.push(segment);
     }

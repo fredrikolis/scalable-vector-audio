@@ -17,6 +17,7 @@ pub(crate) struct Frontier<'w> {
     keys: &'w BTreeMap<String, Hash>,
     root: &'w str,
     config: &'w RenderConfig,
+    streaming: bool,
     pinned: BTreeSet<String>,
     stack: Vec<Step>,
     pub(crate) stored: BTreeMap<String, Arc<Stored>>,
@@ -24,9 +25,10 @@ pub(crate) struct Frontier<'w> {
     pub(crate) lookups: Vec<Lookup>,
 }
 
+/// Each flags a lookup: nothing beneath a streamed hit is looked up.
 enum Step {
-    Visit(String),
-    Close(String),
+    Visit(String, bool),
+    Close(String, bool),
 }
 
 impl<'w> Frontier<'w> {
@@ -34,47 +36,52 @@ impl<'w> Frontier<'w> {
         (inst, order): (&Instances<'_>, &'w Order),
         keys: &'w BTreeMap<String, Hash>,
         root: &'w str,
-        config: &'w RenderConfig,
+        (config, streaming): (&'w RenderConfig, bool),
     ) -> Frontier<'w> {
         Frontier {
             order,
             keys,
             root,
             config,
+            streaming,
             pinned: pinned(inst, order, config),
-            stack: vec![Step::Visit(root.to_string())],
+            stack: vec![Step::Visit(root.to_string(), true)],
             stored: BTreeMap::new(),
             visited: BTreeSet::new(),
             lookups: Vec::new(),
         }
     }
 
-    /// A hit ends the walk down its branch; a miss goes on into every node it reads.
+    /// A hit ends the walk down its branch, or streaming, the lookups; a miss walks on.
     pub(crate) async fn walk(&mut self, store: &impl Through) {
         while let Some(step) = self.stack.pop() {
-            let path = match step {
-                Step::Close(path) => {
-                    if !self.pinned.contains(&path) {
+            let (path, look) = match step {
+                Step::Close(path, looked) => {
+                    if looked && !self.pinned.contains(&path) {
                         let key = self.keys[&path];
                         self.lookups
                             .push(noted(&path, key, Outcome::ComputedNotStored));
                     }
                     continue;
                 }
-                Step::Visit(path) if self.visited.contains(&path) => continue,
-                Step::Visit(path) => path,
+                Step::Visit(path, _) if self.visited.contains(&path) => continue,
+                Step::Visit(path, look) => (path, look),
             };
             self.visited.insert(path.clone());
-            if !self.pinned.contains(&path)
+            if look
+                && !self.pinned.contains(&path)
                 && let Some(hit) = store.lookup(self.keys[&path]).await
-                && answers(&hit, path == self.root, self.config)
+                && answers(&hit, path == self.root && !self.streaming, self.config)
             {
                 self.lookups
                     .push(noted(&path, self.keys[&path], Outcome::Hit));
-                self.stored.insert(path, Arc::new(hit));
+                self.stored.insert(path.clone(), Arc::new(hit));
+                if self.streaming {
+                    self.opened(path, false);
+                }
                 continue;
             }
-            self.opened(path);
+            self.opened(path, look);
         }
     }
 
@@ -82,15 +89,15 @@ impl<'w> Frontier<'w> {
     pub(crate) fn reopen(&mut self, path: &str) {
         self.stored.remove(path);
         self.lookups.retain(|lookup| lookup.node != path);
-        self.opened(path.to_string());
+        self.opened(path.to_string(), true);
     }
 
-    fn opened(&mut self, path: String) {
+    fn opened(&mut self, path: String, look: bool) {
         let order = self.order;
         let reads = order.deps(&path);
-        self.stack.push(Step::Close(path));
+        self.stack.push(Step::Close(path, look));
         for read in reads.iter().rev() {
-            self.stack.push(Step::Visit(read.clone()));
+            self.stack.push(Step::Visit(read.clone(), look));
         }
     }
 }
@@ -105,8 +112,8 @@ fn noted(path: &str, key: Hash, outcome: Outcome) -> Lookup {
     }
 }
 
-/// The root answers where it holds the samples read; any other node where a reader may take
-/// its samples, and planning its readers finds whether they hold all they ask.
+/// A render's root answers where it holds the samples read; any other node, or a stream's
+/// root, where a reader may take its samples.
 fn answers(hit: &Stored, root: bool, config: &RenderConfig) -> bool {
     let support = hit.support;
     if !root {

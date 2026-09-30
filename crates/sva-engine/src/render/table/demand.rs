@@ -41,6 +41,11 @@ pub(crate) fn demand(values: &[Value], asked: &[(usize, Extent)]) -> Vec<Need> {
                     }
                 }
             }
+            Kind::Stored { .. } => {
+                for read in &value.reads {
+                    holds[*read].union(&compute);
+                }
+            }
             Kind::Frames { .. } | Kind::Istft if !compute.is_empty() => {
                 let source = value.reads[0];
                 holds[source].add(values[source].support);

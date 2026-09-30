@@ -1,5 +1,6 @@
 // Concern: the one table of values, keyed by identity and step, that renders, streams, prices and logs read | Non-concern: typing, readings off samples | IO: (Typing, roots) -> Table, samples
 
+mod ahead;
 mod demand;
 pub(crate) mod edit;
 mod eval;
@@ -14,6 +15,7 @@ pub(crate) mod support;
 mod value;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 
 use sva_formula::{ClosedForm, Hash, Held as Representation, NodeId, Var};
 use sva_samples::{
@@ -24,13 +26,14 @@ use sva_samples::{
 pub(crate) use demand::Need;
 pub(crate) use value::{Held, Key, Kind, Value};
 
-use crate::cache::Recording;
+use crate::cache::{Recording, Stored};
 use crate::cast::Cast;
 use crate::error::EngineError;
 use crate::refs;
 use crate::time::Lattice;
 use crate::typing::{Typing, Value as Typed};
 use program::Source;
+use segments::Segments;
 use support::Supports;
 use value::Program;
 
@@ -60,6 +63,18 @@ impl Table {
         Table::bounded(tys, (root, wanted), profile, &BTreeSet::new())
     }
 
+    /// The same, each node `prefixes` names standing on the samples the store holds of it,
+    /// which its own value, computed live, continues past.
+    pub(crate) fn prefixed(
+        tys: &Typing,
+        root: NodeId,
+        profile: &Profile,
+        prefixes: &BTreeMap<NodeId, Arc<Stored>>,
+    ) -> Result<Table, EngineError> {
+        let bounds = (1, &BTreeSet::new(), prefixes);
+        Table::built(tys, (root, &[]), profile, bounds, false)
+    }
+
     /// The same, each of `bounds` a value of its own wherever it is read, never inlined.
     pub(crate) fn bounded(
         tys: &Typing,
@@ -67,7 +82,13 @@ impl Table {
         profile: &Profile,
         bounds: &BTreeSet<NodeId>,
     ) -> Result<Table, EngineError> {
-        Table::built(tys, (root, wanted), profile, (1, bounds), false)
+        Table::built(
+            tys,
+            (root, wanted),
+            profile,
+            (1, bounds, &BTreeMap::new()),
+            false,
+        )
     }
 
     /// Every read its own value, as if each were written out where it is read.
@@ -78,7 +99,8 @@ impl Table {
         wanted: &[NodeId],
         profile: &Profile,
     ) -> Result<Table, EngineError> {
-        Table::built(tys, (root, wanted), profile, (1, &BTreeSet::new()), true)
+        let none = (1, &BTreeSet::new(), &BTreeMap::new());
+        Table::built(tys, (root, wanted), profile, none, true)
     }
 
     /// Every value `fine` times finer than its own step: a closed form's reference.
@@ -89,20 +111,15 @@ impl Table {
         profile: &Profile,
         fine: i128,
     ) -> Result<Table, EngineError> {
-        Table::built(
-            tys,
-            (root, wanted),
-            profile,
-            (fine, &BTreeSet::new()),
-            false,
-        )
+        let finer = (fine, &BTreeSet::new(), &BTreeMap::new());
+        Table::built(tys, (root, wanted), profile, finer, false)
     }
 
     fn built(
         tys: &Typing,
         (root, wanted): (NodeId, &[NodeId]),
         profile: &Profile,
-        (fine, bounds): (i128, &BTreeSet<NodeId>),
+        (fine, bounds, prefixes): (i128, &BTreeSet<NodeId>, &BTreeMap<NodeId, Arc<Stored>>),
         apart: bool,
     ) -> Result<Table, EngineError> {
         let supports = Supports::new(tys);
@@ -112,6 +129,7 @@ impl Table {
             profile,
             fine,
             bounds,
+            prefixes,
             apart,
             copies: 0,
             reading: Vec::new(),
@@ -154,7 +172,7 @@ impl Table {
         let needs = self.demand(range);
         self.planned = self.price(&needs);
         for (planned, value) in self.planned.iter_mut().zip(&self.values) {
-            if let Kind::Stored { priced } = value.kind {
+            if let Kind::Stored { priced, .. } = value.kind {
                 *planned += priced;
             }
         }
@@ -328,8 +346,9 @@ impl Table {
             .any(|w| *w != root && self.values[*w].reads.contains(&root));
         for (at, need) in needs.into_iter().enumerate() {
             let whole = self.whole(at) && !(output && at == root);
-            let stored = matches!(self.values[at].kind, Kind::Stored { .. });
-            if self.values[at].alias().is_some() || whole || stored {
+            let value = &self.values[at];
+            let stored = matches!(value.kind, Kind::Stored { .. }) && value.reads.is_empty();
+            if value.alias().is_some() || whole || stored {
                 continue;
             }
             let mut kept = need.hold;
@@ -424,6 +443,7 @@ struct Building<'a> {
     profile: &'a Profile,
     fine: i128,
     bounds: &'a BTreeSet<NodeId>,
+    prefixes: &'a BTreeMap<NodeId, Arc<Stored>>,
     /// Every read its own value rather than one per identity.
     apart: bool,
     /// Values made apart so far, each its own key.
@@ -448,8 +468,58 @@ impl Building<'_> {
             identity: refs::identity_in(self.tys, id, &mut self.named)?,
             step: step(grid),
         };
-        let at = self.value(key, Source::Node(id), grid, self.tys.name(id))?;
+        let mut at = self.value(key, Source::Node(id), grid, self.tys.name(id))?;
+        if let Some(stored) = self.prefixes.get(&id) {
+            at = self.prefix(at, stored)?;
+        }
         self.nodes.insert(id, at);
+        Ok(at)
+    }
+
+    /// The stored samples of `live`'s node, reading `live` for all they miss; none where they
+    /// were written on another grid or width.
+    fn prefix(&mut self, live: usize, stored: &Stored) -> Result<usize, EngineError> {
+        let of = &self.values[live];
+        if stored.grid != of.grid || usize::from(stored.width) != of.width {
+            return Ok(live);
+        }
+        let key = Key {
+            identity: crate::cache::mixed(of.key.identity, &[PREFIX]),
+            step: of.key.step,
+        };
+        let mut covers = Segments::default();
+        for part in &stored.segments {
+            covers.add(part.extent().intersect(of.support));
+        }
+        let mut value = Value {
+            key,
+            node: of.node,
+            name: of.name.clone(),
+            grid: of.grid,
+            width: of.width,
+            support: of.support,
+            period: None,
+            kind: Kind::Stored {
+                priced: stored.priced,
+                covers: covers.clone(),
+            },
+            reads: vec![live],
+            held: Held::Segments(Vec::new()),
+            evaluated: covers.iter().collect(),
+            label: Some(stored.label.clone()),
+            switches: Vec::new(),
+            moved: stored.moved,
+            pure: true,
+        };
+        for part in &stored.segments {
+            for e in covers.intersect(part.extent()).iter() {
+                value.hold(part.over(e, part.extent()));
+            }
+        }
+        self.moved = self.moved.max(stored.moved);
+        self.values.push(value);
+        let at = self.values.len() - 1;
+        self.keys.insert(key, at);
         Ok(at)
     }
 
@@ -592,6 +662,7 @@ impl Building<'_> {
                 value.held = Held::Segments(held.segments.clone());
                 value.kind = Kind::Stored {
                     priced: held.priced,
+                    covers: value.holding(),
                 };
                 Ok(value)
             }
@@ -899,6 +970,9 @@ fn unbounded(name: &str) -> EngineError {
         help: "crop what a short-time transform takes to a window".to_string(),
     })
 }
+
+/// What sets a stored value's key apart from its live value's.
+const PREFIX: u64 = 0x70_72_65_66_69_78_00_01;
 
 fn step(grid: Grid) -> (i128, i128) {
     (grid.a, grid.d)

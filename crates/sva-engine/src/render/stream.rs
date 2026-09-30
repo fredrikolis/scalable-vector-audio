@@ -1,5 +1,8 @@
 // Concern: opens a target as a stream over a store, editing it and its terms live | Non-concern: pulling its blocks, what an edit carries on | IO: (Graph, target) -> Stream; (expr) -> Handle, bool
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use sva_ast::{Expr, Graph};
 use sva_formula::NodeId;
 use sva_samples::Extent;
@@ -9,12 +12,12 @@ use super::frontier::Frontier;
 use super::table::{Table, edit};
 use super::terms::{Handle, NOTES, Terms};
 use super::{Ends, Render, RenderConfig, range_of, through};
-use crate::cache::{Cache, CacheStats, Lookup, Outcome, Recording, Through};
+use crate::cache::{Cache, CacheStats, Lookup, Outcome, Recording, Stored, Through};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::flops::Work;
-use crate::instantiate::{self, Instances};
+use crate::instantiate;
 use crate::schedule;
-use crate::typing::{self, Typing};
+use crate::typing;
 
 pub const STREAMED: &str = "streamed";
 
@@ -26,7 +29,8 @@ pub struct StreamConfig {
 
 /// A target rendered block by block off one table. The target may read `@notes`, the sum of
 /// the terms added under handles; an edit to it or to a term plays from the next block on.
-/// Opening and each edit look `store` up first, as a render through it does.
+/// Opening and each edit look `store` up first: a node it answers plays from its samples, its
+/// own value computing what they miss.
 pub struct Stream {
     config: StreamConfig,
     shell: Render,
@@ -55,7 +59,7 @@ impl Stream {
     ) -> Result<Stream, EngineError> {
         let mut terms = Terms::default();
         let render = &blocked(&config)?.render;
-        let found = shelled(graph, target, &mut terms, render, None, store).await?;
+        let found = shelled(graph, target, &mut terms, render, store).await?;
         let mut recording = Recording::over(cache, config.render.cache_policy);
         recording.found(found.hits);
         let driver = Driver::new(
@@ -143,8 +147,7 @@ impl Stream {
     ) -> Result<(), EngineError> {
         let mut render = self.config.render.clone();
         render.range.start = Some(self.driver.start);
-        let now = Some(self.driver.at);
-        let found = shelled(graph, &target, &mut terms, &render, now, store).await?;
+        let found = shelled(graph, &target, &mut terms, &render, store).await?;
         let Shelled {
             shell,
             range,
@@ -168,6 +171,7 @@ impl Stream {
     /// The next block, cut where the stream ends; `None` from there on.
     pub fn next_block(&mut self) -> Result<Option<Block>, EngineError> {
         let block = self.driver.next_block()?;
+        self.dropped.append(&mut self.driver.dropped);
         self.prune();
         Ok(block)
     }
@@ -175,6 +179,7 @@ impl Stream {
     /// An edited node with no state there starts silent, never computing its past.
     pub fn go_live(&mut self) {
         self.live = true;
+        self.driver.live = true;
     }
 
     /// Each node a live edit started silent.
@@ -272,14 +277,13 @@ fn wrapped(graph: &Graph, target: &Expr, terms: &Terms) -> Result<Graph, EngineE
     Ok(wrapped)
 }
 
-/// The wrapped graph typed from the root down through `store`, as a render through it: a hit
-/// whose samples miss what the stream asks of it from `now` on is walked on into as a miss.
+/// The wrapped graph typed whole, each node `store` answers from the root down standing on its
+/// samples, and its own value, typed beneath it, computing what they miss.
 async fn shelled(
     graph: &Graph,
     target: &Expr,
     terms: &mut Terms,
     config: &RenderConfig,
-    now: Option<i64>,
     store: &impl Through,
 ) -> Result<Shelled, EngineError> {
     let wrapped = wrapped(graph, target, terms)?;
@@ -287,48 +291,28 @@ async fn shelled(
     let root = instances.instance_of(STREAMED)?;
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&root))?;
     let keys = through::keys(&wrapped, &instances, &order, config);
-    let mut found = Frontier::from((&instances, &order), &keys, &root, config);
-    loop {
-        found.walk(store).await;
-        let tys = typing::infer_over(&instances, &order.within(&found.visited), &found.stored)?;
-        let id = tys
-            .id(&root)
-            .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;
-        let shelled = typed(&instances, tys, id, terms, config)?;
-        let range = shelled.range;
-        let from = now.map_or(range.start, |now| now.clamp(range.start, range.end));
-        let short = through::short(&shelled.table, Extent::new(from, range.end));
-        if short.is_empty() {
-            let hits = found.lookups.into_iter();
-            let hits = hits
-                .filter(|lookup| lookup.outcome == Outcome::Hit)
-                .collect();
-            return Ok(Shelled { hits, ..shelled });
-        }
-        for path in short {
-            found.reopen(&path);
-        }
-    }
-}
-
-/// Each term's node named, then scheduled, ranged and tabled.
-fn typed(
-    instances: &Instances,
-    mut tys: Typing,
-    root: NodeId,
-    terms: &mut Terms,
-    config: &RenderConfig,
-) -> Result<Shelled, EngineError> {
-    terms.typed(instances, &mut tys);
-    let schedule = schedule::plan(&tys, root, &[]);
-    let shell = Render::shell(tys, root, config.clone(), schedule);
+    let mut found = Frontier::from((&instances, &order), &keys, &root, (config, true));
+    found.walk(store).await;
+    let mut tys = typing::infer_over(&instances, &order.within(&found.visited), &BTreeMap::new())?;
+    let id = tys
+        .id(&root)
+        .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;
+    terms.typed(&instances, &mut tys);
+    let prefixes: BTreeMap<NodeId, Arc<Stored>> = std::mem::take(&mut found.stored)
+        .into_iter()
+        .filter_map(|(path, stored)| Some((tys.id(&path)?, stored)))
+        .collect();
+    let schedule = schedule::plan(&tys, id, &[]);
+    let shell = Render::shell(tys, id, config.clone(), schedule);
     let range = range_of(&shell, Ends::Pulled)?;
-    let table = Table::build(&shell.tys, shell.root, &[], &shell.config.profile)?;
+    let table = Table::prefixed(&shell.tys, shell.root, &shell.config.profile, &prefixes)?;
+    let hits = found.lookups.into_iter();
+    let hits = hits.filter(|l| l.outcome == Outcome::Hit).collect();
     Ok(Shelled {
         shell,
         range,
         table,
-        hits: Vec::new(),
+        hits,
     })
 }
 

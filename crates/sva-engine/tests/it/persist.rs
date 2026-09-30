@@ -682,3 +682,161 @@ fn a_stream_reads_a_note_another_store_over_its_directory_persisted() {
     let hits: Vec<String> = hits.map(|l| l.node).collect();
     assert_eq!(hits, ["blip(f0=200)"], "{:?}", warm.stats());
 }
+
+/// A string held until `release`, never released here.
+const HELD: &str = "release = inf\nchaigne_askenfelt(f0, damper_r=0.1*crop(min(1, \
+    (t - release)/0.03s), release, inf))\n";
+
+/// A composition whose `string` a worker warmed over its first `stored` samples and persisted.
+fn warmed(name: &str, stored: i64) -> (Graph, Memory) {
+    let graph = graph_of(
+        name,
+        &[("string", HELD), ("warm", "@string(t, f0=261.63)\n")],
+    );
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    let config = RenderConfig {
+        range: Range {
+            start: Some(0),
+            end: Some(stored),
+        },
+        ..RenderConfig::at(RATE)
+    };
+    now(render_through(&graph, "warm", config, &store)).expect("a render");
+    now(store.persist()).expect("persisted");
+    (graph, memory)
+}
+
+const STRIKE: &str = "@string(t - 512sp, f0=261.63)";
+
+fn notes(graph: &Graph, end: i64, store: &impl sva_engine::Through) -> Stream {
+    let config = StreamConfig {
+        block: 256,
+        render: RenderConfig {
+            range: Range {
+                start: Some(0),
+                end: Some(end),
+            },
+            ..RenderConfig::at(RATE)
+        },
+    };
+    let master = sva_ast::parse_expr("@notes").expect("an expression");
+    now(Stream::open(graph, &master, config, None, store)).expect("a stream")
+}
+
+fn term(text: &str) -> sva_ast::Expr {
+    sva_ast::parse_expr(text).expect("an expression")
+}
+
+fn played(stream: &mut Stream) -> Vec<u64> {
+    let mut heard = Vec::new();
+    while let Some(block) = stream.next_block().expect("a block") {
+        heard.extend(block.plane(0).iter().map(|v| v.to_bits()));
+    }
+    heard
+}
+
+fn store_hits(stream: &Stream) -> Vec<String> {
+    let hits = stream.stats().lookups.into_iter();
+    hits.filter(|l| l.store == Some(true))
+        .map(|l| l.node)
+        .collect()
+}
+
+/// A held note the store holds over all the stream plays of it, key-up and fade included, is
+/// played from its samples: it computes nothing, and the blocks are a storeless stream's.
+#[test]
+fn a_stream_plays_a_stored_held_note_from_its_samples() {
+    let (graph, memory) = warmed("held-stored", 2_000);
+    let fade = format!("{STRIKE} * (1 - step(t - 1200sp)*(1 - exp(-(t - 1200sp)/0.15s)))");
+    let player = opened(&memory, u64::MAX);
+    let mut heard = Vec::new();
+    for store in [None, Some(&player)] {
+        let mut stream = match store {
+            Some(store) => notes(&graph, 2_000, store),
+            None => notes(&graph, 2_000, &NoStore),
+        };
+        let handle = match store {
+            Some(store) => now(stream.add(&graph, &term(STRIKE), store)),
+            None => now(stream.add(&graph, &term(STRIKE), &NoStore)),
+        };
+        let handle = handle.expect("added");
+        let mut blocks = Vec::new();
+        for _ in 0..4 {
+            let block = stream.next_block().expect("a block").expect("a block");
+            blocks.extend(block.plane(0).iter().map(|v| v.to_bits()));
+        }
+        let keyed = (handle, &term(&fade));
+        let replaced = match store {
+            Some(store) => now(stream.replace(&graph, keyed, store)),
+            None => now(stream.replace(&graph, keyed, &NoStore)),
+        };
+        assert!(replaced.expect("replaced"));
+        blocks.extend(played(&mut stream));
+        heard.push((blocks, stream.stats().lookups));
+    }
+    let (cold, warm) = (&heard[0], &heard[1]);
+    assert!(cold.0.iter().any(|b| *b != 0), "silence tests nothing");
+    assert_eq!(
+        warm.0, cold.0,
+        "the stored note is the live one, bit for bit"
+    );
+    let note = |lookups: &[sva_engine::Lookup]| -> Vec<(Outcome, Option<bool>)> {
+        let of = lookups
+            .iter()
+            .filter(|l| l.node == "string(f0=261.63, release=inf)");
+        of.map(|l| (l.outcome, l.store)).collect()
+    };
+    assert!(
+        !note(&cold.1).is_empty(),
+        "the storeless stream computes the note"
+    );
+    assert!(!note(&warm.1).is_empty());
+    assert!(
+        note(&warm.1)
+            .iter()
+            .all(|l| *l == (Outcome::Hit, Some(true))),
+        "the store answers the note, which computes nothing: {:?}",
+        note(&warm.1)
+    );
+}
+
+/// Held past what the store holds, the note continues live, seamlessly: an exact stream and a
+/// live one both play a storeless stream's blocks, and the live one starts nothing silent.
+#[test]
+fn a_held_note_longer_than_the_store_continues_live_seamlessly() {
+    let (graph, memory) = warmed("held-longer", 2_000);
+    let mut cold = notes(&graph, 8_000, &NoStore);
+    now(cold.add(&graph, &term(STRIKE), &NoStore)).expect("added");
+    let cold = played(&mut cold);
+    for live in [false, true] {
+        let player = opened(&memory, u64::MAX);
+        let mut warm = notes(&graph, 8_000, &player);
+        if live {
+            warm.go_live();
+        }
+        now(warm.add(&graph, &term(STRIKE), &player)).expect("added");
+        let first = warm.next_block().expect("a block").expect("a block");
+        assert_eq!(
+            warm.work().priced_flops,
+            0,
+            "live {live}: the first block is stored"
+        );
+        let mut heard: Vec<u64> = first.plane(0).iter().map(|v| v.to_bits()).collect();
+        heard.extend(played(&mut warm));
+        let first = heard.iter().zip(&cold).position(|(a, b)| a != b);
+        eprintln!(
+            "live {live} len {} {} first diff {first:?} dropped {:?}",
+            heard.len(),
+            cold.len(),
+            warm.dropped()
+        );
+        assert!(heard == cold, "live {live}");
+        assert!(
+            warm.dropped().is_empty(),
+            "live {live}: {:?}",
+            warm.dropped()
+        );
+        assert!(!store_hits(&warm).is_empty(), "live {live}");
+    }
+}

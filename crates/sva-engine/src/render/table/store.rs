@@ -69,6 +69,9 @@ impl Place {
 /// store answered nothing.
 pub(crate) fn load(value: &mut Value, place: &mut Place, recording: &Recording) -> bool {
     place.looked = true;
+    if matches!(value.kind, Kind::Stored { .. }) {
+        return false;
+    }
     let kind = Place::kind(value);
     let (rate, width) = (value.grid.rate, value.width);
     let stamp = recording.stamp(place.slot, place.fork, kind);
@@ -172,7 +175,7 @@ fn resumed(value: &mut Value, place: &mut Place, recording: &Recording) -> bool 
 
 /// The first time a value is asked: one lookup, answered by what it computes now.
 pub(crate) fn noted(value: &Value, place: &mut Place, computes: bool, recording: &mut Recording) {
-    if place.noted.is_some() {
+    if place.noted.is_some() || matches!(value.kind, Kind::Stored { .. }) {
         return;
     }
     let (kind, key) = (Place::kind(value), place.keyed(value));
@@ -244,7 +247,8 @@ pub(crate) fn stored(
     recording: &mut Recording,
 ) {
     let kind = Place::kind(value);
-    if computed.is_empty() || !value.pure || !recording.stores(place.fork, place.target) {
+    let stored = matches!(value.kind, Kind::Stored { .. });
+    if computed.is_empty() || stored || !value.pure || !recording.stores(place.fork, place.target) {
         return;
     }
     let stamp = recording.stamp(place.slot, place.fork, kind);

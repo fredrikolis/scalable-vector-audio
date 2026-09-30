@@ -27,7 +27,7 @@ pub async fn render_through<B: Backend>(
     let root = instances.instance_of(target)?;
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&root))?;
     let keys = keys(graph, &instances, &order, &config);
-    let mut found = frontier::Frontier::from((&instances, &order), &keys, &root, &config);
+    let mut found = frontier::Frontier::from((&instances, &order), &keys, &root, (&config, false));
     let (mut held, typed) = loop {
         found.walk(store).await;
         let tys = typing::infer_over(&instances, &order.within(&found.visited), &found.stored)?;
@@ -107,7 +107,7 @@ pub(crate) fn keys(
 }
 
 /// Each stored node whose samples miss some its readers ask over `range`.
-pub(crate) fn short(table: &Table, range: sva_samples::Extent) -> Vec<String> {
+fn short(table: &Table, range: sva_samples::Extent) -> Vec<String> {
     let needs = table.demand(range);
     table
         .values

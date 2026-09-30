@@ -18,10 +18,17 @@ pub(crate) struct Key {
 pub(crate) enum Kind {
     Rows(Box<Rows>),
     Program(Box<Program>),
-    Frames { window: usize, hop: usize },
+    Frames {
+        window: usize,
+        hop: usize,
+    },
     Istft,
     Spectrum(Box<SpectralSum>),
-    Stored { priced: u128 },
+    /// The store's samples over `covers`; a value it reads computes what they miss.
+    Stored {
+        priced: u128,
+        covers: Segments,
+    },
 }
 
 pub(crate) struct Program {
