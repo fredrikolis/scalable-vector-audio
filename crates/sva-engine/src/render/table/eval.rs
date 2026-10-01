@@ -41,9 +41,18 @@ pub(crate) fn compute(
                 0
             }
         };
-        value.evaluated.push(segment);
+        evaluated(&mut value.evaluated, segment);
     }
     Ok((priced, waves))
+}
+
+/// A segment continuing the last one computed extends it, so a value pulled block by block
+/// keeps one segment per unbroken run, however long it plays.
+fn evaluated(held: &mut Vec<Extent>, segment: Extent) {
+    match held.last_mut() {
+        Some(last) if last.end == segment.start => last.end = segment.end,
+        _ => held.push(segment),
+    }
 }
 
 fn rows(value: &mut Value, segment: Extent) -> Result<u128, EngineError> {

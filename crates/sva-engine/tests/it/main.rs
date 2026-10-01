@@ -33,6 +33,7 @@ mod release;
 mod ringing;
 mod sampled;
 mod segments;
+mod session;
 mod skip;
 mod stats;
 mod stores;
