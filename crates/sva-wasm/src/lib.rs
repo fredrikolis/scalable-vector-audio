@@ -843,17 +843,29 @@ impl Stream {
         ))
     }
 
-    /// `late`: edits landed past where issued.
+    /// `late`: edits landed past where issued; `built`: what the latest change built anew.
     pub fn counts(&self) -> Result<JsValue, JsValue> {
         let counts = self.edits.inner.borrow().counts();
-        let out = js_sys::Object::new();
-        for (key, value) in [
+        let whole = |pairs: &[(&str, usize)]| -> Result<js_sys::Object, JsValue> {
+            let out = js_sys::Object::new();
+            for (key, value) in pairs {
+                js_sys::Reflect::set(&out, &(*key).into(), &(*value as f64).into())?;
+            }
+            Ok(out)
+        };
+        let built = counts.built;
+        let out = whole(&[
             ("dropped", counts.dropped),
             ("late", counts.late),
             ("terms", counts.terms),
-        ] {
-            js_sys::Reflect::set(&out, &key.into(), &(value as f64).into())?;
-        }
+        ])?;
+        let built = whole(&[
+            ("instances", built.instances),
+            ("typed", built.typed),
+            ("values", built.values),
+            ("lookups", built.lookups),
+        ])?;
+        js_sys::Reflect::set(&out, &"built".into(), &built)?;
         Ok(out.into())
     }
 

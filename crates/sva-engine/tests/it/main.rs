@@ -25,6 +25,7 @@ mod placement;
 mod pointwise;
 mod policies;
 mod pruning;
+mod rebuild;
 mod refs;
 mod refusals;
 mod release;

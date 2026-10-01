@@ -54,6 +54,11 @@ impl Order {
         self.deps.get(path).map_or(&[], Vec::as_slice)
     }
 
+    /// What each node reads.
+    pub(crate) fn into_deps(self) -> BTreeMap<String, Vec<String>> {
+        self.deps
+    }
+
     pub(crate) fn within(&self, kept: &BTreeSet<String>) -> Order {
         Order {
             groups: self

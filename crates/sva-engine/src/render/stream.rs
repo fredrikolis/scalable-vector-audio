@@ -1,6 +1,6 @@
 // Concern: opens a target as a stream over a store, editing it and its terms live | Non-concern: pulling its blocks, what an edit carries on | IO: (Graph, target) -> Stream; (Change) -> Changed
 
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -52,6 +52,10 @@ pub struct Stream {
     live: bool,
     dropped: Recent<String>,
     late: usize,
+    built: Built,
+    /// Each instance's store key, and what it reads, as the stream plays it.
+    keys: BTreeMap<String, Hash>,
+    reads: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -60,9 +64,20 @@ pub struct Counts {
     /// Edits that landed past the sample they were issued at.
     pub late: usize,
     pub terms: usize,
+    /// The latest change's, or the open's.
+    pub built: Built,
 }
 
-/// Each hit met: a header holds until its store moves the samples; any holder may fill a miss.
+/// What one change built anew, not what it carried over.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Built {
+    pub instances: usize,
+    pub typed: usize,
+    pub values: usize,
+    pub lookups: usize,
+}
+
+/// Each lookup met, until its store moves the samples.
 #[derive(Default)]
 struct Met {
     epoch: u64,
@@ -86,9 +101,9 @@ impl Met {
         }
     }
 
-    fn hits(&mut self, store: &impl Through) -> Vec<(Hash, Option<Arc<Stored>>)> {
-        let hits = self.over(store).iter().filter(|(_, found)| found.is_some());
-        hits.map(|(key, found)| (*key, found.clone())).collect()
+    fn entries(&mut self, store: &impl Through) -> Vec<(Hash, Option<Arc<Stored>>)> {
+        let entries = self.over(store).iter();
+        entries.map(|(key, found)| (*key, found.clone())).collect()
     }
 }
 
@@ -97,6 +112,9 @@ struct Shelled {
     range: Extent,
     table: Table,
     hits: Vec<Lookup>,
+    built: Built,
+    keys: BTreeMap<String, Hash>,
+    reads: BTreeMap<String, Vec<String>>,
 }
 
 impl Stream {
@@ -110,16 +128,20 @@ impl Stream {
         let terms = Terms::default();
         let (mut known, epoch) = (Known::new(), store.epoch());
         let render = &blocked(&config)?.render;
-        let walk = async |found: &mut Frontier<'_>| found.walked(&mut known, store).await;
-        let mut found = shelled(graph, target, &terms, render, walk).await?;
+        let lookups = std::cell::Cell::new(0);
+        let walk = async |found: &mut Frontier<'_>| {
+            lookups.set(found.walked(&mut known, store).await);
+        };
+        let mut found = shelled(graph, target, &terms, render, (walk, || None)).await?;
+        found.built.lookups = lookups.get();
         let width = config.channels.unwrap_or(found.width());
         if width == 0 {
             return Err(refusal("a stream of no channels".to_string()));
         }
         widens(found.width(), width)?;
         let mut met = Met::default();
-        for (key, hit) in known.into_iter().filter(|(_, found)| found.is_some()) {
-            met.noted(key, &hit, epoch, store);
+        for (key, found) in known {
+            met.noted(key, &found, epoch, store);
         }
         let next = ahead(found.range.start, render.rate);
         through::load(&mut found.table, store, next, &BTreeSet::new()).await;
@@ -143,6 +165,9 @@ impl Stream {
             live: false,
             dropped: Recent::keeping(LATEST),
             late: 0,
+            built: found.built,
+            keys: found.keys,
+            reads: found.reads,
             driver,
             config,
             shell: found.shell,
@@ -230,7 +255,12 @@ impl Stream {
             range,
             mut table,
             hits,
+            built,
+            keys,
+            reads,
         } = shelled;
+        self.built = built;
+        (self.keys, self.reads) = (keys, reads);
         let old = std::mem::replace(&mut self.driver.table, Table::empty());
         let dropped = edit::carried(&mut table, old, self.driver.at, self.live);
         for (key, samples) in fetched {
@@ -343,6 +373,7 @@ impl Stream {
             dropped: self.dropped.made(),
             late: self.late,
             terms: self.terms.count(),
+            built: self.built,
         }
     }
 
@@ -464,28 +495,29 @@ pub async fn change<E: From<EngineError>>(
     let mut fetched: Vec<(Hash, Vec<Buffer>)> = Vec::new();
     let (mut unread, mut asked) = (BTreeSet::new(), Vec::<(Hash, Extent)>::new());
     let issued = stream.borrow().driver.at;
+    let lookups = std::cell::Cell::new(0);
     loop {
         let change = build(&stream.borrow())?;
         let prospect = match stream.borrow().prospect(change) {
             Ok(prospect) => prospect,
             Err(answer) => return Ok(answer),
         };
-        for (key, hit) in stream.borrow_mut().met.hits(store) {
-            local.noted(key, &hit, store.epoch(), store);
+        for (key, found) in stream.borrow_mut().met.entries(store) {
+            local.noted(key, &found, store.epoch(), store);
         }
         let walk = async |found: &mut Frontier<'_>| {
             while let Some(key) = found.walk(local.over(store)) {
                 let epoch = store.epoch();
+                lookups.set(lookups.get() + 1);
                 let found = store.lookup(key).await.map(Arc::new);
-                if found.is_some() {
-                    stream.borrow_mut().met.noted(key, &found, epoch, store);
-                }
+                stream.borrow_mut().met.noted(key, &found, epoch, store);
                 local.noted(key, &found, epoch, store);
             }
         };
         let (graph, target) = (&prospect.graph, &prospect.target);
         let config = &prospect.render;
-        let mut shelled = shelled(graph, target, &prospect.terms, config, walk).await?;
+        let prior = || Some(stream.borrow());
+        let mut shelled = shelled(graph, target, &prospect.terms, config, (walk, prior)).await?;
         widens(shelled.width(), stream.borrow().width())?;
         let standing = (prospect.generation, prospect.landing);
         loop {
@@ -498,6 +530,7 @@ pub async fn change<E: From<EngineError>>(
             };
             if wants.is_empty() {
                 let answer = prospect.answer;
+                shelled.built.lookups = lookups.get();
                 stream
                     .borrow_mut()
                     .apply((prospect, issued), shelled, &fetched);
@@ -573,15 +606,19 @@ fn wrapped(graph: &Graph, target: &Expr, terms: &Terms) -> Result<Graph, EngineE
 }
 
 /// The wrapped graph typed whole, each node the store answers standing on its samples.
-async fn shelled(
+async fn shelled<'s>(
     graph: &Graph,
     target: &Expr,
     terms: &Terms,
     config: &RenderConfig,
-    walk: impl AsyncFnOnce(&mut Frontier<'_>),
+    (walk, prior): (
+        impl AsyncFnOnce(&mut Frontier<'_>),
+        impl Fn() -> Option<Ref<'s, Stream>>,
+    ),
 ) -> Result<Shelled, EngineError> {
     let wrapped = wrapped(graph, target, terms)?;
     let instances = instantiate::instantiate(&wrapped, STREAMED, config.rate)?;
+    let named = instances.paths().count();
     let root = instances.instance_of(STREAMED)?;
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&root))?;
     let keys = through::keys(&wrapped, &instances, &order, config);
@@ -589,6 +626,9 @@ async fn shelled(
     if !terms.is_empty() {
         found.unstored(reading(&order, &instances.instance_of(NOTES)?));
         found.unstored(terms.handles().map(Handle::node));
+    }
+    if let Some(prior) = prior() {
+        found.asking(anew((&prior.keys, &prior.reads), &keys, &order));
     }
     walk(&mut found).await;
     let mut tys = typing::infer_over(&instances, &order.within(&found.visited), &BTreeMap::new())?;
@@ -604,14 +644,46 @@ async fn shelled(
     let shell = Render::shell(tys, id, config.clone(), schedule);
     let range = range_of(&shell, Ends::Pulled)?;
     let table = Table::prefixed(&shell.tys, shell.root, &shell.config.profile, &prefixes)?;
-    let hits = found.lookups.into_iter();
+    let hits = std::mem::take(&mut found.lookups).into_iter();
     let hits = hits.filter(|l| l.outcome == Outcome::Hit).collect();
+    drop(found);
+    let built = Built {
+        instances: named,
+        typed: shell.tys.lowered().len(),
+        values: table.built,
+        lookups: 0,
+    };
     Ok(Shelled {
         shell,
         range,
         table,
         hits,
+        built,
+        keys,
+        reads: order.into_deps(),
     })
+}
+
+/// The key of each read a changed node makes and did not in `prior`: any holder may fill a
+/// miss, so one read anew is asked again.
+fn anew(
+    (prior, reads): (&BTreeMap<String, Hash>, &BTreeMap<String, Vec<String>>),
+    keys: &BTreeMap<String, Hash>,
+    order: &schedule::Order,
+) -> BTreeSet<Hash> {
+    let changed = keys
+        .iter()
+        .filter(|(path, key)| prior.get(*path) != Some(key));
+    let mut out = BTreeSet::new();
+    for (path, _) in changed {
+        let before = reads.get(path).map_or(&[][..], Vec::as_slice);
+        let new = order
+            .deps(path)
+            .iter()
+            .filter(|read| !before.contains(read));
+        out.extend(new.filter_map(|read| keys.get(read)));
+    }
+    out
 }
 
 impl Shelled {

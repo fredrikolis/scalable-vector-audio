@@ -21,6 +21,7 @@ pub(crate) struct Frontier<'w> {
     config: &'w RenderConfig,
     streaming: bool,
     pinned: BTreeSet<String>,
+    again: BTreeSet<Hash>,
     /// Walked beneath a streamed hit, not looked up.
     unlooked: BTreeSet<String>,
     stack: Vec<Step>,
@@ -49,6 +50,7 @@ impl<'w> Frontier<'w> {
             config,
             streaming,
             pinned: pinned(inst, order, config),
+            again: BTreeSet::new(),
             unlooked: BTreeSet::new(),
             stack: vec![Step::Visit(root.to_string(), true)],
             stored: BTreeMap::new(),
@@ -79,8 +81,9 @@ impl<'w> Frontier<'w> {
             let key = self.keys[&path];
             let found = match look && !self.pinned.contains(&path) {
                 true => match known.get(&key) {
-                    Some(found) => found.clone(),
-                    None => {
+                    Some(found) if found.is_some() || !self.again.contains(&key) => found.clone(),
+                    _ => {
+                        self.again.remove(&key);
                         self.stack.push(Step::Visit(path, look));
                         return Some(key);
                     }
@@ -109,15 +112,23 @@ impl<'w> Frontier<'w> {
         None
     }
 
-    pub(crate) async fn walked(&mut self, known: &mut Known, store: &impl Through) {
+    pub(crate) async fn walked(&mut self, known: &mut Known, store: &impl Through) -> usize {
+        let mut made = 0;
         while let Some(key) = self.walk(known) {
             known.insert(key, store.lookup(key).await.map(Arc::new));
+            made += 1;
         }
+        made
     }
 
     /// Nodes no store can hold, never looked up.
     pub(crate) fn unstored(&mut self, paths: impl IntoIterator<Item = String>) {
         self.pinned.extend(paths);
+    }
+
+    /// Keys asked again where `known` holds a miss of them.
+    pub(crate) fn asking(&mut self, keys: impl IntoIterator<Item = Hash>) {
+        self.again.extend(keys);
     }
 
     /// A hit whose samples fall short of what its readers ask, walked on into as a miss.

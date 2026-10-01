@@ -865,6 +865,15 @@ fn a_stream_counts_what_it_did_and_lists_only_its_latest_lookups() {
         "{}",
         as_text(&counts)
     );
+    let built = field(&counts, "built");
+    for name in ["instances", "typed", "values", "lookups"] {
+        let value = field(&built, name).as_f64();
+        assert!(
+            value.is_some_and(|v| v >= 1.0 && v.fract() == 0.0),
+            "the last add built `{name}` as a whole number: {}",
+            as_text(&counts)
+        );
+    }
     let stats = stream
         .stats()
         .unwrap_or_else(|_| unreachable!("stats answer"));

@@ -50,6 +50,8 @@ pub(crate) struct Table {
     pub(crate) moved: f64,
     /// Each node pruned under the profile's level, and the sample it is zero from.
     pub(crate) cuts: Vec<(String, i64)>,
+    /// The values it built from their node or formula.
+    pub(crate) built: usize,
 }
 
 impl Table {
@@ -133,6 +135,7 @@ impl Table {
             prefixes,
             apart,
             copies: 0,
+            built: 0,
             reading: Vec::new(),
             named: BTreeMap::new(),
             keys: HashMap::new(),
@@ -162,6 +165,7 @@ impl Table {
             profile: *profile,
             moved: building.moved,
             cuts,
+            built: building.built,
         })
     }
 
@@ -196,6 +200,7 @@ impl Table {
             profile: sva_samples::PSYCHOACOUSTIC_V1,
             moved: 0.0,
             cuts: Vec::new(),
+            built: 0,
         }
     }
 
@@ -486,6 +491,8 @@ struct Building<'a> {
     apart: bool,
     /// Values made apart so far, each its own key.
     copies: u64,
+    /// Values built from their node or formula so far.
+    built: usize,
     /// The nodes whose reads are being built, apart.
     reading: Vec<NodeId>,
     named: BTreeMap<NodeId, Hash>,
@@ -631,6 +638,7 @@ impl Building<'_> {
             return Err(refs::cyclic(self.tys, id));
         }
         self.open.push(key);
+        self.built += 1;
         let built = self.built(key, &source, grid, name);
         self.open.pop();
         let value = built?;
