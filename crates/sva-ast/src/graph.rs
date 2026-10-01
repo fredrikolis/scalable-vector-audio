@@ -185,6 +185,10 @@ impl Graph {
         self.per_bar.map(PerBar::secs)
     }
 
+    pub fn per_bar(&self) -> Option<PerBar> {
+        self.per_bar
+    }
+
     /// Adds a node no file backs — an ad-hoc expression read in this graph's namespace.
     /// `false` when `path` is taken, so a probe can never shadow a composition's own file.
     pub fn define(&mut self, path: &str, expr: Expr) -> bool {
@@ -300,13 +304,22 @@ impl Graph {
     /// Expands every `repeat`/`concat` call into `crop` + shifted-ref + sum (FORMAT.md sugar).
     /// Must run AFTER [`Self::resolve_bar_spans`]; a still-`Bars` span here is refused.
     pub fn desugar_arrangement(&mut self) -> Result<(), Vec<Refusal>> {
+        self.desugared(None)
+    }
+
+    /// The same, a span this graph lacks read in `beside`.
+    pub fn desugar_arrangement_beside(&mut self, beside: &Graph) -> Result<(), Vec<Refusal>> {
+        self.desugared(Some(beside))
+    }
+
+    fn desugared(&mut self, beside: Option<&Graph>) -> Result<(), Vec<Refusal>> {
         let paths: Vec<String> = self.nodes.keys().cloned().collect();
         let mut refusals = Vec::new();
         let mut rewritten = Vec::new();
 
         for path in &paths {
             let expr = self.expr(path).expect("path came from nodes.keys()");
-            match self.rewrite_arrangement(path, expr) {
+            match self.rewrite_arrangement(path, expr, beside) {
                 Ok(new_expr) => rewritten.push((path.clone(), new_expr)),
                 Err(r) => refusals.push(r),
             }
@@ -326,21 +339,37 @@ impl Graph {
     }
 
     pub fn define_arranged(&mut self, path: &str, expr: Expr) -> Result<bool, Refusal> {
-        let arranged = self.rewrite_arrangement(path, &expr)?;
+        let arranged = self.rewrite_arrangement(path, &expr, None)?;
         Ok(self.define(path, arranged))
     }
 
-    fn rewrite_arrangement(&self, referencing: &str, e: &Expr) -> Result<Expr, Refusal> {
+    /// The same, a span this graph lacks read in `beside`.
+    pub fn define_arranged_beside(
+        &mut self,
+        beside: &Graph,
+        path: &str,
+        expr: Expr,
+    ) -> Result<bool, Refusal> {
+        let arranged = self.rewrite_arrangement(path, &expr, Some(beside))?;
+        Ok(self.define(path, arranged))
+    }
+
+    fn rewrite_arrangement(
+        &self,
+        referencing: &str,
+        e: &Expr,
+        beside: Option<&Graph>,
+    ) -> Result<Expr, Refusal> {
         let rebuilt = map_children(e, Binds::Substitute, |c| {
-            self.rewrite_arrangement(referencing, c)
+            self.rewrite_arrangement(referencing, c, beside)
         })?;
         // Bottom-up: a `repeat`/`concat` expands only once its own arguments are rewritten.
         match &rebuilt {
             Expr::Call { name, args, span } if name == "repeat" => {
-                self.expand_repeat(referencing, args, *span)
+                self.expand_repeat((referencing, beside), args, *span)
             }
             Expr::Call { name, args, span } if name == "concat" => {
-                self.expand_concat(referencing, args, *span)
+                self.expand_concat((referencing, beside), args, *span)
             }
             _ => Ok(rebuilt),
         }
@@ -349,7 +378,7 @@ impl Graph {
     /// `repeat(@x, n)` desugars to `concat(@x, @x, ..., @x)`, `n` copies of the same argument.
     fn expand_repeat(
         &self,
-        referencing: &str,
+        (referencing, beside): (&str, Option<&Graph>),
         args: &[Arg],
         span: ByteSpan,
     ) -> Result<Expr, Refusal> {
@@ -378,7 +407,7 @@ impl Graph {
         };
 
         let concat_args: Vec<Arg> = (0..n).map(|_| Arg::Pos(x.clone())).collect();
-        self.expand_concat(referencing, &concat_args, span)
+        self.expand_concat((referencing, beside), &concat_args, span)
     }
 
     /// `concat(@a, @b, ...)` desugars to a sum of each argument, cropped to its own
@@ -386,7 +415,7 @@ impl Graph {
     /// it — sequential placement, zero manual offset arithmetic from the composition author.
     fn expand_concat(
         &self,
-        referencing: &str,
+        (referencing, beside): (&str, Option<&Graph>),
         args: &[Arg],
         span: ByteSpan,
     ) -> Result<Expr, Refusal> {
@@ -428,7 +457,8 @@ impl Graph {
             let Some(target) = resolve_ref_path(referencing, path) else {
                 return Err(above_root(referencing, *ref_span, path, &self.root));
             };
-            let file_span = match self.span(&target) {
+            let held = self.span(&target);
+            let file_span = match held.or_else(|| beside?.span(&target)) {
                 Some(fs) if fs.unit == SpanUnit::Seconds => fs,
                 Some(_) => {
                     return Err(Refusal::new(
@@ -516,7 +546,7 @@ pub fn load(source: &dyn Source) -> Result<Graph, Vec<Refusal>> {
             reason: Skip::Special,
         });
     }
-    loading.finish()
+    loading.finish(None)
 }
 
 /// Whether anything names this path: a ref path, or one an instance's binds follow, which
@@ -551,7 +581,25 @@ pub fn load_reaching(source: &dyn Source, roots: &[&str]) -> Result<Graph, Vec<R
         }
         work.extend(loading.reads(&path));
     }
-    loading.finish()
+    loading.finish(None)
+}
+
+/// What `roots` reach that `base` does not hold, and nothing `base` holds: each node read and
+/// parsed once, a ref into `base` resolving there.
+pub fn load_beside(
+    source: &dyn Source,
+    roots: &[&str],
+    base: &Graph,
+) -> Result<Graph, Vec<Refusal>> {
+    let mut loading = Loading::new(source.name());
+    let mut work: Vec<String> = roots.iter().rev().map(|r| (*r).to_string()).collect();
+    while let Some(path) = work.pop() {
+        if base.defines(&path) || loading.holds(&path) || !loading.pull(source, &path) {
+            continue;
+        }
+        work.extend(loading.reads(&path));
+    }
+    loading.finish(Some(base))
 }
 
 /// One parsed node at a time, so pulling everything and pulling a closure are the same walk.
@@ -639,11 +687,14 @@ impl Loading {
         }
     }
 
-    fn finish(self) -> Result<Graph, Vec<Refusal>> {
+    /// Every ref resolving here or in `base`.
+    fn finish(self, base: Option<&Graph>) -> Result<Graph, Vec<Refusal>> {
         if !self.refusals.is_empty() {
             return Err(self.refusals);
         }
-        let dangling = check_refs(&self.nodes, &self.texts, &self.name);
+        let held =
+            |path: &str| self.nodes.contains_key(path) || base.is_some_and(|b| b.defines(path));
+        let dangling = check_refs((&self.nodes, &held), &self.texts, &self.name);
         if !dangling.is_empty() {
             return Err(dangling);
         }
@@ -739,8 +790,10 @@ fn collect_named(e: &Expr, out: &mut Vec<String>) {
     }
 }
 
+type Holds<'a> = &'a dyn Fn(&str) -> bool;
+
 fn check_refs(
-    nodes: &BTreeMap<String, Expr>,
+    (nodes, held): (&BTreeMap<String, Expr>, Holds),
     texts: &HashMap<String, String>,
     root: &str,
 ) -> Vec<Refusal> {
@@ -753,7 +806,7 @@ fn check_refs(
                 refusals.push(above_root(path, site.span, &site.path, root));
                 continue;
             };
-            if !nodes.contains_key(&target) {
+            if !held(&target) {
                 let hint = texts
                     .get(path)
                     .and_then(|text| digit_segment_hint(text, site.span.end))

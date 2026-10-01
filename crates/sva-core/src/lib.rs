@@ -117,13 +117,8 @@ impl<'a> Job<'a> {
 }
 
 fn settle(job: &Job) -> Result<(Graph, RenderConfig), CliError> {
-    settle_reaching(job, &[])
-}
-
-fn settle_reaching(job: &Job, also: &[String]) -> Result<(Graph, RenderConfig), CliError> {
     let Target { expr, interval } = target(job.target)?;
-    let mut roots = roots_of(job.source, &expr)?;
-    roots.extend_from_slice(also);
+    let roots = roots_of(job.source, &expr)?;
     let mut graph = settled(sva_ast::load_reaching(
         job.source,
         &roots.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -377,27 +372,49 @@ async fn changed(
     })
 }
 
-/// `text` with no interval, and a graph reaching it and all the stream plays.
+/// `text` with no interval, and each node it reads that `stream` does not hold yet, read and
+/// parsed off `source`: a node the stream holds plays as it first read it.
 fn streamed(
     stream: &Stream,
     source: &dyn Source,
     text: &str,
 ) -> Result<(Graph, sva_ast::Expr), CliError> {
-    let playing: Vec<String> = stream
-        .exprs()
-        .flat_map(|e| sva_ast::reads_of(PROBE, e))
-        .collect();
-    let (graph, config) = settle_reaching(&Job::over(source, text), &playing)?;
-    if config.range != Range::default() {
+    let Target { expr, interval } = target(text)?;
+    if interval.is_some() {
         return Err(CliError::Usage(format!(
             "`{text}` reads an interval, and a stream keeps its own"
         )));
     }
-    let expr = graph
+    let held = stream.graph();
+    let roots = roots_of(source, &expr)?;
+    let roots: Vec<&str> = roots.iter().map(String::as_str).collect();
+    let mut delta = sva_ast::load_beside(source, &roots, held).map_err(CliError::Refusals)?;
+    if let Some(per_bar) = held.per_bar() {
+        delta.resolve_bar_spans(per_bar);
+    }
+    delta
+        .desugar_arrangement_beside(held)
+        .map_err(CliError::Refusals)?;
+    let parsed = sva_ast::parse_expr(&expr).map_err(|d| {
+        CliError::BadProbe(format!(
+            "`{text}` does not parse as an expression: {}",
+            d.message
+        ))
+    })?;
+    let defined = delta
+        .define_arranged_beside(held, PROBE, parsed)
+        .map_err(|r| CliError::Refusals(vec![r]))?;
+    if !defined {
+        return Err(CliError::BadProbe(format!(
+            "this composition already has a node named `{PROBE}`"
+        )));
+    }
+    tempo::refuse_unresolved_bars(&delta)?;
+    let expr = delta
         .expr(PROBE)
         .cloned()
         .expect("the target was defined as the probe");
-    Ok((graph, expr))
+    Ok((delta, expr))
 }
 
 /// A double holds no bit past its own mantissa, and one bit writes only zero.

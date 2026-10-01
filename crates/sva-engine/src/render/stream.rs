@@ -169,14 +169,6 @@ impl Stream {
         Ok(stream)
     }
 
-    pub fn exprs(&self) -> impl Iterator<Item = &Expr> {
-        let terms = self
-            .terms
-            .handles()
-            .filter_map(|h| self.world.graph.expr(&h.node()));
-        std::iter::once(&self.expr).chain(terms)
-    }
-
     pub fn graph(&self) -> &Graph {
         &self.world.graph
     }
@@ -414,9 +406,8 @@ impl Stream {
         self.driver.table.took(key, samples);
     }
 
-    /// `n` samples from sample `at`, cut where the stream ends; `None` from there on. An `at`
-    /// behind the stream is refused; one past it skips there, computing through the span, or,
-    /// live, as `go_live` says.
+    /// `n` samples from `at`, `None` past the end. An `at` behind is refused; one ahead skips
+    /// there, computing through the span, or, live, as `go_live` says.
     pub fn read(&mut self, at: i64, n: usize) -> Result<Option<Block>, EngineError> {
         let now = self.driver.at;
         if at < now {
@@ -456,9 +447,8 @@ impl Stream {
         Ok(block.map(|b| b.widened(self.width)))
     }
 
-    /// An edited node with no state there, or one a read skips past, starts silent there,
-    /// never computing its past, and is named in `dropped`; a formula reads on exactly. Silent,
-    /// it plays on.
+    /// An edited node with no state, or one a read skips past, starts silent, never computing
+    /// its past, named in `dropped`; a formula reads on exactly.
     pub fn go_live(&mut self) {
         self.live = true;
         let last = self.last(self.driver.last());
