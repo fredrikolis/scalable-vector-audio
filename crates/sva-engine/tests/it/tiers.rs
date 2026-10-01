@@ -287,3 +287,19 @@ fn a_fetch_makes_a_bounded_number_of_disk_reads() {
     assert!(reads.iter().all(|n| *n <= FETCH_READS as u64), "{reads:?}");
     assert!(reads[1] > 0, "the next fetch reads on: {reads:?}");
 }
+
+/// A render the store answers whole computes nothing, so it prices nothing; the cold one it
+/// stands on priced what it computed.
+#[test]
+fn a_render_the_store_answers_whole_prices_nothing() {
+    let memory = Memory::default();
+    let graph = blip("priced", 110);
+    let cold = now(render_over(&graph, "warm", over(800), &Tier::default())).expect("a render");
+    persisted(&memory, &graph, "warm", 800);
+    let tier = opened(&memory, u64::MAX);
+    let held = now(render_over(&graph, "warm", over(800), &tier)).expect("a render");
+    assert!(cold.work().priced_flops > 0, "{:?}", cold.work());
+    assert_eq!(held.work().priced_flops, 0, "{:?}", held.work());
+    assert_eq!(held.work().samples, cold.work().samples);
+    assert_eq!(bits(&held), bits(&cold));
+}

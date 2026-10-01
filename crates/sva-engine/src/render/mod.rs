@@ -115,6 +115,8 @@ pub struct Render {
     pub(crate) unranged: Option<EngineError>,
     /// Every value the render read, each over the segments it computed.
     pub(crate) table: Option<Table>,
+    /// The price of what its pulls computed.
+    computed: u128,
 }
 
 impl Render {
@@ -140,14 +142,15 @@ impl Render {
             range: None,
             unranged: None,
             table: None,
+            computed: 0,
         }
     }
 
-    /// What its schedule prices: every value once over the range, whatever memory answered.
+    /// What it computed: nothing memory answered is priced.
     pub fn work(&self) -> crate::flops::Work {
         crate::flops::Work {
             samples: self.range.map_or(0, |range| range.len() as u64),
-            priced_flops: crate::flops::total(self),
+            priced_flops: self.computed,
             waves: None,
         }
     }
@@ -452,6 +455,7 @@ fn driving(held: &mut Render, recording: Recording) -> Result<Option<drive::Driv
 fn drove(held: &mut Render, driver: drive::Driver, keep: bool) {
     let range = held.range.expect("a pulled render has a range");
     held.held_bytes = driver.most_bytes();
+    held.computed = driver.work.priced_flops;
     held.cache_stats = Some(driver.recording.stats());
     if let Some(stop) = driver.stop().filter(|stop| *stop < range.end) {
         held.range = Some(Extent::new(range.start, stop));

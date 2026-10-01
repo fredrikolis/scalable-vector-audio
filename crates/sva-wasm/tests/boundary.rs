@@ -1013,7 +1013,7 @@ fn a_stream_refuses_what_it_cannot_take_at_the_boundary() {
 }
 
 /// A sine is one line and its mirror, turned at each sample of its one period, 80 samples of
-/// 100 Hz at 8 kHz; a render prices its schedule.
+/// 100 Hz at 8 kHz; a render prices what it computes, and memory answering it, nothing.
 #[wasm_bindgen_test]
 fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
     let held = page();
@@ -1028,12 +1028,24 @@ fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
     assert_eq!(count(&work, "waves"), Some(2.0 * 80.0));
     assert!(count(&work, "priced_flops").is_some_and(|f| f > 0.0));
 
-    let whole = render(&held, "partials/one")
-        .work()
-        .unwrap_or_else(|_| unreachable!("a render's work"));
+    let fresh = page();
+    let work = |held: &Composition| {
+        render(held, "partials/one")
+            .work()
+            .unwrap_or_else(|_| unreachable!("a render's work"))
+    };
+    let whole = work(&fresh);
     assert_eq!(count(&whole, "samples"), Some(8000.0));
     assert!(count(&whole, "priced_flops").is_some_and(|f| f > 0.0));
     assert!(field(&whole, "waves").is_null());
+    let again = work(&fresh);
+    assert_eq!(count(&again, "samples"), Some(8000.0));
+    assert_eq!(
+        count(&again, "priced_flops"),
+        Some(0.0),
+        "{}",
+        as_text(&again)
+    );
 }
 
 /// An in-memory directory handle. A missing name rejects as `NotFoundError`; a write lands on
