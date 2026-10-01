@@ -141,3 +141,47 @@ fn a_filter_or_loop_with_no_proven_decay_never_ends() {
         );
     }
 }
+
+/// A term that ended leaves its past in a filter that read the note sum, so only that filter
+/// loses its bound: one reading no note keeps its cut, as the whole render of it does.
+#[test]
+fn a_retired_term_leaves_a_filter_that_reads_no_note_its_cut() {
+    use crate::fixtures::{Now, added, next};
+    use sva_engine::{NoStore, Stream, StreamConfig};
+    let g = rings();
+    let expr = |text: &str| sva_ast::parse_expr(text).unwrap_or_else(|e| panic!("{}", e.message));
+    let config = StreamConfig {
+        block: 256,
+        channels: None,
+        render: RenderConfig::at(RATE),
+    };
+    let stream = Stream::open(&g, &expr("@notes + @lowpass"), config, None, &NoStore).now();
+    let stream = std::cell::RefCell::new(stream.expect("opens"));
+    let add = |text: &str| {
+        added(&stream, &g, &expr(text), &NoStore)
+            .now()
+            .unwrap_or_else(|e| panic!("{e}"))
+    };
+    let cut = || {
+        let pruned = stream.borrow().pruned();
+        pruned.cuts.into_iter().find(|(node, _)| node == "lowpass")
+    };
+    let whole = render(&g, "lowpass", RenderConfig::seconds(RATE, 1.0));
+    let cut_whole = whole.labels[&whole.root].pruned.clone().expect("a level");
+    let cut_whole = cut_whole
+        .cuts
+        .into_iter()
+        .find(|(node, _)| node == "lowpass");
+    assert!(cut_whole.is_some(), "the filter rings out");
+    add("crop(sin(2*pi*500*t), 0s, 0.01s)");
+    assert_eq!(cut(), cut_whole);
+    while stream.borrow().counts().terms > 0 {
+        next(&mut stream.borrow_mut()).expect("a block");
+    }
+    add("crop(sin(2*pi*700*t), 0.5s, 0.6s)");
+    assert_eq!(
+        cut(),
+        cut_whole,
+        "the note that ended left the filter its cut"
+    );
+}

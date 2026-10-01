@@ -83,8 +83,8 @@ impl Tail {
                 }
                 let (coeffs, _) =
                     sva_samples::filters::coefficients(*shape, cutoff?, q?, gain?, grid.sr());
-                // A retired term's past is in the filter's state but in no bound here.
-                if tys.retires() {
+                // A retired term's past is in a note-reading filter's state, in no bound here.
+                if tys.retired_sum().is_some_and(|sum| tys.reads(*x, sum)) {
                     return None;
                 }
                 let input = match tys.value(*x) {

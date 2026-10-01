@@ -148,11 +148,39 @@ impl Typing {
         self.sum = Some((node, slots));
     }
 
-    /// Whether the note sum holds a term it retired.
-    pub(crate) fn retires(&self) -> bool {
-        self.sum
-            .as_ref()
-            .is_some_and(|(_, slots)| slots.iter().any(|slot| matches!(slot, SumSlot::Retired(_))))
+    /// The note sum, where it holds a term it retired.
+    pub(crate) fn retired_sum(&self) -> Option<NodeId> {
+        let (sum, slots) = self.sum.as_ref()?;
+        let retired = slots.iter().any(|slot| matches!(slot, SumSlot::Retired(_)));
+        retired.then_some(*sum)
+    }
+
+    /// The edges a node's identity is hashed over.
+    pub(crate) fn operands(&self, id: NodeId) -> Vec<NodeId> {
+        match self.value(id) {
+            Value::ClosedForm(form) => crate::refs::nodes_in(&form.body),
+            Value::Cast(_, source) | Value::Read { source, .. } => vec![*source],
+            Value::Op { args, .. } => args.clone(),
+            Value::Filter {
+                x, cutoff, q, gain, ..
+            } => vec![*x, *cutoff, *q, *gain],
+            Value::Solver { varying, .. } => varying.iter().map(|(_, a)| *a).collect(),
+            Value::SelfAt { .. } | Value::Noise(_) | Value::Stored(_) => Vec::new(),
+        }
+    }
+
+    /// Whether `id` reads `of`, however far down.
+    pub(crate) fn reads(&self, id: NodeId, of: NodeId) -> bool {
+        let (mut open, mut seen) = (vec![id], BTreeSet::new());
+        while let Some(at) = open.pop() {
+            if at == of {
+                return true;
+            }
+            if seen.insert(at) {
+                open.extend(self.operands(at));
+            }
+        }
+        false
     }
 
     pub(crate) fn sum_slots(&self, node: NodeId) -> Option<&[SumSlot]> {

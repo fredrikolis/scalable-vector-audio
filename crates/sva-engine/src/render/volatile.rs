@@ -8,7 +8,7 @@ use sva_formula::{Hash, NodeId};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Cx, Instances, Node, ScopeId};
 use crate::render::Render;
-use crate::typing::{Typing, Value};
+use crate::typing::Typing;
 
 /// The base of each volatile node's slot; a node absent here keeps every value it stores.
 #[derive(Default)]
@@ -93,25 +93,12 @@ fn volatile(
     }
     marked[id.0 as usize] = Some(false);
     let held = instances.contains(tys.name(id))
-        || operands(tys, id)
+        || tys
+            .operands(id)
             .into_iter()
             .any(|op| volatile(tys, op, instances, marked));
     marked[id.0 as usize] = Some(held);
     held
-}
-
-/// The edges a node's identity is hashed over.
-fn operands(tys: &Typing, id: NodeId) -> Vec<NodeId> {
-    match tys.value(id) {
-        Value::ClosedForm(form) => crate::refs::nodes_in(&form.body),
-        Value::Cast(_, source) | Value::Read { source, .. } => vec![*source],
-        Value::Op { args, .. } => args.clone(),
-        Value::Filter {
-            x, cutoff, q, gain, ..
-        } => vec![*x, *cutoff, *q, *gain],
-        Value::Solver { varying, .. } => varying.iter().map(|(_, a)| *a).collect(),
-        Value::SelfAt { .. } | Value::Noise(_) | Value::Stored(_) => Vec::new(),
-    }
 }
 
 struct Reach<'a, 'g> {
