@@ -142,8 +142,9 @@ pub(crate) fn answers(hit: &Stored, root: bool, config: &RenderConfig) -> bool {
     hit.holds(Extent::new(start, end.max(start)).intersect(support))
 }
 
-/// A node looked up nowhere: a loop's member, whose samples hold its own past, and a node a
-/// reading asks more of than its samples; a ledger reads every node under its own.
+/// A node looked up nowhere: a loop's member, whose samples hold its own past, a node a reading
+/// asks more of than its samples, and every node above one a reading asks of, which a hit would
+/// hide; a ledger reads every node under its own.
 fn pinned(inst: &Instances, order: &Order, config: &RenderConfig) -> BTreeSet<String> {
     let mut out: BTreeSet<String> = order
         .groups
@@ -159,11 +160,20 @@ fn pinned(inst: &Instances, order: &Order, config: &RenderConfig) -> BTreeSet<St
     if ledger {
         out.extend(order.groups.iter().flatten().cloned());
     }
+    let mut asked = BTreeSet::new();
     for ask in &config.asks {
-        if ask.representation != Representation::Samples
-            && let Ok(path) = inst.instance_of(&ask.node)
-        {
-            out.insert(path);
+        let Ok(path) = inst.instance_of(&ask.node) else {
+            continue;
+        };
+        if ask.representation != Representation::Samples {
+            out.insert(path.clone());
+        }
+        asked.insert(path);
+    }
+    for path in order.groups.iter().flatten() {
+        if order.deps(path).iter().any(|read| asked.contains(read)) {
+            asked.insert(path.clone());
+            out.insert(path.clone());
         }
     }
     out

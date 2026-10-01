@@ -9,9 +9,9 @@ use std::task::{Context, Poll, Waker};
 use crate::fixtures::{added, graph_of, next, replaced, samples};
 use sva_ast::Graph;
 use sva_engine::{
-    Backend, CacheStats, Change, Changed, EngineError, Handle, Hash, INDEX_NAME, NoStore, Outcome,
-    Placed, Range, Render, RenderConfig, STORE_FORMAT, Store, Stream, StreamConfig, change, render,
-    render_through, warm,
+    Ask, Backend, CacheStats, Change, Changed, EngineError, Handle, Hash, INDEX_NAME, NoStore,
+    Outcome, Placed, Range, Render, RenderConfig, Representation, STORE_FORMAT, Store, Stream,
+    StreamConfig, change, render, render_through, warm,
 };
 
 const SECONDS: f64 = 0.05;
@@ -562,6 +562,32 @@ fn an_edit_visits_the_missed_path_and_its_hit_siblings_and_types_only_the_missed
         bits(&fresh.expect("a render")),
         "hits read as computed"
     );
+}
+
+/// A reading of a node under one the store answers reaches it: the store's hit above it would
+/// hide it, so each node above an asked one is computed, and the asked node read as its samples.
+#[test]
+fn a_reading_of_a_node_under_a_stored_one_reads_it() {
+    let memory = Memory::default();
+    let graph = nested("asked-under", 220);
+    let store = opened(&memory, u64::MAX);
+    rendered(&graph, &store);
+    now(store.persist()).expect("persisted");
+
+    let asks = vec![Ask {
+        node: "e".to_string(),
+        representation: Representation::Samples,
+    }];
+    let config = RenderConfig::seconds(RATE, SECONDS).asking(asks);
+    let fresh = render(&graph, "master", config.clone(), None).expect("a render");
+    let store = opened(&memory, u64::MAX);
+    let warm = now(render_through(&graph, "master", config, &store)).expect("a render");
+    let e = |render: &Render| {
+        let id = render.id("e").expect("`e` was typed");
+        render.output(id).expect("`e` was read").plane(0).to_vec()
+    };
+    assert_eq!(e(&warm), e(&fresh));
+    assert!(outcomes(stats(&warm), "e").contains(&Outcome::Hit));
 }
 
 #[test]
