@@ -140,7 +140,7 @@ fn built(
             q,
             gain,
         } => {
-            sink.text(shape.name());
+            sink.text(crate::vocabulary::shape_name(*shape));
             for operand in [x, cutoff, q, gain] {
                 sink.hash(identity_of(typing, *operand, open, named)?);
             }

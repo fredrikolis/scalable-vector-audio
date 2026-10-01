@@ -161,7 +161,7 @@ fn crosses(inst: &Instances, typing: &Typing, e: &Expr, cx: Cx) -> Option<String
             .then(|| format!("the sampled input `@{path}`")),
         Node::Call { name, args, .. } => {
             let sampled = matches!(name, "sample" | "stft" | "istft")
-                || crate::overload::FINITE_DIFFERENCE.contains(&name);
+                || sva_ast::FINITE_DIFFERENCE.contains(&name);
             match sampled {
                 true => Some(format!("the sampled input `{name}(...)`")),
                 false => args.iter().find_map(|a| {

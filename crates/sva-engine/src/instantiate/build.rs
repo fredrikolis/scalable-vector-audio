@@ -6,10 +6,9 @@ use sva_ast::{Arg, ByteSpan, Expr, Graph};
 
 use crate::error::{BindingFault, EngineError};
 use crate::instantiate::{
-    Instances, MAX_INSTANCES, NO_PARAMS, SIGNAL_PARAM, Scope, ScopeId, Thunk, is_free_name,
-    is_reserved, resolve_ref_path,
+    Instances, MAX_INSTANCES, NO_PARAMS, SIGNAL_PARAM, Scope, ScopeId, Thunk, resolve_ref_path,
 };
-use crate::vocabulary::{SERIES, is_builtin};
+use sva_ast::{SERIES, is_builtin, is_language_value, is_reserved};
 
 pub fn instantiate<'g>(
     graph: &'g Graph,
@@ -23,15 +22,6 @@ pub fn instantiate<'g>(
 pub fn from_roots<'g>(
     graph: &'g Graph,
     roots: &[String],
-    rate: u32,
-) -> Result<(Instances<'g>, Vec<String>), EngineError> {
-    let unbound = roots.iter().map(|root| (root.as_str(), Vec::new()));
-    built(graph, unbound.collect(), rate)
-}
-
-fn built<'g>(
-    graph: &'g Graph,
-    roots: Vec<(&str, Vec<(String, Thunk<'g>)>)>,
     rate: u32,
 ) -> Result<(Instances<'g>, Vec<String>), EngineError> {
     let mut b = Builder {
@@ -49,14 +39,15 @@ fn built<'g>(
         site: BTreeMap::new(),
         indices: Vec::new(),
         chained: BTreeSet::new(),
+        given: BTreeMap::new(),
     };
     let mut named: Vec<String> = Vec::with_capacity(roots.len());
-    for (root, binds) in roots {
-        let name = b.intern(root, binds, None)?;
+    for root in roots {
+        let name = b.intern(root, Vec::new(), None)?;
         b.site
             .entry(name.clone())
             .or_insert_with(|| (root.to_string(), None));
-        b.out.own_terms.insert(root.to_string(), name.clone());
+        b.out.own_terms.insert(root.clone(), name.clone());
         named.push(name);
     }
     b.out.root = named.first().cloned().unwrap_or_default();
@@ -70,6 +61,13 @@ fn built<'g>(
         let file = b.out.origin[&name].clone();
         let held = b.out.nodes[&name];
         let (caller, at) = b.site[&name].clone();
+        let given: Vec<&str> = b.given[&name].iter().map(String::as_str).collect();
+        // An unbound bareword call names a node, so it is the scan's to refuse.
+        let unbound = sva_ast::free_parameters(held.expr, graph.defaults(&file), &given, |_| true);
+        if let Some(first) = unbound.into_iter().next() {
+            let found = BindingFault::Unbound(file.clone(), first);
+            return Err(relocate(fault(&file, None, found), &caller, at));
+        }
         let mut used = BTreeSet::new();
         let mut children = Vec::new();
         let place = In {
@@ -108,41 +106,6 @@ fn built<'g>(
     }
 
     Ok((b.out, named))
-}
-
-/// Whether `file` names a parameter its own defaults leave unbound: a library node, which only
-/// a reader's invocation instantiates.
-pub fn has_free_parameter(graph: &Graph, file: &str) -> bool {
-    !free_parameters(graph, file).is_empty()
-}
-
-static FOUND: Expr = Expr::Lit(sva_ast::Literal::Num(0.0));
-
-/// Each parameter `file`'s defaults leave unbound, as the scan meets them: each one found is
-/// bound and the walk retaken, up to its first other fault.
-pub fn free_parameters(graph: &Graph, file: &str) -> Vec<String> {
-    let mut found: Vec<String> = Vec::new();
-    loop {
-        let binds = found.iter().map(|name| {
-            let held = Thunk {
-                expr: &FOUND,
-                scope: NO_PARAMS,
-            };
-            (name.clone(), held)
-        });
-        let walked = built(
-            graph,
-            vec![(file, binds.collect())],
-            crate::DEFAULT_SAMPLE_RATE,
-        );
-        match walked {
-            Err(EngineError::Binding {
-                fault: BindingFault::Unbound(owner, name),
-                ..
-            }) if owner == file && !found.contains(&name) => found.push(name),
-            _ => return found,
-        }
-    }
 }
 
 /// Whether an expression names any of the parameters bound so far.
@@ -199,6 +162,8 @@ struct Builder<'g> {
     indices: Vec<String>,
     /// The scopes a default stands in, one per default that names a line above it.
     chained: BTreeSet<ScopeId>,
+    /// The names each instance's caller binds.
+    given: BTreeMap<String, Vec<String>>,
 }
 
 impl<'g> Builder<'g> {
@@ -210,6 +175,7 @@ impl<'g> Builder<'g> {
         mut binds: Vec<(String, Thunk<'g>)>,
         span: Option<ByteSpan>,
     ) -> Result<String, EngineError> {
+        let given: Vec<String> = binds.iter().map(|(name, _)| name.clone()).collect();
         let Some(body) = self.graph.expr(file) else {
             return Err(EngineError::UnknownNode(file.to_string()));
         };
@@ -267,6 +233,7 @@ impl<'g> Builder<'g> {
                     let scope = self.out.scopes.len() as ScopeId;
                     self.out.scopes.push(Scope::new(binds));
                     self.out.origin.insert(name.clone(), file.to_string());
+                    self.given.insert(name.clone(), given);
                     self.out
                         .nodes
                         .insert(name.clone(), Thunk { expr: body, scope });
@@ -321,7 +288,7 @@ impl<'g> Builder<'g> {
             Expr::Lit(sva_ast::Literal::Num(n)) => Some(*n),
             Expr::Lit(_) => None,
             Expr::Var(name) if name == "pi" => Some(std::f64::consts::PI),
-            Expr::Var(name) => sva_formula::note::frequency(name),
+            Expr::Var(name) => crate::vocabulary::note_hz(name),
             Expr::Bin(op, l, r) => {
                 let (a, b) = (
                     self.one_number(l, file, open)?,
@@ -371,22 +338,17 @@ impl<'g> Builder<'g> {
         used: &mut BTreeSet<String>,
         children: &mut Vec<String>,
     ) -> Result<(), EngineError> {
-        let In { file, scope, at } = place;
+        let In { file, scope, .. } = place;
         match e {
             Expr::Lit(_) => Ok(()),
             Expr::Var(name) => {
-                if is_free_name(name) || self.indices.iter().any(|k| k == name) {
+                if is_language_value(name) || self.indices.iter().any(|k| k == name) {
                     return Ok(());
                 }
                 if self.out.binds(scope, name).is_some() {
                     used.insert(name.clone());
-                    return Ok(());
                 }
-                Err(fault(
-                    file,
-                    at,
-                    BindingFault::Unbound(file.to_string(), name.clone()),
-                ))
+                Ok(())
             }
             Expr::Bin(_, l, r) => {
                 self.scan(l, place, used, children)?;
@@ -394,14 +356,9 @@ impl<'g> Builder<'g> {
             }
             Expr::SelfRef { arg, span, .. } => self.scan(arg, place.spanned(*span), used, children),
             Expr::Indexed { name, arg, span } => {
-                if self.out.binds(scope, name).is_none() {
-                    return Err(fault(
-                        file,
-                        Some(*span),
-                        BindingFault::Unbound(file.to_string(), name.clone()),
-                    ));
+                if self.out.binds(scope, name).is_some() {
+                    used.insert(name.clone());
                 }
-                used.insert(name.clone());
                 self.scan(arg, place.spanned(*span), used, children)
             }
             Expr::Call { name, args, span } => {

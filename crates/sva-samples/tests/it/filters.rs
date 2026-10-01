@@ -52,8 +52,7 @@ fn a_rendered_tone_is_attenuated_by_what_the_response_predicts() {
         );
         assert!(
             (measured - predicted).abs() < 0.5,
-            "{}: measured {measured:.2} dB, predicted {predicted:.2} dB",
-            shape.name()
+            "{shape:?}: measured {measured:.2} dB, predicted {predicted:.2} dB"
         );
     }
 }

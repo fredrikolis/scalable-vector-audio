@@ -19,7 +19,7 @@ pub struct FilterTrace {
     pub node: String,
     pub site: usize,
     pub channel: Option<usize>,
-    pub shape: &'static str,
+    pub shape: Shape,
     pub clamped: bool,
     pub trace_secs: f64,
     pub frames: Vec<AutomationFrame>,
@@ -30,7 +30,7 @@ pub struct Automation {
     pub node: String,
     pub site: usize,
     pub channel: Option<usize>,
-    pub shape: &'static str,
+    pub shape: Shape,
     pub clamped: bool,
     pub frames: Vec<AutomationFrame>,
     pub coefficients: Coeffs,
@@ -52,7 +52,7 @@ impl FilterTrace {
             q: 1.0,
             gain_db: 0.0,
         });
-        let shape = Shape::from_name(self.shape).expect("shape came from Shape::name");
+        let shape = self.shape;
         let cutoff = clamp_cutoff(mid.cutoff, sample_rate).0;
         let coefficients = design(shape, cutoff, clamp_q(mid.q).0, mid.gain_db, sample_rate);
         Automation {
@@ -245,7 +245,7 @@ impl FilterSite {
                 node: node.to_string(),
                 site,
                 channel: wide.then_some(c),
-                shape: self.shape.name(),
+                shape: self.shape,
                 clamped: self.clamped,
                 trace_secs: self.stride as f64 / sr,
                 frames: lane.frames.clone(),

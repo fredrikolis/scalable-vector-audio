@@ -199,13 +199,13 @@ fn read(inst: &Instances, e: &Expr, cx: Cx, gain: C64) -> Reading {
             (false, false) => Reading::Free,
             _ => Reading::Nonlinear("a division by `self`".to_string()),
         },
-        Node::Call { name, args, .. } if name == crate::vocabulary::CHANNEL => match args {
+        Node::Call { name, args, .. } if name == sva_ast::CHANNEL => match args {
             [Arg::Pos(x), Arg::Pos(k)] if !holds(inst, k, cx) => {
                 opaque(read(inst, x, cx, gain), name)
             }
             _ => construct(name),
         },
-        Node::Call { name, args, .. } if name == crate::vocabulary::JOIN => args
+        Node::Call { name, args, .. } if name == sva_ast::JOIN => args
             .iter()
             .map(|a| match a {
                 Arg::Pos(x) => opaque(read(inst, x, cx, gain), name),
@@ -229,7 +229,7 @@ fn read(inst: &Instances, e: &Expr, cx: Cx, gain: C64) -> Reading {
 /// A call over the loop's own past: a filter, which holds state of its own, or any other,
 /// which no series expands.
 fn construct(name: &str) -> Reading {
-    Reading::Nonlinear(match sva_formula::filter::Shape::from_name(name) {
+    Reading::Nonlinear(match crate::vocabulary::shape(name) {
         Some(_) => format!("the filter `{name}(...)`"),
         None => format!("`{name}(...)` over `self`"),
     })
@@ -477,7 +477,7 @@ fn folded(
         Node::Lit(Literal::Samples(n)) => Some(cx.grid.steps_f64(*n)),
         Node::Name("pi") => Some(std::f64::consts::PI),
         Node::Name("inf") => Some(f64::INFINITY),
-        Node::Name(other) => sva_formula::note::frequency(other),
+        Node::Name(other) => crate::vocabulary::note_hz(other),
         Node::Bin(op, l, r) => {
             let (a, b) = (folded(inst, l, cx, chosen)?, folded(inst, r, cx, chosen)?);
             Some(match op {

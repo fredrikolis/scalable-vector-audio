@@ -8,7 +8,7 @@ use sva_formula::{Body, Bound, C64, IndexId, Part, Series, Unary, Var};
 use crate::error::EngineError;
 use crate::instantiate::{Cx, Node};
 use crate::lower::{Lowering, Piece};
-use crate::vocabulary::SERIES;
+use sva_ast::SERIES;
 
 impl Lowering<'_, '_> {
     /// `saw`, `square` and `triangle` carry no harmonic budget: each is the series FORMAT 6.4

@@ -1,8 +1,10 @@
 // Concern: proves every admitted name types as the family it belongs to | Non-concern: the numbers each produces (sva-formula) | IO: (a composition) -> Ty
 
 use crate::fixtures::graph_of;
-use sva_engine::{BUILTINS, Held, Value, Var, recognized_named, types};
+use sva_ast::{BUILTINS, FILTERS};
+use sva_engine::{Held, Value, Var, recognized_named, shape, shape_name, types};
 use sva_formula::Body;
+use sva_formula::filter::{ALL_SHAPES, Shape};
 
 fn ty_of(name: &str, body: &str) -> sva_engine::Ty {
     let g = graph_of(name, &[("node", body)]);
@@ -188,7 +190,7 @@ fn a_quantized_time_key_reads_the_noise() {
 /// first from the second is what keeps a printed name from being a refusal on call.
 #[test]
 fn the_vocabulary_names_exactly_what_the_engine_lowers() {
-    for name in sva_engine::overload::FINITE_DIFFERENCE {
+    for name in sva_ast::FINITE_DIFFERENCE {
         assert!(
             BUILTINS.contains(&name),
             "`{name}` lowers to a solver but is not callable"
@@ -199,6 +201,30 @@ fn the_vocabulary_names_exactly_what_the_engine_lowers() {
     let mut once = held.clone();
     once.dedup();
     assert_eq!(held.len(), once.len(), "one name, one entry: {held:?}");
+}
+
+/// sva-ast owns the filter names, sva-formula the maths: each name stands for its own shape.
+#[test]
+fn each_filter_name_stands_for_the_shape_it_names() {
+    let named = [
+        ("lp", Shape::OnePole),
+        ("lowpass", Shape::Lowpass),
+        ("highpass", Shape::Highpass),
+        ("bandpass", Shape::Bandpass),
+        ("notch", Shape::Notch),
+        ("peaking", Shape::Peaking),
+        ("lowshelf", Shape::Lowshelf),
+        ("highshelf", Shape::Highshelf),
+    ];
+    assert_eq!(named.len(), FILTERS.len());
+    for (name, held) in named {
+        assert_eq!(shape(name), Some(held), "{name}");
+        assert_eq!(shape_name(held), name);
+    }
+    for held in ALL_SHAPES {
+        assert_eq!(shape(shape_name(held)), Some(held));
+    }
+    assert_eq!(shape("sin"), None);
 }
 
 /// One written `vel=` reaches whichever geometry it is written on.

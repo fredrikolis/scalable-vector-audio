@@ -1,9 +1,10 @@
 // Concern: assembles the language's callable/syntactic vocabulary off the engine's own tables, as the `data` object | Non-concern: what a builtin renders | IO: none -> Builtins, JSON
 
+use sva_ast::BUILTINS;
 use sva_engine::overload::{notation, signature};
 use sva_engine::{
-    BUILTINS, Cast, Codomain, Held, MAX_WIDTH, Meaning, REGISTRY, Ty, Var, meaning, named_may_move,
-    recognized_named,
+    Cast, Codomain, Held, MAX_WIDTH, Meaning, REGISTRY, Ty, Var, meaning, named_may_move,
+    recognized_named, shape_name,
 };
 use sva_formula::filter::{ALL_SHAPES, Shape};
 use sva_formula::{FAMILIES, TABLE_VERSION};
@@ -158,16 +159,16 @@ fn filter_callable(shape: Shape) -> Callable {
     } else {
         3
     };
-    let named = recognized_named(shape.name()).unwrap_or(&[]);
+    let named = recognized_named(shape_name(shape)).unwrap_or(&[]);
     Callable {
-        name: shape.name(),
+        name: shape_name(shape),
         required: 2,
         max_positional,
         named,
         required_named: &[],
         takes_gain: Some(gain),
-        arguments: meanings(shape.name(), named),
-        positional: positional(shape.name()),
+        arguments: meanings(shape_name(shape), named),
+        positional: positional(shape_name(shape)),
     }
 }
 
@@ -224,7 +225,7 @@ pub fn builtins() -> Builtins {
         refusals: &REGISTRY,
         unit_suffixes: &UNIT_SUFFIXES,
         note_names: NOTE_GRAMMAR,
-        reserved: &sva_engine::RESERVED,
+        reserved: &sva_ast::RESERVED,
         special_forms: &SPECIAL_FORMS,
         not_supported: &NOT_SUPPORTED,
     }
@@ -304,13 +305,13 @@ mod tests {
     fn the_note_grammar_this_dump_states_is_what_note_actually_resolves() {
         for note in ["A4", "Cs4", "Db4"] {
             assert!(
-                sva_formula::note::frequency(note).is_some(),
+                sva_ast::note_midi(note).is_some(),
                 "{note} should be a note"
             );
         }
         for not_a_note in ["H4", "Cs", "C99999999999"] {
             assert!(
-                sva_formula::note::frequency(not_a_note).is_none(),
+                sva_ast::note_midi(not_a_note).is_none(),
                 "{not_a_note} is not the grammar this dump states"
             );
         }
@@ -353,8 +354,8 @@ mod tests {
             let found = b
                 .callables
                 .iter()
-                .find(|c| c.name == shape.name())
-                .unwrap_or_else(|| panic!("{} is missing", shape.name()));
+                .find(|c| c.name == shape_name(shape))
+                .unwrap_or_else(|| panic!("{} is missing", shape_name(shape)));
             assert_eq!(found.takes_gain, Some(shape.takes_gain()));
         }
     }
@@ -424,9 +425,9 @@ mod tests {
 
     #[test]
     fn each_reserved_name_still_behaves_the_way_this_dump_says_it_does() {
-        for (name, _) in sva_engine::RESERVED {
+        for (name, _) in sva_ast::RESERVED {
             assert!(
-                sva_engine::instantiate::is_reserved(name),
+                sva_ast::is_reserved(name),
                 "`{name}` is listed as reserved but a parameter may still take it"
             );
             if name == "self" {
@@ -438,7 +439,7 @@ mod tests {
             );
         }
         assert!(
-            !sva_engine::instantiate::is_reserved("cutoff"),
+            !sva_ast::is_reserved("cutoff"),
             "an ordinary parameter name must not be reserved, or the claim says nothing"
         );
         assert!(

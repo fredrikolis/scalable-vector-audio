@@ -1,8 +1,7 @@
-// Concern: whether each node plays as a bare `@path`: every parameter defaulted, its support ending | Non-concern: deciding either (sva-engine) | IO: (&Graph) -> Vec<Finding>
+// Concern: whether each node plays as a bare `@path`: every parameter defaulted, its support ending | Non-concern: deciding either (sva-ast, sva-engine) | IO: (&Graph) -> Vec<Finding>
 
 use sva_ast::Graph;
 use sva_core::{LintCode, Severity};
-use sva_engine::instantiate::free_parameters;
 use sva_engine::{DEFAULT_SAMPLE_RATE, RenderConfig};
 
 use crate::lint::Finding;
@@ -16,7 +15,7 @@ pub fn bare_findings(graph: &Graph) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut whole = Vec::new();
     for path in sounds {
-        let free = free_parameters(graph, path);
+        let free = graph.free_parameters(path);
         if free.is_empty() {
             whole.push(path.to_string());
         }

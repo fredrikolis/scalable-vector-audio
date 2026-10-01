@@ -237,16 +237,6 @@ const fn plain(
 
 pub const OPERATORS: [&str; 5] = ["+", "-", "*", "/", "%"];
 
-/// The six finite-difference builtins, which produce samples and never a closed form.
-pub const FINITE_DIFFERENCE: [&str; 6] = [
-    "chaigne_askenfelt",
-    "willemsen_bilbao_serafin",
-    "darabundit_scavone",
-    "rhaouti_chaigne_joly",
-    "chaigne_doutaut",
-    "botteldooren",
-];
-
 pub static SIGNATURES: &[Signature] = &[
     plain("+", TWO, elementwise),
     plain("-", TWO, elementwise),

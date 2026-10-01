@@ -5,8 +5,7 @@ use std::f64::consts::TAU;
 use crate::closed_form::Rational;
 use crate::complex::C64;
 
-/// The response shapes, named for the math the way MATLAB's `ftype` and the RBJ cookbook's
-/// own section titles are. `OnePole` is `lp`'s 6 dB/oct filter.
+/// `OnePole` is the 6 dB/oct filter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shape {
     OnePole,
@@ -19,6 +18,7 @@ pub enum Shape {
     Highshelf,
 }
 
+/// In the order sva-ast's `FILTERS` names them.
 pub const ALL_SHAPES: [Shape; 8] = [
     Shape::OnePole,
     Shape::Lowpass,
@@ -31,33 +31,6 @@ pub const ALL_SHAPES: [Shape; 8] = [
 ];
 
 impl Shape {
-    pub fn from_name(name: &str) -> Option<Shape> {
-        Some(match name {
-            "lp" => Shape::OnePole,
-            "lowpass" => Shape::Lowpass,
-            "highpass" => Shape::Highpass,
-            "bandpass" => Shape::Bandpass,
-            "notch" => Shape::Notch,
-            "peaking" => Shape::Peaking,
-            "lowshelf" => Shape::Lowshelf,
-            "highshelf" => Shape::Highshelf,
-            _ => return None,
-        })
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Shape::OnePole => "lp",
-            Shape::Lowpass => "lowpass",
-            Shape::Highpass => "highpass",
-            Shape::Bandpass => "bandpass",
-            Shape::Notch => "notch",
-            Shape::Peaking => "peaking",
-            Shape::Lowshelf => "lowshelf",
-            Shape::Highshelf => "highshelf",
-        }
-    }
-
     pub fn default_q(self) -> f64 {
         match self {
             Shape::Bandpass | Shape::Notch | Shape::Peaking => 1.0,
@@ -70,8 +43,7 @@ impl Shape {
     }
 }
 
-/// The RBJ Audio EQ Cookbook's analog prototypes, before any bilinear transform: the
-/// rational a pair's dual is multiplied by, with `s` the closed form's own free variable.
+/// The RBJ Audio EQ Cookbook's analog prototypes, before any bilinear transform.
 pub fn design(shape: Shape, cutoff: f64, q: f64, gain_db: f64) -> Rational {
     let w0 = TAU * cutoff;
     let a = 10f64.powf(gain_db / 40.0);

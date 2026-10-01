@@ -86,7 +86,7 @@ pub(crate) fn entry_points(graph: &Graph) -> Vec<String> {
         .paths()
         .filter(|p| !reached.contains(*p))
         .filter(|p| !reserved_variable(p))
-        .filter(|p| !sva_engine::instantiate::has_free_parameter(graph, p))
+        .filter(|p| graph.free_parameters(p).is_empty())
         .map(str::to_string)
         .collect()
 }

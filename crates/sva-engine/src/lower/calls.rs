@@ -1,7 +1,6 @@
 // Concern: the formula each written call lowers to | Non-concern: the recursion over an Expr (mod.rs) | IO: (name, args) -> a Piece
 
 use sva_ast::{Arg, ByteSpan, Expr};
-use sva_formula::filter::Shape;
 use sva_formula::{
     Body, C64, Codomain, Edge, Fold, Held, NodeId, Origin, Part, Ty, Unary, Var, hash,
 };
@@ -14,7 +13,7 @@ use crate::instantiate::Cx;
 use crate::lower::{Lowering, Piece};
 use crate::time::Lattice;
 use crate::typing::{Value, When};
-use crate::vocabulary::SERIES;
+use sva_ast::SERIES;
 
 impl<'g> Lowering<'_, 'g> {
     pub(super) fn call(
@@ -49,8 +48,8 @@ impl<'g> Lowering<'_, 'g> {
         let mut chosen = Vec::new();
         let named = self.named_values(name, args, span, cx, &mut chosen)?;
         let view: Vec<(&str, f64)> = named.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-        let solved = crate::overload::FINITE_DIFFERENCE.contains(&name);
-        if solved || super::physics::MODAL.contains(&name) {
+        let solved = sva_ast::FINITE_DIFFERENCE.contains(&name);
+        if solved || sva_ast::MODAL.contains(&name) {
             let Some(numbers) = positional_values(self, args, cx, &mut chosen) else {
                 return Err(EngineError::BadArity(name.to_string()));
             };
@@ -87,7 +86,7 @@ impl<'g> Lowering<'_, 'g> {
             };
             return self.cast(cast, args, span, cx, var);
         }
-        if let Some(shape) = Shape::from_name(name) {
+        if let Some(shape) = crate::vocabulary::shape(name) {
             return self.filter(shape, args, span, cx, var);
         }
         if name == "rand" {

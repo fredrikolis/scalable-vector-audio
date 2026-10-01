@@ -9,12 +9,14 @@ mod graph;
 mod ingest;
 mod lexer;
 pub mod outline;
+mod parameters;
 mod parser;
 mod print;
 mod refusal;
 mod skipped;
 mod source;
 mod tsv;
+mod vocabulary;
 
 pub use diag::{ByteSpan, Diag, DiagCode};
 pub use dir::Dir;
@@ -32,12 +34,17 @@ pub use lexer::{
     LogUnit, Token, TokenKind, ref_spans, strip_line_comment, tokenize, whole_ref_path,
 };
 pub use outline::{Outline, outline};
+pub use parameters::free_parameters;
 pub use parser::parse as parse_expr;
 pub use print::render as render_expr;
 pub use refusal::{Location, Refusal};
 pub use skipped::{Skip, Skipped};
 pub use source::{Composition, Listing, Source};
 pub use tsv::Grid;
+pub use vocabulary::{
+    BUILTINS, CASTS, CHANNEL, FILTERS, FINITE_DIFFERENCE, MODAL, RESERVED, SELF, is_builtin,
+    is_language_value, is_reserved, note_midi,
+};
 
 use std::path::Path;
 

@@ -243,7 +243,8 @@ fn a_key_times_a_semitone_offset_folds() {
         .map(|l| l.hz.abs())
         .filter(|h| *h > 0.0)
         .collect();
-    let want = sva_formula::note::frequency("D3").expect("D3") * 2f64.powf(3.0 / 12.0);
+    let want =
+        sva_formula::note::frequency(sva_ast::note_midi("D3").expect("D3")) * 2f64.powf(3.0 / 12.0);
     assert!(
         hz.iter().all(|h| (h - want).abs() < 1e-9),
         "a minor third above D3 is {want} Hz, got {hz:?}"

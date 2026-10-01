@@ -478,7 +478,7 @@ fn names_a_missing_node(text: &str) -> bool {
 fn reads_as_a_value(text: &str) -> bool {
     match sva_ast::parse_expr(text) {
         Ok(sva_ast::Expr::Lit(_)) => true,
-        Ok(sva_ast::Expr::Var(name)) => sva_engine::instantiate::is_reserved(&name),
+        Ok(sva_ast::Expr::Var(name)) => sva_ast::is_reserved(&name),
         _ => false,
     }
 }

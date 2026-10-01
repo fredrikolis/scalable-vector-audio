@@ -11,17 +11,6 @@ use sva_formula::{Body, Damping, Excitation, Geometry, ModalBank, Mode, modes};
 use crate::error::EngineError;
 use crate::lower::{Lowering, Piece};
 
-/// The seven names of FORMAT 12.1, each a series of modes and each a pair.
-pub const MODAL: [&str; 7] = [
-    "string",
-    "membrane",
-    "bar",
-    "bore",
-    "room",
-    "hammer_pulse",
-    "helmholtz",
-];
-
 /// Enough partials to reach the ceiling for a bass fundamental; the collapse drops what the
 /// profile's floor does not carry.
 const MODE_COUNT: usize = 256;

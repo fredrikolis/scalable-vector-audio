@@ -5,13 +5,6 @@ use sva_samples::biquad::{RESPONSE_RATIOS, clamp_cutoff, clamp_q, design, magnit
 
 const SR: f64 = 48000.0;
 
-#[test]
-fn all_shapes_round_trips_through_name_and_from_name() {
-    for shape in sva_formula::filter::ALL_SHAPES {
-        assert_eq!(Shape::from_name(shape.name()), Some(shape));
-    }
-}
-
 fn db_at(shape: Shape, cutoff: f64, q: f64, hz: f64) -> f64 {
     magnitude_db(&design(shape, cutoff, q, 0.0, SR), hz, SR)
 }

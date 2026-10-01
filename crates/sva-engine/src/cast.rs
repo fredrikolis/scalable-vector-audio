@@ -37,7 +37,7 @@ pub enum Cast {
 }
 
 impl Cast {
-    pub const NAMES: [&'static str; 5] = ["sample", "fourier", "ifourier", "stft", "istft"];
+    pub const NAMES: [&'static str; 5] = sva_ast::CASTS;
 
     /// A short-time transform's window and hop are counted where the call is lowered.
     pub fn from_name(name: &str) -> Option<Cast> {

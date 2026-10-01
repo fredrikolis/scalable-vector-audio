@@ -6,14 +6,12 @@ mod resolved;
 use std::collections::{BTreeMap, HashMap};
 
 use sva_ast::{Address, Arg, BinOp, ByteSpan, Expr, Literal};
-use sva_formula::filter::Shape;
-use sva_formula::note;
 
 use crate::error::EngineError;
 use crate::time::Grid;
-use crate::vocabulary::is_builtin;
+use sva_ast::is_builtin;
 
-pub use build::{free_parameters, from_roots, has_free_parameter, instantiate};
+pub use build::{from_roots, instantiate};
 
 pub(crate) type ScopeId = u32;
 
@@ -239,22 +237,10 @@ pub(crate) fn sole<T>(target: &str, mut held: Vec<(String, T)>) -> Result<T, Eng
     }
 }
 
-/// A name the language answers, so no binding reaches it.
-pub(crate) fn is_free_name(name: &str) -> bool {
-    let reserved = crate::vocabulary::RESERVED
-        .iter()
-        .any(|(held, _)| *held == name);
-    (reserved && name != crate::vocabulary::SELF) || note::frequency(name).is_some()
-}
-
 fn implicit_time(name: &str) -> bool {
-    crate::overload::FINITE_DIFFERENCE.contains(&name)
-        || crate::lower::physics::MODAL.contains(&name)
+    sva_ast::FINITE_DIFFERENCE.contains(&name)
+        || sva_ast::MODAL.contains(&name)
         || matches!(name, "noise" | "stft" | "istft")
-}
-
-pub fn is_reserved(name: &str) -> bool {
-    is_free_name(name) || name == crate::vocabulary::SELF || is_builtin(name)
 }
 
 impl<'g> Instances<'g> {
@@ -408,7 +394,8 @@ impl<'g> Instances<'g> {
                 .or_else(|| self.position_dependent(r, cx)),
             Node::Read { arg, .. } | Node::Signal { arg, .. } => self.position_dependent(arg, cx),
             Node::Call { name, args, .. } => {
-                if Shape::from_name(name).is_some() || name == "crop" || implicit_time(name) {
+                if crate::vocabulary::shape(name).is_some() || name == "crop" || implicit_time(name)
+                {
                     return Some(name.to_string());
                 }
                 args.iter().find_map(|a| {

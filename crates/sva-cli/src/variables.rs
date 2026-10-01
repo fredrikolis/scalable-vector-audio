@@ -31,7 +31,7 @@ pub fn key_findings(graph: &Graph) -> Vec<Finding> {
 fn pitch(e: &Expr) -> bool {
     match e {
         Expr::Lit(Literal::Num(_)) => true,
-        Expr::Var(name) => sva_formula::note::frequency(name).is_some(),
+        Expr::Var(name) => sva_ast::note_midi(name).is_some(),
         Expr::Bin(..) => children(e, Binds::Substitute).into_iter().all(pitch),
         _ => false,
     }

@@ -1,7 +1,7 @@
 // Concern: the recursion over one node's written expression | Non-concern: what a call lowers to (calls.rs), classifying a loop (loops.rs) | IO: (&Expr, Cx, Var) -> a Piece
 
 use sva_ast::{Address, Arg, BinOp, ByteSpan, Expr, Literal};
-use sva_formula::{Body, C64, Held, IndexId, NodeId, Ty, Var, note};
+use sva_formula::{Body, C64, Held, IndexId, NodeId, Ty, Var};
 
 use crate::cast::Cast;
 use crate::error::{EngineError, Located};
@@ -185,7 +185,7 @@ impl Lowering<'_, '_> {
                 let secs = exact.map_or_else(|| grid.steps_f64(*n), Q::to_f64);
                 Ok(Piece::ClosedForm(Body::Const(C64::real(secs))))
             }
-            Literal::Str(s) => match note::frequency(s) {
+            Literal::Str(s) => match crate::vocabulary::note_hz(s) {
                 Some(hz) => Ok(Piece::ClosedForm(Body::Const(C64::real(hz)))),
                 None => Err(self.refused(
                     "grammar.unknown_name",
@@ -213,7 +213,7 @@ impl Lowering<'_, '_> {
             "pi" => C64::real(std::f64::consts::PI),
             "i" => C64::new(0.0, 1.0),
             "inf" => C64::real(f64::INFINITY),
-            other => match note::frequency(other) {
+            other => match crate::vocabulary::note_hz(other) {
                 Some(hz) => C64::real(hz),
                 None => return Err(EngineError::UnknownBuiltin(other.to_string())),
             },
@@ -318,7 +318,7 @@ impl Lowering<'_, '_> {
             }
             args.push((id, constant));
         }
-        if name == crate::vocabulary::CHANNEL
+        if name == sva_ast::CHANNEL
             && let [(of, false), (k, true)] = args.as_slice()
             && let x = self.typing.ty(*of)
             && let Some(k) = constant::number_of(self.typing, *k)
@@ -563,8 +563,8 @@ impl Lowering<'_, '_> {
         self.visit(e, cx, &mut |node| {
             let (what, span) = match node {
                 Node::Call { name, span, .. }
-                    if sva_formula::filter::Shape::from_name(name).is_some()
-                        || crate::overload::FINITE_DIFFERENCE.contains(&name) =>
+                    if crate::vocabulary::shape(name).is_some()
+                        || sva_ast::FINITE_DIFFERENCE.contains(&name) =>
                 {
                     (format!("`{name}(…)`"), span)
                 }

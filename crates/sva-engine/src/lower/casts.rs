@@ -100,7 +100,9 @@ impl Lowering<'_, '_> {
             })
             .collect();
         let [signal, rest @ ..] = positional.as_slice() else {
-            return Err(EngineError::BadArity(shape.name().to_string()));
+            return Err(EngineError::BadArity(
+                crate::vocabulary::shape_name(shape).to_string(),
+            ));
         };
         let written = |slot: usize, key: &str| -> Option<&Expr> {
             rest.get(slot).copied().or_else(|| {
@@ -117,12 +119,21 @@ impl Lowering<'_, '_> {
         let ty = self.typing.ty(source);
         if ty.held == Held::Sampled {
             let Some(cutoff) = arguments[0] else {
-                return Err(EngineError::BadArity(shape.name().to_string()));
+                return Err(EngineError::BadArity(
+                    crate::vocabulary::shape_name(shape).to_string(),
+                ));
             };
-            let mut held = [self.automation((shape.name(), "cutoff"), cutoff, cx, var)?; 3];
+            let mut held = [self.automation(
+                (crate::vocabulary::shape_name(shape), "cutoff"),
+                cutoff,
+                cx,
+                var,
+            )?; 3];
             for (slot, key, fallback) in [(1, "q", shape.default_q()), (2, "gain", 0.0)] {
                 held[slot] = match arguments[slot] {
-                    Some(x) => self.automation((shape.name(), key), x, cx, var)?,
+                    Some(x) => {
+                        self.automation((crate::vocabulary::shape_name(shape), key), x, cx, var)?
+                    }
                     None => self.constant_node(fallback, var),
                 };
             }
@@ -151,7 +162,9 @@ impl Lowering<'_, '_> {
             return Err(self.swept(shape, span));
         };
         if !cutoff.is_finite() {
-            return Err(EngineError::BadArity(shape.name().to_string()));
+            return Err(EngineError::BadArity(
+                crate::vocabulary::shape_name(shape).to_string(),
+            ));
         }
         if !ty.has_dual() {
             let m = Mismatch::new(
@@ -159,7 +172,7 @@ impl Lowering<'_, '_> {
                 &[ty],
                 "write the filter over sample(x) to filter at the render rate",
             );
-            return Err(self.refuse(shape.name(), &m, Some(span)));
+            return Err(self.refuse(crate::vocabulary::shape_name(shape), &m, Some(span)));
         }
         let response = Body::Rational(in_frequency(design(shape, cutoff, q, gain)));
         let spectrum = match var {
@@ -218,7 +231,7 @@ impl Lowering<'_, '_> {
             &[],
             "a swept argument is a sampled filter: write it over sample(x)",
         );
-        self.refuse(shape.name(), &m, Some(span))
+        self.refuse(crate::vocabulary::shape_name(shape), &m, Some(span))
     }
 }
 

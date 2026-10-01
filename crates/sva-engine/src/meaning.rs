@@ -1,9 +1,6 @@
 // Concern: what each builtin's named arguments mean, their unit and the model part each moves | Non-concern: which names a builtin takes (vocabulary.rs) | IO: (builtin, name) -> Meaning
 
-use sva_formula::filter::Shape;
-
-use crate::lower::physics::MODAL;
-use crate::overload::FINITE_DIFFERENCE;
+use sva_ast::{FINITE_DIFFERENCE, MODAL};
 
 /// `unit` is `none` for a pure number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,7 +28,7 @@ const fn plain(text: &'static str, unit: &'static str) -> Meaning {
 
 /// `None` for a name `builtin` does not take, by name or, for a solver or a bank, by position.
 pub fn meaning(builtin: &str, key: &str) -> Option<Meaning> {
-    if Shape::from_name(builtin).is_some() {
+    if crate::vocabulary::shape(builtin).is_some() {
         return filter(key);
     }
     if FINITE_DIFFERENCE.contains(&builtin) {

@@ -1,90 +1,28 @@
-// Concern: the names this language answers: callables, their named arguments, and each reserved word with a line on it | Non-concern: evaluating any of them | IO: (name) -> is-a-builtin, named keys
+// Concern: each builtin's named arguments, and the maths each sva-ast filter name stands for | Non-concern: which names are builtins or reserved (sva-ast) | IO: (name) -> named keys, a Shape
 
-use sva_formula::filter::Shape;
-
-use crate::lower::physics::MODAL;
-use crate::overload::FINITE_DIFFERENCE as PHYSICS;
-
-/// Every name the language reserves; `self` is call-only, the rest are values.
-pub const RESERVED: [(&str, &str); 6] = [
-    ("t", "time in seconds"),
-    ("f", "frequency in hertz"),
-    ("i", "the imaginary unit"),
-    ("pi", "the constant pi"),
-    (
-        "inf",
-        "infinity, a value: a crop edge never reached, a sum's open bound; arithmetic that \
-         leaves no number refuses",
-    ),
-    (
-        SELF,
-        "a loop's own past: self(t - 17ms) in a continuous loop, self[idx(t) - 1] in a discrete one",
-    ),
-];
-
-pub const SELF: &str = "self";
+use sva_ast::{CHANNEL, FILTERS, JOIN, SERIES};
+use sva_formula::filter::{ALL_SHAPES, Shape};
 
 /// Enough for surround; ambisonics is deferred rather than pretended at.
 pub const MAX_WIDTH: usize = 8;
 
-pub use sva_ast::{JOIN, SERIES};
-pub const CHANNEL: &str = "ch";
+/// The maths of the filter sva-ast names `name`.
+pub fn shape(name: &str) -> Option<Shape> {
+    FILTERS
+        .iter()
+        .position(|held| *held == name)
+        .map(|at| ALL_SHAPES[at])
+}
 
-const ARITHMETIC: [&str; 22] = [
-    "sin", "cos", "exp", "log", "pow", "sqrt", "abs", "tanh", "step", "max", "min", "saw",
-    "square", "triangle", "sat", "crop", "rand", "delta", "pv", SERIES, JOIN, CHANNEL,
-];
+const _: () = assert!(FILTERS.len() == ALL_SHAPES.len());
 
-/// The five written crossings of FORMAT 7, callable like any other name.
-pub const CASTS: [&str; 5] = ["sample", "fourier", "ifourier", "stft", "istft"];
+pub fn shape_name(shape: Shape) -> &'static str {
+    let at = ALL_SHAPES.iter().position(|held| *held == shape);
+    FILTERS[at.expect("ALL_SHAPES holds every shape")]
+}
 
-/// The noise realization, beside the modal instruments `lower/physics.rs` dispatches:
-/// every one of them a closed form.
-const WRITTEN_LAWS: [&str; 1] = ["noise"];
-
-const LAWS: [&str; WRITTEN_LAWS.len() + MODAL.len()] = {
-    let mut all = [""; WRITTEN_LAWS.len() + MODAL.len()];
-    let mut i = 0;
-    while i < WRITTEN_LAWS.len() {
-        all[i] = WRITTEN_LAWS[i];
-        i += 1;
-    }
-    let mut j = 0;
-    while j < MODAL.len() {
-        all[WRITTEN_LAWS.len() + j] = MODAL[j];
-        j += 1;
-    }
-    all
-};
-
-/// Every callable name besides the filter shapes.
-pub const BUILTINS: [&str; ARITHMETIC.len() + PHYSICS.len() + CASTS.len() + LAWS.len()] = {
-    let mut all = [""; ARITHMETIC.len() + PHYSICS.len() + CASTS.len() + LAWS.len()];
-    let mut i = 0;
-    while i < ARITHMETIC.len() {
-        all[i] = ARITHMETIC[i];
-        i += 1;
-    }
-    let mut j = 0;
-    while j < PHYSICS.len() {
-        all[ARITHMETIC.len() + j] = PHYSICS[j];
-        j += 1;
-    }
-    let mut k = 0;
-    while k < CASTS.len() {
-        all[ARITHMETIC.len() + PHYSICS.len() + k] = CASTS[k];
-        k += 1;
-    }
-    let mut n = 0;
-    while n < LAWS.len() {
-        all[ARITHMETIC.len() + PHYSICS.len() + CASTS.len() + n] = LAWS[n];
-        n += 1;
-    }
-    all
-};
-
-pub fn is_builtin(name: &str) -> bool {
-    Shape::from_name(name).is_some() || BUILTINS.contains(&name) || name == sva_ast::INDEX
+pub(crate) fn note_hz(name: &str) -> Option<f64> {
+    sva_ast::note_midi(name).map(sva_formula::note::frequency)
 }
 
 /// Consts, so `recognized_named` hands back the same data a call site checks against.
@@ -222,7 +160,7 @@ const BOTTELDOOREN_NAMED: &[&str] = &[
 /// A filter's cutoff, q and gain, and a solver's varying parameters, may move with `t` or
 /// read a signal: the builtin routes each itself. Every other named argument is one number.
 pub fn named_may_move(name: &str, key: &str) -> bool {
-    (Shape::from_name(name).is_some() && FILTER_NAMED.contains(&key))
+    (shape(name).is_some() && FILTER_NAMED.contains(&key))
         || sva_samples::physics::varying(name)
             .iter()
             .any(|(k, _)| *k == key)
@@ -230,7 +168,7 @@ pub fn named_may_move(name: &str, key: &str) -> bool {
 
 /// `None` for a name `is_builtin` does not recognize.
 pub fn recognized_named(name: &str) -> Option<&'static [&'static str]> {
-    if Shape::from_name(name).is_some() {
+    if shape(name).is_some() {
         return Some(FILTER_NAMED);
     }
     Some(match name {
