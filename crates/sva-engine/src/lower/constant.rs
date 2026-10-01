@@ -69,6 +69,30 @@ pub fn unbounded(body: &Body) -> Option<f64> {
         .flatten()
 }
 
+/// A sum whose numbers add to `inf` and whose every other term is a real polynomial in the free
+/// variable, finite wherever it reaches up to `reach`: IEEE arithmetic makes it that `inf`.
+pub fn swamped(body: &Body, reach: f64) -> Option<f64> {
+    let Body::Add(parts) = body else {
+        return None;
+    };
+    let (numbers, terms): (Vec<&Part>, Vec<&Part>) =
+        parts.iter().partition(|p| is_constant(&p.body));
+    let sum = numbers
+        .iter()
+        .try_fold(0.0, |held, p| Some(held + scalar(&p.body)?))?;
+    let finite = |p: &&Part| {
+        let coeffs = sva_formula::affine::polynomial(&p.body)?;
+        coeffs.iter().enumerate().try_fold(0.0f64, |held, (k, c)| {
+            let c = c.exact().filter(|c| c.im == 0.0 && c.re.is_finite())?;
+            Some(held + c.re.abs() * reach.powi(k as i32))
+        })
+    };
+    let reached = terms
+        .iter()
+        .try_fold(0.0, |held, p| Some(held + finite(p)?));
+    (sum.is_infinite() && reached.is_some_and(|r| r < f64::MAX / 4.0)).then_some(sum)
+}
+
 pub fn holds_infinite(f: &Body) -> bool {
     matches!(f, Body::Const(c) if !c.is_finite())
         || children(f).iter().any(|p| holds_infinite(&p.body))

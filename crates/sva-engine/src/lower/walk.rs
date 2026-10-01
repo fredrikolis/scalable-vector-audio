@@ -246,7 +246,7 @@ impl Lowering<'_, '_> {
                     BinOp::Div => Body::Div(a, b),
                     BinOp::Mod => Body::Fold(sva_formula::Fold::Mod, vec![a, b]),
                 };
-                return self.folded(body);
+                return self.folded(body, var);
             }
             pieces => pieces,
         };
@@ -261,9 +261,12 @@ impl Lowering<'_, '_> {
     }
 
     /// A body of numbers holding `inf` is the one number it folds to, and `inf - inf` or
-    /// `0*inf` refuse; anything else stays the body it was built as.
-    pub(super) fn folded(&self, body: Body) -> Result<Piece, EngineError> {
-        match constant::unbounded(&body) {
+    /// `0*inf` refuse; so is a sum of `inf` and terms finite at every instant, as `t - inf` is
+    /// `-inf`. Anything else stays the body it was built as.
+    pub(super) fn folded(&self, body: Body, var: Var) -> Result<Piece, EngineError> {
+        let reach = (var == Var::T).then(|| i64::MAX as f64 / self.grid.sr());
+        let swamped = || reach.and_then(|reach| constant::swamped(&body, reach));
+        match constant::unbounded(&body).or_else(swamped) {
             Some(v) if v.is_nan() => Err(self
                 .infinite("arithmetic on inf folds to no number here, as inf - inf or 0*inf does")),
             Some(v) => Ok(Piece::ClosedForm(Body::Const(C64::real(v)))),

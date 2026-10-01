@@ -147,7 +147,7 @@ impl<'g> Lowering<'_, 'g> {
             let origin = self.typing.mark(self.node, Some(span));
             let two = bodies.len() == 2;
             return match arithmetic(name, bodies, named, var, origin) {
-                Some(body) => self.folded(body),
+                Some(body) => self.folded(body, var),
                 None if name == "pow" && two => Err(self.non_integer_power(written, span)),
                 None => Err(EngineError::BadArity(name.to_string())),
             };
