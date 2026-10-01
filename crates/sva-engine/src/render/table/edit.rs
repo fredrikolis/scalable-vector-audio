@@ -146,8 +146,8 @@ fn indexed(value: &Value) -> Vec<(usize, Option<(i64, i64)>)> {
 /// An old value's reads, and each read's slot and map.
 type Shape = (Vec<usize>, Vec<(usize, sva_samples::Map)>);
 
-/// The old values each carried reader of a value, of `readers` in order, read through the same
-/// map, same slot first.
+/// The old values a value's carried `readers` read through the same map as they read it now,
+/// those read at the same slot first.
 fn predecessors(
     readers: &[(usize, usize, sva_samples::Map)],
     old: &[Shape],
