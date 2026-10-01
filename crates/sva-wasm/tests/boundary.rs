@@ -1417,6 +1417,55 @@ async fn a_render_with_out_null_hands_back_no_samples() {
     refused_as(named.err(), "wasm.bad_argument");
 }
 
+/// A page measures a cropped closed form by sampling its one ref read, and that render leaves
+/// memory what the plain read answers from.
+#[wasm_bindgen_test]
+fn a_sampled_ref_read_measures_what_the_plain_read_refuses_and_shares_its_memory() {
+    let mut held = Composition::new(None);
+    held.insert("n", "crop(tanh(4*(2*t - 1)), 0s, 1s)\n");
+    let pitch = || Some(vec!["pitch".to_string()]);
+    let plain = held
+        .rendered("@n([0, 1s])", pitch(), options(&[]))
+        .unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)));
+    refused_as(plain.representations().err(), "cast.left_algebra");
+
+    let sampled = held
+        .rendered(
+            "sample(@n([0, 1s]))",
+            pitch(),
+            options(&[("out", JsValue::NULL)]),
+        )
+        .unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)));
+    let measured = field(&field(&readings(&sampled), "representations"), "pitch");
+    assert_eq!(
+        field(&measured, "source").as_string().as_deref(),
+        Some("measured"),
+        "{}",
+        as_text(&measured)
+    );
+
+    let mut fresh = Composition::new(None);
+    fresh.insert("n", "crop(tanh(4*(2*t - 1)), 0s, 1s)\n");
+    fresh
+        .rendered(
+            "sample(@n([0, 1s]))",
+            None,
+            options(&[("out", JsValue::NULL)]),
+        )
+        .unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)));
+    let stats = fresh
+        .rendered("@n([0, 1s])", None, options(&[]))
+        .unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)))
+        .stats()
+        .unwrap_or_else(|_| unreachable!("stats"));
+    assert_eq!(
+        field(&stats, "computed").as_f64(),
+        Some(0.0),
+        "{}",
+        as_text(&stats)
+    );
+}
+
 /// `index` set to what an older format wrote, over the values a newer one left under it.
 fn aged(dir: &JsValue) {
     let files: js_sys::Map = field(dir, "files").into();

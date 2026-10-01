@@ -42,10 +42,52 @@ pub struct Target {
     pub interval: Option<(Edge, Edge)>,
 }
 
-/// An interval is the argument of the target's own ref, `@a([0, 2b], vel=0.5)`: nowhere else.
-/// A `[` right after a ref or `self` reads an index, which the expression grammar owns.
+/// An interval is the argument of the target's own ref, `@a([0, 2b], vel=0.5)`, or of the one
+/// ref it samples, `sample(@a([0, 2b]))`: nowhere else.
 pub fn target(text: &str) -> Result<Target, CliError> {
     let tokens = tokenize(text).map_err(|d| unparsed(text, &d.message))?;
+    if let Some(inner) = sampled(text, &tokens) {
+        let read = own_read(inner, text)?;
+        if read.interval.is_some() {
+            return Ok(Target {
+                expr: format!("sample({})", read.expr),
+                interval: read.interval,
+            });
+        }
+    }
+    own_read(text, text)
+}
+
+/// What a target that is one `sample(@...)` call holds.
+fn sampled<'t>(text: &'t str, tokens: &[Token]) -> Option<&'t str> {
+    match tokens {
+        [
+            Token {
+                kind: TokenKind::Ident(name),
+                ..
+            },
+            open @ Token {
+                kind: TokenKind::LParen,
+                ..
+            },
+            Token {
+                kind: TokenKind::Ref(_),
+                ..
+            },
+            ..,
+            close @ Token {
+                kind: TokenKind::RParen,
+                ..
+            },
+        ] if name == "sample" => Some(&text[open.span.end..close.span.start]),
+        _ => None,
+    }
+}
+
+/// `@a([0, 2b], vel=0.5)`, or no interval at all. A `[` right after a ref or `self` reads an
+/// index, which the expression grammar owns.
+fn own_read(text: &str, written: &str) -> Result<Target, CliError> {
+    let tokens = tokenize(text).map_err(|d| unparsed(written, &d.message))?;
     let indexes = |at: usize| {
         at > 0
             && match &tokens[at - 1].kind {
@@ -68,7 +110,7 @@ pub fn target(text: &str) -> Result<Target, CliError> {
             });
         }
         [at] => *at,
-        _ => return Err(misplaced(text)),
+        _ => return Err(misplaced(written)),
     };
     let own_ref = matches!(
         tokens.as_slice(),
@@ -85,29 +127,30 @@ pub fn target(text: &str) -> Result<Target, CliError> {
         ]
     );
     if at != 2 || !own_ref {
-        return Err(misplaced(text));
+        return Err(misplaced(written));
     }
-    let comma = position(&tokens, at, |k| *k == TokenKind::Comma).ok_or_else(|| misplaced(text))?;
+    let comma =
+        position(&tokens, at, |k| *k == TokenKind::Comma).ok_or_else(|| misplaced(written))?;
     let close = position(&tokens, comma, |k| {
         matches!(k, TokenKind::RBracket | TokenKind::RParen)
     })
-    .ok_or_else(|| misplaced(text))?;
+    .ok_or_else(|| misplaced(written))?;
     if closing(&tokens, close) != Some(tokens.len() - 1)
         || !matches!(
             tokens.get(close + 1).map(|t| &t.kind),
             Some(TokenKind::Comma | TokenKind::RParen)
         )
     {
-        return Err(misplaced(text));
+        return Err(misplaced(written));
     }
     let start = edge(text, &tokens[at + 1..comma])?;
     let end = match &tokens[comma + 1..close] {
         [] => Edge::Inf,
-        written => edge(text, written)?,
+        ends => edge(text, ends)?,
     };
     if start == Edge::Inf {
         return Err(CliError::Usage(format!(
-            "`{text}` starts its interval at inf; start it at a time, as `[0, inf)`"
+            "`{written}` starts its interval at inf; start it at a time, as `[0, inf)`"
         )));
     }
     let expr = format!(
@@ -203,7 +246,8 @@ fn edge(text: &str, written: &[Token]) -> Result<Edge, CliError> {
 fn misplaced(text: &str) -> CliError {
     CliError::Usage(format!(
         "`{text}` holds an interval outside its own ref's argument; write one ref read over \
-         it, as `@a([0, 2b], vel=0.5)`"
+         it, as `@a([0, 2b], vel=0.5)`, or sample that one read, as \
+         `sample(@a([0, 2b], vel=0.5))`"
     ))
 }
 

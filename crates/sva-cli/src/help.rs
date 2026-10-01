@@ -37,7 +37,8 @@ RENDER:
   history before it is still computed, so a loop or a filter carries the state
   it had there. With no interval the render starts at 0, earlier only where a
   crop reaches before it, and its end is open. Inside an expression a window is
-  a `crop`.
+  a `crop`. A target that samples its one ref read, `sample(@piano4([0, 2b],
+  f0=C4))`, reads that ref's interval and binds and the same node values.
 
   Every node is computed over its support met with what reads it, and nowhere
   else: outside its support a node is exactly zero. One exception: a node whose
@@ -75,9 +76,10 @@ RENDER:
 
   A closed form's `spectrum` and `pitch` are its exact lines, so a term under a
   crop or an envelope, which has a width and is no line, refuses them; so does
-  `spectrum(frame=)`, as a closed form has no frames. `sample(...)` of it
-  measures either frame by frame. A measured `spectrum` is one spectrum: every
-  `frame`-long window across the range, averaged. `pitch` is framed, one entry
+  `spectrum(frame=)`, as a closed form has no frames. To measure either frame
+  by frame, a reader samples the target's ref, `sample(@x([0, 1s]))`, and an
+  author writes `sample(...)` inside the node. A measured `spectrum` is one
+  spectrum: every `frame`-long window across the range, averaged. `pitch` is framed, one entry
   per `frame`; for the spectrum at one instant, read a range one frame long.
   A measured `envelope` is framed too, and reads every channel: a frame's
   `rms` is the root mean square of all its channels' samples together, its
@@ -225,6 +227,7 @@ EXAMPLES:
   sva-cli render '@voice/note([0, inf), f0=C4, len=2s)' \
     --until 'envelope(t) < -60db and t > 1s' --representation samples=/tmp/note.wav
   sva-cli render 'sample(@chord/home)' --representation 'spectrum(peaks=8)' --rate 48000
+  sva-cli render 'sample(@voice/note([0, 2s], f0=C4))' --representation pitch
   sva-cli lint
   sva-cli lint '@master'
   sva-cli trace grid/phrase-2b

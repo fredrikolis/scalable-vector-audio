@@ -3,4 +3,5 @@
 mod diagnostics;
 mod lint_codes;
 mod pipeline;
+mod sampled;
 mod stream;
