@@ -1,29 +1,27 @@
 // Concern: walks every reachable file once and names one instance per argument tuple | Non-concern: what an instance holds (mod.rs), reading one back (resolved.rs) | IO: (&Graph, roots) -> Instances
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 
-use sva_ast::{Arg, ByteSpan, Expr, Graph};
+use sva_ast::{Arg, ByteSpan, Defined, Expr, Graph};
 
 use crate::error::{BindingFault, EngineError};
 use crate::instantiate::{
-    Instances, MAX_INSTANCES, NO_PARAMS, SIGNAL_PARAM, Scope, ScopeId, Thunk, resolve_ref_path,
+    Bound, Instances, MAX_INSTANCES, NO_PARAMS, SIGNAL_PARAM, Scope, ScopeId, Written,
+    resolve_ref_path,
 };
 use sva_ast::{SERIES, is_builtin, is_language_value, is_reserved};
 
-pub fn instantiate<'g>(
-    graph: &'g Graph,
-    root: &str,
-    rate: u32,
-) -> Result<Instances<'g>, EngineError> {
+pub fn instantiate(graph: &Graph, root: &str, rate: u32) -> Result<Instances, EngineError> {
     Ok(from_roots(graph, &[root.to_string()], rate)?.0)
 }
 
 /// One table over several roots, so a node two roots reach is one instance and one buffer.
-pub fn from_roots<'g>(
-    graph: &'g Graph,
+pub fn from_roots(
+    graph: &Graph,
     roots: &[String],
     rate: u32,
-) -> Result<(Instances<'g>, Vec<String>), EngineError> {
+) -> Result<(Instances, Vec<String>), EngineError> {
     let mut b = Builder {
         graph,
         out: Instances {
@@ -59,11 +57,12 @@ pub fn from_roots<'g>(
             continue;
         }
         let file = b.out.origin[&name].clone();
-        let held = b.out.nodes[&name];
+        let held = b.out.nodes[&name].clone();
         let (caller, at) = b.site[&name].clone();
         let given: Vec<&str> = b.given[&name].iter().map(String::as_str).collect();
         // An unbound bareword call names a node, so it is the scan's to refuse.
-        let unbound = sva_ast::free_parameters(held.expr, graph.defaults(&file), &given, |_| true);
+        let body = held.written.expr();
+        let unbound = sva_ast::free_parameters(body, graph.defaults(&file), &given, |_| true);
         if let Some(first) = unbound.into_iter().next() {
             let found = BindingFault::Unbound(file.clone(), first);
             return Err(relocate(fault(&file, None, found), &caller, at));
@@ -75,17 +74,23 @@ pub fn from_roots<'g>(
             scope: held.scope,
             at: None,
         };
-        b.scan(held.expr, place, &mut used, &mut children)
+        let sinks = (&mut used, &mut children);
+        b.scan(body, &mut At::of(&held.written), place, sinks)
             .map_err(|e| relocate(e, &caller, at))?;
-        let filled: Vec<(&Expr, ScopeId)> = b.out.scopes[held.scope as usize]
+        let filled: Vec<Bound> = b.out.scopes[held.scope as usize]
             .vars
             .iter()
-            .filter(|(_, thunk)| thunk.scope == NO_PARAMS || b.chained.contains(&thunk.scope))
-            .map(|(_, thunk)| (thunk.expr, thunk.scope))
+            .filter(|(_, bound)| bound.scope == NO_PARAMS || b.chained.contains(&bound.scope))
+            .map(|(_, bound)| bound.clone())
             .collect();
-        for (value, scope) in filled {
-            let inside = In { scope, ..place };
-            b.scan(value, inside, &mut used, &mut children)
+        for value in &filled {
+            let inside = In {
+                scope: value.scope,
+                ..place
+            };
+            let mut walked = At::of(&value.written);
+            let sinks = (&mut used, &mut children);
+            b.scan(value.written.expr(), &mut walked, inside, sinks)
                 .map_err(|e| relocate(e, &caller, at))?;
         }
         let keys: Vec<String> = b.out.scopes[held.scope as usize]
@@ -108,8 +113,33 @@ pub fn from_roots<'g>(
     Ok((b.out, named))
 }
 
+/// The parameters a scan finds used, and the child instances it finds invoked.
+type Sinks<'s> = (&'s mut BTreeSet<String>, &'s mut Vec<String>);
+
+/// Where a scan stands in what it walks: the node it was written in, and the path down.
+struct At {
+    defined: Arc<Defined>,
+    path: Vec<u32>,
+}
+
+impl At {
+    fn of(written: &Written) -> At {
+        At {
+            defined: Arc::clone(&written.defined),
+            path: written.path.to_vec(),
+        }
+    }
+
+    fn here(&self) -> Written {
+        Written {
+            defined: Arc::clone(&self.defined),
+            path: self.path.as_slice().into(),
+        }
+    }
+}
+
 /// Whether an expression names any of the parameters bound so far.
-fn names_any(e: &Expr, binds: &[(String, Thunk<'_>)]) -> bool {
+fn names_any(e: &Expr, binds: &[(String, Bound)]) -> bool {
     binds.iter().any(|(name, _)| sva_ast::occurs_free(e, name))
 }
 
@@ -137,7 +167,7 @@ fn fault(node: &str, span: Option<ByteSpan>, fault: BindingFault) -> EngineError
     }
 }
 
-/// Where a scan stands. `'a` is `file`'s short per-call borrow; `'g` is the graph's.
+/// Where a scan stands. `'a` is `file`'s short per-call borrow.
 #[derive(Clone, Copy)]
 struct In<'a> {
     file: &'a str,
@@ -156,7 +186,7 @@ impl<'a> In<'a> {
 
 struct Builder<'g> {
     graph: &'g Graph,
-    out: Instances<'g>,
+    out: Instances,
     site: BTreeMap<String, (String, Option<ByteSpan>)>,
     /// The series indices in scope, innermost last.
     indices: Vec<String>,
@@ -166,21 +196,21 @@ struct Builder<'g> {
     given: BTreeMap<String, Vec<String>>,
 }
 
-impl<'g> Builder<'g> {
+impl Builder<'_> {
     /// Sharing is decided by comparing the bindings themselves, never a name or a digest: a
     /// name a DIFFERENT tuple holds takes the next suffix, so no two tuples share a buffer.
     fn intern(
         &mut self,
         file: &str,
-        mut binds: Vec<(String, Thunk<'g>)>,
+        mut binds: Vec<(String, Bound)>,
         span: Option<ByteSpan>,
     ) -> Result<String, EngineError> {
         let given: Vec<String> = binds.iter().map(|(name, _)| name.clone()).collect();
-        let Some(body) = self.graph.expr(file) else {
+        let Some(defined) = self.graph.defined(file) else {
             return Err(EngineError::UnknownNode(file.to_string()));
         };
         // A default stands in the scope the lines above it make, in declaration order.
-        for (name, value) in self.graph.defaults(file) {
+        for (line, (name, value)) in (1..).zip(&defined.defaults) {
             self.arithmetic_only(value, file)?;
             if binds.iter().any(|(k, _)| k == name) {
                 continue;
@@ -196,14 +226,18 @@ impl<'g> Builder<'g> {
                     id
                 }
             };
-            binds.push((name.clone(), Thunk { expr: value, scope }));
+            let written = Written::of(defined, line, &[]);
+            binds.push((name.clone(), Bound { written, scope }));
         }
         binds.sort_by(|a, b| a.0.cmp(&b.0));
         for (key, value) in &binds {
             if is_reserved(key) {
                 return Err(fault(file, span, BindingFault::Reserved(key.clone())));
             }
-            if self.out.holds_self(value.expr, self.out.cx(value.scope)) {
+            if self
+                .out
+                .holds_self(value.thunk().expr, self.out.cx(value.scope))
+            {
                 return Err(fault(file, span, BindingFault::SelfInArgument(key.clone())));
             }
         }
@@ -234,9 +268,10 @@ impl<'g> Builder<'g> {
                     self.out.scopes.push(Scope::new(binds));
                     self.out.origin.insert(name.clone(), file.to_string());
                     self.given.insert(name.clone(), given);
+                    let written = Written::of(defined, 0, &[]);
                     self.out
                         .nodes
-                        .insert(name.clone(), Thunk { expr: body, scope });
+                        .insert(name.clone(), Bound { written, scope });
                     return Ok(name);
                 }
             }
@@ -333,10 +368,10 @@ impl<'g> Builder<'g> {
     /// refusing what the bindings cannot answer. Nothing is rewritten.
     fn scan(
         &mut self,
-        e: &'g Expr,
+        e: &Expr,
+        at: &mut At,
         place: In<'_>,
-        used: &mut BTreeSet<String>,
-        children: &mut Vec<String>,
+        (used, children): Sinks<'_>,
     ) -> Result<(), EngineError> {
         let In { file, scope, .. } = place;
         match e {
@@ -351,29 +386,62 @@ impl<'g> Builder<'g> {
                 Ok(())
             }
             Expr::Bin(_, l, r) => {
-                self.scan(l, place, used, children)?;
-                self.scan(r, place, used, children)
+                self.down(at, 0, l, place, (&mut *used, &mut *children))?;
+                self.down(at, 1, r, place, (&mut *used, &mut *children))
             }
-            Expr::SelfRef { arg, span, .. } => self.scan(arg, place.spanned(*span), used, children),
+            Expr::SelfRef { arg, span, .. } => self.down(
+                at,
+                0,
+                arg,
+                place.spanned(*span),
+                (&mut *used, &mut *children),
+            ),
             Expr::Indexed { name, arg, span } => {
                 if self.out.binds(scope, name).is_some() {
                     used.insert(name.clone());
                 }
-                self.scan(arg, place.spanned(*span), used, children)
+                self.down(
+                    at,
+                    0,
+                    arg,
+                    place.spanned(*span),
+                    (&mut *used, &mut *children),
+                )
             }
             Expr::Call { name, args, span } => {
+                let place = place.spanned(*span);
                 if self.out.binds(scope, name).is_some() {
-                    return self.read_parameter(name, args, place.spanned(*span), used, children);
+                    used.insert(name.to_string());
+                    let [Arg::Pos(when)] = args.as_slice() else {
+                        return Err(EngineError::BadArity(name.to_string()));
+                    };
+                    self.down(at, 0, when, place, (&mut *used, &mut *children))?;
+                    return self.read_parameter(name, when, place);
                 }
                 if name == SERIES {
-                    return self.scan_series(args, place.spanned(*span), used, children);
+                    let [
+                        Arg::Pos(Expr::Var(index)),
+                        Arg::Pos(lo),
+                        Arg::Pos(hi),
+                        Arg::Pos(term),
+                    ] = args.as_slice()
+                    else {
+                        return Err(EngineError::BadArity(SERIES.to_string()));
+                    };
+                    // `sum(k, lo, hi, term)` binds `k` over the term alone.
+                    self.down(at, 1, lo, place, (&mut *used, &mut *children))?;
+                    self.down(at, 2, hi, place, (&mut *used, &mut *children))?;
+                    self.indices.push(index.clone());
+                    let scanned = self.down(at, 3, term, place, (&mut *used, &mut *children));
+                    self.indices.pop();
+                    return scanned;
                 }
                 if let (sva_ast::INDEX, [Arg::Pos(time), ..]) = (name.as_str(), args.as_slice()) {
-                    return self.scan(time, place.spanned(*span), used, children);
+                    return self.down(at, 0, time, place, (&mut *used, &mut *children));
                 }
-                for a in args {
+                for (k, a) in (0..).zip(args) {
                     let (Arg::Pos(x) | Arg::Named(_, x)) = a;
-                    self.scan(x, place.spanned(*span), used, children)?;
+                    self.down(at, k, x, place, (&mut *used, &mut *children))?;
                 }
                 if is_builtin(name) {
                     return Ok(());
@@ -382,8 +450,8 @@ impl<'g> Builder<'g> {
                 if self.graph.expr(&target).is_none() {
                     return Err(EngineError::UnknownBuiltin(name.clone()));
                 }
-                let binds = call_bindings(name, args, scope, file, *span)?;
-                self.invoke(e, &target, binds, place.spanned(*span), children)
+                let binds = call_bindings(name, args, (at, scope), (file, *span))?;
+                self.invoke(e, &target, binds, place, children)
             }
             Expr::Ref {
                 path,
@@ -392,23 +460,47 @@ impl<'g> Builder<'g> {
                 span,
                 ..
             } => {
-                self.scan(arg, place.spanned(*span), used, children)?;
+                let place = place.spanned(*span);
+                self.down(at, 0, arg, place, (&mut *used, &mut *children))?;
                 let mut bound = Vec::with_capacity(binds.len());
-                for (k, value) in binds {
-                    self.scan(value, place.spanned(*span), used, children)?;
-                    bound.push((k.clone(), Thunk { expr: value, scope }));
+                for (k, (name, value)) in (1..).zip(binds) {
+                    self.down(at, k, value, place, (&mut *used, &mut *children))?;
+                    at.path.push(k);
+                    bound.push((
+                        name.clone(),
+                        Bound {
+                            written: at.here(),
+                            scope,
+                        },
+                    ));
+                    at.path.pop();
                 }
                 let target = resolve_ref_path(file, path)?;
-                self.invoke(e, &target, bound, place.spanned(*span), children)
+                self.invoke(e, &target, bound, place, children)
             }
         }
     }
 
+    /// The `k`th child of what `at` stands on, scanned.
+    fn down(
+        &mut self,
+        at: &mut At,
+        k: u32,
+        x: &Expr,
+        place: In<'_>,
+        sinks: Sinks<'_>,
+    ) -> Result<(), EngineError> {
+        at.path.push(k);
+        let scanned = self.scan(x, at, place, sinks);
+        at.path.pop();
+        scanned
+    }
+
     fn invoke(
         &mut self,
-        site: &'g Expr,
+        site: &Expr,
         target: &str,
-        binds: Vec<(String, Thunk<'g>)>,
+        binds: Vec<(String, Bound)>,
         place: In,
         children: &mut Vec<String>,
     ) -> Result<(), EngineError> {
@@ -423,47 +515,14 @@ impl<'g> Builder<'g> {
         Ok(())
     }
 
-    /// `sum(k, lo, hi, term)` binds `k` over the term alone; the two bounds are written
-    /// outside it and read no index.
-    fn scan_series(
-        &mut self,
-        args: &'g [Arg],
-        place: In<'_>,
-        used: &mut BTreeSet<String>,
-        children: &mut Vec<String>,
-    ) -> Result<(), EngineError> {
-        let [
-            Arg::Pos(Expr::Var(index)),
-            Arg::Pos(lo),
-            Arg::Pos(hi),
-            Arg::Pos(term),
-        ] = args
-        else {
-            return Err(EngineError::BadArity(SERIES.to_string()));
-        };
-        self.scan(lo, place, used, children)?;
-        self.scan(hi, place, used, children)?;
-        self.indices.push(index.clone());
-        let scanned = self.scan(term, place, used, children);
-        self.indices.pop();
-        scanned
-    }
-
     /// `p(t - M)` reads the argument bound to `p` at another time. Spelled without `@` so that
     /// `@` keeps meaning "a file" and a dangling ref stays a parse-time refusal.
     fn read_parameter(
         &mut self,
         name: &str,
-        args: &'g [Arg],
+        when: &Expr,
         place: In<'_>,
-        used: &mut BTreeSet<String>,
-        children: &mut Vec<String>,
     ) -> Result<(), EngineError> {
-        used.insert(name.to_string());
-        let [Arg::Pos(when)] = args else {
-            return Err(EngineError::BadArity(name.to_string()));
-        };
-        self.scan(when, place, used, children)?;
         let bound = self
             .out
             .binds(place.scope, name)
@@ -484,25 +543,30 @@ impl<'g> Builder<'g> {
 }
 
 /// The one allowed positional argument binds [`SIGNAL_PARAM`]; a second has nothing to mean.
-fn call_bindings<'g>(
+fn call_bindings(
     name: &str,
-    args: &'g [Arg],
-    scope: ScopeId,
-    file: &str,
-    span: ByteSpan,
-) -> Result<Vec<(String, Thunk<'g>)>, EngineError> {
-    let mut binds: Vec<(String, Thunk<'g>)> = Vec::new();
-    for a in args {
+    args: &[Arg],
+    (at, scope): (&mut At, ScopeId),
+    (file, span): (&str, ByteSpan),
+) -> Result<Vec<(String, Bound)>, EngineError> {
+    let mut binds: Vec<(String, Bound)> = Vec::new();
+    for (k, a) in (0..).zip(args) {
+        at.path.push(k);
+        let bound = Bound {
+            written: at.here(),
+            scope,
+        };
+        at.path.pop();
         match a {
-            Arg::Pos(e) if binds.is_empty() => {
-                binds.push((SIGNAL_PARAM.to_string(), Thunk { expr: e, scope }));
+            Arg::Pos(_) if binds.is_empty() => {
+                binds.push((SIGNAL_PARAM.to_string(), bound));
             }
             Arg::Pos(_) => return Err(EngineError::BadArity(name.to_string())),
-            Arg::Named(k, e) => {
+            Arg::Named(k, _) => {
                 if binds.iter().any(|(seen, _)| seen == k) {
                     return Err(fault(file, Some(span), BindingFault::Duplicate(k.clone())));
                 }
-                binds.push((k.clone(), Thunk { expr: e, scope }));
+                binds.push((k.clone(), bound));
             }
         }
     }

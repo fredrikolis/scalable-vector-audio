@@ -123,7 +123,7 @@ pub fn schedule_from(inst: &Instances, roots: &[String]) -> Result<Order, Engine
 }
 
 struct Walk<'a> {
-    inst: &'a Instances<'a>,
+    inst: &'a Instances,
     deps: BTreeMap<String, Vec<String>>,
     index: HashMap<String, usize>,
     low: HashMap<String, usize>,

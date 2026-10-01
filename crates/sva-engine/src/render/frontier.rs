@@ -38,7 +38,7 @@ enum Step {
 
 impl<'w> Frontier<'w> {
     pub(crate) fn from(
-        (inst, order): (&Instances<'_>, &'w Order),
+        (inst, order): (&Instances, &'w Order),
         keys: &'w BTreeMap<String, Hash>,
         root: &'w str,
         (config, streaming): (&'w RenderConfig, bool),

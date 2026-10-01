@@ -1,6 +1,7 @@
 // Concern: folds a source's node texts into a graph, desugars repeat/concat | Non-concern: where the texts come from (source.rs), one file's own content (ingest.rs) | IO: (&dyn Source) -> Graph
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 
 use crate::diag::{ByteSpan, DiagCode};
 use crate::expr::{
@@ -19,14 +20,20 @@ pub const VARIABLES: &str = "variables";
 #[derive(Clone, Debug)]
 pub struct Graph {
     root: String,
-    nodes: BTreeMap<String, Expr>,
-    defaults: BTreeMap<String, Vec<(String, Expr)>>,
+    nodes: BTreeMap<String, Arc<Defined>>,
     grids: HashMap<String, Grid>,
     spans: HashMap<String, Option<FileSpan>>,
     per_bar: Option<PerBar>,
     skipped: Vec<Skipped>,
     /// Each node's text as its source answered it, or as a defined one prints.
     texts: HashMap<String, String>,
+}
+
+/// A node's body and the default lines written above it, held whole so a reader may keep it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Defined {
+    pub body: Expr,
+    pub defaults: Vec<(String, Expr)>,
 }
 
 fn has_bar_literal(e: &Expr) -> bool {
@@ -77,6 +84,10 @@ impl Graph {
     }
 
     pub fn expr(&self, path: &str) -> Option<&Expr> {
+        self.nodes.get(path).map(|defined| &defined.body)
+    }
+
+    pub fn defined(&self, path: &str) -> Option<&Arc<Defined>> {
         self.nodes.get(path)
     }
 
@@ -88,15 +99,16 @@ impl Graph {
     /// What an invocation binding nothing for a name gets, in written order. A caller's own
     /// binding wins, so this is only ever consulted for names the invocation left out.
     pub fn defaults(&self, path: &str) -> &[(String, Expr)] {
-        self.defaults.get(path).map_or(&[], Vec::as_slice)
+        self.nodes
+            .get(path)
+            .map_or(&[], |defined| defined.defaults.as_slice())
     }
 
     /// A global by name, `variables/` first and the composition root second — where nothing
     /// distinguishes a global from a signal, and which is transitional.
     pub fn global(&self, name: &str) -> Option<&Expr> {
-        self.nodes
-            .get(&format!("{VARIABLES}/{name}"))
-            .or_else(|| self.nodes.get(name))
+        self.expr(&format!("{VARIABLES}/{name}"))
+            .or_else(|| self.expr(name))
     }
 
     pub fn span(&self, path: &str) -> Option<FileSpan> {
@@ -123,15 +135,17 @@ impl Graph {
             let Some(Some(span)) = self.spans.get(path) else {
                 continue;
             };
-            self.nodes
-                .insert(path.clone(), crate::tsv::materialize(grid, span.amount));
+            if let Some(defined) = self.nodes.get_mut(path) {
+                Arc::make_mut(defined).body = crate::tsv::materialize(grid, span.amount);
+            }
         }
         self.per_bar = Some(per_bar);
-        for expr in self.nodes.values_mut() {
-            *expr = resolve_bar_literals(expr, per_bar);
-        }
-        for value in self.defaults.values_mut().flatten() {
-            value.1 = resolve_bar_literals(&value.1, per_bar);
+        for defined in self.nodes.values_mut() {
+            let defined = Arc::make_mut(defined);
+            defined.body = resolve_bar_literals(&defined.body, per_bar);
+            for value in &mut defined.defaults {
+                value.1 = resolve_bar_literals(&value.1, per_bar);
+            }
         }
     }
 
@@ -140,8 +154,9 @@ impl Graph {
     pub fn unresolved_bar_literals(&self) -> Vec<&str> {
         self.nodes
             .iter()
-            .filter(|(path, expr)| {
-                has_bar_literal(expr) || self.defaults(path).iter().any(|(_, v)| has_bar_literal(v))
+            .filter(|(_, defined)| {
+                has_bar_literal(&defined.body)
+                    || defined.defaults.iter().any(|(_, v)| has_bar_literal(v))
             })
             .map(|(path, _)| path.as_str())
             .collect()
@@ -167,7 +182,11 @@ impl Graph {
         };
         self.texts
             .insert(path.to_string(), crate::print::render(&expr));
-        self.nodes.insert(path.to_string(), expr);
+        let defined = Defined {
+            body: expr,
+            defaults: Vec::new(),
+        };
+        self.nodes.insert(path.to_string(), Arc::new(defined));
         self.spans.insert(path.to_string(), None);
         true
     }
@@ -180,7 +199,7 @@ impl Graph {
         let mut rewritten = Vec::new();
 
         for path in &paths {
-            let expr = self.nodes.get(path).expect("path came from nodes.keys()");
+            let expr = self.expr(path).expect("path came from nodes.keys()");
             match self.rewrite_arrangement(path, expr) {
                 Ok(new_expr) => rewritten.push((path.clone(), new_expr)),
                 Err(r) => refusals.push(r),
@@ -191,7 +210,11 @@ impl Graph {
             return Err(refusals);
         }
         for (path, new_expr) in rewritten {
-            self.nodes.insert(path, new_expr);
+            if let Some(defined) = self.nodes.get_mut(&path)
+                && defined.body != new_expr
+            {
+                Arc::make_mut(defined).body = new_expr;
+            }
         }
         Ok(())
     }
@@ -522,10 +545,14 @@ impl Loading {
         if !cycles.is_empty() {
             return Err(cycles);
         }
+        let mut defaults = self.defaults;
+        let nodes = self.nodes.into_iter().map(|(path, body)| {
+            let defaults = defaults.remove(&path).unwrap_or_default();
+            (path, Arc::new(Defined { body, defaults }))
+        });
         Ok(Graph {
             root: self.name,
-            nodes: self.nodes,
-            defaults: self.defaults,
+            nodes: nodes.collect(),
             grids: self.grids,
             spans: self.spans,
             per_bar: None,

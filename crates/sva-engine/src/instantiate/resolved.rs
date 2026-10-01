@@ -4,16 +4,19 @@ use std::collections::BTreeMap;
 
 use sva_ast::{Arg, Expr};
 
-use crate::instantiate::{Cx, Instances, Node, Thunk};
+use crate::instantiate::{Bound, Cx, Instances, Node};
 
-impl<'g> Instances<'g> {
-    pub(crate) fn display_name(&self, file: &str, binds: &[(String, Thunk<'g>)]) -> String {
+impl Instances {
+    pub(crate) fn display_name(&self, file: &str, binds: &[(String, Bound)]) -> String {
         if binds.is_empty() {
             return file.to_string();
         }
         let args: Vec<String> = binds
             .iter()
-            .map(|(k, v)| format!("{k}={}", self.render(v.expr, self.cx(v.scope))))
+            .map(|(k, v)| {
+                let v = v.thunk();
+                format!("{k}={}", self.render(v.expr, self.cx(v.scope)))
+            })
             .collect();
         format!("{file}({})", args.join(", "))
     }

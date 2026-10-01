@@ -237,17 +237,13 @@ fn closed(held: &mut Render) -> Result<(), EngineError> {
     Ok(())
 }
 
-pub(crate) struct Prepared<'g> {
-    pub(crate) instances: instantiate::Instances<'g>,
+pub(crate) struct Prepared {
+    pub(crate) instances: instantiate::Instances,
     pub(crate) tys: Typing,
     pub(crate) root: NodeId,
 }
 
-pub(crate) fn prepared<'g>(
-    graph: &'g Graph,
-    target: &str,
-    rate: u32,
-) -> Result<Prepared<'g>, EngineError> {
+pub(crate) fn prepared(graph: &Graph, target: &str, rate: u32) -> Result<Prepared, EngineError> {
     let instances = instantiate::instantiate(graph, target, rate)?;
     let held = instances.instance_of(target)?;
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&held))?;
@@ -263,7 +259,7 @@ pub(crate) fn prepared<'g>(
 }
 
 fn planned(
-    prepared: Prepared<'_>,
+    prepared: Prepared,
     config: RenderConfig,
     bounds: &BTreeSet<NodeId>,
 ) -> Result<Render, EngineError> {

@@ -15,7 +15,7 @@ use crate::time::Lattice;
 use crate::typing::{Value, When};
 use sva_ast::SERIES;
 
-impl<'g> Lowering<'_, 'g> {
+impl Lowering<'_> {
     pub(super) fn call(
         &mut self,
         name: &str,

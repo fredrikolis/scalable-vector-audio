@@ -67,7 +67,7 @@ impl Args<'_> {
     }
 }
 
-impl Lowering<'_, '_> {
+impl Lowering<'_> {
     /// Every geometry answers with its own modes; the excitation multiplies them.
     pub(super) fn modal(
         &mut self,

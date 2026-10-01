@@ -10,7 +10,7 @@ use crate::instantiate::{Cx, Node};
 use crate::lower::{Lowering, Piece};
 use sva_ast::SERIES;
 
-impl Lowering<'_, '_> {
+impl Lowering<'_> {
     /// `saw`, `square` and `triangle` carry no harmonic budget: each is the series FORMAT 6.4
     /// states, truncated once at collapse.
     pub(super) fn wave(

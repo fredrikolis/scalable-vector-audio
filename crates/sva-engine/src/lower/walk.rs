@@ -12,7 +12,7 @@ use crate::overload;
 use crate::time::{Affine, Lattice, Q};
 use crate::typing::{Step, Value, When};
 
-impl Lowering<'_, '_> {
+impl Lowering<'_> {
     pub(super) fn walk(&mut self, e: &Expr, cx: Cx, var: Var) -> Result<Piece, EngineError> {
         let inst = self.inst;
         if let Some(r) = inst.follow(e, cx, |e2, cx2| self.walk(e2, cx2, var)) {

@@ -12,7 +12,7 @@ use crate::instantiate::Cx;
 use crate::lower::{Lowering, Piece};
 use crate::typing::Value;
 
-impl Lowering<'_, '_> {
+impl Lowering<'_> {
     pub(super) fn cast(
         &mut self,
         cast: Cast,

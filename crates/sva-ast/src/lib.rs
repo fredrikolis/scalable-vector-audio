@@ -27,7 +27,8 @@ pub use expr::{
 };
 pub use filename::{FileSpan, SpanUnit};
 pub use graph::{
-    Graph, PerBar, VARIABLES, load, load_reaching, names_a_node, reads_of, resolve_ref_path,
+    Defined, Graph, PerBar, VARIABLES, load, load_reaching, names_a_node, reads_of,
+    resolve_ref_path,
 };
 pub use ingest::{Parsed, occurs_free, parse_file};
 pub use lexer::{

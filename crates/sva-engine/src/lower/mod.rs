@@ -42,8 +42,8 @@ enum SelfMode {
     Discrete(String),
 }
 
-pub struct Lowering<'a, 'g> {
-    inst: &'a Instances<'g>,
+pub struct Lowering<'a> {
+    inst: &'a Instances,
     typing: &'a mut Typing,
     node: &'a str,
     indices: Vec<(String, IndexId)>,
@@ -231,7 +231,7 @@ fn scan_axis(inst: &Instances, typing: &Typing, e: &Expr, cx: Cx, seen: &mut (bo
     }
 }
 
-impl<'g> Lowering<'_, 'g> {
+impl Lowering<'_> {
     fn here(&self, span: Option<ByteSpan>) -> Located {
         Located::at(self.node, span)
     }

@@ -58,11 +58,7 @@ pub(super) fn mark(inst: &Instances, held: &Render, target: &str) -> Result<Vola
 }
 
 fn refuse_unbound(inst: &Instances, names: &[String], target: &str) -> Result<(), EngineError> {
-    let bound: BTreeSet<&str> = inst
-        .scopes
-        .iter()
-        .flat_map(|scope| scope.vars.iter().map(|(name, _)| name.as_str()))
-        .collect();
+    let bound: BTreeSet<&str> = inst.bound_names().collect();
     let Some(missing) = names.iter().find(|n| !bound.contains(n.as_str())) else {
         return Ok(());
     };
@@ -101,14 +97,14 @@ fn volatile(
     held
 }
 
-struct Reach<'a, 'g> {
-    inst: &'a Instances<'g>,
+struct Reach<'a> {
+    inst: &'a Instances,
     names: &'a [String],
     bound: HashMap<(ScopeId, String), bool>,
     text: HashMap<String, String>,
 }
 
-impl Reach<'_, '_> {
+impl Reach<'_> {
     fn declared(&self, name: &str) -> bool {
         self.names.iter().any(|n| n == name)
     }
@@ -122,10 +118,9 @@ impl Reach<'_, '_> {
     }
 
     fn vars(&self, scope: ScopeId) -> Vec<String> {
-        self.inst.scopes[scope as usize]
-            .vars
-            .iter()
-            .map(|(name, _)| name.clone())
+        self.inst
+            .vars(scope)
+            .map(|(name, _)| name.to_string())
             .collect()
     }
 
@@ -160,7 +155,7 @@ impl Reach<'_, '_> {
         let file = self.inst.origin(path).unwrap_or(path).to_string();
         let inst = self.inst;
         let mut args = Vec::new();
-        for (name, thunk) in &inst.scopes[cx.scope as usize].vars {
+        for (name, thunk) in inst.vars(cx.scope) {
             let value = match self.declared(name) {
                 true => format!("?{name}"),
                 false => sva_ast::render_expr(&self.copy(thunk.expr, inst.cx(thunk.scope))),
