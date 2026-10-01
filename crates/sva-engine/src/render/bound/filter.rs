@@ -9,7 +9,7 @@ pub(super) struct Ringing {
     quiet: i64,
     lead: f64,
     lag: f64,
-    floor: f64,
+    rounding: f64,
     decay: Envelope,
 }
 
@@ -34,18 +34,28 @@ impl Ringing {
             quiet: end.checked_add(2)?,
             lead: feedback * whole,
             lag: c.a2.abs() * whole,
-            floor: carried * (GAMMA * feedback * whole + TINY),
+            rounding: GAMMA * feedback,
             decay,
         })
     }
 
     pub(super) fn from(&self, n: i64) -> f64 {
-        if n < self.quiet {
-            return self.whole * (1.0 + SLACK);
+        match n < self.quiet {
+            true => self.whole * (1.0 + SLACK),
+            false => self.past(n - self.quiet) * (1.0 + SLACK),
         }
-        let m = n - self.quiet;
+    }
+
+    /// `sup_{i>=m}|y[quiet+i]|`: errors before `m/2` under `whole`, later ones under itself.
+    fn past(&self, m: i64) -> f64 {
+        if m < 0 {
+            return self.whole;
+        }
         let rings = self.lead * self.decay.at(m) + self.lag * self.decay.at(m - 1);
-        (rings + self.floor).min(self.whole) * (1.0 + SLACK)
+        let split = m / 2;
+        let early = (self.rounding * self.whole + TINY) * self.decay.tail(m - split + 1);
+        let late = self.decay.sum() * (self.rounding * self.past(split - 2) + TINY);
+        (rings + early + late).min(self.whole)
     }
 }
 
@@ -107,6 +117,24 @@ impl Envelope {
             Some(pair) => linear.min(pair * self.power(k)),
             None => linear,
         }
+    }
+
+    /// Bounds `sum_{j>=k}|g[j]|`.
+    fn tail(&self, k: i64) -> f64 {
+        let open = 1.0 - self.rho;
+        let ones = self.power(k) / open;
+        let held = match (self.single, self.pair) {
+            (true, _) => ones,
+            (false, pair) => {
+                let from = k.max(self.peak);
+                let flat = (from - k) as f64 * self.at(k);
+                let linear =
+                    self.power(from) * ((from as f64 + 1.0) / open + self.rho / (open * open));
+                let linear = flat + linear;
+                pair.map_or(linear, |pair| linear.min(pair * ones))
+            }
+        };
+        held * (1.0 + SLACK)
     }
 
     fn sum(&self) -> f64 {

@@ -126,6 +126,53 @@ fn what_the_cut_zeroes_is_under_the_level() {
     }
 }
 
+/// A pole close to the unit circle sums to a large gain, so the rounding its feedback adds
+/// is bounded as it falls with the ringing, not by the loudest sample: every shape at a low
+/// cutoff over a cropped input still ends past it, and is zero only once under the level.
+#[test]
+fn a_fixed_filter_with_a_pole_near_one_ends() {
+    const RATE: u32 = 44_100;
+    let input = "sample(crop(sin(2*pi*440*t), 0s, 1s))";
+    let shapes = [
+        format!("highpass({input}, cutoff=100, q=0.7)"),
+        format!("lowpass({input}, cutoff=1000)"),
+        format!("lowpass({input}, cutoff=40, q=0.7)"),
+        format!("bandpass({input}, 60hz, 4)"),
+        format!("notch({input}, 50hz, 0.5)"),
+        format!("lowshelf({input}, 60hz, 0.7, -6)"),
+    ];
+    let files: Vec<(String, String)> = shapes
+        .iter()
+        .enumerate()
+        .map(|(k, body)| (format!("f{k}"), format!("{body}\n")))
+        .collect();
+    let named: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(n, b)| (n.as_str(), b.as_str()))
+        .collect();
+    let g = graph_of("near-one", &named);
+    let deep = RenderConfig {
+        profile: Profile {
+            prune_db: -300.0,
+            ..PSYCHOACOUSTIC_V1
+        },
+        ..RenderConfig::seconds(RATE, 30.0)
+    };
+    for (name, body) in &files {
+        let bare = plane(&render(&g, name, RenderConfig::at(RATE)));
+        assert!(bare.len() > RATE as usize, "{body} rings past its input");
+        let unpruned = plane(&render(&g, name, deep.clone()));
+        assert!(
+            unpruned.len() > bare.len(),
+            "{body} ends within the long render"
+        );
+        let loudest = unpruned[bare.len()..]
+            .iter()
+            .fold(0.0f64, |m, v| m.max(v.abs()));
+        assert!(loudest < 1e-6, "{body}: {loudest} past {}", bare.len());
+    }
+}
+
 /// A moving cutoff, an input that never ends, and a loop have no proven decay: each bare
 /// render still refuses for want of an end.
 #[test]
