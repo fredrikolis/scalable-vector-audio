@@ -330,7 +330,7 @@ impl Table {
             self.released(
                 demand::demand(&self.values, &later),
                 Extent::NOWHERE,
-                window.start,
+                Some(window.start),
             );
             from = to;
         }
@@ -435,8 +435,8 @@ impl Table {
     }
 
     /// Drops what no later window reads: `future` is the rest of the root's range, `keep` more
-    /// the root holds besides, and `since` where the output is read from.
-    pub(crate) fn release(&mut self, future: Option<Extent>, keep: Extent, since: i64) {
+    /// the root holds besides, and `since` where the output is read from, if it is.
+    pub(crate) fn release(&mut self, future: Option<Extent>, keep: Extent, since: Option<i64>) {
         let needs = match future {
             Some(window) => self.demand(window),
             None => vec![Need::default(); self.values.span()],
@@ -446,7 +446,7 @@ impl Table {
 
     /// A wanted value keeps everything, as a wanted reader's rerun reads it from its start;
     /// the target's own value, which no wanted value reads, keeps only the output's samples.
-    fn released(&mut self, mut needs: Vec<Need>, keep: Extent, since: i64) {
+    fn released(&mut self, mut needs: Vec<Need>, keep: Extent, since: Option<i64>) {
         let (mut root, mut by) = (self.root, 0);
         while let Some((read, shift)) = self.values[root].alias() {
             (root, by) = (read, by + shift);
@@ -466,7 +466,7 @@ impl Table {
             let mut kept = need.hold;
             if at == root {
                 kept.add(keep.shifted(by));
-                if self.whole(at) {
+                if let Some(since) = since.filter(|_| self.whole(at)) {
                     kept.add(Extent::new(since, i64::MAX).shifted(by));
                 }
             }

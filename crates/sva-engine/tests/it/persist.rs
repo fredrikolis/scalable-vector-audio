@@ -9,9 +9,9 @@ use crate::disk::{Held, Memory, disk, now, opened};
 use crate::fixtures::{added, graph_of, next, replaced, samples};
 use sva_ast::Graph;
 use sva_engine::{
-    Ask, Backend, CacheStats, Change, Changed, EngineError, Handle, Hash, INDEX_NAME, Outcome,
+    Ask, Backend, CacheStats, Change, Changed, EngineError, Handle, Hash, INDEX_NAME, Out, Outcome,
     Placed, Range, Render, RenderConfig, Representation, STORE_FORMAT, Store, Stream, StreamConfig,
-    Tier, change, render, render_over, warm,
+    Tier, change, render, render_over,
 };
 
 const SECONDS: f64 = 0.05;
@@ -594,11 +594,11 @@ fn a_persist_that_fails_leaves_every_value_it_did_not_commit_staged() {
     assert_eq!(memory.entries().len(), 3);
 }
 
-/// A medium that refuses every write fails no render and no warm: the render's samples are a
-/// render's over memory alone, and its stats and the warm's say why nothing was written; once
-/// the medium takes writes, a persist writes what memory still holds.
+/// A medium that refuses every write fails no render, its out dropped or not: the samples are a
+/// render's over memory alone, and each one's stats say why nothing was written; once the medium
+/// takes writes, a persist writes what memory still holds.
 #[test]
-fn a_store_refusing_every_write_fails_no_render_and_no_warm() {
+fn a_store_refusing_every_write_fails_no_render() {
     let memory = Memory::default();
     let store = opened(&memory, u64::MAX);
     store.set_max_bytes(1);
@@ -609,8 +609,12 @@ fn a_store_refusing_every_write_fails_no_render_and_no_warm() {
     let fresh = render(&graph, "master", config.clone(), &Tier::default()).expect("a render");
     assert_eq!(samples(&through), samples(&fresh));
     assert!(stats(&through).unstaged.is_some(), "{:?}", stats(&through));
-    let warmed = now(warm(&graph, "master", config, &store)).expect("a warm");
-    assert!(warmed.unstaged.is_some(), "{warmed:?}");
+    let prepared = dropped(&graph, config, &store);
+    assert!(
+        stats(&prepared).unstaged.is_some(),
+        "{:?}",
+        stats(&prepared)
+    );
     assert!(now(store.persist()).is_err());
     memory.refusing.store(false, Ordering::Relaxed);
     assert!(now(store.persist()).expect("persisted").written > 0);
@@ -1339,25 +1343,31 @@ fn a_referral_names_the_samples_themselves_and_misses_once_they_are_gone() {
     assert_eq!(bits(&after), bits(&before));
 }
 
-fn warmed_into(graph: &Graph, store: &Tier<Memory>) -> CacheStats {
-    now(warm(
-        graph,
-        "master",
-        RenderConfig::seconds(RATE, SECONDS),
-        store,
-    ))
-    .expect("warmed")
+/// `graph`'s master rendered with its out dropped.
+fn dropped(graph: &Graph, config: RenderConfig, store: &Tier<Memory>) -> Render {
+    let config = RenderConfig {
+        out: Out::Dropped,
+        ..config
+    };
+    now(render_over(graph, "master", config, store)).expect("a render")
 }
 
-/// A warmed target, once persisted, renders from the store alone, bit for bit the fresh render.
+fn prepared(graph: &Graph, store: &Tier<Memory>) -> Render {
+    dropped(graph, RenderConfig::seconds(RATE, SECONDS), store)
+}
+
+/// A target rendered with its out dropped hands back no samples; persisted, it renders from the
+/// store alone, bit for bit the fresh render.
 #[test]
-fn a_warmed_and_persisted_target_renders_as_a_store_hit() {
+fn a_target_prepared_and_persisted_renders_as_a_store_hit() {
     let memory = Memory::default();
-    let graph = nested("warmed", 220);
+    let graph = nested("prepared", 220);
     let store = opened(&memory, u64::MAX);
-    let warmed = warmed_into(&graph, &store);
-    assert!(warmed.computed() > 0, "{warmed:?}");
-    assert!(memory.entries().is_empty(), "warm persists nothing");
+    let prepared = prepared(&graph, &store);
+    assert!(stats(&prepared).computed() > 0, "{:?}", stats(&prepared));
+    assert!(prepared.output(prepared.root).is_err(), "no samples");
+    assert!(prepared.buffers.is_empty());
+    assert!(memory.entries().is_empty(), "a render persists nothing");
     now(store.persist()).expect("persisted");
 
     let hit = rendered(&graph, &opened(&memory, u64::MAX));
@@ -1372,21 +1382,46 @@ fn a_warmed_and_persisted_target_renders_as_a_store_hit() {
     assert_eq!(bits(&hit), bits(&fresh.expect("a render")));
 }
 
-/// Warming what the store holds looks the root up, header alone, and computes and stages nothing.
+/// A render with its out dropped holds as much of its root however long it runs, where one
+/// handing back its samples holds them all.
 #[test]
-fn warming_a_stored_target_computes_nothing() {
+fn a_render_with_its_out_dropped_holds_its_root_a_block_at_a_time() {
+    let master = "lowpass(sample(0.1*saw(110*t)), cutoff=900, q=0.7)\n";
+    let graph = graph_of("out-dropped", &[("master", master)]);
+    let held = |secs: f64, out: Out| {
+        let config = RenderConfig {
+            out,
+            ..RenderConfig::seconds(RATE, secs)
+        };
+        let done = render(&graph, "master", config, &Tier::default()).expect("a render");
+        done.held_bytes
+    };
+    assert_eq!(held(4.0, Out::Dropped), held(8.0, Out::Dropped));
+    assert!(held(8.0, Out::Kept) > held(4.0, Out::Kept));
+}
+
+/// A second preparation over what a first one stored looks the root up, header alone, and
+/// computes, prices and stages nothing.
+#[test]
+fn preparing_a_stored_target_computes_nothing() {
     let memory = Memory::default();
-    let graph = nested("rewarmed", 220);
+    let graph = nested("reprepared", 220);
     let store = opened(&memory, u64::MAX);
-    warmed_into(&graph, &store);
+    prepared(&graph, &store);
     now(store.persist()).expect("persisted");
     let store = opened(&memory, u64::MAX);
     memory.reads.lock().unwrap().clear();
 
-    let again = warmed_into(&graph, &store);
+    let again = prepared(&graph, &store);
+    assert_eq!(again.work().priced_flops, 0);
+    let again = stats(&again);
     assert_eq!(again.computed(), 0, "{again:?}");
     assert_eq!(again.lookups.len(), 1, "{again:?}");
     assert_eq!(again.lookups[0].outcome, Outcome::Hit);
+    assert!(
+        !memory.reads.lock().unwrap().is_empty(),
+        "the disk answered"
+    );
     for (name, bytes) in memory.reads.lock().unwrap().iter() {
         let span = memory.bytes(name).map_or(0, |entry| head_of(&entry));
         assert!(
@@ -1398,15 +1433,15 @@ fn warming_a_stored_target_computes_nothing() {
     assert_eq!(now(store.persist()).expect("persisted").written, 0);
 }
 
-/// Two workers over one directory, each warming its own note and persisting it: both notes
+/// Two workers over one directory, each preparing its own note and persisting it: both notes
 /// are stored, and a store opened afterwards answers each from its root.
 #[test]
-fn stores_sharing_a_directory_each_persist_what_they_warmed() {
+fn stores_sharing_a_directory_each_persist_what_they_prepared() {
     let memory = Memory::default();
     let (low, high) = (nested("note-low", 220), nested("note-high", 440));
     let (first, second) = (opened(&memory, u64::MAX), opened(&memory, u64::MAX));
-    warmed_into(&low, &first);
-    warmed_into(&high, &second);
+    prepared(&low, &first);
+    prepared(&high, &second);
     now(first.persist()).expect("persisted");
     now(second.persist()).expect("persisted");
 

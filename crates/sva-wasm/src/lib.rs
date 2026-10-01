@@ -1,4 +1,4 @@
-// Concern: the JS surface — a composition a page fills node by node, renders, warms, streams, persists | Non-concern: the pipeline, the store's medium | IO: (path, text) -> samples, blocks, counters
+// Concern: the JS surface — a composition a page fills node by node, renders, streams, persists | Non-concern: the pipeline, the store's medium | IO: (path, text) -> samples, blocks, counters
 
 //! A page holds no directory: nodes arrive one at a time, so a composition is BUILT rather
 //! than read. A refusal crosses as a thrown `Error`: `name` is the CLI's error code,
@@ -12,7 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use sva_core::{
-    Asked, CliError, Diagnostic, Job, Printed, Rendered, Report, Representation, SAMPLE_LIMIT,
+    Asked, CliError, Diagnostic, Job, Out, Printed, Rendered, Report, Representation, SAMPLE_LIMIT,
     counters_json, error_envelope, execute_over, query_data, stats_json, stream_stats_json,
     work_json,
 };
@@ -86,6 +86,7 @@ struct Options {
     readings: Vec<String>,
     at: Option<Placed>,
     channels: Option<usize>,
+    out: Out,
 }
 
 /// `keys` are the options this call reads; any other is refused by name.
@@ -123,6 +124,13 @@ fn options_of(options: &JsValue, keys: &[&str]) -> Result<Options, JsValue> {
             }
             "readings" => held.readings = names(&key, &value)?,
             "at" => held.at = Some(placed(&text(&key, &value)?)?),
+            "out" if value.is_null() => held.out = Out::Dropped,
+            "out" => {
+                return Err(refuse(
+                    "`out` is not null".into(),
+                    "pass `out: null` to hand back no samples, or leave it out",
+                ));
+            }
             _ => held.volatile = names(&key, &value)?,
         }
     }
@@ -268,21 +276,35 @@ impl Composition {
     }
 
     /// `target` as `sva-cli render` takes it, `@piano([0, 2b], f0=C4)`; `representations`
-    /// what `representations()` answers, `samples` where unset, each a call as
-    /// `--representation` writes it. `options` sets `rate`, `bits`, `flop_budget`, `until` and
-    /// `volatile`.
+    /// what `representations()` answers, each a call as `--representation` writes it.
+    /// `options`: `rate`, `bits`, `flop_budget`, `until`, `volatile`, and `out: null`, which
+    /// hands back no samples and reads only `representations`, `samples` otherwise.
     pub async fn render(
         &self,
         target: &str,
         representations: Option<Vec<String>>,
         options: JsValue,
     ) -> Result<Rendering, JsValue> {
-        let options = options_of(
-            &options,
-            &["rate", "bits", "flop_budget", "until", "volatile"],
-        )?;
-        let names = representations.unwrap_or_else(|| vec!["samples".to_string()]);
+        let keys = ["rate", "bits", "flop_budget", "until", "volatile", "out"];
+        let options = options_of(&options, &keys)?;
+        let out = options.out;
+        let names = representations.unwrap_or_else(|| match out {
+            Out::Kept => vec!["samples".to_string()],
+            Out::Dropped => Vec::new(),
+        });
         let asked = representations_of(&names)?;
+        let samples = asked
+            .iter()
+            .find(|asked| asked.representation == Representation::Samples);
+        if let (Out::Dropped, Some(samples)) = (out, samples) {
+            return Err(refuse(
+                format!(
+                    "`{}` reads samples, and `out: null` hands back none",
+                    samples.name
+                ),
+                "render without `out` to read its samples",
+            ));
+        }
         let job = Job {
             until: options.until.as_deref(),
             rate: options.rate,
@@ -290,49 +312,14 @@ impl Composition {
             asked: &asked,
             flop_budget: options.flop_budget,
             volatile: &options.volatile,
+            out,
             ..Job::over(&self.inner, target)
         };
         let inner = execute_over(job, &*self.tier)
             .await
             .map_err(|e| thrown(&e))?;
         unstaged(inner.render.cache_stats.as_ref());
-        Ok(Rendering { inner, asked })
-    }
-
-    /// `target` computed into memory as `render` would; `{ stats, representations }`, the
-    /// latter `representations()` for `readings`. Options: `rate`, `bits`, `flop_budget`,
-    /// `readings`.
-    pub async fn warm(&self, target: &str, options: JsValue) -> Result<JsValue, JsValue> {
-        let options = options_of(&options, &["rate", "bits", "flop_budget", "readings"])?;
-        let asked = representations_of(&options.readings)?;
-        if let Some(samples) = asked
-            .iter()
-            .find(|asked| asked.representation == Representation::Samples)
-        {
-            return Err(refuse(
-                format!("`{}` reads samples, and `warm` answers none", samples.name),
-                "render the target to read its samples",
-            ));
-        }
-        let job = Job {
-            rate: options.rate,
-            bits: options.bits,
-            flop_budget: options.flop_budget,
-            asked: &asked,
-            ..Job::over(&self.inner, target)
-        };
-        let warmed = sva_core::warm(job, &*self.tier).await;
-        let warmed = warmed.map_err(|e| thrown(&e))?;
-        unstaged(Some(&warmed.stats));
-        let representations = match &warmed.readings {
-            Some(read) => answered(read, &asked)?,
-            None => JsValue::NULL,
-        };
-        let out = js_sys::Object::new();
-        let set = |key: &str, value: &JsValue| js_sys::Reflect::set(&out, &key.into(), value);
-        set("stats", &parse(&stats_json(&warmed.stats))?)?;
-        set("representations", &representations)?;
-        Ok(out.into())
+        Ok(Rendering { inner, asked, out })
     }
 
     /// `target` block by block. `options`: `rate`, `bits`, `until`, `live`, `channels`.
@@ -459,6 +446,7 @@ fn prune_policy(name: &str) -> Result<PrunePolicy, JsValue> {
 pub struct Rendering {
     inner: Rendered,
     asked: Vec<Asked>,
+    out: Out,
 }
 
 #[wasm_bindgen]
@@ -493,6 +481,12 @@ impl Rendering {
 
     pub fn samples(&self, channel: usize) -> Result<Vec<f32>, JsValue> {
         let render = &self.inner.render;
+        if self.out == Out::Dropped {
+            return Err(refuse(
+                format!("`{}` was rendered with `out: null`", self.inner.expression),
+                "render without `out` to read its samples",
+            ));
+        }
         if render.buffer(render.root).is_none() {
             return Err(refuse(
                 format!("`{}` read no samples of its root", self.inner.expression),

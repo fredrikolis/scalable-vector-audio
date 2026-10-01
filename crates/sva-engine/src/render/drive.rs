@@ -24,6 +24,7 @@ pub(super) struct Driver {
     keep: i64,
     /// Where the samples heard without a break since start from: a skip starts them anew.
     heard: i64,
+    output: bool,
     most_bytes: usize,
     pub(super) work: Work,
     pub(super) recording: Recording,
@@ -93,6 +94,7 @@ impl Driver {
             start: range.start,
             at: range.start,
             heard: range.start,
+            output: true,
             last: range.end,
             block,
             keep: config.until.as_ref().map_or(0, |_| frame as i64),
@@ -107,6 +109,10 @@ impl Driver {
             },
             recording,
         }
+    }
+
+    pub(super) fn output(self, output: bool) -> Driver {
+        Driver { output, ..self }
     }
 
     /// Ends at `last`, unless `until` already stopped it.
@@ -154,7 +160,7 @@ impl Driver {
         self.recording.reach(to);
         (self.at, self.heard) = (to, to);
         let future = (to < self.last).then(|| Extent::new(to, self.last));
-        self.table.release(future, Extent::NOWHERE, self.start);
+        self.table.release(future, Extent::NOWHERE, self.since());
         if self.last <= to {
             self.end = Some(to);
         }
@@ -187,8 +193,12 @@ impl Driver {
         self.settle(from, to);
         let future = (to < self.last).then(|| Extent::new(to, self.last));
         let keep = Extent::new(from.min(to.saturating_sub(self.keep)), to);
-        self.table.release(future, keep, self.start);
+        self.table.release(future, keep, self.since());
         Ok(true)
+    }
+
+    fn since(&self) -> Option<i64> {
+        self.output.then_some(self.start)
     }
 
     fn priced(&mut self, pulled: &Pulled) {

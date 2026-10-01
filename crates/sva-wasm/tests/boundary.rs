@@ -1341,31 +1341,32 @@ async fn a_stream_plays_on_while_its_edits_await_the_store() {
     );
 }
 
-async fn warmed(held: &Composition, readings: &[&str]) -> JsValue {
-    let readings: js_sys::Array = readings.iter().map(|r| JsValue::from_str(r)).collect();
-    held.warm(
+/// `@master` rendered with `out: null`, asking `readings`, or none.
+async fn prepared(held: &Composition, readings: &[&str]) -> Rendering {
+    let readings = (!readings.is_empty()).then(|| readings.iter().map(|r| r.to_string()).collect());
+    held.render(
         "@master([0, 0.1s])",
-        options(&[("readings", readings.into())]),
+        readings,
+        options(&[("out", JsValue::NULL)]),
     )
     .await
-    .unwrap_or_else(|e| unreachable!("it warms: {}", as_text(&e)))
+    .unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)))
 }
 
-/// A warm answers stats and, only where asked, readings: never a sample. Persisted, the target
-/// renders from the store alone; warmed again, nothing is computed.
+/// A render with `out: null` hands back no samples and reads only what it asks. Persisted, the
+/// target renders from the store alone; prepared again, nothing is computed or priced.
 #[wasm_bindgen_test]
-async fn a_warm_answers_no_samples_and_readings_only_when_asked() {
+async fn a_render_with_out_null_hands_back_no_samples() {
     let dir = fake_directory();
     let held = over_store(&dir).await;
-    let bare = warmed(&held, &[]).await;
-    let keys: Vec<String> = js_sys::Object::keys(bare.unchecked_ref::<js_sys::Object>())
-        .iter()
-        .filter_map(|key| key.as_string())
-        .collect();
-    assert_eq!(keys, ["stats", "representations"], "{}", as_text(&bare));
-    assert!(field(&bare, "representations").is_null());
-    assert!(field(&field(&bare, "stats"), "computed").as_f64() > Some(0.0));
-    assert_eq!(values_in(&dir), 0, "a warm writes nothing");
+    let bare = prepared(&held, &[]).await;
+    refused_as(bare.samples(0).err(), "wasm.bad_argument");
+    let asked = field(&readings(&bare), "representations");
+    let keys = js_sys::Object::keys(asked.unchecked_ref::<js_sys::Object>());
+    assert_eq!(keys.length(), 0, "{}", as_text(&asked));
+    let stats = bare.stats().unwrap_or_else(|_| unreachable!("stats"));
+    assert!(field(&stats, "computed").as_f64() > Some(0.0));
+    assert_eq!(values_in(&dir), 0, "a render writes nothing");
     held.persist()
         .await
         .unwrap_or_else(|_| unreachable!("persisted"));
@@ -1378,30 +1379,42 @@ async fn a_warm_answers_no_samples_and_readings_only_when_asked() {
         "{}",
         as_text(&hit)
     );
-    let again = warmed(&reader, &[]).await;
-    let stats = field(&again, "stats");
+    let again = prepared(&over_store(&dir).await, &[]).await;
+    let stats = again.stats().unwrap_or_else(|_| unreachable!("stats"));
     assert_eq!(
         field(&stats, "computed").as_f64(),
         Some(0.0),
         "{}",
         as_text(&stats)
     );
+    let work = again.work().unwrap_or_else(|_| unreachable!("work"));
+    assert_eq!(field(&work, "priced_flops").as_f64(), Some(0.0));
 
-    let read = warmed(&reader, &["envelope"]).await;
-    let asked = field(&field(&read, "representations"), "representations");
+    let read = prepared(&reader, &["envelope"]).await;
+    let asked = field(&readings(&read), "representations");
     assert!(
         !field(&asked, "envelope").is_undefined(),
         "{}",
-        as_text(&read)
+        as_text(&asked)
     );
-    assert!(field(&asked, "samples").is_undefined());
+    refused_as(read.samples(0).err(), "wasm.bad_argument");
+    let samples = Some(vec!["samples".to_string()]);
     let refused = reader
-        .warm(
+        .render(
             "@master([0, 0.1s])",
-            options(&[("readings", js_sys::Array::of1(&"samples".into()).into())]),
+            samples,
+            options(&[("out", JsValue::NULL)]),
         )
         .await;
     refused_as(refused.err(), "wasm.bad_argument");
+    let named = reader
+        .render(
+            "@master([0, 0.1s])",
+            None,
+            options(&[("out", JsValue::TRUE)]),
+        )
+        .await;
+    refused_as(named.err(), "wasm.bad_argument");
 }
 
 /// `index` set to what an older format wrote, over the values a newer one left under it.
@@ -1429,8 +1442,8 @@ async fn aged_directory() -> JsValue {
     dir
 }
 
-/// Four workers warm and one renders the same sound, each over its own store on `dir`, all at
-/// once, and each persists.
+/// Four workers render the same sound with `out: null` and one renders it, each over its own
+/// store on `dir`, all at once, and each persists.
 async fn workers(dir: &JsValue) {
     let workers: js_sys::Array = (0..5)
         .map(|n| {
@@ -1438,13 +1451,11 @@ async fn workers(dir: &JsValue) {
             task(async move {
                 let mut held = Composition::open(None, Some(dir.into())).await;
                 held.insert("master", "sample(sin(2*pi*100*t))*0.5\n");
-                match n {
-                    0 => drop(
-                        held.render("@master([0, 0.1s])", None, options(&[]))
-                            .await?,
-                    ),
-                    _ => drop(held.warm("@master([0, 0.1s])", options(&[])).await?),
-                }
+                let out = match n {
+                    0 => options(&[]),
+                    _ => options(&[("out", JsValue::NULL)]),
+                };
+                drop(held.render("@master([0, 0.1s])", None, out).await?);
                 Ok(JsValue::from(held.persist().await?))
             })
         })
@@ -1457,7 +1468,7 @@ async fn workers(dir: &JsValue) {
 /// On one directory an older format left, every open wipes or waits, every persist commits
 /// whole, and no worker fails.
 #[wasm_bindgen_test]
-async fn workers_opening_one_aged_directory_at_once_each_warm_render_and_persist() {
+async fn workers_opening_one_aged_directory_at_once_each_render_and_persist() {
     let dir = aged_directory().await;
     let values = values_in(&dir);
     workers(&dir).await;
@@ -1533,10 +1544,10 @@ async fn channel(held: &Composition) -> Vec<f32> {
         .unwrap_or_else(|e| unreachable!("its samples: {}", as_text(&e)))
 }
 
-/// A directory that rejects every call fails no render and no warm, whether it failed after the
-/// store opened or before: each renders a storeless composition's samples.
+/// A directory that rejects every call fails no render, its out kept or not, whether it failed
+/// after the store opened or before: each renders a storeless composition's samples.
 #[wasm_bindgen_test]
-async fn a_directory_that_rejects_every_call_fails_no_render_and_no_warm() {
+async fn a_directory_that_rejects_every_call_fails_no_render() {
     let dir = fake_directory();
     let before = over_store(&dir).await;
     revoked(&dir);
@@ -1546,8 +1557,9 @@ async fn a_directory_that_rejects_every_call_fails_no_render_and_no_warm() {
     let bare = channel(&memory).await;
     for held in [&before, &after] {
         assert_eq!(channel(held).await, bare);
-        let read = warmed(held, &["envelope"]).await;
-        assert!(!field(&read, "representations").is_null());
+        let read = prepared(held, &["envelope"]).await;
+        let asked = field(&readings(&read), "representations");
+        assert!(!field(&asked, "envelope").is_undefined());
     }
     assert_eq!(after.persist().await.ok(), Some(0));
 }

@@ -1,4 +1,4 @@
-// Concern: the parse->tempo->render pipeline shared by both front ends | Non-concern: argv (sva-cli), JS bindings (sva-wasm) | IO: (a Source, a target) -> Rendered, Warmed, a Stream or CliError
+// Concern: the parse->tempo->render pipeline shared by both front ends | Non-concern: argv (sva-cli), JS bindings (sva-wasm) | IO: (a Source, a target) -> Rendered, a Stream or CliError
 
 mod answer;
 mod builtins;
@@ -39,7 +39,7 @@ use sva_engine::{
     render, render_over,
 };
 
-pub use sva_engine::{Handle, Placed, Stream, Until};
+pub use sva_engine::{Handle, Out, Placed, Stream, Until};
 
 pub use sva_engine::{Answer, Extent, Label, Output, Representation};
 pub use sva_engine::{
@@ -95,6 +95,7 @@ pub struct Job<'a> {
     /// The operation count the caller acknowledges paying; the profile's own where `None`.
     pub flop_budget: Option<u128>,
     pub volatile: &'a [String],
+    pub out: Out,
 }
 
 impl<'a> Job<'a> {
@@ -108,6 +109,7 @@ impl<'a> Job<'a> {
             asked: &[],
             flop_budget: None,
             volatile: &[],
+            out: Out::Kept,
         }
     }
 }
@@ -162,6 +164,7 @@ fn settle(job: &Job) -> Result<(Graph, RenderConfig), CliError> {
         config.profile.precision_bits = precision(bits)?;
     }
     config.volatile = job.volatile.to_vec();
+    config.out = job.out;
     config.asks = job
         .asked
         .iter()
@@ -217,31 +220,6 @@ pub async fn execute_over<B: Backend>(job: Job<'_>, tier: &Tier<B>) -> Result<Re
     let (graph, config) = settle(&job)?;
     let render = render_over(&graph, PROBE, config, tier).await;
     rendered(&job, graph, render)
-}
-
-pub struct Warmed {
-    pub stats: CacheStats,
-    pub readings: Option<Rendered>,
-}
-
-/// Readings, where asked, are `execute_over`'s, the root computed for them.
-pub async fn warm<B: Backend>(job: Job<'_>, tier: &Tier<B>) -> Result<Warmed, CliError> {
-    if !job.asked.is_empty() {
-        let mut read = execute_over(job, tier).await?;
-        let stats = read.render.cache_stats.take();
-        let stats = stats.expect("a render reports");
-        return Ok(Warmed {
-            stats,
-            readings: Some(read),
-        });
-    }
-    let (graph, config) = settle(&job)?;
-    let stats = sva_engine::warm(&graph, PROBE, config, tier).await;
-    let stats = stats.map_err(|e| CliError::Engine(as_written(e, job.target)))?;
-    Ok(Warmed {
-        stats,
-        readings: None,
-    })
 }
 
 fn rendered(

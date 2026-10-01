@@ -52,6 +52,15 @@ pub struct RenderConfig {
     pub flop_budget: u128,
     /// What reads one of these keeps one value in memory, its last.
     pub volatile: Vec<String>,
+    pub out: Out,
+}
+
+/// Whether a render hands back its root's samples.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Out {
+    #[default]
+    Kept,
+    Dropped,
 }
 
 impl RenderConfig {
@@ -64,6 +73,7 @@ impl RenderConfig {
             asks: Vec::new(),
             flop_budget: PSYCHOACOUSTIC_V1.flop_budget,
             volatile: Vec::new(),
+            out: Out::Kept,
         }
     }
 
@@ -86,7 +96,7 @@ impl RenderConfig {
 
 pub use answer::{answer, answer_buffer, sketch_atom};
 pub use drive::Block;
-pub use run::{render_over, warm};
+pub use run::render_over;
 pub use stream::{
     Built, Change, Changed, Counts, LATEST, Placed, STREAMED, Stream, StreamConfig, change, fetch,
 };
@@ -428,7 +438,7 @@ fn affordable(held: &Render) -> Result<(), EngineError> {
 fn pulled(held: &mut Render, recording: Recording) -> Result<(), EngineError> {
     if let Some(mut driver) = driving(held, recording)? {
         while driver.pull()? {}
-        drove(held, driver, true);
+        drove(held, driver);
     }
     Ok(())
 }
@@ -443,16 +453,16 @@ fn driving(held: &mut Render, recording: Recording) -> Result<Option<drive::Driv
         held.table = Some(table);
         return Ok(None);
     }
-    Ok(Some(drive::Driver::new(
-        table,
-        range,
-        BLOCK,
-        &held.config,
-        recording,
-    )))
+    let driver = drive::Driver::new(table, range, BLOCK, &held.config, recording);
+    Ok(Some(driver.output(!dropped(&held.config))))
 }
 
-fn drove(held: &mut Render, driver: drive::Driver, keep: bool) {
+pub(crate) fn dropped(config: &RenderConfig) -> bool {
+    config.out == Out::Dropped && config.asks.is_empty()
+}
+
+fn drove(held: &mut Render, driver: drive::Driver) {
+    let keep = !dropped(&held.config);
     let range = held.range.expect("a pulled render has a range");
     held.held_bytes = driver.most_bytes();
     held.computed = driver.work.priced_flops;

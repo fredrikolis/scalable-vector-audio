@@ -1,4 +1,4 @@
-// Concern: renders or warms a target over memory, from the root down to what it answers | Non-concern: what memory keeps or writes, computing a value | IO: (&Graph, target, Tier) -> Render, CacheStats
+// Concern: renders a target over memory, from the root down to what it answers | Non-concern: what memory keeps or writes, computing a value | IO: (&Graph, target, Tier) -> Render
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -7,62 +7,22 @@ use sva_formula::{Hash, NodeId};
 
 use super::offer::{Offers, readable};
 use super::table::{self, Table};
-use super::{Render, RenderConfig, closed, driving, drove, frontier, planned_over};
-use crate::cache::{Backend, CacheStats, Recording, Tier};
+use super::{Render, RenderConfig, closed, driving, dropped, drove, frontier, planned_over};
+use crate::cache::{Backend, Recording, Tier};
 use crate::error::EngineError;
 use crate::instantiate;
 use crate::schedule;
 use crate::typing;
 
 /// `target` over `tier`, from the root down: a node memory answers stands as its samples, and
-/// nothing under it is typed, planned or looked up. What the rest computes memory keeps as it
-/// says, offered as nodes where a reader may take them; only `persist` commits them to a disk.
-/// A failing disk fails no render: memory writes nothing more to it, and the stats say why.
+/// nothing under it is typed, planned or looked up; with `out` dropped and no reading, a root
+/// it answers ends the render unread. What the rest computes memory keeps as it says.
 pub async fn render_over<B: Backend>(
     graph: &Graph,
     target: &str,
     config: RenderConfig,
     tier: &Tier<B>,
 ) -> Result<Render, EngineError> {
-    match run(graph, target, config, tier, Keep::Wanted).await? {
-        Reached::Render(held) => Ok(*held),
-        Reached::Held(_) => unreachable!("a render reads a held root's samples"),
-    }
-}
-
-/// `render_over`'s work alone, `config` asking nothing: a root memory answers ends it unread.
-pub async fn warm<B: Backend>(
-    graph: &Graph,
-    target: &str,
-    config: RenderConfig,
-    tier: &Tier<B>,
-) -> Result<CacheStats, EngineError> {
-    Ok(
-        match run(graph, target, config, tier, Keep::Nothing).await? {
-            Reached::Render(mut held) => held.cache_stats.take().expect("a render reports"),
-            Reached::Held(stats) => *stats,
-        },
-    )
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Keep {
-    Wanted,
-    Nothing,
-}
-
-enum Reached {
-    Render(Box<Render>),
-    Held(Box<CacheStats>),
-}
-
-async fn run<B: Backend>(
-    graph: &Graph,
-    target: &str,
-    config: RenderConfig,
-    tier: &Tier<B>,
-    keep: Keep,
-) -> Result<Reached, EngineError> {
     let round = tier.begin();
     let mut recording = Recording::over(tier.memory());
     let instances = instantiate::instantiate(graph, target, config.rate)?;
@@ -71,9 +31,14 @@ async fn run<B: Backend>(
     let keys = keys(graph, &instances, &order, &config);
     let mut found = frontier::Frontier::from((&instances, &order), &keys, &root, &config);
     found.walked(tier, round).await;
-    if keep == Keep::Nothing && found.stored.contains_key(&root) {
-        recording.found(found.lookups);
-        return Ok(Reached::Held(Box::new(recording.stats())));
+    if dropped(&config) && found.stored.contains_key(&root) {
+        recording.found(std::mem::take(&mut found.lookups));
+        let tys = typing::infer_over(&instances, &order.within(&found.visited), &found.stored)?;
+        let id = tys.id(&root).ok_or(EngineError::UnknownNode(root))?;
+        let schedule = schedule::plan(&tys, id, &config.asks);
+        let mut held = Render::shell(tys, id, config, schedule);
+        held.cache_stats = Some(recording.stats());
+        return Ok(held);
     }
     let (mut held, typed) = loop {
         found.walked(tier, round).await;
@@ -122,7 +87,7 @@ async fn run<B: Backend>(
                 }
             }
             offers.rest(&driver.table, tier.memory());
-            drove(&mut held, driver, keep == Keep::Wanted);
+            drove(&mut held, driver);
         }
         None => held.cache_stats = Some(walked),
     }
@@ -136,7 +101,7 @@ async fn run<B: Backend>(
         stats.planned = computed;
     }
     closed(&mut held)?;
-    Ok(Reached::Render(Box::new(held)))
+    Ok(held)
 }
 
 /// Each instance's node key: its source identity at the render's rate and profile.
