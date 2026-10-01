@@ -26,8 +26,8 @@ pub(crate) enum Kind {
     },
     Istft,
     Spectrum(Arc<SpectralSum>),
-    /// Stored samples, loaded as asked; a value it reads computes what they miss.
-    Stored(Arc<crate::cache::Stored>),
+    /// A node memory holds; a value it reads computes what its samples miss.
+    Resident(Arc<crate::cache::Stored>),
 }
 
 pub(crate) struct Program {
@@ -41,7 +41,7 @@ pub(crate) struct Program {
     /// slot and the shift, and it computes and holds nothing of its own.
     pub(crate) alias: Option<(usize, i64)>,
     pub(crate) machine: Option<Machine>,
-    /// Its state where its run passes each of these, kept for the store.
+    /// Its state where its run passes each of these, kept for memory.
     pub(crate) marks: std::collections::BTreeMap<i64, sva_samples::MachineState>,
 }
 
@@ -77,7 +77,7 @@ pub(crate) struct Value {
     pub(crate) switches: Vec<(i64, Hash)>,
     pub(crate) moved: f64,
     /// Its samples are its identity's alone; one an edit carried on, or anything reading one,
-    /// holds a history no key names, so the store neither answers nor keeps it.
+    /// holds a history no key names, so memory neither answers nor keeps it.
     pub(crate) pure: bool,
 }
 
@@ -146,8 +146,8 @@ impl Value {
 
     pub(crate) fn covers(&self) -> Segments {
         let mut out = Segments::default();
-        if let Kind::Stored(stored) = &self.kind {
-            for e in stored.extents() {
+        if let Kind::Resident(stored) = &self.kind {
+            for e in stored.extents().iter().copied() {
                 out.add(e.intersect(self.support()));
             }
         }

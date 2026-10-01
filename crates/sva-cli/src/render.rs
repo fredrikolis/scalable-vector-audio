@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use sva_core::{
-    Answer, Asked, CliError, Diagnostic, Job, Output, Printed, Report, SAMPLE_LIMIT, Store, cwd,
-    execute, execute_through, query_data,
+    Answer, Asked, CliError, Diagnostic, Job, Output, Printed, Report, SAMPLE_LIMIT, Tier, cwd,
+    execute_over, query_data,
 };
 use sva_engine::{
     Buffer, DEFAULT_FRAME_SECS, PSYCHOACOUSTIC_V1, Representation, answer_buffer, cache_log,
@@ -29,11 +29,9 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
         }
     }
     let mut warnings = Vec::new();
-    let store = crate::store::opened(&args.cache, &mut warnings)?;
-    let answered = answered(args, &dir, &target, store, &mut warnings);
-    if let Some(store) = store {
-        crate::store::persisted(store, &mut warnings);
-    }
+    let tier = crate::store::opened(&args.cache, &mut warnings)?;
+    let answered = answered(args, &dir, &target, tier, &mut warnings);
+    crate::store::persisted(tier, &mut warnings);
     answered.map(|data| success_envelope(&data, &warnings))
 }
 
@@ -42,7 +40,7 @@ fn answered(
     args: &RenderArgs,
     dir: &Path,
     target: &str,
-    store: Option<&Store<Directory>>,
+    tier: &Tier<Directory>,
     warnings: &mut Vec<Diagnostic>,
 ) -> Result<String, CliError> {
     let source = sva_ast::Dir::at(dir);
@@ -55,15 +53,12 @@ fn answered(
         flop_budget: args.flop_budget,
         ..Job::over(&source, target)
     };
-    let rendered = match store {
-        Some(store) => wait(execute_through(job, store))?,
-        None => execute(job)?,
-    };
+    let rendered = wait(execute_over(job, tier))?;
 
     let rate = rendered.config.rate;
     let stats = rendered.render.cache_stats.as_ref();
     if let Some(why) = stats.and_then(|stats| stats.unstaged.as_deref()) {
-        let message = format!("this render stopped staging what it computed: {why}");
+        let message = format!("this render stopped writing what it computed: {why}");
         warnings.push(crate::store::warning("store.unstaged", message));
     }
     if let (true, Some(stats)) = (logs, stats) {

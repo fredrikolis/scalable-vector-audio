@@ -1,4 +1,4 @@
-// Concern: walks down from the root to the nodes the store answers, before any typing | Non-concern: naming a node, computing the rest | IO: (Store, root) -> hits, visited nodes, lookups
+// Concern: walks down from the root to the nodes memory answers, before any typing | Non-concern: naming a node, computing the rest | IO: (Tier, root) -> hits, visited nodes, lookups
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -7,12 +7,10 @@ use sva_formula::Hash;
 use sva_samples::Extent;
 
 use super::{RenderConfig, default_end, default_start};
-use crate::cache::{Lookup, Outcome, PayloadKind, Stored, Through};
+use crate::cache::{Backend, Known, Lookup, Outcome, PayloadKind, Stored, Tier};
 use crate::instantiate::Instances;
 use crate::query::Representation;
 use crate::schedule::Order;
-
-pub(crate) type Known = BTreeMap<Hash, Option<Arc<Stored>>>;
 
 pub(crate) struct Frontier<'w> {
     order: &'w Order<'w>,
@@ -52,8 +50,8 @@ impl<'w> Frontier<'w> {
     }
 
     /// A hit ends the walk down its branch; a miss walks on. It pauses at the first key
-    /// `known` lacks, answering it.
-    pub(crate) fn walk(&mut self, known: &Known) -> Option<Hash> {
+    /// `known` cannot answer, answering it.
+    pub(crate) fn walk(&mut self, known: &dyn Fn(Hash) -> Known) -> Option<Hash> {
         while let Some(step) = self.stack.pop() {
             let path = match step {
                 Step::Close(path) => {
@@ -71,9 +69,10 @@ impl<'w> Frontier<'w> {
             }
             let key = self.keys[&path];
             let found = match self.pinned.contains(&path) {
-                false => match known.get(&key) {
-                    Some(found) => found.clone(),
-                    None => {
+                false => match known(key) {
+                    Known::Hit(hit) => Some(hit),
+                    Known::Miss => None,
+                    Known::Unknown => {
                         self.stack.push(Step::Visit(path));
                         return Some(key);
                     }
@@ -92,13 +91,15 @@ impl<'w> Frontier<'w> {
         None
     }
 
-    pub(crate) async fn walked(&mut self, known: &mut Known, store: &impl Through) -> usize {
-        let mut made = 0;
-        while let Some(key) = self.walk(known) {
-            known.insert(key, store.lookup(key).await.map(Arc::new));
-            made += 1;
+    /// Walked to its end, each key memory cannot answer looked up through it this round.
+    pub(crate) async fn walked<B: Backend>(&mut self, tier: &Tier<B>, round: u64) {
+        loop {
+            let memory = tier.memory();
+            let Some(key) = self.walk(&|key| memory.answer(key, round)) else {
+                return;
+            };
+            tier.lookup(key, round).await;
         }
-        made
     }
 
     /// A hit whose samples fall short of what its readers ask, walked on into as a miss.

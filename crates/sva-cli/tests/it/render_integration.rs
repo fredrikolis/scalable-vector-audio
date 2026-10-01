@@ -7,7 +7,7 @@ use crate::helpers::{asked, entry, fixture, json_of, master, plane, put, scratch
 use sva_ast::Dir;
 use sva_cli::{CliError, error_envelope};
 use sva_core::{Job, PROBE, ROOT, execute, probe};
-use sva_engine::{Cache, Output, PayloadKind, Representation, Source};
+use sva_engine::{Output, PayloadKind, Representation, Source, Tier};
 
 /// `expr` over its first second, read through a node of its own.
 fn second(expr: &str) -> sva_core::Rendered {
@@ -50,10 +50,13 @@ fn a_stated_sample_rate_lays_the_same_seconds_on_a_different_grid() {
     let dir = fixture("arranged");
     let source = Dir::at(&dir);
     let at = |hz: Option<u32>| {
-        execute(Job {
-            rate: hz,
-            ..Job::over(&source, "@drop-2b([0, 2b])")
-        })
+        execute(
+            Job {
+                rate: hz,
+                ..Job::over(&source, "@drop-2b([0, 2b])")
+            },
+            &Tier::default(),
+        )
         .unwrap()
     };
     let base = at(None);
@@ -376,7 +379,7 @@ fn a_render_pulls_only_the_closure_its_target_reaches() {
     held.insert("lead-2b", "sin(2*pi*220*t)\n");
     held.insert("master", "@lead-2b*0.5\n");
     held.insert("nothing-reaches-this", "this is not an expression (\n");
-    let reached = execute(Job::over(&held, "@lead-2b([0, 2b])"))
+    let reached = execute(Job::over(&held, "@lead-2b([0, 2b])"), &Tier::default())
         .expect("only what `lead-2b` reaches is read");
     assert_eq!(secs(&reached), 4.0, "two bars at 120bpm");
 }
@@ -386,10 +389,13 @@ fn a_render_pulls_only_the_closure_its_target_reaches() {
 fn a_law_answers_lines_with_no_buffer_behind_it() {
     let dir = fixture("basic");
     let source = Dir::at(&dir);
-    let rendered = execute(Job {
-        asked: &asked("lines"),
-        ..Job::over(&source, "sin(2*pi*261.63*t) + sin(2*pi*329.63*t)")
-    })
+    let rendered = execute(
+        Job {
+            asked: &asked("lines"),
+            ..Job::over(&source, "sin(2*pi*261.63*t) + sin(2*pi*329.63*t)")
+        },
+        &Tier::default(),
+    )
     .unwrap();
     assert!(rendered.render.range.is_none(), "and reads no range");
     assert!(
@@ -412,10 +418,13 @@ fn lines_reads_a_pair_written_in_either_variable() {
     let dir = fixture("basic");
     let listed = |expr: &str| {
         let source = Dir::at(&dir);
-        let rendered = execute(Job {
-            asked: &asked("lines"),
-            ..Job::over(&source, expr)
-        })
+        let rendered = execute(
+            Job {
+                asked: &asked("lines"),
+                ..Job::over(&source, expr)
+            },
+            &Tier::default(),
+        )
         .expect("the probe types");
         let Output::Lines(lines) = rendered.answer(PROBE, Representation::Lines).unwrap().value
         else {
@@ -443,13 +452,15 @@ fn two_readings_share_one_collapse() {
         "; Models: a stack | Neglects: an envelope | IO: (t) -> amplitude | Tags: test\n\
          sin(2*pi*100*t) + sin(2*pi*200*t)\n",
     );
-    let cache = Cache::new();
+    let cache = Tier::default();
     let source = Dir::at(&dir);
-    let rendered = execute(Job {
-        asked: &asked("loudness, envelope"),
-        cache: Some(&cache),
-        ..Job::over(&source, "@master([0, 1s])")
-    })
+    let rendered = execute(
+        Job {
+            asked: &asked("loudness, envelope"),
+            ..Job::over(&source, "@master([0, 1s])")
+        },
+        &cache,
+    )
     .expect("the stack renders");
     let stats = rendered
         .render
@@ -459,6 +470,7 @@ fn two_readings_share_one_collapse() {
         .lookups
         .iter()
         .filter(|l| l.node == "master" && l.kind == PayloadKind::Segments)
+        .filter(|l| l.store.is_none())
         .count();
     assert_eq!(
         buffers, 1,
@@ -473,10 +485,13 @@ fn a_missing_node_is_not_found() {
     put(&dir, "master", "sin(2*pi*300*t)\n");
 
     let source = Dir::at(&dir);
-    let rendered = execute(Job {
-        asked: &asked("lines"),
-        ..Job::over(&source, "@master")
-    })
+    let rendered = execute(
+        Job {
+            asked: &asked("lines"),
+            ..Job::over(&source, "@master")
+        },
+        &Tier::default(),
+    )
     .expect("the composition renders");
     let Err(refused) = rendered.answer("nowhere", Representation::Lines) else {
         panic!("a node nothing defines has no reading");

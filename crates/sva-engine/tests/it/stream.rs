@@ -2,7 +2,7 @@
 
 use crate::fixtures::{Now, graph_of, next};
 use sva_ast::Graph;
-use sva_engine::{NoStore, Range, RenderConfig, Stream, StreamConfig, render};
+use sva_engine::{Range, RenderConfig, Stream, StreamConfig, Tier, render};
 
 const RATE: u32 = 8_000;
 
@@ -62,7 +62,7 @@ fn composition() -> Graph {
 
 /// A render of `@target`, the node a stream of it reads through, over the same interval.
 fn read_through(g: &Graph, target: &str, config: RenderConfig) -> Vec<f64> {
-    let whole = render(g, &format!("at_{target}"), config, None).expect("a render");
+    let whole = render(g, &format!("at_{target}"), config, &Tier::default()).expect("a render");
     whole
         .output(whole.root)
         .expect("a buffer")
@@ -96,7 +96,7 @@ fn config(block: usize, range: Range) -> StreamConfig {
 
 fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Vec<f64> {
     let config = config(block, four());
-    let mut stream = Stream::open(g, &at(target), config, None, &NoStore)
+    let mut stream = Stream::open(g, &at(target), config, &Tier::default())
         .now()
         .unwrap_or_else(|e| panic!("{e}"));
     let mut out = Vec::with_capacity(samples + block);
@@ -110,8 +110,13 @@ fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Vec<f64> {
 
 fn whole(g: &Graph, target: &str, samples: usize) -> Vec<f64> {
     let secs = samples as f64 / f64::from(RATE);
-    let held = render(g, target, RenderConfig::seconds(RATE, secs), None)
-        .unwrap_or_else(|e| panic!("{target}: {e}"));
+    let held = render(
+        g,
+        target,
+        RenderConfig::seconds(RATE, secs),
+        &Tier::default(),
+    )
+    .unwrap_or_else(|e| panic!("{target}: {e}"));
     let id = held.id(target).expect("the root");
     held.output(id).expect("a buffer").plane(0).to_vec()
 }
@@ -207,8 +212,7 @@ fn an_open_stream_ends_where_its_support_does() {
             &g,
             &at(target),
             config(441, Range::default()),
-            None,
-            &NoStore,
+            &Tier::default(),
         )
         .now()
         .expect("opens");
@@ -237,7 +241,8 @@ fn a_stream_from_a_later_start_is_the_whole_render_over_the_same_range() {
             range,
             ..RenderConfig::at(RATE)
         };
-        let held = render(&g, target, config, None).unwrap_or_else(|e| panic!("{target}: {e}"));
+        let held = render(&g, target, config, &Tier::default())
+            .unwrap_or_else(|e| panic!("{target}: {e}"));
         let want = held.output(held.root).expect("a buffer").plane(0).to_vec();
         sounds(&want);
         assert_eq!(
@@ -245,7 +250,7 @@ fn a_stream_from_a_later_start_is_the_whole_render_over_the_same_range() {
             whole(&g, target, (start + samples) as usize)[start as usize..],
             "{target}: a late start trims the output alone"
         );
-        let mut stream = Stream::open(&g, &at(target), self::config(777, range), None, &NoStore)
+        let mut stream = Stream::open(&g, &at(target), self::config(777, range), &Tier::default())
             .now()
             .unwrap_or_else(|e| panic!("{target}: {e}"));
         let mut heard = Vec::new();
@@ -283,8 +288,7 @@ fn an_open_stream_whose_support_never_ends_streams_on_while_pulled() {
             &g,
             &at(target),
             config(block, Range::default()),
-            None,
-            &NoStore,
+            &Tier::default(),
         )
         .now()
         .unwrap_or_else(|e| panic!("{target}: {e}"));
@@ -296,7 +300,7 @@ fn an_open_stream_whose_support_never_ends_streams_on_while_pulled() {
         assert_eq!(stream.end(), None, "{target}");
         sounds(&heard[heard.len() - block..]);
     }
-    let refused = render(&g, "at_damped", RenderConfig::at(RATE), None)
+    let refused = render(&g, "at_damped", RenderConfig::at(RATE), &Tier::default())
         .err()
         .expect("an open render with no end");
     assert_eq!(refused.code(), "render.no_end", "{refused}");
@@ -310,7 +314,7 @@ fn a_closed_stream_ends_at_its_range() {
         start: Some(0),
         end: Some(1_000),
     };
-    let mut stream = Stream::open(&g, &at("tone"), config(256, range), None, &NoStore)
+    let mut stream = Stream::open(&g, &at("tone"), config(256, range), &Tier::default())
         .now()
         .expect("a closed range opens");
     let mut heard = 0;
@@ -365,7 +369,7 @@ fn streamed_at(g: &Graph, target: &str, rate: u32, block: usize, samples: usize)
             ..RenderConfig::at(rate)
         },
     };
-    let mut stream = Stream::open(g, &at(target), config, None, &NoStore)
+    let mut stream = Stream::open(g, &at(target), config, &Tier::default())
         .now()
         .unwrap_or_else(|e| panic!("{e}"));
     let mut out = Vec::with_capacity(samples + block);
@@ -379,8 +383,13 @@ fn streamed_at(g: &Graph, target: &str, rate: u32, block: usize, samples: usize)
 
 fn whole_at(g: &Graph, target: &str, rate: u32, samples: usize) -> Vec<f64> {
     let secs = samples as f64 / f64::from(rate);
-    let held = render(g, target, RenderConfig::seconds(rate, secs), None)
-        .unwrap_or_else(|e| panic!("{target}: {e}"));
+    let held = render(
+        g,
+        target,
+        RenderConfig::seconds(rate, secs),
+        &Tier::default(),
+    )
+    .unwrap_or_else(|e| panic!("{target}: {e}"));
     held.output(held.root).expect("a buffer").plane(0).to_vec()
 }
 
@@ -415,11 +424,17 @@ fn a_stream_is_the_whole_render_bit_for_bit_at_every_rate() {
 #[test]
 fn a_filter_read_at_a_moving_time_refuses_whole_and_streamed() {
     let g = reads();
-    let Err(whole) = render(&g, "warped", RenderConfig::seconds(RATE, 0.1), None) else {
+    let Err(whole) = render(
+        &g,
+        "warped",
+        RenderConfig::seconds(RATE, 0.1),
+        &Tier::default(),
+    ) else {
         panic!("a filter has no value at a time that moves");
     };
     assert_eq!(whole.code(), "type.stateful_warp", "{whole}");
-    let Err(streamed) = Stream::open(&g, &at("warped"), config(256, four()), None, &NoStore).now()
+    let Err(streamed) =
+        Stream::open(&g, &at("warped"), config(256, four()), &Tier::default()).now()
     else {
         panic!("a filter streams no value at a time that moves");
     };

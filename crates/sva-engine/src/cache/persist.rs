@@ -1,4 +1,4 @@
-// Concern: node values on a backend, staged then committed: version, budget, eviction | Non-concern: the bytes' medium (a Backend) | IO: (key) -> Stored; samples -> staged; persist() -> commits
+// Concern: node values on a backend beneath memory, staged then committed: version, budget, eviction | Non-concern: the bytes' medium (a Backend) | IO: (key) -> Header; samples -> staged; persist()
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -9,8 +9,7 @@ use sva_samples::{Buffer, Extent};
 use super::codec::{self, STORE_FORMAT};
 use super::index::{Index, key_of, name_of};
 use super::joined;
-use super::stored::Samples;
-pub use super::stored::Stored;
+use super::stored::{Header, Samples};
 
 pub const DEFAULT_STORE_BYTES: u64 = 2 << 30;
 
@@ -50,54 +49,15 @@ pub trait Backend: Sized {
     fn rename(&self, name: &str, to: &Self) -> impl Future<Output = Result<bool, String>>;
 }
 
-/// A store, or nothing, that a render looks a node up in and reads its samples from.
-pub trait Through {
-    fn lookup(&self, key: Hash) -> impl Future<Output = Option<Stored>>;
-    /// Whole chunks holding `over`; `None` where they are gone or corrupt.
-    fn read(&self, stored: &Stored, over: Extent) -> impl Future<Output = Option<Vec<Buffer>>>;
-    /// Moves on whenever this holder stages or commits.
-    fn epoch(&self) -> u64;
-}
-
-impl<B: Backend> Through for Store<B> {
-    fn lookup(&self, key: Hash) -> impl Future<Output = Option<Stored>> {
-        Store::lookup(self, key)
-    }
-
-    fn read(&self, stored: &Stored, over: Extent) -> impl Future<Output = Option<Vec<Buffer>>> {
-        Store::read(self, stored, over)
-    }
-
-    fn epoch(&self) -> u64 {
-        *locked(&self.epoch)
-    }
-}
-
-pub struct NoStore;
-
-impl Through for NoStore {
-    async fn lookup(&self, _: Hash) -> Option<Stored> {
-        None
-    }
-
-    async fn read(&self, _: &Stored, _: Extent) -> Option<Vec<Buffer>> {
-        None
-    }
-
-    fn epoch(&self) -> u64 {
-        0
-    }
-}
-
 #[derive(Clone, Default)]
 struct Staged {
     chunks: Vec<(String, Extent)>,
     meta: bool,
 }
 
-/// Node values under their keys: a render stages, and only `persist` commits each value whole
-/// by rename, evicting the least recently used past the budget. Every change to the backend's
-/// names runs under its lock; lookups and reads never wait on it.
+/// Node values under their keys, beneath the memory tier alone: it stages, and only `persist`
+/// commits each value whole by rename, evicting the least recently used past the budget. Every
+/// change to the backend's names runs under its lock; lookups and reads never wait on it.
 pub struct Store<B> {
     backend: B,
     staging: B,
@@ -105,7 +65,6 @@ pub struct Store<B> {
     index: Mutex<Index>,
     staged: Mutex<BTreeMap<Hash, Staged>>,
     written: Mutex<u64>,
-    epoch: Mutex<u64>,
 }
 
 enum Committed {
@@ -154,7 +113,6 @@ impl<B: Backend> Store<B> {
             index: Mutex::new(index),
             staged: Mutex::new(BTreeMap::new()),
             written: Mutex::new(0),
-            epoch: Mutex::new(0),
         })
     }
 
@@ -171,12 +129,12 @@ impl<B: Backend> Store<B> {
     }
 
     /// Reads headers, never a sample; one standing for another's samples reads that one's.
-    pub(crate) async fn lookup(&self, key: Hash) -> Option<Stored> {
+    pub(crate) async fn lookup(&self, key: Hash) -> Option<Header> {
         let found = self.written(key).await?;
-        let Samples::Of { key: of, by } = found.samples else {
+        let &Samples::Of { key: of, by } = found.samples() else {
             return Some(found);
         };
-        let samples = match self.written(of).await?.samples {
+        let samples = match self.written(of).await?.into_parts().1 {
             Samples::Entry { file, runs, .. } => Samples::Entry {
                 file,
                 runs,
@@ -185,11 +143,11 @@ impl<B: Backend> Store<B> {
             Samples::Staged { chunks, .. } => Samples::Staged { chunks, shift: -by },
             _ => return None,
         };
-        Some(Stored { samples, ..found })
+        Some(Header::new(found.into_parts().0, samples))
     }
 
     /// Staged first; past the index, the backend, for another store's commits.
-    async fn written(&self, key: Hash) -> Option<Stored> {
+    async fn written(&self, key: Hash) -> Option<Header> {
         if let Some(staged) = self.staged_value(key).await {
             return Some(staged);
         }
@@ -200,7 +158,8 @@ impl<B: Backend> Store<B> {
         };
         let rest = codec::head_len(&bytes)? - 8;
         bytes.extend(self.backend.get_range(&name, 8, rest as u64).await.ok()??);
-        let (found, len) = codec::read_head(&bytes, key).filter(|(found, _)| found.key == key)?;
+        let (found, len) =
+            codec::read_head(&bytes, key).filter(|(found, _)| found.stored().key == key)?;
         let mut index = locked(&self.index);
         match index.held.contains_key(&key) {
             true => index.used(key),
@@ -209,23 +168,24 @@ impl<B: Backend> Store<B> {
         Some(found)
     }
 
-    async fn staged_value(&self, key: Hash) -> Option<Stored> {
+    async fn staged_value(&self, key: Hash) -> Option<Header> {
         let chunks = {
             let staged = locked(&self.staged);
             let held = staged.get(&key).filter(|staged| staged.meta)?;
             held.chunks.clone()
         };
         let meta = self.staging.get(&staged_name(key, META)).await.ok()??;
-        let (mut stored, _) = codec::read_head(&meta, key)?;
-        if !stored.refers() {
-            stored.samples = Samples::Staged { chunks, shift: 0 };
-        }
-        Some(stored)
+        let (found, _) = codec::read_head(&meta, key)?;
+        Some(match found.refers() {
+            true => found,
+            false => Header::new(found.into_parts().0, Samples::Staged { chunks, shift: 0 }),
+        })
     }
 
-    pub(crate) async fn read(&self, stored: &Stored, over: Extent) -> Option<Vec<Buffer>> {
+    /// Whole chunks holding `over`; `None` where they are gone or corrupt.
+    pub(crate) async fn read(&self, head: &Header, over: Extent) -> Option<Vec<Buffer>> {
         let mut out = Vec::new();
-        match &stored.samples {
+        match head.samples() {
             Samples::None | Samples::Of { .. } => {}
             Samples::Entry { file, runs, shift } => {
                 for run in runs {
@@ -274,25 +234,17 @@ impl<B: Backend> Store<B> {
         Ok(())
     }
 
-    /// `stored` holds no samples.
-    pub(crate) async fn stage_meta(&self, key: Hash, stored: &Stored) -> Result<(), String> {
+    pub(crate) async fn stage_meta(&self, key: Hash, head: &Header) -> Result<(), String> {
         let name = staged_name(key, META);
-        self.staging.put(&name, &codec::entry(stored, &[])).await?;
+        self.staging.put(&name, &codec::entry(head, &[])).await?;
         locked(&self.staged).entry(key).or_default().meta = true;
-        *locked(&self.epoch) += 1;
         Ok(())
     }
 
     /// A value staged without its meta is dropped. A key leaves the staging record only once
     /// its files have, so a failed write leaves every later one staged, as does a commit over
     /// an open entry. An open entry past budget stays for the next persist.
-    pub async fn persist(&self) -> Result<Persisted, String> {
-        let done = self.committed_all().await;
-        *locked(&self.epoch) += 1;
-        done
-    }
-
-    async fn committed_all(&self) -> Result<Persisted, String> {
+    pub(crate) async fn persist(&self) -> Result<Persisted, String> {
         let _held = self.backend.lock().await?;
         let mut done = Persisted::default();
         let keys: Vec<Hash> = locked(&self.staged).keys().copied().collect();
@@ -340,11 +292,11 @@ impl<B: Backend> Store<B> {
             true => self.staged_value_of(key, held).await?,
             false => None,
         };
-        let whole = whole.filter(|(stored, runs)| !runs.is_empty() || stored.refers());
-        let Some((stored, runs)) = whole else {
+        let whole = whole.filter(|(head, runs)| !runs.is_empty() || head.refers());
+        let Some((head, runs)) = whole else {
             return Ok(Committed::Dropped);
         };
-        let bytes = codec::entry(&stored, &runs);
+        let bytes = codec::entry(&head, &runs);
         if bytes.len() as u64 > self.max_bytes {
             return Ok(Committed::Dropped);
         }
@@ -362,11 +314,11 @@ impl<B: Backend> Store<B> {
         &self,
         key: Hash,
         held: &Staged,
-    ) -> Result<Option<(Stored, Vec<Buffer>)>, String> {
+    ) -> Result<Option<(Header, Vec<Buffer>)>, String> {
         let Some(meta) = self.staging.get(&staged_name(key, META)).await? else {
             return Ok(None);
         };
-        let Some((stored, _)) = codec::read_head(&meta, key) else {
+        let Some((head, _)) = codec::read_head(&meta, key) else {
             return Ok(None);
         };
         let mut runs = Vec::new();
@@ -378,7 +330,7 @@ impl<B: Backend> Store<B> {
             }
         }
         let runs = runs.into_iter().map(Arc::unwrap_or_clone).collect();
-        Ok(Some((stored, runs)))
+        Ok(Some((head, runs)))
     }
 }
 

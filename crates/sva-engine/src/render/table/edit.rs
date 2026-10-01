@@ -91,7 +91,7 @@ pub(crate) fn carried(
             let least = reached.map_or(i64::MIN, |(least, _)| least);
             reach(read, None, from.map(|n| n.saturating_add(least)));
         }
-        if let Kind::Stored { .. } = values[at].kind {
+        if let Kind::Resident { .. } = values[at].kind {
             for read in values[at].reads.clone() {
                 reach(read, here, from);
             }

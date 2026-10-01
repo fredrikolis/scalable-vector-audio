@@ -3,7 +3,7 @@
 use crate::fixtures::graph_of;
 use sva_engine::instantiate::{instantiate, resolve_ref_path};
 use sva_engine::schedule_from;
-use sva_engine::{Ask, EngineError, Held, RenderConfig, Representation, Var, render, types};
+use sva_engine::{Ask, EngineError, Held, RenderConfig, Representation, Tier, Var, render, types};
 use sva_engine::{DEFAULT_SAMPLE_RATE, symbolic_hash};
 
 #[test]
@@ -67,8 +67,13 @@ fn an_sp_offset_read_is_an_integer_index() {
             name,
             &[("grid", "chaigne_askenfelt(261.63)\n"), ("node", body)],
         );
-        let held = render(&g, "node", RenderConfig::seconds(44_100, 0.01), None)
-            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let held = render(
+            &g,
+            "node",
+            RenderConfig::seconds(44_100, 0.01),
+            &Tier::default(),
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
         let id = held.id("node").expect("the root");
         held.output(id).expect("a rendered read").plane(0).to_vec()
     };
@@ -101,8 +106,13 @@ fn a_bar_offset_that_lands_on_the_grid_reads_a_sampled_ref() {
         seconds: 2.0,
         per: 1.0,
     });
-    let held = render(&g, "node", RenderConfig::seconds(8_000, 2.5), None)
-        .expect("a bar offset that lands on the grid");
+    let held = render(
+        &g,
+        "node",
+        RenderConfig::seconds(8_000, 2.5),
+        &Tier::default(),
+    )
+    .expect("a bar offset that lands on the grid");
     let id = held.id("node").expect("the root");
     let buffer = held.output(id).expect("a rendered read");
     let delay = 16_000;
@@ -132,7 +142,7 @@ fn a_law_ref_stays_a_read_of_a_node_and_allocates_no_buffer() {
         node: "node".to_string(),
         representation: Representation::Lines,
     }]);
-    let held = render(&g, "node", config, None).expect("a law");
+    let held = render(&g, "node", config, &Tier::default()).expect("a law");
     assert!(held.buffers.is_empty(), "no buffer stands behind a law");
 
     let (id, src) = (
@@ -167,8 +177,13 @@ fn a_law_read_at_a_grid_offset_renders() {
             ("node", "@src(t - 2sp)*0.5\n"),
         ],
     );
-    let held = render(&g, "node", RenderConfig::seconds(8_000, 0.01), None)
-        .expect("a law read on the grid");
+    let held = render(
+        &g,
+        "node",
+        RenderConfig::seconds(8_000, 0.01),
+        &Tier::default(),
+    )
+    .expect("a law read on the grid");
     let id = held.id("node").expect("the root");
     let buffer = held.output(id).expect("a rendered read");
     assert_eq!(buffer.len(), 80);
@@ -201,8 +216,13 @@ fn a_law_ref_tiled_by_modulo_point_samples() {
         "a warped time leaves A"
     );
 
-    let rendered =
-        render(&g, "node", RenderConfig::seconds(8_000, 0.05), None).expect("a tiled read");
+    let rendered = render(
+        &g,
+        "node",
+        RenderConfig::seconds(8_000, 0.05),
+        &Tier::default(),
+    )
+    .expect("a tiled read");
     let root = rendered.id("node").expect("the root");
     let buffer = rendered.output(root).expect("a point-sampled law");
     for i in 0..buffer.len() {
@@ -232,7 +252,7 @@ fn a_key_times_a_semitone_offset_folds() {
         node: "node".to_string(),
         representation: Representation::Lines,
     }]);
-    let held = render(&g, "node", config, None).expect("a folded key");
+    let held = render(&g, "node", config, &Tier::default()).expect("a folded key");
     let id = held.id("node").expect("the root");
     let found = sva_engine::answer(&held, id, Representation::Lines).expect("lines");
     let sva_engine::Output::Lines(lines) = found.value else {
@@ -265,8 +285,13 @@ fn a_ref_that_is_not_one_number_composes_as_a_law() {
         ],
     );
 
-    let held = render(&g, "voiced", RenderConfig::seconds(44_100, 0.05), None)
-        .expect("a series read under a product");
+    let held = render(
+        &g,
+        "voiced",
+        RenderConfig::seconds(44_100, 0.05),
+        &Tier::default(),
+    )
+    .expect("a series read under a product");
     let buffer = held
         .output(held.id("voiced").expect("the root"))
         .expect("a rendered series");
@@ -277,7 +302,8 @@ fn a_ref_that_is_not_one_number_composes_as_a_law() {
         node: "struck".to_string(),
         representation: Representation::Atoms,
     }]);
-    let held = render(&g, "struck", config, None).expect("a delta read under a product");
+    let held =
+        render(&g, "struck", config, &Tier::default()).expect("a delta read under a product");
     let id = held.id("struck").expect("the root");
     let sva_engine::Output::Atoms(atoms) = sva_engine::answer(&held, id, Representation::Atoms)
         .expect("atoms")
@@ -302,8 +328,13 @@ fn a_per_channel_shift_on_a_law_substitutes_per_lane() {
             ("taps", "@wide(join(t - 0.01s, t - 0.02s))\n"),
         ],
     );
-    let held = render(&g, "taps", RenderConfig::seconds(44_100, 0.05), None)
-        .expect("a law read once per component");
+    let held = render(
+        &g,
+        "taps",
+        RenderConfig::seconds(44_100, 0.05),
+        &Tier::default(),
+    )
+    .expect("a law read once per component");
     let buffer = held
         .output(held.id("taps").expect("the root"))
         .expect("two lanes");
@@ -399,7 +430,8 @@ fn lines_compose_through_a_join_of_crops() {
             node: node.to_string(),
             representation,
         }]);
-        let held = render(&g, node, config, None).unwrap_or_else(|e| panic!("{node}: {e}"));
+        let held =
+            render(&g, node, config, &Tier::default()).unwrap_or_else(|e| panic!("{node}: {e}"));
         let id = held.id(node).unwrap_or_else(|| panic!("{node} typed"));
         sva_engine::answer(&held, id, representation).unwrap_or_else(|e| panic!("{node}: {e}"))
     };
@@ -469,7 +501,8 @@ fn a_modal_bank_times_an_envelope_lists_its_modes() {
             node: node.to_string(),
             representation,
         }]);
-        let held = render(&g, node, config, None).unwrap_or_else(|e| panic!("{node}: {e}"));
+        let held =
+            render(&g, node, config, &Tier::default()).unwrap_or_else(|e| panic!("{node}: {e}"));
         let id = held.id(node).unwrap_or_else(|| panic!("{node} typed"));
         let sva_engine::Output::Atoms(atoms) = sva_engine::answer(&held, id, representation)
             .unwrap_or_else(|e| panic!("{node}: {e}"))
@@ -516,7 +549,7 @@ fn first(name: &str, body: &str, n: usize) -> Result<Vec<f64>, EngineError> {
         &g,
         "root",
         RenderConfig::seconds(100, n as f64 / 100.0),
-        None,
+        &Tier::default(),
     )?;
     let root = held.id("root").expect("the root");
     Ok(held.output(root).expect("samples").plane(0).to_vec())

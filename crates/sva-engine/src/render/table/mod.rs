@@ -5,11 +5,9 @@ pub(crate) mod edit;
 mod eval;
 #[cfg(test)]
 mod laws;
-mod load;
 mod period;
 pub(crate) mod program;
-mod segments;
-pub(crate) mod spill;
+pub(crate) mod segments;
 mod store;
 pub(crate) mod support;
 mod value;
@@ -241,7 +239,7 @@ impl Table {
         let needs = self.demand(range);
         self.planned = self.price(&needs);
         for (at, value) in self.values.iter() {
-            if let Kind::Stored(stored) = &value.kind {
+            if let Kind::Resident(stored) = &value.kind {
                 self.planned[at] += stored.priced;
             }
         }
@@ -422,7 +420,7 @@ impl Table {
                 .map(|(start, _)| *start)
                 .collect(),
             every: recording
-                .stores(place.fork, place.target)
+                .keeps(place.fork, place.target, place.offered)
                 .then(|| recording.mark_every()),
         };
         let done = eval::compute(value, need, (&self.values, &marks), &self.profile)?;
@@ -461,7 +459,7 @@ impl Table {
             let need = std::mem::take(&mut needs[at]);
             let whole = self.whole(at) && !(output && at == root);
             let value = &self.values[at];
-            let stored = matches!(value.kind, Kind::Stored { .. }) && value.reads.is_empty();
+            let stored = matches!(value.kind, Kind::Resident { .. }) && value.reads.is_empty();
             if value.alias().is_some() || whole || stored {
                 continue;
             }
@@ -735,7 +733,7 @@ impl Building<'_> {
             whole: of.support(),
             silent: None,
             period: None,
-            kind: Kind::Stored(Arc::clone(stored)),
+            kind: Kind::Resident(Arc::clone(stored)),
             reads: vec![live],
             held: Held::Segments(Vec::new()),
             evaluated: Vec::new(),
@@ -882,7 +880,7 @@ impl Building<'_> {
             (_, Typed::Stored(held)) => {
                 value.moved = held.moved;
                 value.label = Some(held.label.clone());
-                value.kind = Kind::Stored(Arc::clone(held));
+                value.kind = Kind::Resident(Arc::clone(held));
                 none(value)
             }
             (Representation::Frames, Typed::Cast(Cast::Stft { window, hop }, of)) => {
@@ -1095,6 +1093,7 @@ fn place(values: &Values, value: &Value, profile: &Profile) -> store::Place {
         segments: segments(&value.switches, key(value.key.identity), key),
         fork: false,
         target: false,
+        offered: false,
         slot: None,
         unread: leaf_reads(values, value),
         reached: 0,

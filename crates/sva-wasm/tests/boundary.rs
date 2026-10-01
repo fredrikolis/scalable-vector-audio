@@ -318,9 +318,11 @@ fn a_repeated_render_is_all_hits() {
     assert_eq!(field(&first, "outcome").as_string().as_deref(), Some("hit"));
 
     let first_cold = items(&cold, "lookups").get(0);
-    assert_eq!(
-        field(&first_cold, "outcome").as_string().as_deref(),
-        Some("computed_stored")
+    let outcome = field(&first_cold, "outcome").as_string();
+    assert!(
+        outcome.is_some_and(|o| o.starts_with("computed")),
+        "{}",
+        as_text(&cold)
     );
 }
 
@@ -438,34 +440,26 @@ fn the_cache_budget_is_the_pages_own_and_survives_a_clear() {
     assert_eq!((held.cache_bytes(), held.cache_entries()), (0.0, 0));
 }
 
-/// A cache policy crosses by name: the composition's default, and one render's own in its
-/// config.
+/// A cache policy crosses by name, the composition's own: no render names one, and memory
+/// cannot be switched off.
 #[wasm_bindgen_test]
-fn a_cache_policy_crosses_by_name_and_per_render() {
+fn a_cache_policy_crosses_by_name_and_no_render_names_its_own() {
     let held = page();
     assert_eq!(held.cache_policy(), "all");
-    held.set_cache_policy("none")
-        .unwrap_or_else(|_| unreachable!("none is a policy"));
-    render(&held, "master");
-    assert_eq!(held.cache_entries(), 0, "nothing was stored");
+    assert!(held.set_cache_policy("none").is_err(), "memory stays on");
     assert!(held.set_cache_policy("some").is_err());
-
-    let at = |policy: &str| {
-        held.rendered(
-            "@master([0, 1s])",
-            None,
-            options(&[("cache", JsValue::from_str(policy))]),
-        )
-    };
-    let target = at("target").unwrap_or_else(|_| unreachable!("target is a policy"));
+    held.set_cache_policy("target")
+        .unwrap_or_else(|_| unreachable!("target is a policy"));
+    assert_eq!(held.cache_policy(), "target");
+    let target = render(&held, "master");
     let stored = field(&stats_of(&target), "stored").as_f64();
-    assert!(stored > Some(0.0), "the target was stored");
-    assert_eq!(
-        stored,
-        Some(held.cache_entries() as f64),
-        "and nothing else"
+    assert_eq!(stored, Some(1.0), "the target alone was stored");
+    let named = held.rendered(
+        "@master([0, 1s])",
+        None,
+        options(&[("cache", JsValue::from_str("target"))]),
     );
-    assert!(at("most").is_err());
+    refused_as(named.err(), "wasm.bad_argument");
 }
 
 /// A prune policy crosses by name: the default one a render over the cap prunes by, and the
@@ -1262,6 +1256,26 @@ async fn a_stream_reads_a_note_another_worker_persisted() {
         store > memory,
         "the store answers the note: {store:?} hits against {memory:?}"
     );
+    let tier = |stats: &Result<JsValue, JsValue>| {
+        field(stats.as_ref().ok().unwrap_or(&JsValue::NULL), "tier")
+    };
+    let read = field(&tier(&heard[0].1), "disk_reads").as_f64();
+    assert!(read > Some(0.0), "{}", as_text(&tier(&heard[0].1)));
+    assert_eq!(field(&tier(&heard[1].1), "disk_reads").as_f64(), Some(0.0));
+    let counters = player
+        .counters()
+        .unwrap_or_else(|_| unreachable!("counters answer"));
+    for key in [
+        "disk_lookups",
+        "disk_reads",
+        "disk_read_bytes",
+        "promotions",
+        "writebacks",
+        "evictions",
+    ] {
+        assert!(field(&counters, key).as_f64().is_some(), "{key}");
+    }
+    assert!(field(&counters, "promotions").as_f64() > Some(0.0));
 }
 
 /// An edit awaits the store without holding the stream: the stream plays and answers
@@ -1460,7 +1474,10 @@ async fn an_entry_open_elsewhere_fails_no_worker_and_the_next_persist_writes_it(
 
     let held = over_store(&dir).await;
     let cold = stored_render(&held).await;
-    assert!(field(&cold, "computed").as_f64() > Some(0.0));
+    let missed = items(&cold, "lookups")
+        .iter()
+        .any(|l| field(&l, "outcome").as_string().as_deref() != Some("hit"));
+    assert!(missed, "the entry left open was missed: {}", as_text(&cold));
     held.persist()
         .await
         .unwrap_or_else(|e| unreachable!("persisted: {}", as_text(&e)));

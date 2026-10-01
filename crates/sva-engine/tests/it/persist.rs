@@ -1,188 +1,29 @@
-// Concern: proves a store answers a render or a stream from its root down, stages until persist, keeps a version and a budget | Non-concern: any real medium | IO: (composition, fake backend) -> hits
+// Concern: proves memory over a disk answers renders and streams from the root down, writes until persist, keeps a version and budget | Non-concern: a real medium | IO: (composition, fake disk) -> hits
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering;
 use std::task::{Context, Poll, Waker};
 
+use crate::disk::{Held, Memory, disk, now, opened};
 use crate::fixtures::{added, graph_of, next, replaced, samples};
 use sva_ast::Graph;
 use sva_engine::{
-    Ask, Backend, CacheStats, Change, Changed, EngineError, Handle, Hash, INDEX_NAME, NoStore,
-    Outcome, Placed, Range, Render, RenderConfig, Representation, STORE_FORMAT, Store, Stream,
-    StreamConfig, change, render, render_through, warm,
+    Ask, Backend, CacheStats, Change, Changed, EngineError, Handle, Hash, INDEX_NAME, Outcome,
+    Placed, Range, Render, RenderConfig, Representation, STORE_FORMAT, Store, Stream, StreamConfig,
+    Tier, change, render, render_over, warm,
 };
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
 
-/// One map of names; each staging area's names sit under its own prefix, where `list` never looks.
-/// While `refusing` is up, every write and rename fails. `reads` logs each read: the name and the bytes it
-/// answered. A name in `open` is another holder's, so, as in OPFS, it is neither removed nor
-/// moved onto.
-#[derive(Clone, Default)]
-struct Memory {
-    held: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
-    prefix: String,
-    refusing: Arc<AtomicBool>,
-    reads: Arc<Mutex<Vec<(String, usize)>>>,
-    lists: Arc<AtomicUsize>,
-    locked: Arc<AtomicBool>,
-    open: Arc<Mutex<BTreeSet<String>>>,
+/// A render's node lookups alone, each of which memory may pass to the disk.
+fn nodes(stats: &CacheStats) -> Vec<&sva_engine::Lookup> {
+    stats.lookups.iter().filter(|l| l.store.is_some()).collect()
 }
 
-/// The fake's lock, released when dropped.
-struct Held(Arc<AtomicBool>);
-
-impl Drop for Held {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
-
-impl Memory {
-    fn names(&self) -> Vec<String> {
-        self.held
-            .lock()
-            .unwrap()
-            .keys()
-            .filter(|n| !n.contains('/'))
-            .cloned()
-            .collect()
-    }
-
-    fn staged(&self) -> Vec<String> {
-        let held = self.held.lock().unwrap();
-        held.keys().filter(|n| n.contains('/')).cloned().collect()
-    }
-
-    fn at(&self, name: &str) -> String {
-        format!("{}{name}", self.prefix)
-    }
-
-    fn entries(&self) -> Vec<String> {
-        let names = self.names().into_iter();
-        names.filter(|n| n != INDEX_NAME).collect()
-    }
-
-    fn bytes(&self, name: &str) -> Option<Vec<u8>> {
-        self.held.lock().unwrap().get(&self.at(name)).cloned()
-    }
-
-    fn set(&self, name: &str, bytes: Vec<u8>) {
-        self.held.lock().unwrap().insert(self.at(name), bytes);
-    }
-
-    fn opened(&self, name: &str) -> bool {
-        self.open.lock().unwrap().contains(&self.at(name))
-    }
-}
-
-impl Backend for Memory {
-    type Lock = Held;
-
-    async fn lock(&self) -> Result<Held, String> {
-        std::future::poll_fn(|_| {
-            let free =
-                self.locked
-                    .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed);
-            match free {
-                Ok(_) => Poll::Ready(Ok(Held(self.locked.clone()))),
-                Err(_) => Poll::Pending,
-            }
-        })
-        .await
-    }
-
-    async fn get(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
-        let found = self.bytes(name);
-        let read = (self.at(name), found.as_ref().map_or(0, Vec::len));
-        self.reads.lock().unwrap().push(read);
-        Ok(found)
-    }
-
-    async fn get_range(&self, name: &str, from: u64, len: u64) -> Result<Option<Vec<u8>>, String> {
-        let found = self.bytes(name).map(|bytes| {
-            let from = (from as usize).min(bytes.len());
-            let to = from.saturating_add(len as usize).min(bytes.len());
-            bytes[from..to].to_vec()
-        });
-        let read = (self.at(name), found.as_ref().map_or(0, Vec::len));
-        self.reads.lock().unwrap().push(read);
-        Ok(found)
-    }
-
-    async fn put(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
-        if self.refusing.load(Ordering::Relaxed) {
-            return Err("the medium refused".to_string());
-        }
-        self.set(name, bytes.to_vec());
-        Ok(())
-    }
-
-    async fn delete(&self, name: &str) -> Result<bool, String> {
-        if self.opened(name) {
-            return Ok(false);
-        }
-        self.held.lock().unwrap().remove(&self.at(name));
-        Ok(true)
-    }
-
-    async fn list(&self) -> Result<Vec<(String, u64)>, String> {
-        self.lists.fetch_add(1, Ordering::Relaxed);
-        let held = self.held.lock().unwrap();
-        Ok(held
-            .iter()
-            .filter_map(|(n, b)| Some((n.strip_prefix(&self.prefix)?, b)))
-            .filter(|(n, _)| !n.contains('/'))
-            .map(|(n, b)| (n.to_string(), b.len() as u64))
-            .collect())
-    }
-
-    /// Each store its own area, as the backend promises: none writes another's.
-    async fn staging(&self) -> Result<Memory, String> {
-        static AREAS: AtomicUsize = AtomicUsize::new(0);
-        let area = AREAS.fetch_add(1, Ordering::Relaxed);
-        Ok(Memory {
-            prefix: format!("{}staging-{area}/", self.prefix),
-            ..self.clone()
-        })
-    }
-
-    async fn rename(&self, name: &str, to: &Memory) -> Result<bool, String> {
-        if self.refusing.load(Ordering::Relaxed) {
-            return Err("the medium refused".to_string());
-        }
-        if self.opened(name) || to.opened(name) {
-            return Ok(false);
-        }
-        let mut held = self.held.lock().unwrap();
-        let bytes = held.remove(&self.at(name)).ok_or("nothing staged")?;
-        held.insert(to.at(name), bytes);
-        Ok(true)
-    }
-}
-
-/// The fake never waits, so one poll finishes every future it makes.
-fn now<F: Future>(future: F) -> F::Output {
-    let mut future = std::pin::pin!(future);
-    match future
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-    {
-        Poll::Ready(out) => out,
-        Poll::Pending => panic!("the in-memory backend never waits"),
-    }
-}
-
-/// A fresh in-memory store over `memory`, as a new process opens it.
-fn opened(memory: &Memory, max_bytes: u64) -> Store<Memory> {
-    now(Store::open(memory.clone(), max_bytes)).expect("the store opens")
-}
-
-fn rendered(graph: &Graph, store: &Store<Memory>) -> Render {
-    now(render_through(
+fn rendered(graph: &Graph, store: &Tier<Memory>) -> Render {
+    now(render_over(
         graph,
         "master",
         RenderConfig::seconds(RATE, SECONDS),
@@ -270,7 +111,7 @@ fn a_store_another_format_wrote_is_wiped_on_open() {
     let reopened = opened(&memory, u64::MAX);
     assert_eq!(memory.names(), vec![INDEX_NAME.to_string()]);
     assert_eq!(memory.bytes(INDEX_NAME), Some(format_only()));
-    assert_eq!(reopened.bytes(), 0);
+    assert_eq!(disk(&reopened).bytes(), 0);
 }
 
 /// The index as every build at this format writes it for an empty store, whatever its engine
@@ -317,7 +158,7 @@ fn opening_a_store_reads_its_index_alone() {
     assert_eq!(reads.len(), 1, "{reads:?}");
     assert_eq!(reads[0].0, INDEX_NAME);
     assert_eq!(memory.lists.load(Ordering::Relaxed), 0);
-    assert!(reopened.bytes() > 0, "the index names every entry");
+    assert!(disk(&reopened).bytes() > 0, "the index names every entry");
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
@@ -382,9 +223,9 @@ fn a_truncated_entry_is_a_miss_and_is_written_again() {
     let cold = rendered(&graph, &store);
     now(store.persist()).expect("persisted");
 
-    let root = stats(&cold)
-        .lookups
-        .last()
+    let root = nodes(stats(&cold))
+        .into_iter()
+        .find(|l| l.node == "master")
         .expect("the root was looked up")
         .key;
     let name = format!("{:016x}{:016x}", root.0, root.1);
@@ -410,17 +251,20 @@ fn tone(name: &str, hz: u32) -> Graph {
 /// Each tone's own keys, and the bytes its render persisted.
 fn persisted_tone(memory: &Memory, max_bytes: u64, hz: u32) -> (Vec<Hash>, u64) {
     let store = opened(memory, max_bytes);
-    let before = store.bytes();
+    let before = disk(&store).bytes();
     let render = rendered(&tone(&format!("tone-{hz}"), hz), &store);
     now(store.persist()).expect("persisted");
-    assert!(store.bytes() <= max_bytes, "the store keeps its budget");
-    let keys = stats(&render).lookups.iter().map(|l| l.key).collect();
-    (keys, store.bytes().saturating_sub(before))
+    assert!(
+        disk(&store).bytes() <= max_bytes,
+        "the store keeps its budget"
+    );
+    let keys = nodes(stats(&render)).iter().map(|l| l.key).collect();
+    (keys, disk(&store).bytes().saturating_sub(before))
 }
 
 fn all_held(memory: &Memory, keys: &[Hash]) -> bool {
     let store = opened(memory, u64::MAX);
-    keys.iter().all(|k| store.holds(*k))
+    keys.iter().all(|k| disk(&store).holds(*k))
 }
 
 #[test]
@@ -432,6 +276,10 @@ fn past_its_budget_the_store_evicts_the_least_recently_used_first() {
     let (b, _) = persisted_tone(&memory, budget, 200);
     persisted_tone(&memory, budget, 100);
     let (c, _) = persisted_tone(&memory, budget, 300);
+    eprintln!(
+        "DEBUG one {one} a {a:?} b {b:?} c {c:?} entries {:?}",
+        memory.entries()
+    );
     assert!(all_held(&memory, &a), "read since, so kept");
     assert!(!all_held(&memory, &b), "least recently used, so gone");
     assert!(all_held(&memory, &c), "just written, so kept");
@@ -471,8 +319,8 @@ fn stores_sharing_a_directory_keep_one_budget_over_what_both_persisted() {
     );
 }
 
-fn rendered_over(graph: &Graph, store: &Store<Memory>, seconds: f64) -> Render {
-    now(render_through(
+fn rendered_over(graph: &Graph, store: &Tier<Memory>, seconds: f64) -> Render {
+    now(render_over(
         graph,
         "master",
         RenderConfig::seconds(RATE, seconds),
@@ -538,14 +386,15 @@ fn an_edit_visits_the_missed_path_and_its_hit_siblings_and_types_only_the_missed
     let edited = nested("path-after", 440);
     let warm = rendered(&edited, &opened(&memory, u64::MAX));
     let stats = stats(&warm);
-    let visited: Vec<String> = stats.lookups.iter().map(|l| l.node.clone()).collect();
+    let walked = nodes(stats);
+    let visited: Vec<String> = walked.iter().map(|l| l.node.clone()).collect();
     assert_eq!(
         sorted(&visited),
         ["e", "master", "p", "q", "s"],
         "{stats:?}"
     );
     assert_eq!(visited.len(), 5, "each node is visited once");
-    for lookup in &stats.lookups {
+    for lookup in walked {
         let hit = ["q", "s"].contains(&lookup.node.as_str());
         assert_eq!(lookup.outcome == Outcome::Hit, hit, "{lookup:?}");
     }
@@ -555,7 +404,7 @@ fn an_edit_visits_the_missed_path_and_its_hit_siblings_and_types_only_the_missed
         &edited,
         "master",
         RenderConfig::seconds(RATE, SECONDS),
-        None,
+        &Tier::default(),
     );
     assert_eq!(
         bits(&warm),
@@ -579,9 +428,9 @@ fn a_reading_of_a_node_under_a_stored_one_reads_it() {
         representation: Representation::Samples,
     }];
     let config = RenderConfig::seconds(RATE, SECONDS).asking(asks);
-    let fresh = render(&graph, "master", config.clone(), None).expect("a render");
+    let fresh = render(&graph, "master", config.clone(), &Tier::default()).expect("a render");
     let store = opened(&memory, u64::MAX);
-    let warm = now(render_through(&graph, "master", config, &store)).expect("a render");
+    let warm = now(render_over(&graph, "master", config, &store)).expect("a render");
     let e = |render: &Render| {
         let id = render.id("e").expect("`e` was typed");
         render.output(id).expect("`e` was read").plane(0).to_vec()
@@ -605,9 +454,9 @@ fn a_cold_render_through_a_store_writes_the_bits_a_render_without_one_does() {
         ],
     );
     let config = RenderConfig::seconds(RATE, 1.2);
-    let fresh = render(&graph, "master", config.clone(), None).expect("a render");
+    let fresh = render(&graph, "master", config.clone(), &Tier::default()).expect("a render");
     let store = opened(&Memory::default(), u64::MAX);
-    let cold = now(render_through(&graph, "master", config, &store)).expect("a render");
+    let cold = now(render_over(&graph, "master", config, &store)).expect("a render");
     assert!(
         bits(&fresh)[0].iter().any(|b| *b != 0),
         "silence tests nothing"
@@ -615,24 +464,32 @@ fn a_cold_render_through_a_store_writes_the_bits_a_render_without_one_does() {
     assert_eq!(bits(&cold), bits(&fresh));
 }
 
+/// What a render offers memory goes to the disk only as memory lets it go, and is committed
+/// only by persist: under a cap below what the render offers, memory writes back what it
+/// evicts, and the store is unchanged until persist moves everything into it.
 #[test]
-fn a_render_stages_what_it_drops_and_only_persist_moves_it_into_the_store() {
+fn memory_writes_back_what_it_evicts_and_only_persist_commits_it() {
     let memory = Memory::default();
     let graph = two_voices("staging", 330);
     let store = opened(&memory, u64::MAX);
-    let cold = rendered_over(&graph, &store, 2.0);
-    assert!(memory.entries().is_empty(), "the store is unchanged");
-    let staged: u64 = memory
-        .staged()
-        .iter()
-        .map(|name| memory.held.lock().unwrap()[name].len() as u64)
-        .sum();
-    assert!(staged > 0, "the render staged what it computed");
+    rendered_over(&graph, &store, 2.0);
     assert!(
-        (cold.held_bytes as u64) < staged,
-        "the render held {} bytes at most, less than the {staged} it staged",
-        cold.held_bytes
+        memory.staged().is_empty(),
+        "memory holds all it was offered"
     );
+    let held = store.bytes();
+
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    store.set_max_bytes(held / 3);
+    rendered_over(&graph, &store, 2.0);
+    assert!(memory.entries().is_empty(), "the store is unchanged");
+    assert!(
+        !memory.staged().is_empty(),
+        "memory wrote back what it evicted"
+    );
+    assert!(store.counters().writebacks > 0);
+    assert!(store.bytes() <= held / 3, "memory keeps its cap");
     let done = now(store.persist()).expect("persisted");
     assert_eq!(done.written, memory.entries().len());
     assert!(memory.staged().is_empty(), "every staged value moved");
@@ -703,22 +560,25 @@ fn a_persist_that_fails_leaves_every_value_it_did_not_commit_staged() {
 }
 
 /// A medium that refuses every write fails no render and no warm: the render's samples are a
-/// storeless render's, and its stats say why it staged nothing.
+/// render's over memory alone, and its stats and the warm's say why nothing was written; once
+/// the medium takes writes, a persist writes what memory still holds.
 #[test]
 fn a_store_refusing_every_write_fails_no_render_and_no_warm() {
     let memory = Memory::default();
     let store = opened(&memory, u64::MAX);
+    store.set_max_bytes(1);
     memory.refusing.store(true, Ordering::Relaxed);
     let graph = two_voices("refusing", 330);
     let through = rendered(&graph, &store);
     let config = RenderConfig::seconds(RATE, SECONDS);
-    let fresh = render(&graph, "master", config.clone(), None).expect("a render");
+    let fresh = render(&graph, "master", config.clone(), &Tier::default()).expect("a render");
     assert_eq!(samples(&through), samples(&fresh));
     assert!(stats(&through).unstaged.is_some(), "{:?}", stats(&through));
     let warmed = now(warm(&graph, "master", config, &store)).expect("a warm");
     assert!(warmed.unstaged.is_some(), "{warmed:?}");
+    assert!(now(store.persist()).is_err());
     memory.refusing.store(false, Ordering::Relaxed);
-    assert_eq!(now(store.persist()).expect("persisted").written, 0);
+    assert!(now(store.persist()).expect("persisted").written > 0);
 }
 
 /// Entries another holder has open, as another worker's OPFS handle holds them: a persist
@@ -777,7 +637,7 @@ fn a_stream_reads_a_note_another_store_over_its_directory_persisted() {
     );
     let memory = Memory::default();
     let (renderer, player) = (opened(&memory, u64::MAX), opened(&memory, u64::MAX));
-    now(render_through(
+    now(render_over(
         &graph,
         "warm",
         RenderConfig::seconds(RATE, 0.1),
@@ -803,13 +663,12 @@ fn a_stream_reads_a_note_another_store_over_its_directory_persisted() {
         &graph,
         &master,
         config.clone(),
-        None,
-        &NoStore,
+        &Tier::default(),
     ));
     let cold = RefCell::new(cold.expect("a stream"));
-    let warm = now(Stream::open(&graph, &master, config, None, &player));
+    let warm = now(Stream::open(&graph, &master, config, &player));
     let warm = RefCell::new(warm.expect("a stream"));
-    now(added(&cold, &graph, &term, &NoStore)).expect("added");
+    now(added(&cold, &graph, &term, &Tier::default())).expect("added");
     now(added(&warm, &graph, &term, &player)).expect("added");
     for _ in 0..(RATE / 256) {
         let (cold, warm) = (
@@ -850,14 +709,14 @@ fn warmed(name: &str, stored: i64) -> (Graph, Memory) {
         },
         ..RenderConfig::at(RATE)
     };
-    now(render_through(&graph, "warm", config, &store)).expect("a render");
+    now(render_over(&graph, "warm", config, &store)).expect("a render");
     now(store.persist()).expect("persisted");
     (graph, memory)
 }
 
 const STRIKE: &str = "@string(t - 512sp, f0=261.63)";
 
-fn notes(graph: &Graph, end: i64, store: &impl sva_engine::Through) -> RefCell<Stream> {
+fn notes<B: Backend>(graph: &Graph, end: i64, store: &Tier<B>) -> RefCell<Stream> {
     let config = StreamConfig {
         block: 256,
         channels: None,
@@ -870,7 +729,7 @@ fn notes(graph: &Graph, end: i64, store: &impl sva_engine::Through) -> RefCell<S
         },
     };
     let master = sva_ast::parse_expr("@notes").expect("an expression");
-    RefCell::new(now(Stream::open(graph, &master, config, None, store)).expect("a stream"))
+    RefCell::new(now(Stream::open(graph, &master, config, store)).expect("a stream"))
 }
 
 fn term(text: &str) -> sva_ast::Expr {
@@ -903,11 +762,11 @@ fn a_stream_plays_a_stored_held_note_from_its_samples() {
     for store in [None, Some(&player)] {
         let stream = match store {
             Some(store) => notes(&graph, 2_000, store),
-            None => notes(&graph, 2_000, &NoStore),
+            None => notes(&graph, 2_000, &Tier::default()),
         };
         let handle = match store {
             Some(store) => now(added(&stream, &graph, &term(STRIKE), store)),
-            None => now(added(&stream, &graph, &term(STRIKE), &NoStore)),
+            None => now(added(&stream, &graph, &term(STRIKE), &Tier::default())),
         };
         let handle = handle.expect("added");
         let mut blocks = Vec::new();
@@ -920,7 +779,7 @@ fn a_stream_plays_a_stored_held_note_from_its_samples() {
         let keyed = (handle, &term(&fade));
         let replaced = match store {
             Some(store) => now(replaced(&stream, &graph, keyed, store)),
-            None => now(replaced(&stream, &graph, keyed, &NoStore)),
+            None => now(replaced(&stream, &graph, keyed, &Tier::default())),
         };
         assert!(replaced.expect("replaced"));
         blocks.extend(played(&stream));
@@ -957,8 +816,8 @@ fn a_stream_plays_a_stored_held_note_from_its_samples() {
 #[test]
 fn an_exact_stream_computes_a_held_note_past_what_the_store_holds() {
     let (graph, memory) = warmed("held-longer", 2_000);
-    let cold = notes(&graph, 8_000, &NoStore);
-    now(added(&cold, &graph, &term(STRIKE), &NoStore)).expect("added");
+    let cold = notes(&graph, 8_000, &Tier::default());
+    now(added(&cold, &graph, &term(STRIKE), &Tier::default())).expect("added");
     let cold = played(&cold);
     let player = opened(&memory, u64::MAX);
     let warm = notes(&graph, 8_000, &player);
@@ -980,7 +839,7 @@ fn an_exact_stream_computes_a_held_note_past_what_the_store_holds() {
 const LATE: &str = "@string(t - 512sp, f0=261.63)";
 
 /// Four blocks in, adds the late note and plays on.
-fn late(graph: &Graph, live: bool, store: &impl sva_engine::Through) -> (Vec<u64>, Vec<String>) {
+fn late<B: Backend>(graph: &Graph, live: bool, store: &Tier<B>) -> (Vec<u64>, Vec<String>) {
     let stream = notes(graph, 8_000, store);
     if live {
         stream.borrow_mut().go_live();
@@ -1008,8 +867,8 @@ fn late(graph: &Graph, live: bool, store: &impl sva_engine::Through) -> (Vec<u64
 #[test]
 fn a_live_stream_drops_a_held_note_that_is_not_ready() {
     let (graph, memory) = warmed("held-live", 2_000);
-    let (cold, _) = late(&graph, false, &NoStore);
-    let (unready, _) = late(&graph, true, &NoStore);
+    let (cold, _) = late(&graph, false, &Tier::default());
+    let (unready, _) = late(&graph, true, &Tier::default());
     let player = opened(&memory, u64::MAX);
     let (heard, dropped) = late(&graph, true, &player);
     let stored = (512 + 2_000 - 1_024) as usize;
@@ -1056,7 +915,7 @@ fn warmed_notes(name: &str, hz: &[&str]) -> (Graph, Memory, Vec<BTreeSet<String>
             ..RenderConfig::at(RATE)
         };
         let before: BTreeSet<String> = memory.entries().into_iter().collect();
-        now(render_through(&graph, &format!("warm{f}"), config, &store)).expect("a render");
+        now(render_over(&graph, &format!("warm{f}"), config, &store)).expect("a render");
         now(store.persist()).expect("persisted");
         let after = memory.entries().into_iter();
         entries.push(after.filter(|e| !before.contains(e)).collect());
@@ -1111,12 +970,12 @@ fn a_stream_reads_each_stored_notes_header_once() {
     assert!(!store_hits(&stream).is_empty());
 }
 
-fn warm_into(graph: &Graph, store: &Store<Memory>) {
+fn warm_into(graph: &Graph, store: &Tier<Memory>) {
     let mut warmed = graph.clone();
     let warm = sva_ast::parse_expr("@string(t, f0=261.63)").expect("an expression");
     assert!(warmed.define("warm", warm));
     let config = RenderConfig::seconds(RATE, SECONDS);
-    now(render_through(&warmed, "warm", config, store)).expect("a render");
+    now(render_over(&warmed, "warm", config, store)).expect("a render");
 }
 
 /// A note a stream met as missing is asked for again, so one another holder persists while it
@@ -1135,24 +994,23 @@ fn a_stream_finds_a_note_another_holder_persisted_after_it_missed_it() {
     assert_eq!(store_hits(&stream), ["string(f0=261.63, release=inf)"]);
 }
 
-/// A hit met while staged is asked for again once its store commits it, as its samples moved.
+/// A note a render left in memory is the stream's from memory, before its persist and after:
+/// committing it moves nothing memory holds.
 #[test]
-fn a_stream_asks_again_for_a_hit_its_store_committed() {
+fn a_stream_reads_a_note_memory_holds_across_its_commit() {
     let (graph, memory, _) = warmed_notes("committed-later", &[]);
     let player = opened(&memory, u64::MAX);
     warm_into(&graph, &player);
     let stream = notes(&graph, 8_000, &player);
-    now(added(&stream, &graph, &term(STRIKE), &player)).expect("added");
     taken(&memory);
     now(added(&stream, &graph, &term(STRIKE), &player)).expect("added");
-    assert_eq!(taken(&memory), [], "a hit met once is not asked again");
+    now(added(&stream, &graph, &term(STRIKE), &player)).expect("added");
+    assert_eq!(taken(&memory), [], "memory answers the note it was offered");
     now(player.persist()).expect("persisted");
     taken(&memory);
     now(added(&stream, &graph, &term(STRIKE), &player)).expect("added");
-    assert!(
-        !taken(&memory).is_empty(),
-        "the committed note is asked for"
-    );
+    assert_eq!(taken(&memory), [], "and still does once it is committed");
+    assert_eq!(store_hits(&stream), ["string(f0=261.63, release=inf)"; 3]);
 }
 
 /// `Memory` whose every read answers only on its `delay`th poll, waking itself between.
@@ -1246,7 +1104,7 @@ fn changed_by(graph: &Graph, (at, f0, replaced): Spec) -> Change {
     }
 }
 
-fn notes_over(graph: &Graph, store: &impl sva_engine::Through, live: bool) -> RefCell<Stream> {
+fn notes_over<B: Backend>(graph: &Graph, store: &Tier<B>, live: bool) -> RefCell<Stream> {
     let config = StreamConfig {
         block: 256,
         channels: None,
@@ -1258,7 +1116,7 @@ fn notes_over(graph: &Graph, store: &impl sva_engine::Through, live: bool) -> Re
             ..RenderConfig::at(RATE)
         },
     };
-    let stream = settled(Stream::open(graph, &term("@notes"), config, None, store));
+    let stream = settled(Stream::open(graph, &term("@notes"), config, store));
     let mut stream = stream.expect("a stream");
     if live {
         stream.go_live();
@@ -1279,6 +1137,7 @@ fn a_live_stream_plays_on_while_its_edits_await_a_slow_store() {
         delay: 3,
     };
     let player = settled(Store::open(slow, u64::MAX)).expect("the store opens");
+    let player = Tier::over(player, u64::MAX);
     let shared = notes_over(&graph, &player, true);
     let (mut specs, mut landed, mut handles) = (Vec::<Spec>::new(), Vec::new(), Vec::new());
     let (mut pending, mut heard, mut waited) = (Vec::<(usize, Pending)>::new(), Vec::new(), 0);
@@ -1364,7 +1223,7 @@ fn a_crop_of_a_stored_node_stores_no_copy() {
             ..RenderConfig::at(RATE)
         };
         let store = opened(&memory, u64::MAX);
-        let cold = now(render_through(&graph, "warm", config.clone(), &store)).expect("a render");
+        let cold = now(render_over(&graph, "warm", config.clone(), &store)).expect("a render");
         now(store.persist()).expect("persisted");
         let root = stats(&cold).lookups.iter().find(|l| l.node == "warm");
         let root = root.expect("the root was looked up").key;
@@ -1379,7 +1238,7 @@ fn a_crop_of_a_stored_node_stores_no_copy() {
         assert_eq!(memory.entries().len(), 2, "{name}: the note and the root");
 
         let store = opened(&memory, u64::MAX);
-        let warm = now(render_through(&graph, "warm", config, &store)).expect("a render");
+        let warm = now(render_over(&graph, "warm", config, &store)).expect("a render");
         assert_eq!(stats(&warm).computed(), 0, "{name}: {:?}", stats(&warm));
         assert_eq!(bits(&warm), bits(&cold), "{name}");
     }
@@ -1419,7 +1278,7 @@ fn a_referral_names_the_samples_themselves_and_misses_once_they_are_gone() {
     };
     let render = |target: &str| {
         let store = opened(&memory, u64::MAX);
-        let done = now(render_through(&graph, target, config.clone(), &store)).expect("a render");
+        let done = now(render_over(&graph, target, config.clone(), &store)).expect("a render");
         now(store.persist()).expect("persisted");
         done
     };
@@ -1445,7 +1304,7 @@ fn a_referral_names_the_samples_themselves_and_misses_once_they_are_gone() {
     assert_eq!(bits(&after), bits(&before));
 }
 
-fn warmed_into(graph: &Graph, store: &Store<Memory>) -> CacheStats {
+fn warmed_into(graph: &Graph, store: &Tier<Memory>) -> CacheStats {
     now(warm(
         graph,
         "master",
@@ -1469,7 +1328,12 @@ fn a_warmed_and_persisted_target_renders_as_a_store_hit() {
     let hit = rendered(&graph, &opened(&memory, u64::MAX));
     assert_eq!(stats(&hit).lookups.len(), 1, "{:?}", stats(&hit));
     assert_eq!(stats(&hit).lookups[0].outcome, Outcome::Hit);
-    let fresh = render(&graph, "master", RenderConfig::seconds(RATE, SECONDS), None);
+    let fresh = render(
+        &graph,
+        "master",
+        RenderConfig::seconds(RATE, SECONDS),
+        &Tier::default(),
+    );
     assert_eq!(bits(&hit), bits(&fresh.expect("a render")));
 }
 
@@ -1531,7 +1395,7 @@ fn a_moving_index_read_of_a_stored_value_drops_nothing() {
     );
     let memory = Memory::default();
     let store = opened(&memory, u64::MAX);
-    now(render_through(
+    now(render_over(
         &graph,
         "warm",
         RenderConfig::seconds(RATE, 0.1),
@@ -1540,10 +1404,10 @@ fn a_moving_index_read_of_a_stored_value_drops_nothing() {
     .expect("warmed");
     now(store.persist()).expect("persisted");
     let loop_term = term("crop(@looped[idx((t - 2048sp) % 800sp)], 2048sp, inf)");
-    let heard = |live: bool, player: Option<&Store<Memory>>| {
+    let heard = |live: bool, player: Option<&Tier<Memory>>| {
         let stream = match player {
             Some(player) => notes(&graph, 6_000, player),
-            None => notes(&graph, 6_000, &NoStore),
+            None => notes(&graph, 6_000, &Tier::default()),
         };
         if live {
             stream.borrow_mut().go_live();
@@ -1557,7 +1421,7 @@ fn a_moving_index_read_of_a_stored_value_drops_nothing() {
         }
         match player {
             Some(player) => now(added(&stream, &graph, &loop_term, player)),
-            None => now(added(&stream, &graph, &loop_term, &NoStore)),
+            None => now(added(&stream, &graph, &loop_term, &Tier::default())),
         }
         .expect("added");
         heard.extend(played(&stream));

@@ -3,7 +3,7 @@
 use std::f64::consts::TAU;
 
 use crate::fixtures::graph_of;
-use sva_engine::{EngineError, RenderConfig, render};
+use sva_engine::{EngineError, RenderConfig, Tier, render};
 
 const RATE: u32 = 44_100;
 
@@ -16,15 +16,25 @@ const SYNTH: &str = "a = 0.01\nd = 0.3\ns = 0.6\nr = 0.4\nrelease = inf\n\
 
 fn samples(files: &[(&str, &str)], root: &str, secs: f64) -> Vec<f64> {
     let g = graph_of(root, files);
-    let held = render(&g, root, RenderConfig::seconds(RATE, secs), None)
-        .unwrap_or_else(|e| panic!("{root}: {e}"));
+    let held = render(
+        &g,
+        root,
+        RenderConfig::seconds(RATE, secs),
+        &Tier::default(),
+    )
+    .unwrap_or_else(|e| panic!("{root}: {e}"));
     let id = held.id(root).expect("the root");
     held.output(id).expect("a buffer").plane(0).to_vec()
 }
 
 fn refusal(body: &str) -> EngineError {
     let g = graph_of("probe", &[("probe", body)]);
-    match render(&g, "probe", RenderConfig::seconds(RATE, 1.0), None) {
+    match render(
+        &g,
+        "probe",
+        RenderConfig::seconds(RATE, 1.0),
+        &Tier::default(),
+    ) {
         Err(e) => e,
         Ok(_) => panic!("`{body}` rendered"),
     }
@@ -106,7 +116,13 @@ fn a_solver_parameter_moves_only_as_its_model_allows() {
     }
     let jumps = "chaigne_askenfelt(261.63, damper_k=1e3*step(t - 0.1))\n";
     let g = graph_of("jumps", &[("jumps", jumps)]);
-    render(&g, "jumps", RenderConfig::seconds(RATE, 0.2), None).expect("a spring that jumps");
+    render(
+        &g,
+        "jumps",
+        RenderConfig::seconds(RATE, 0.2),
+        &Tier::default(),
+    )
+    .expect("a spring that jumps");
 }
 
 /// `t - inf` is `-inf` at every instant, as IEEE arithmetic has it, so a release nobody sets

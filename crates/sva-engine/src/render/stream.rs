@@ -1,4 +1,4 @@
-// Concern: opens a target as a stream over a store, editing it and its terms live | Non-concern: pulling its blocks, what an edit carries on | IO: (Graph, target) -> Stream; (Change) -> Changed
+// Concern: opens a target as a stream over memory, editing it and its terms live | Non-concern: pulling its blocks, what an edit carries on | IO: (Graph, target) -> Stream; (Change) -> Changed
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -9,12 +9,11 @@ use sva_formula::{Hash, NodeId};
 use sva_samples::{Buffer, Extent};
 
 use super::drive::{Block, Driver};
-use super::frontier::Known as Met;
 use super::table::Table;
 use super::table::support::Supports;
 use super::terms::{Handle, NOTES, Terms, cut, placed};
-use super::{Ends, RenderConfig, range_over, through};
-use crate::cache::{Cache, CacheStats, Recording, Stored, Through};
+use super::{Ends, RenderConfig, range_over};
+use crate::cache::{Backend, CacheStats, Counters, Memory, Recording, Stored, Tier};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::flops::Work;
 use crate::recent::Recent;
@@ -49,7 +48,6 @@ pub struct Stream {
     supports: BTreeMap<Handle, Extent>,
     /// The first sounding term's end, which `supports` evicts.
     ending: Option<Option<i64>>,
-    met: Lookups,
     generation: u64,
     live: bool,
     dropped: Recent<String>,
@@ -68,6 +66,7 @@ pub struct Counts {
     pub built: Built,
     /// The reads that worked out what the root asks of the note sum.
     pub demands: usize,
+    pub tier: Counters,
 }
 
 /// What one change did anew, not what it carried over.
@@ -76,7 +75,6 @@ pub struct Built {
     /// Texts it took in: its expression and each node it newly reads.
     pub parsed: usize,
     pub instances: usize,
-    /// Instances its walk to the store visited.
     pub visited: usize,
     pub typed: usize,
     pub values: usize,
@@ -85,42 +83,16 @@ pub struct Built {
     pub lookups: usize,
 }
 
-/// Each lookup met, until its store moves the samples.
-#[derive(Default)]
-struct Lookups {
-    epoch: u64,
-    known: Met,
-}
-
-impl Lookups {
-    fn over(&mut self, store: &impl Through) -> &Met {
-        if store.epoch() != self.epoch {
-            self.known.clear();
-            self.epoch = store.epoch();
-        }
-        &self.known
-    }
-
-    /// Kept where the store has not changed since `epoch`.
-    fn noted(&mut self, key: Hash, found: &Option<Arc<Stored>>, epoch: u64, store: &impl Through) {
-        self.over(store);
-        if epoch == self.epoch {
-            self.known.insert(key, found.clone());
-        }
-    }
-}
-
 impl Stream {
-    pub async fn open(
+    pub async fn open<B: Backend>(
         graph: &Graph,
         target: &Expr,
         config: StreamConfig,
-        cache: Option<&Cache>,
-        store: &impl Through,
+        tier: &Tier<B>,
     ) -> Result<Stream, EngineError> {
         let render = blocked(&config)?.render.clone();
         let world = World::new(graph, &render)?;
-        let recording = Recording::over(cache, config.render.cache_policy).latest(LATEST);
+        let recording = Recording::over(tier.memory()).latest(LATEST);
         let table = Table::new(&render.profile);
         let driver = Driver::new(table, Extent::new(0, 0), config.block, &render, recording);
         let mut stream = Stream {
@@ -131,7 +103,6 @@ impl Stream {
             width: 0,
             supports: BTreeMap::new(),
             ending: None,
-            met: Lookups::default(),
             generation: 0,
             live: false,
             dropped: Recent::keeping(LATEST),
@@ -150,22 +121,23 @@ impl Stream {
             parsed: 1,
         };
         let mut local = Local::default();
+        let round = tier.begin();
         loop {
-            match stream.attempt(&opening, &mut local)? {
+            match stream.attempt(&opening, &mut local, (tier.memory(), round))? {
                 Attempt::Landed(_) => break,
-                Attempt::Asks(keys) => {
-                    let epoch = store.epoch();
-                    local.look(keys, store).await;
-                    for (key, found) in std::mem::take(&mut local.recorded) {
-                        stream.met.noted(key, &found, epoch, store);
-                    }
-                }
-                Attempt::Reads(wants) => local.read(wants, store).await,
+                Attempt::Asks(keys) => local.look(keys, tier, round).await,
+                Attempt::Reads(wants) => local.read(wants, tier).await,
                 Attempt::Moved => unreachable!("nothing plays a stream before it opens"),
             }
         }
-        let next = ahead(stream.driver.start, render.rate);
-        through::load(&mut stream.driver.table, store, next, &BTreeSet::new()).await;
+        let mut needs = stream.needs();
+        while !needs.is_empty() {
+            let fetched = tier.fetch(&needs).await;
+            for (key, parts) in fetched.handed {
+                stream.driver.table.took(key, &parts);
+            }
+            needs = fetched.left;
+        }
         Ok(stream)
     }
 
@@ -240,8 +212,13 @@ impl Stream {
     }
 
     /// One try at `prospect`: planned, typed and built beside what plays, then held, or undone
-    /// where the store must answer first.
-    fn attempt(&mut self, prospect: &Prospect, local: &mut Local) -> Result<Attempt, EngineError> {
+    /// where memory must answer first.
+    fn attempt(
+        &mut self,
+        prospect: &Prospect,
+        local: &mut Local,
+        (memory, round): (&Memory, u64),
+    ) -> Result<Attempt, EngineError> {
         if prospect.landing.is_some_and(|at| at != self.driver.at) {
             return Ok(Attempt::Moved);
         }
@@ -251,9 +228,8 @@ impl Stream {
             term: prospect.term.as_ref().map(|(h, e)| (*h, e)),
             from: prospect.from.as_ref().map(|(g, roots)| (g, roots.clone())),
         };
-        let met = &self.met.known;
-        let found = |key: Hash| local.known.get(&key).or_else(|| met.get(&key)).cloned();
-        let walked = self.world.plan(&wanted, (&found, &local.again))?;
+        let found = |key: Hash| memory.answer(key, round);
+        let walked = self.world.plan(&wanted, &found)?;
         let mut plan = match walked {
             Walked::Asks(keys) => return Ok(Attempt::Asks(keys)),
             Walked::Planned(plan) => plan,
@@ -268,10 +244,10 @@ impl Stream {
             }
         };
         let window = ahead(self.driver.at.max(range.start), self.config.render.rate);
-        let wants = self.driver.table.wants_made(root, window);
-        let wants: Vec<(Arc<Stored>, Extent)> = wants
+        let wants = self.driver.table.needs_made(root, window);
+        let wants: Vec<(Hash, Extent)> = wants
             .into_iter()
-            .filter(|(stored, over)| !local.holds(stored.key, *over))
+            .filter(|(key, over)| !local.holds(*key, *over))
             .collect();
         if !wants.is_empty() {
             let freed = self.world.abort();
@@ -333,8 +309,8 @@ impl Stream {
         let freed = self.world.commit(&mut plan);
         let now = self.driver.at;
         let carried = self.driver.table.settled(root, &freed, (now, self.live));
-        for (key, samples) in &local.fetched {
-            self.driver.table.took(*key, samples);
+        for (key, parts) in &local.fetched {
+            self.driver.table.took(*key, parts);
         }
         for at in &carried.silent {
             self.dropped
@@ -389,21 +365,9 @@ impl Stream {
         self.supports.insert(handle, support);
     }
 
-    /// Loads the stored samples the next second reads; a block reading one not loaded has it
-    /// computed, or, live, started silent where not ready.
-    pub async fn fetch(&mut self, store: &impl Through) {
+    fn needs(&self) -> Vec<(Hash, Extent)> {
         let next = ahead(self.driver.at, self.config.render.rate);
-        through::load(&mut self.driver.table, store, next, &BTreeSet::new()).await;
-    }
-
-    /// What `fetch` reads, for a caller reading it as the stream plays.
-    pub fn wanted(&self) -> Vec<(Arc<Stored>, Extent)> {
-        let next = ahead(self.driver.at, self.config.render.rate);
-        self.driver.table.wants(next)
-    }
-
-    pub fn took(&mut self, key: Hash, samples: &[Buffer]) {
-        self.driver.table.took(key, samples);
+        self.driver.table.needs(next)
     }
 
     /// `n` samples from `at`, `None` past the end. An `at` behind is refused; one ahead skips
@@ -474,6 +438,7 @@ impl Stream {
             terms: self.terms.count(),
             built: self.built,
             demands: self.demands,
+            tier: self.driver.recording.since(),
         }
     }
 
@@ -603,7 +568,7 @@ struct Prospect {
 enum Attempt {
     Landed(Changed),
     Asks(Vec<Hash>),
-    Reads(Vec<(Arc<Stored>, Extent)>),
+    Reads(Vec<(Hash, Extent)>),
     /// The stream left the sample it was placed at.
     Moved,
 }
@@ -611,11 +576,7 @@ enum Attempt {
 /// What one change has looked up and read, across its tries.
 #[derive(Default)]
 struct Local {
-    known: Met,
-    /// Keys asked again, a miss met before.
-    again: BTreeSet<Hash>,
-    recorded: Vec<(Hash, Option<Arc<Stored>>)>,
-    fetched: Vec<(Hash, Vec<Buffer>)>,
+    fetched: Vec<(Hash, Vec<Arc<Buffer>>)>,
     asked: Vec<(Hash, Extent)>,
     unread: BTreeSet<Hash>,
     lookups: usize,
@@ -623,34 +584,26 @@ struct Local {
 }
 
 impl Local {
-    async fn look(&mut self, keys: Vec<Hash>, store: &impl Through) {
+    async fn look<B: Backend>(&mut self, keys: Vec<Hash>, tier: &Tier<B>, round: u64) {
         for key in keys {
             self.lookups += 1;
-            let found = store.lookup(key).await.map(Arc::new);
-            self.again.insert(key);
-            self.known.insert(key, found.clone());
-            self.recorded.push((key, found));
+            tier.lookup(key, round).await;
         }
     }
 
-    async fn read(&mut self, wants: Vec<(Arc<Stored>, Extent)>, store: &impl Through) {
-        for (stored, over) in wants {
-            let again = self
-                .asked
-                .iter()
-                .any(|(key, e)| *key == stored.key && !e.intersect(over).is_empty());
-            self.asked.push((stored.key, over));
-            let read = match again {
-                false => store.read(&stored, over).await,
-                true => None,
-            };
-            match read {
-                Some(samples) => self.fetched.push((stored.key, samples)),
-                None => {
-                    self.unread.insert(stored.key);
-                }
+    /// What `wants` asks, off memory; one a fetch's reads did not reach is asked again.
+    async fn read<B: Backend>(&mut self, wants: Vec<(Hash, Extent)>, tier: &Tier<B>) {
+        let fetched = tier.fetch(&wants).await;
+        for (key, over) in wants {
+            if fetched.left.contains(&(key, over)) {
+                continue;
+            }
+            self.asked.push((key, over));
+            if !fetched.handed.iter().any(|(held, _)| *held == key) {
+                self.unread.insert(key);
             }
         }
+        self.fetched.extend(fetched.handed);
     }
 
     /// Whether this change already read `key` over `over`, or could not.
@@ -666,15 +619,16 @@ impl Local {
 /// `build`'s change, the stream held only while each try runs, between two blocks: an exact
 /// stream pulled once its edit is done plays it where issued. `build` runs again whenever the
 /// stream changed under it.
-pub async fn change<E: From<EngineError>>(
+pub async fn change<E: From<EngineError>, B: Backend>(
     stream: &RefCell<Stream>,
     mut build: impl FnMut(&Stream) -> Result<Change, E>,
-    store: &impl Through,
+    tier: &Tier<B>,
 ) -> Result<Changed, E> {
     let mut local = Local {
         issued: stream.borrow().driver.at,
         ..Local::default()
     };
+    let round = tier.begin();
     loop {
         let change = build(&stream.borrow())?;
         let prospect = match stream.borrow().prospect(change) {
@@ -686,21 +640,26 @@ pub async fn change<E: From<EngineError>>(
             if stream.borrow().generation != generation {
                 break;
             }
-            stream.borrow_mut().met.over(store);
-            let attempt = stream.borrow_mut().attempt(&prospect, &mut local)?;
+            let memory = (tier.memory(), round);
+            let attempt = stream.borrow_mut().attempt(&prospect, &mut local, memory)?;
             match attempt {
                 Attempt::Landed(answer) => return Ok(answer),
                 Attempt::Moved => break,
-                Attempt::Asks(keys) => {
-                    let epoch = store.epoch();
-                    local.look(keys, store).await;
-                    for (key, found) in std::mem::take(&mut local.recorded) {
-                        stream.borrow_mut().met.noted(key, &found, epoch, store);
-                    }
-                }
-                Attempt::Reads(wants) => local.read(wants, store).await,
+                Attempt::Asks(keys) => local.look(keys, tier, round).await,
+                Attempt::Reads(wants) => local.read(wants, tier).await,
             }
         }
+    }
+}
+
+/// What the next second of `stream` reads off memory, as far as one fetch reaches; a block
+/// reading samples not ready computes them, or, live, starts them silent.
+pub async fn fetch<B: Backend>(stream: &RefCell<Stream>, tier: &Tier<B>) {
+    let needs = stream.borrow().needs();
+    let fetched = tier.fetch(&needs).await;
+    let mut stream = stream.borrow_mut();
+    for (key, parts) in fetched.handed {
+        stream.driver.table.took(key, &parts);
     }
 }
 

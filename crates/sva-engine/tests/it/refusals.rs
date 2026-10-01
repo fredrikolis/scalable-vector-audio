@@ -2,7 +2,7 @@
 
 use crate::fixtures;
 use crate::fixtures::graph_of;
-use sva_engine::{EngineError, Held, RenderConfig, Var, render, types};
+use sva_engine::{EngineError, Held, RenderConfig, Tier, Var, render, types};
 
 fn refusal(name: &str, files: &[(&str, &str)], root: &str) -> EngineError {
     types(&graph_of(name, files), root).expect_err("a refusal")
@@ -204,9 +204,14 @@ fn a_nonlinearity_over_a_spectrum_names_the_construct() {
             "tanh(lowpass(exp(0 - pow(f/300, 2)), 800, 0.7))\n",
         )],
     );
-    let e = render(&g, "shaped", RenderConfig::seconds(8_000, 0.01), None)
-        .err()
-        .expect("a nonlinearity over a crossing in f composes nothing");
+    let e = render(
+        &g,
+        "shaped",
+        RenderConfig::seconds(8_000, 0.01),
+        &Tier::default(),
+    )
+    .err()
+    .expect("a nonlinearity over a crossing in f composes nothing");
     let (code, message, help) = parts(&e);
     assert_eq!(code, "read.no_spectral_sum");
     assert!(message.contains("tanh"), "{message}");
@@ -316,8 +321,13 @@ fn an_exact_reading_on_a_ct_names_the_blocking_term() {
             ("master", "tanh(@turned(t))\n"),
         ],
     );
-    let held = render(&g, "master", RenderConfig::seconds(8_000, 0.01), None)
-        .expect("a continuous-time law still renders");
+    let held = render(
+        &g,
+        "master",
+        RenderConfig::seconds(8_000, 0.01),
+        &Tier::default(),
+    )
+    .expect("a continuous-time law still renders");
     let id = held.id("master").expect("the root");
     let e = sva_engine::answer(&held, id, sva_engine::Representation::Lines)
         .expect_err("a line list off a term no atom sum reaches");
@@ -335,7 +345,12 @@ fn an_exact_reading_on_a_ct_names_the_blocking_term() {
 fn a_zero_fall_shoulder_is_a_hard_edge_not_a_panic() {
     let rendered = |body: &str| {
         let g = graph_of("crop-edges", &[("node", body)]);
-        render(&g, "node", RenderConfig::seconds(8_000, 4.0), None)
+        render(
+            &g,
+            "node",
+            RenderConfig::seconds(8_000, 4.0),
+            &Tier::default(),
+        )
     };
     let rms = |body: &str| {
         let held = rendered(body).unwrap_or_else(|e| panic!("{body}: {e}"));
@@ -426,7 +441,7 @@ fn a_finite_difference_argument_outside_its_range_refuses_before_a_grid_is_built
 fn a_room_too_large_for_one_grid_refuses_with_the_ceiling_it_passed() {
     let graph = graph_of("room-too-large", &[("node", "botteldooren(40)\n")]);
     let config = sva_engine::RenderConfig::seconds(16_000, 0.01);
-    let Err(refused) = sva_engine::render(&graph, "node", config, None) else {
+    let Err(refused) = sva_engine::render(&graph, "node", config, &Tier::default()) else {
         panic!("a 40 Hz room is millions of nodes");
     };
     let (code, message, _) = parts(&refused);

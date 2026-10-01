@@ -1,4 +1,4 @@
-// Concern: what a stream plays across its changes: graph, instances, keys, store answers, typing | Non-concern: the table, the blocks (stream.rs) | IO: (wanted nodes) -> a plan; commit, abort
+// Concern: what a stream plays across its changes: graph, instances, keys, memory's answers, typing | Non-concern: the table, the blocks (stream.rs) | IO: (wanted nodes) -> a plan; commit, abort
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -10,14 +10,14 @@ use super::super::RenderConfig;
 use super::super::frontier::{answers, noted};
 use super::super::terms::{Handle, NOTES, Terms, is_term};
 use super::STREAMED;
-use crate::cache::{Lookup, Outcome, Stored};
+use crate::cache::{Known as Answer, Lookup, Outcome, Stored};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::Instances;
 use crate::schedule;
 use crate::typing::Typing;
 
-/// What a lookup of a key answered, where one was made.
-pub(super) type Found<'f> = &'f dyn Fn(Hash) -> Option<Option<Arc<Stored>>>;
+/// What memory answers a key with this round.
+pub(super) type Found<'f> = &'f dyn Fn(Hash) -> Answer;
 
 /// What a stream plays, each part changed in place and held once a change lands.
 pub(super) struct World {
@@ -95,12 +95,8 @@ impl World {
     /// The graph set to what `wanted` plays, what changed named and scanned, each instance
     /// it may rename keyed, and a walk to what the store answers of each changed or newly
     /// read. Undone on a refusal or keys to look up.
-    pub(super) fn plan(
-        &mut self,
-        wanted: &Wanted,
-        (found, again): (Found, &BTreeSet<Hash>),
-    ) -> Result<Walked, EngineError> {
-        let planned = self.planned(wanted, (found, again));
+    pub(super) fn plan(&mut self, wanted: &Wanted, found: Found) -> Result<Walked, EngineError> {
+        let planned = self.planned(wanted, found);
         match &planned {
             Ok(Walked::Planned(_)) => {}
             _ => {
@@ -110,11 +106,7 @@ impl World {
         planned
     }
 
-    fn planned(
-        &mut self,
-        wanted: &Wanted,
-        (found, again): (Found, &BTreeSet<Hash>),
-    ) -> Result<Walked, EngineError> {
+    fn planned(&mut self, wanted: &Wanted, found: Found) -> Result<Walked, EngineError> {
         let adopted = match &wanted.from {
             Some((graph, roots)) => {
                 self.renew(graph, roots);
@@ -172,7 +164,6 @@ impl World {
             changed: &changed,
             fresh: &fresh,
             found,
-            again,
         };
         let walked = walk.walked();
         let (mut found_known, visited, hits, asks) = walked;
@@ -352,7 +343,6 @@ struct Walk<'w> {
     changed: &'w BTreeSet<String>,
     fresh: &'w BTreeMap<&'w str, BTreeSet<&'w str>>,
     found: Found<'w>,
-    again: &'w BTreeSet<Hash>,
 }
 
 type WalkedOut = (BTreeMap<String, Known>, usize, Vec<Lookup>, Vec<Hash>);
@@ -373,7 +363,7 @@ impl Walk<'_> {
             let mut known = self.known(&path);
             if visited.contains(&path) {
                 let asked = anew && !known.pinned && known.stored.is_none();
-                if asked && !self.again.contains(&known.key) {
+                if asked && matches!((self.found)(known.key), Answer::Unknown) {
                     asks.push(known.key);
                 }
                 continue;
@@ -386,9 +376,9 @@ impl Walk<'_> {
             let stored = match known.pinned {
                 true => None,
                 false => match (self.found)(known.key) {
-                    Some(Some(hit)) => Some(hit),
-                    Some(None) if !anew || self.again.contains(&known.key) => None,
-                    _ => {
+                    Answer::Hit(hit) => Some(hit),
+                    Answer::Miss => None,
+                    Answer::Unknown => {
                         asks.push(known.key);
                         continue;
                     }

@@ -1,7 +1,7 @@
 // Concern: proves every answer says which reading ran and under which profile | Non-concern: the arithmetic of any one reading (sva-samples) | IO: (a Render) -> Answer
 
 use crate::fixtures::graph_of;
-use sva_engine::{Ask, Output, Render, RenderConfig, Representation, Source, answer, render};
+use sva_engine::{Ask, Output, Render, RenderConfig, Representation, Source, Tier, answer, render};
 
 const CHORD: &str = "sin(2*pi*256*t) + sin(2*pi*512*t)\n";
 
@@ -19,7 +19,7 @@ fn rendered_of(name: &str, files: &[(&str, &str)], asks: Vec<&str>) -> Render {
         })
         .collect();
     let config = RenderConfig::seconds(8_192, 1.0).asking(asks);
-    render(&g, "node", config, None).unwrap_or_else(|e| panic!("{name}: {e}"))
+    render(&g, "node", config, &Tier::default()).unwrap_or_else(|e| panic!("{name}: {e}"))
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn bindings_and_the_ledger_read_off_the_render_that_ran() {
         node: "node".to_string(),
         representation: Representation::Samples,
     }]);
-    let held = render(&g, "node", config, None).expect("a sampled node");
+    let held = render(&g, "node", config, &Tier::default()).expect("a sampled node");
     let id = held.id("node").expect("the root");
 
     let instance = held

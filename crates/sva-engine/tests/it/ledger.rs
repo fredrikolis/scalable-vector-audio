@@ -1,7 +1,9 @@
 // Concern: proves a ledger names every ref under its target, whatever each holds | Non-concern: the arithmetic of one entry (sva-samples) | IO: (a composition) -> LedgerEntry per node
 
 use crate::fixtures::graph_of;
-use sva_engine::{Ask, LedgerEntry, Output, Range, RenderConfig, Representation, answer, render};
+use sva_engine::{
+    Ask, LedgerEntry, Output, Range, RenderConfig, Representation, Tier, answer, render,
+};
 
 fn ledger(name: &str, files: &[(&str, &str)], depth: usize) -> Vec<LedgerEntry> {
     let g = graph_of(name, files);
@@ -13,7 +15,7 @@ fn ledger(name: &str, files: &[(&str, &str)], depth: usize) -> Vec<LedgerEntry> 
         &g,
         "master",
         RenderConfig::seconds(8_000, 1.0).asking(asks),
-        None,
+        &Tier::default(),
     )
     .unwrap_or_else(|e| panic!("{name}: {e}"));
     let id = held.id("master").expect("the root");
@@ -326,7 +328,7 @@ fn a_ledger_over_a_late_range_shares_that_range_alone() {
         },
         ..RenderConfig::at(8_000).asking(asks)
     };
-    let held = render(&g, "master", config, None).expect("a render");
+    let held = render(&g, "master", config, &Tier::default()).expect("a render");
     let id = held.id("master").expect("the root");
     let Output::Ledger(second_half) = answer(&held, id, Representation::Ledger { depth })
         .expect("a ledger")

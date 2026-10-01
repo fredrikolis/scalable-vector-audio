@@ -2,7 +2,7 @@
 
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{Range, RenderConfig, render};
+use sva_engine::{Range, RenderConfig, Tier, render};
 
 const RATE: u32 = 8_000;
 
@@ -45,7 +45,8 @@ fn over(g: &Graph, target: &str, start: i64, end: i64) -> Vec<f64> {
         },
         ..RenderConfig::at(RATE)
     };
-    let held = render(g, target, config, None).unwrap_or_else(|e| panic!("{target}: {e}"));
+    let held =
+        render(g, target, config, &Tier::default()).unwrap_or_else(|e| panic!("{target}: {e}"));
     held.output(held.root).expect("the root").plane(0).to_vec()
 }
 
@@ -161,7 +162,7 @@ fn a_filter_starts_where_its_support_does_whatever_reads_it() {
 #[test]
 fn a_transform_of_an_endless_input_refuses() {
     let config = RenderConfig::seconds(RATE, 0.1);
-    let Err(refused) = render(&composition(), "whole", config, None) else {
+    let Err(refused) = render(&composition(), "whole", config, &Tier::default()) else {
         panic!("a transform of an endless input rendered");
     };
     assert_eq!(refused.code(), "engine.unbounded_extent", "{refused}");

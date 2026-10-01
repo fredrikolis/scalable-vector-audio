@@ -8,7 +8,7 @@ use sva_samples::{
 use sva_formula::Hash;
 
 use super::Stored;
-use super::stored::{Laid, Samples};
+use super::stored::{Header, Laid, Samples};
 
 /// Bumped by, and only by, a change to a stored value's bytes.
 pub const STORE_FORMAT: u32 = 11;
@@ -28,7 +28,7 @@ pub(crate) const CHUNK: usize = 4096;
 
 /// A header's length, then the header, then each run's samples chunk by chunk, every plane of
 /// a chunk together, so a stretch of a run is one read.
-pub(crate) fn entry(stored: &Stored, runs: &[Buffer]) -> Vec<u8> {
+pub(crate) fn entry(head: &Header, runs: &[Buffer]) -> Vec<u8> {
     let mut laid = Vec::new();
     let mut body = Vec::new();
     for run in runs {
@@ -53,7 +53,7 @@ pub(crate) fn entry(stored: &Stored, runs: &[Buffer]) -> Vec<u8> {
             sums,
         });
     }
-    let head = sealed(header(stored, &laid));
+    let head = sealed(header(head, &laid));
     let mut out = Vec::with_capacity(8 + head.len() + body.len());
     word(&mut out, head.len() as u64);
     out.extend_from_slice(&head);
@@ -61,7 +61,8 @@ pub(crate) fn entry(stored: &Stored, runs: &[Buffer]) -> Vec<u8> {
     out
 }
 
-fn header(stored: &Stored, laid: &[Laid]) -> Vec<u8> {
+fn header(head: &Header, laid: &[Laid]) -> Vec<u8> {
+    let stored = head.stored();
     let mut out = entry_tag();
     word(&mut out, stored.key.0);
     word(&mut out, stored.key.1);
@@ -80,8 +81,8 @@ fn header(stored: &Stored, laid: &[Laid]) -> Vec<u8> {
     out.extend_from_slice(&stored.priced.to_le_bytes());
     word(&mut out, stored.moved.to_bits());
     out.push(u8::from(stored.readable));
-    match stored.samples {
-        Samples::Of { key, by } => {
+    match head.samples() {
+        &Samples::Of { key, by } => {
             out.push(1);
             word(&mut out, key.0);
             word(&mut out, key.1);
@@ -110,7 +111,7 @@ pub(crate) fn head_len(first: &[u8]) -> Option<usize> {
 
 /// The meta an entry's header states, its samples laid in `file`, and the entry's length; a
 /// truncated, corrupt or foreign header is `None`, never a partial value.
-pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Stored, u64)> {
+pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Header, u64)> {
     let span = head_len(bytes)?;
     let mut r = Reader(opened(bytes.get(8..span)?, &entry_tag())?);
     let key = Hash(r.word()?, r.word()?);
@@ -191,9 +192,10 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Stored, u64)> {
         priced,
         moved,
         readable,
-        samples,
+        held: Vec::new(),
     };
-    (runs_whole(count, &stored.samples) && r.0.is_empty()).then_some((stored, at))
+    let whole = runs_whole(count, &samples) && r.0.is_empty();
+    whole.then(|| (Header::new(stored, samples), at))
 }
 
 fn runs_whole(count: usize, samples: &Samples) -> bool {

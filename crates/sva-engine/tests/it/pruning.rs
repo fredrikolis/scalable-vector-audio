@@ -3,7 +3,7 @@
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
 use sva_engine::{
-    Ask, Cache, Extent, Output, Range, Render, RenderConfig, Representation, answer, flops, render,
+    Ask, Extent, Output, Range, Render, RenderConfig, Representation, Tier, answer, flops, render,
 };
 
 const RATE: u32 = 8_000;
@@ -31,7 +31,7 @@ fn sampled_notes() -> Graph {
     )
 }
 
-fn over(g: &Graph, target: &str, secs: f64, cache: Option<&Cache>) -> Render {
+fn over(g: &Graph, target: &str, secs: f64, cache: &Tier) -> Render {
     render(g, target, config(secs), cache).unwrap_or_else(|e| panic!("{target}: {e}"))
 }
 
@@ -51,14 +51,14 @@ fn config(secs: f64) -> RenderConfig {
 #[test]
 fn a_note_read_three_times_is_computed_once_and_added() {
     let g = notes();
-    let cache = Cache::new();
-    let held = over(&g, "song", 6.0, Some(&cache));
+    let cache = Tier::default();
+    let held = over(&g, "song", 6.0, &cache);
     let note = held.id("note").expect("the note");
     assert_eq!(
         held.evaluated(note),
         vec![Extent::new(0, i64::from(RATE / 2))]
     );
-    let alone = over(&g, "note", 6.0, None);
+    let alone = over(&g, "note", 6.0, &Tier::default());
     let own = alone
         .output(alone.root)
         .expect("the note")
@@ -79,7 +79,7 @@ fn a_note_read_three_times_is_computed_once_and_added() {
         assert_eq!(sample.to_bits(), added.to_bits(), "sample {n}");
     }
 
-    let further = over(&g, "song", 8.0, Some(&cache));
+    let further = over(&g, "song", 8.0, &cache);
     let stats = further.cache_stats.as_ref().expect("stats");
     assert_eq!(stats.hits(), stats.lookups.len(), "{stats:?}");
     let reread = further.output(further.root).expect("the song").plane(0)[..samples.len()].to_vec();
@@ -91,9 +91,9 @@ fn a_note_read_three_times_is_computed_once_and_added() {
 #[test]
 fn a_sampled_sum_reads_each_operand_only_where_it_is_nonzero() {
     let g = sampled_notes();
-    let held = over(&g, "song", 4.5, None);
+    let held = over(&g, "song", 4.5, &Tier::default());
     let song = held.output(held.root).expect("the song").plane(0).to_vec();
-    let alone = over(&g, "note", 4.5, None);
+    let alone = over(&g, "note", 4.5, &Tier::default());
     let note = alone
         .output(alone.root)
         .expect("the note")
@@ -133,14 +133,18 @@ fn a_long_sum_of_index_reads_shares_one_value_and_pays_each_term_only_where_it_s
             ("song", &format!("{}\n", song.join(" + "))),
         ],
     );
-    let held = over(&g, "song", 2.0 * (terms - 1) as f64 + 0.5, None);
+    let held = over(&g, "song", 2.0 * (terms - 1) as f64 + 0.5, &Tier::default());
     let note = held.id("note").expect("the note");
     assert_eq!(
         held.evaluated(note),
         vec![Extent::new(0, i64::from(RATE / 2))]
     );
     let stats = held.cache_stats.as_ref().expect("stats");
-    let reads = stats.lookups.iter().filter(|l| l.node == "note").count();
+    let reads = stats
+        .lookups
+        .iter()
+        .filter(|l| l.node == "note" && l.store.is_none());
+    let reads = reads.count();
     assert_eq!(
         reads, terms,
         "each read looks up the note's one value: {stats:?}"
@@ -174,9 +178,9 @@ fn a_scaled_sampled_term_is_read_only_where_it_is_nonzero() {
             ),
         ],
     );
-    let held = over(&scaled, "song", 4.5, None);
+    let held = over(&scaled, "song", 4.5, &Tier::default());
     let song = held.output(held.root).expect("the song").plane(0).to_vec();
-    let alone = over(&g, "note", 4.5, None);
+    let alone = over(&g, "note", 4.5, &Tier::default());
     let note = alone
         .output(alone.root)
         .expect("the note")
@@ -197,7 +201,7 @@ fn a_scaled_sampled_term_is_read_only_where_it_is_nonzero() {
     }
     assert_eq!(
         flops::tree(&held).rows[0].own,
-        flops::tree(&over(&g, "song", 4.5, None)).rows[0].own,
+        flops::tree(&over(&g, "song", 4.5, &Tier::default())).rows[0].own,
         "a note scaled by constants is priced only while it sounds, as an unscaled one is"
     );
 }
@@ -205,12 +209,12 @@ fn a_scaled_sampled_term_is_read_only_where_it_is_nonzero() {
 #[test]
 fn a_count_prices_the_render_it_names() {
     let g = sampled_notes();
-    let held = over(&g, "song", 4.5, None);
+    let held = over(&g, "song", 4.5, &Tier::default());
     let asked = config(4.5).asking(vec![Ask {
         node: "song".to_string(),
         representation: Representation::Flops,
     }]);
-    let counted = render(&g, "song", asked, None).expect("a count");
+    let counted = render(&g, "song", asked, &Tier::default()).expect("a count");
     let Output::Flops(tree) = answer(&counted, counted.root, Representation::Flops)
         .expect("a count")
         .value
@@ -238,8 +242,9 @@ fn a_ramp_and_a_decay_end_where_they_are_exactly_zero() {
         },
         ..RenderConfig::at(RATE)
     };
-    let open =
-        |target: &str| render(&g, target, exact.clone(), None).unwrap_or_else(|e| panic!("{e}"));
+    let open = |target: &str| {
+        render(&g, target, exact.clone(), &Tier::default()).unwrap_or_else(|e| panic!("{e}"))
+    };
     let ramp = open("ramp");
     assert_eq!(ramp.range.expect("a range").end, 2 * i64::from(RATE));
 

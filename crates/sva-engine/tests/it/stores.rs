@@ -1,8 +1,8 @@
-// Concern: proves the store never passes its cap and evicts what each prune policy names | Non-concern: what a key stands for (cache.rs) | IO: (a composition, a store) -> what it holds
+// Concern: proves memory never passes its cap and evicts what each prune policy names | Non-concern: what a key stands for (cache.rs) | IO: (a composition, a tier) -> what it holds
 
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{Cache, CacheStats, Hash, PrunePolicy, RenderConfig, render};
+use sva_engine::{CacheStats, Hash, PrunePolicy, RenderConfig, Tier, render};
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
@@ -21,16 +21,11 @@ fn forked(f: u32) -> Graph {
     )
 }
 
-fn stats(graph: &Graph, cache: &Cache) -> CacheStats {
-    render(
-        graph,
-        "master",
-        RenderConfig::seconds(RATE, SECONDS),
-        Some(cache),
-    )
-    .expect("a render")
-    .cache_stats
-    .expect("a render handed a store reports on it")
+fn stats(graph: &Graph, cache: &Tier) -> CacheStats {
+    render(graph, "master", RenderConfig::seconds(RATE, SECONDS), cache)
+        .expect("a render")
+        .cache_stats
+        .expect("a render handed a store reports on it")
 }
 
 fn keys_of(stats: &CacheStats, node: &str) -> Vec<Hash> {
@@ -49,15 +44,15 @@ fn own_key(stats: &CacheStats, node: &str) -> Hash {
     *keys_of(stats, node).last().expect("looked up")
 }
 
-fn held(cache: &Cache, keys: &[Hash]) -> bool {
+fn held(cache: &Tier, keys: &[Hash]) -> bool {
     keys.iter().all(|k| cache.holds(*k))
 }
 
-fn gone(cache: &Cache, keys: &[Hash]) -> bool {
+fn gone(cache: &Tier, keys: &[Hash]) -> bool {
     keys.iter().all(|k| !cache.holds(*k))
 }
 
-fn within(cache: &Cache) {
+fn within(cache: &Tier) {
     assert!(
         cache.bytes() <= cache.max_bytes(),
         "{} over {}",
@@ -69,7 +64,7 @@ fn within(cache: &Cache) {
 #[test]
 fn the_cap_holds_after_every_render_and_every_prune() {
     for policy in PrunePolicy::ALL {
-        let cache = Cache::holding(20_000);
+        let cache = Tier::new(20_000);
         cache.set_prune_policy(policy);
         let mut evicted = 0;
         for f in (1..=8).map(|k| 100 * k) {
@@ -92,7 +87,7 @@ fn the_cap_holds_after_every_render_and_every_prune() {
 
 #[test]
 fn a_prune_by_oldest_keeps_only_what_the_newest_render_touched() {
-    let cache = Cache::new();
+    let cache = Tier::default();
     let first = stats(&forked(110), &cache);
     let second = stats(&forked(220), &cache);
     cache.prune(PrunePolicy::Oldest);
@@ -110,7 +105,7 @@ fn a_prune_by_oldest_keeps_only_what_the_newest_render_touched() {
 
 #[test]
 fn a_prune_by_forks_keeps_only_the_values_two_nodes_read() {
-    let cache = Cache::new();
+    let cache = Tier::default();
     let rendered = stats(&forked(110), &cache);
     cache.prune(PrunePolicy::Forks);
     for node in ["a", "b", "master"] {
@@ -126,7 +121,7 @@ fn a_prune_by_forks_keeps_only_the_values_two_nodes_read() {
 /// values go together, both forks, though one alone would have been enough.
 #[test]
 fn where_a_policy_frees_too_little_whole_trees_go_oldest_first() {
-    let cache = Cache::new();
+    let cache = Tier::default();
     cache.set_prune_policy(PrunePolicy::Forks);
     let trees: Vec<CacheStats> = [110, 220, 330]
         .into_iter()

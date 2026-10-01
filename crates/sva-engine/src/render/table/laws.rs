@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 
-use crate::cache::NoStore;
+use crate::cache::Tier;
 use crate::render::{
     Change, Changed, Handle, Placed, Range, RenderConfig, Stream, StreamConfig, change, render,
     render_apart,
@@ -145,7 +145,7 @@ fn a_tree_is_the_same_bits_shared_or_apart_whole_or_streamed() {
             composition.insert(name, body);
         }
         let g = sva_ast::load(&composition).expect("a composition");
-        let Ok(whole) = render(&g, "root", config(), None) else {
+        let Ok(whole) = render(&g, "root", config(), &Tier::default()) else {
             continue;
         };
         rendered += 1;
@@ -176,7 +176,8 @@ fn a_tree_is_the_same_bits_shared_or_apart_whole_or_streamed() {
             render: config(),
         };
         let at = sva_ast::parse_expr("@root").expect("a ref");
-        let mut stream = now(Stream::open(&g, &at, stream, None, &NoStore)).expect("it streams");
+        let tier = Tier::default();
+        let mut stream = now(Stream::open(&g, &at, stream, &tier)).expect("it streams");
         let mut heard = Vec::new();
         while let Some(block) = stream.read(stream.position(), block).expect("a block") {
             heard.extend_from_slice(block.plane(0));
@@ -195,7 +196,12 @@ fn expr(text: &str) -> sva_ast::Expr {
 }
 
 /// One random change: an add, a replace or a remove of a term, or an edit of the target.
-fn changed(stream: &RefCell<Stream>, g: &sva_ast::Graph, draw: &mut Draw, held: &mut Vec<Handle>) {
+fn changed(
+    (stream, tier): (&RefCell<Stream>, &Tier),
+    g: &sva_ast::Graph,
+    draw: &mut Draw,
+    held: &mut Vec<Handle>,
+) {
     let reads: Vec<String> = g.paths().map(str::to_string).collect();
     let at = stream.borrow().position();
     let term = format!(
@@ -223,7 +229,7 @@ fn changed(stream: &RefCell<Stream>, g: &sva_ast::Graph, draw: &mut Draw, held: 
     };
     let mut edit = Some(edit);
     let build = |_: &Stream| Ok::<_, crate::EngineError>(edit.take().expect("built once"));
-    if let Ok(Changed::Added(handle)) = now(change(stream, build, &NoStore)) {
+    if let Ok(Changed::Added(handle)) = now(change(stream, build, tier)) {
         held.push(handle);
     }
 }
@@ -244,13 +250,8 @@ fn a_changed_stream_holds_what_a_build_of_all_it_plays_would() {
             channels: None,
             render: RenderConfig::at(RATE),
         };
-        let Ok(stream) = now(Stream::open(
-            &g,
-            &expr("@notes + @root"),
-            config,
-            None,
-            &NoStore,
-        )) else {
+        let tier = Tier::default();
+        let Ok(stream) = now(Stream::open(&g, &expr("@notes + @root"), config, &tier)) else {
             continue;
         };
         let (stream, mut draw, mut held) = (RefCell::new(stream), Draw(seed | 1), Vec::new());
@@ -258,7 +259,7 @@ fn a_changed_stream_holds_what_a_build_of_all_it_plays_would() {
             stream.borrow_mut().go_live();
         }
         for _ in 0..16 {
-            changed(&stream, &g, &mut draw, &mut held);
+            changed((&stream, &tier), &g, &mut draw, &mut held);
             for _ in 0..draw.below(4) {
                 let at = stream.borrow().position();
                 stream.borrow_mut().read(at, 100).expect("a block");

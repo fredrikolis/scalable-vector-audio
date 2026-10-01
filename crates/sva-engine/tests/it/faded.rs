@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use crate::fixtures::{Now, added, graph_of, next, replaced};
 use sva_ast::Graph;
 use sva_engine::{
-    NoStore, PSYCHOACOUSTIC_V1, Profile, Range, Render, RenderConfig, Stream, StreamConfig,
+    PSYCHOACOUSTIC_V1, Profile, Range, Render, RenderConfig, Stream, StreamConfig, Tier,
 };
 
 const RATE: u32 = 8_000;
@@ -29,7 +29,8 @@ fn rendered(g: &Graph, target: &str, profile: Profile) -> Render {
         profile,
         ..RenderConfig::seconds(RATE, 4.0)
     };
-    sva_engine::render(g, target, config, None).unwrap_or_else(|e| panic!("{target}: {e}"))
+    sva_engine::render(g, target, config, &Tier::default())
+        .unwrap_or_else(|e| panic!("{target}: {e}"))
 }
 
 fn plane(r: &Render) -> Vec<f64> {
@@ -153,7 +154,7 @@ fn a_faded_key_up_leaves_the_stream_s_sum_with_no_remove() {
         },
     };
     let expr = |text: &str| sva_ast::parse_expr(text).unwrap_or_else(|e| panic!("{}", e.message));
-    let stream = Stream::open(&g, &expr("@notes"), config, None, &NoStore).now();
+    let stream = Stream::open(&g, &expr("@notes"), config, &Tier::default()).now();
     let stream = RefCell::new(stream.expect("opens"));
     let blocks = |count: usize| {
         for _ in 0..count {
@@ -162,7 +163,7 @@ fn a_faded_key_up_leaves_the_stream_s_sum_with_no_remove() {
         }
     };
     let add = |text: &str| {
-        added(&stream, &g, &expr(text), &NoStore)
+        added(&stream, &g, &expr(text), &Tier::default())
             .now()
             .unwrap_or_else(|e| panic!("{e}"))
     };
@@ -171,7 +172,7 @@ fn a_faded_key_up_leaves_the_stream_s_sum_with_no_remove() {
     blocks(4);
     let up = stream.borrow().position();
     let fade = format!("@pad(t, f0=200)*(1 - step(t - {up}sp)*(1 - exp(-(t - {up}sp)/0.15)))");
-    let held = replaced(&stream, &g, (note, &expr(&fade)), &NoStore).now();
+    let held = replaced(&stream, &g, (note, &expr(&fade)), &Tier::default()).now();
     assert_eq!(held.ok(), Some(true), "the note is held");
     let terms = || stream.borrow().counts().terms;
     let per_second = RATE as usize / BLOCK;

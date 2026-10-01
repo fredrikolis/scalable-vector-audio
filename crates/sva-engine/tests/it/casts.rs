@@ -2,15 +2,20 @@
 
 use crate::fixtures::graph_of;
 use sva_engine::{
-    Ask, Cast, Codomain, Held, RenderConfig, Representation, Source, Ty, Var, render,
+    Ask, Cast, Codomain, Held, RenderConfig, Representation, Source, Tier, Ty, Var, render,
 };
 
 const CHORD: &str = "sin(2*pi*256*t) + sin(2*pi*512*t)\n";
 
 fn samples(name: &str, files: &[(&str, &str)], root: &str, rate: u32, secs: f64) -> Vec<f64> {
     let g = graph_of(name, files);
-    let held = render(&g, root, RenderConfig::seconds(rate, secs), None)
-        .unwrap_or_else(|e| panic!("{name}: {e}"));
+    let held = render(
+        &g,
+        root,
+        RenderConfig::seconds(rate, secs),
+        &Tier::default(),
+    )
+    .unwrap_or_else(|e| panic!("{name}: {e}"));
     let id = held.id(root).expect("the root");
     held.output(id).expect("a rendered root").plane(0).to_vec()
 }
@@ -68,7 +73,13 @@ fn an_unedited_round_trip_is_labelled_exact() {
             ),
         ],
     );
-    let held = render(&g, "back", RenderConfig::seconds(8_192, 0.25), None).expect("a round trip");
+    let held = render(
+        &g,
+        "back",
+        RenderConfig::seconds(8_192, 0.25),
+        &Tier::default(),
+    )
+    .expect("a round trip");
     let root = held.id("back").expect("the root");
     assert_eq!(held.labels[&root].source, Source::Exact);
 }
@@ -88,7 +99,7 @@ fn each_cast_has_its_own_key() {
         node: "as_law".to_string(),
         representation: Representation::Lines,
     }]);
-    let held = render(&g, "as_law", config, None).expect("a law");
+    let held = render(&g, "as_law", config, &Tier::default()).expect("a law");
     let law = held.id("as_law").expect("the law");
     let law_key =
         sva_engine::symbolic_hash(&held.tys, law, sva_engine::Var::T).expect("a law hashes");
@@ -109,8 +120,13 @@ fn a_spectrum_product_under_ifourier_composes() {
             ("voiced", "ifourier(fourier(@shell) * @tilt)\n"),
         ],
     );
-    let held = render(&g, "voiced", RenderConfig::seconds(44_100, 0.1), None)
-        .expect("a cast inside a product composes");
+    let held = render(
+        &g,
+        "voiced",
+        RenderConfig::seconds(44_100, 0.1),
+        &Tier::default(),
+    )
+    .expect("a cast inside a product composes");
     let id = held.id("voiced").expect("the root");
     assert!(held.tys.ty(id).has_dual());
     let buffer = held.output(id).expect("a collapsed pair");

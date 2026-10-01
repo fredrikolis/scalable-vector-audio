@@ -2,7 +2,7 @@
 
 use crate::fixtures::{Now, graph_of, next};
 use sva_ast::{Graph, PerBar};
-use sva_engine::{NoStore, Range, RenderConfig, Stream, StreamConfig, render};
+use sva_engine::{Range, RenderConfig, Stream, StreamConfig, Tier, render};
 
 const RATE: u32 = 8_000;
 
@@ -12,7 +12,8 @@ fn bits(samples: &[f64]) -> Vec<u64> {
 }
 
 fn whole(g: &Graph, target: &str, config: &RenderConfig) -> Vec<f64> {
-    let held = render(g, target, config.clone(), None).unwrap_or_else(|e| panic!("{target}: {e}"));
+    let held = render(g, target, config.clone(), &Tier::default())
+        .unwrap_or_else(|e| panic!("{target}: {e}"));
     let id = held.id(target).expect("the root");
     held.output(id).expect("a buffer").plane(0).to_vec()
 }
@@ -30,7 +31,7 @@ fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Vec<f64> {
         },
     };
     let at = sva_ast::parse_expr(&format!("@{target}")).expect("a ref");
-    let mut stream = Stream::open(g, &at, config, None, &NoStore)
+    let mut stream = Stream::open(g, &at, config, &Tier::default())
         .now()
         .unwrap_or_else(|e| panic!("{e}"));
     let mut out = Vec::with_capacity(samples + block);
@@ -149,7 +150,7 @@ fn an_index_of_any_time_reads_the_step_nearest_it() {
     let config = RenderConfig::seconds(RATE, 0.1);
     let x = whole(&g, "x", &config);
     for (k, (time, at)) in reads.iter().enumerate() {
-        let read = render(&g, &format!("read{k}"), config.clone(), None)
+        let read = render(&g, &format!("read{k}"), config.clone(), &Tier::default())
             .unwrap_or_else(|e| panic!("idx({time}): {e}"));
         let id = read.id(&format!("read{k}")).expect("the root");
         reads_nearest(&x, read.output(id).expect("a buffer").plane(0), at);
@@ -262,7 +263,7 @@ fn an_index_prunes_its_source_only_where_its_reach_is_bounded() {
             },
         };
         let at = sva_ast::parse_expr(&format!("@{target}")).expect("a ref");
-        let mut stream = Stream::open(&g, &at, config, None, &NoStore)
+        let mut stream = Stream::open(&g, &at, config, &Tier::default())
             .now()
             .unwrap_or_else(|e| panic!("{e}"));
         let mut most = 0;

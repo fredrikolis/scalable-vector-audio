@@ -3,7 +3,7 @@
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
 use sva_engine::{
-    Ask, Binding, EngineError, Output, Render, RenderConfig, Representation, answer, render,
+    Ask, Binding, EngineError, Output, Render, RenderConfig, Representation, Tier, answer, render,
 };
 
 fn rendered(g: &Graph) -> Render {
@@ -15,7 +15,7 @@ fn rendered(g: &Graph) -> Render {
         g,
         "song",
         RenderConfig::seconds(8_000, 0.25).asking(asks),
-        None,
+        &Tier::default(),
     )
     .expect("a composition that renders")
 }

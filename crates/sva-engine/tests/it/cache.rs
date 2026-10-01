@@ -1,26 +1,26 @@
-// Concern: states what a cache key is made of, so a warm render answers a cold one | Non-concern: the store's cap and prunes (stores.rs) | IO: (a composition, twice) -> the same bytes
+// Concern: states what a cache key is made of, so a warm render answers a cold one | Non-concern: memory's cap and prunes (stores.rs) | IO: (a composition, twice) -> the same bytes
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::fixtures::{dir_of, samples};
-use sva_engine::{Ask, Cache, PayloadKind, Render, RenderConfig, Representation, render};
+use sva_engine::{Ask, PayloadKind, Render, RenderConfig, Representation, Tier, render};
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
 
-fn store_all() -> Cache {
-    Cache::new()
+fn store_all() -> Tier {
+    Tier::default()
 }
 
-fn rendered(dir: &Path, root: &str, cache: Option<&Cache>) -> Render {
+fn rendered(dir: &Path, root: &str, cache: &Tier) -> Render {
     let graph = sva_ast::parse_composition(dir).expect("a composition that parses");
     render(&graph, root, RenderConfig::seconds(RATE, SECONDS), cache)
         .unwrap_or_else(|e| panic!("rendering `{root}`: {e}"))
 }
 
 /// Every node held as samples, which is what a reading that consumes buffers asks for.
-fn all_of(dir: &Path, root: &str, nodes: &[&str], cache: Option<&Cache>) -> Render {
+fn all_of(dir: &Path, root: &str, nodes: &[&str], cache: &Tier) -> Render {
     let graph = sva_ast::parse_composition(dir).expect("a composition that parses");
     let asks = nodes
         .iter()
@@ -58,9 +58,9 @@ fn chain(name: &str) -> PathBuf {
 fn a_warm_render_is_byte_identical_to_a_cold_one() {
     let dir = chain("warm-cold");
     let cache = store_all();
-    let cold = samples(&rendered(&dir, "master", Some(&cache)));
+    let cold = samples(&rendered(&dir, "master", &cache));
     assert!(cache.bytes() > 0, "the cold render filled the store");
-    let warm = samples(&rendered(&dir, "master", Some(&cache)));
+    let warm = samples(&rendered(&dir, "master", &cache));
     assert_eq!(cold, warm);
 }
 
@@ -69,8 +69,8 @@ fn a_warm_render_is_byte_identical_to_a_cold_one() {
 fn a_reused_node_still_reports_its_label() {
     let dir = chain("labelled");
     let cache = store_all();
-    let cold = rendered(&dir, "master", Some(&cache));
-    let warm = rendered(&dir, "master", Some(&cache));
+    let cold = rendered(&dir, "master", &cache);
+    let warm = rendered(&dir, "master", &cache);
     let id = warm.id("master").expect("the root");
     assert_eq!(
         warm.labels[&id].profile,
@@ -84,9 +84,9 @@ fn editing_one_file_re_renders_it_and_its_dependents_and_nothing_else() {
     let dir = chain("edited");
     let cache = store_all();
     let nodes = ["chord", "voiced", "master"];
-    let before = samples(&all_of(&dir, "master", &nodes, Some(&cache)));
+    let before = samples(&all_of(&dir, "master", &nodes, &cache));
     write(&dir, "voiced", "@chord*0.75\n");
-    let after = samples(&all_of(&dir, "master", &nodes, Some(&cache)));
+    let after = samples(&all_of(&dir, "master", &nodes, &cache));
     assert_eq!(
         before["chord"], after["chord"],
         "the untouched law is one value"
@@ -110,7 +110,7 @@ fn a_cache_key_follows_content_not_the_path_or_spelling_it_was_written_under() {
         ],
     );
     let cache = store_all();
-    let held = all_of(&spellings, "master", &["plain", "fx/walked"], Some(&cache));
+    let held = all_of(&spellings, "master", &["plain", "fx/walked"], &cache);
     assert_eq!(
         held.output(held.id("plain").expect("plain")),
         held.output(held.id("fx/walked").expect("the walked spelling")),
@@ -119,20 +119,10 @@ fn a_cache_key_follows_content_not_the_path_or_spelling_it_was_written_under() {
 
     let renamed = chain("renamed");
     let cache = store_all();
-    let before = samples(&all_of(
-        &renamed,
-        "master",
-        &["voiced", "master"],
-        Some(&cache),
-    ));
+    let before = samples(&all_of(&renamed, "master", &["voiced", "master"], &cache));
     fs::rename(renamed.join("voiced"), renamed.join("coloured")).expect("a rename");
     write(&renamed, "master", "@coloured + @chord*0.25\n");
-    let after = samples(&all_of(
-        &renamed,
-        "master",
-        &["coloured", "master"],
-        Some(&cache),
-    ));
+    let after = samples(&all_of(&renamed, "master", &["coloured", "master"], &cache));
     assert_eq!(before["master"], after["master"], "one value, one key");
     assert_eq!(before["voiced"], after["coloured"]);
 
@@ -145,7 +135,7 @@ fn a_cache_key_follows_content_not_the_path_or_spelling_it_was_written_under() {
         ],
     );
     let cache = store_all();
-    let held = all_of(&identical, "master", &["left", "right"], Some(&cache));
+    let held = all_of(&identical, "master", &["left", "right"], &cache);
     assert_eq!(
         held.output(held.id("left").expect("left")),
         held.output(held.id("right").expect("right")),
@@ -159,7 +149,7 @@ fn a_cache_key_follows_content_not_the_path_or_spelling_it_was_written_under() {
 fn reordering_a_difference_never_shares_an_entry_with_its_reverse() {
     let of = |name: &str, body: &str| {
         let dir = dir_of(name, &[("master", body)]);
-        samples(&rendered(&dir, "master", None))["master"].clone()
+        samples(&rendered(&dir, "master", &Tier::default()))["master"].clone()
     };
     let difference = of("difference", "sin(2*pi*256*t) - sin(2*pi*384*t)\n");
     let reversed = of("difference-reversed", "sin(2*pi*384*t) - sin(2*pi*256*t)\n");
@@ -171,12 +161,12 @@ fn reordering_a_difference_never_shares_an_entry_with_its_reverse() {
 fn a_rate_change_keys_new_values() {
     let dir = chain("rates");
     let graph = sva_ast::parse_composition(&dir).expect("a composition");
-    let cache = Cache::new();
+    let cache = Tier::default();
     let first = render(
         &graph,
         "master",
         RenderConfig::seconds(RATE, SECONDS),
-        Some(&cache),
+        &cache,
     )
     .expect("a render");
     let id = first.id("master").expect("the root");
@@ -187,7 +177,7 @@ fn a_rate_change_keys_new_values() {
         &graph,
         "master",
         RenderConfig::seconds(RATE * 2, SECONDS),
-        Some(&cache),
+        &cache,
     )
     .expect("a render at another rate");
     let second_id = second.id("master").expect("the root");
@@ -207,8 +197,8 @@ fn a_warm_cyclic_render_is_byte_identical_to_a_cold_one() {
         &[("master", "sin(2*pi*220*t) + 0.5*self(t - 0.01s)\n")],
     );
     let cache = store_all();
-    let cold = samples(&rendered(&dir, "master", Some(&cache)));
-    let warm = samples(&rendered(&dir, "master", Some(&cache)));
+    let cold = samples(&rendered(&dir, "master", &cache));
+    let warm = samples(&rendered(&dir, "master", &cache));
     assert_eq!(cold, warm);
 }
 
@@ -220,9 +210,9 @@ fn editing_a_loop_retires_it() {
         &[("master", "sin(2*pi*220*t) + 0.5*self(t - 0.01s)\n")],
     );
     let cache = store_all();
-    let before = samples(&rendered(&dir, "master", Some(&cache)));
+    let before = samples(&rendered(&dir, "master", &cache));
     write(&dir, "master", "sin(2*pi*220*t) + 0.25*self(t - 0.01s)\n");
-    let after = samples(&rendered(&dir, "master", Some(&cache)));
+    let after = samples(&rendered(&dir, "master", &cache));
     assert_ne!(before["master"], after["master"], "the loop retires");
 }
 
@@ -239,7 +229,12 @@ fn a_loop_of_refs_refuses_rather_than_substituting_forever() {
         ],
     );
     let graph = sva_ast::parse_composition(&dir).expect("a composition");
-    let refused = render(&graph, "master", RenderConfig::seconds(RATE, SECONDS), None);
+    let refused = render(
+        &graph,
+        "master",
+        RenderConfig::seconds(RATE, SECONDS),
+        &Tier::default(),
+    );
     let Err(refused) = refused else {
         panic!("a loop of refs has no law");
     };
@@ -260,14 +255,14 @@ fn frames_are_held_under_the_window_they_were_read_through() {
             ),
         ],
     );
-    let cache = Cache::new();
-    let cold = samples(&rendered(&dir, "master", Some(&cache)));
+    let cache = Tier::default();
+    let cold = samples(&rendered(&dir, "master", &cache));
     assert!(cache.bytes() > 0, "the analysis was kept");
-    let warm = samples(&rendered(&dir, "master", Some(&cache)));
+    let warm = samples(&rendered(&dir, "master", &cache));
     assert_eq!(cold, warm);
 
     write(&dir, "chord", "sin(2*pi*512*t)\n");
-    let edited = samples(&rendered(&dir, "master", Some(&cache)));
+    let edited = samples(&rendered(&dir, "master", &cache));
     assert_ne!(cold, edited, "editing what was analysed retires the frames");
 }
 
@@ -279,15 +274,15 @@ fn a_warm_hit_carries_the_cold_label() {
         "warm-label",
         &[("chord", "sin(2*pi*256*t) + sin(2*pi*384*t)\n")],
     );
-    let label_of = |cache: &Cache| {
-        let held = rendered(&dir, "chord", Some(cache));
+    let label_of = |cache: &Tier| {
+        let held = rendered(&dir, "chord", cache);
         held.labels
             .get(&held.root)
             .expect("the root collapsed")
             .clone()
     };
 
-    let cache = Cache::holding(1 << 20);
+    let cache = Tier::new(1 << 20);
     let cold = label_of(&cache);
     assert_eq!(
         cold.source,
@@ -322,7 +317,7 @@ fn a_sampled_node_is_stored_and_answered_from_the_store() {
         ],
     );
     let cache = store_all();
-    let cold = all_of(&dir, "master", &["acc"], Some(&cache));
+    let cold = all_of(&dir, "master", &["acc"], &cache);
     assert_eq!(
         cold.tys.ty(cold.id("acc").expect("acc types")).held,
         sva_engine::Held::Sampled,
@@ -338,21 +333,18 @@ fn a_sampled_node_is_stored_and_answered_from_the_store() {
         .key;
     assert!(cache.holds(key), "the sampled node is in the store");
 
-    let filled = cache.bytes();
-    let warm = all_of(&dir, "master", &["acc"], Some(&cache));
+    let warm = all_of(&dir, "master", &["acc"], &cache);
     assert_eq!(samples(&cold), samples(&warm), "byte for byte");
+    let filled = cache.bytes();
+    let plain = rendered(&dir, "master", &cache);
+    assert_eq!(samples(&plain)["master"], samples(&cold)["master"]);
     assert_eq!(cache.bytes(), filled, "and nothing was written twice");
 }
 
-fn over(dir: &Path, root: &str, seconds: f64, cache: &Cache) -> Render {
+fn over(dir: &Path, root: &str, seconds: f64, cache: &Tier) -> Render {
     let graph = sva_ast::parse_composition(dir).expect("a composition that parses");
-    render(
-        &graph,
-        root,
-        RenderConfig::seconds(RATE, seconds),
-        Some(cache),
-    )
-    .unwrap_or_else(|e| panic!("rendering `{root}` for {seconds}s: {e}"))
+    render(&graph, root, RenderConfig::seconds(RATE, seconds), cache)
+        .unwrap_or_else(|e| panic!("rendering `{root}` for {seconds}s: {e}"))
 }
 
 fn every_buffer_hit(r: &Render) -> bool {
@@ -374,7 +366,7 @@ fn two_horizons_of_one_node_are_one_value() {
             ("master", "@acc + @acc*0.25\n"),
         ],
     );
-    let memory = Cache::new();
+    let memory = Tier::default();
     let store = &memory;
     let short = samples(&over(&dir, "master", SECONDS, store));
     let long = samples(&over(&dir, "master", 2.0 * SECONDS, store));
@@ -400,9 +392,9 @@ fn sat_drives_a_sampled_operand_as_it_drives_a_closed_form() {
             ("written", "sat(@x*5)\n"),
         ],
     );
-    let store = Cache::new();
+    let store = Tier::default();
     let root = |node: &str| {
-        let held = rendered(&dir, node, Some(&store));
+        let held = rendered(&dir, node, &store);
         let id = held.id(node).expect("the root types");
         let key = sva_engine::identity(&held.tys, id).expect("an identity");
         (held.output(id).expect("a buffer").plane(0).to_vec(), key)

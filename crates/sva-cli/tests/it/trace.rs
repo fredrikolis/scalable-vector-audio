@@ -183,8 +183,11 @@ fn three_verbs_agree_on_an_instance_name() {
     );
 
     let source = sva_ast::Dir::at(&dir);
-    let held = sva_core::execute(sva_core::Job::over(&source, "@motif([0, 1s])"))
-        .expect("`render @motif` reads the file on its own terms");
+    let held = sva_core::execute(
+        sva_core::Job::over(&source, "@motif([0, 1s])"),
+        &sva_core::Tier::default(),
+    )
+    .expect("`render @motif` reads the file on its own terms");
     let rendered = held
         .render
         .tys

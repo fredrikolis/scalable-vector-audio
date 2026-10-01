@@ -1,10 +1,10 @@
-// Concern: what one render asked of its values and the store, how far its output got, and what each lookup came to | Non-concern: what the store evicts (store.rs) | IO: (loads, stores) -> CacheStats
+// Concern: what one render asked of its values and memory, how far its output got, and what each lookup came to | Non-concern: what memory evicts (memory.rs) | IO: (loads, stores) -> CacheStats
 
 use sva_formula::Hash;
 use sva_samples::Label;
 
-use super::store::{Kept, Stamp};
-use super::{Cache, CachePolicy, Entry, Expected, Payload, PayloadKind};
+use super::memory::{Counters, Kept, Memory, Stamp};
+use super::{Entry, Expected, Payload, PayloadKind};
 use crate::recent::Recent;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,11 +25,11 @@ pub struct Lookup {
     pub key: Hash,
     pub kind: PayloadKind,
     pub outcome: Outcome,
-    /// What a persistent store answered.
+    /// What memory answered a node with.
     pub store: Option<bool>,
 }
 
-/// Every lookup in order, or a stream's latest, and the store as the render left it.
+/// Every lookup in order, or a stream's latest, and memory as the render left it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CacheStats {
     pub lookups: Vec<Lookup>,
@@ -38,13 +38,13 @@ pub struct CacheStats {
     pub bytes: u64,
     pub max_bytes: u64,
     pub entries: usize,
-    /// Entries this render's stores evicted.
     pub evictions: u64,
+    pub tier: Counters,
     /// Each output sample a pull reached, and how many lookups had been made by then.
     pub reached: Vec<(i64, usize)>,
     pub typed: Vec<String>,
     pub planned: Vec<String>,
-    /// Why a render stopped staging beside its store.
+    /// Why memory stopped writing to the disk meanwhile.
     pub unstaged: Option<String>,
 }
 
@@ -57,9 +57,13 @@ impl CacheStats {
     }
 
     pub fn hits(&self) -> usize {
-        self.count(|o| o == Outcome::Hit)
+        self.lookups
+            .iter()
+            .filter(|l| l.outcome == Outcome::Hit)
+            .count()
     }
 
+    /// Every value computed: a node memory missed computes nothing until its values do.
     pub fn computed(&self) -> usize {
         self.count(|o| o != Outcome::Hit)
     }
@@ -77,27 +81,27 @@ impl CacheStats {
     }
 
     fn count(&self, of: impl Fn(Outcome) -> bool) -> usize {
-        self.lookups.iter().filter(|l| of(l.outcome)).count()
+        let values = self.lookups.iter().filter(|l| l.store.is_none());
+        values.filter(|l| of(l.outcome)).count()
     }
 }
 
 pub(crate) struct Recording {
-    cache: Option<Cache>,
-    policy: CachePolicy,
+    memory: Memory,
     tree: u64,
-    evictions: u64,
+    since: Counters,
+    failures: u64,
     lookups: Recent<Lookup>,
     reached: Option<Vec<(i64, usize)>>,
 }
 
 impl Recording {
-    /// `policy` where the render names one, else the store's own.
-    pub(crate) fn over(cache: Option<&Cache>, policy: Option<CachePolicy>) -> Recording {
+    pub(crate) fn over(memory: &Memory) -> Recording {
         Recording {
-            cache: cache.cloned(),
-            policy: policy.unwrap_or_else(|| cache.map_or(CachePolicy::None, Cache::policy)),
-            tree: cache.map_or(0, Cache::begin_tree),
-            evictions: cache.map_or(0, Cache::evictions),
+            memory: memory.clone(),
+            tree: memory.begin_tree(),
+            since: memory.counters(),
+            failures: memory.failures().0,
             lookups: Recent::keeping(usize::MAX),
             reached: Some(Vec::new()),
         }
@@ -125,27 +129,35 @@ impl Recording {
     }
 
     pub(crate) fn stats(&self) -> CacheStats {
-        let cache = self.cache.as_ref();
+        let memory = &self.memory;
+        let tier = memory.counters().since(self.since);
+        let (failures, why) = memory.failures();
+        let failed = failures > self.failures;
         CacheStats {
             lookups: self.lookups.iter().cloned().collect(),
             shed: self.lookups.shed(),
-            bytes: cache.map_or(0, Cache::bytes),
-            max_bytes: cache.map_or(0, Cache::max_bytes),
-            entries: cache.map_or(0, Cache::entries),
-            evictions: cache.map_or(0, |c| c.evictions() - self.evictions),
+            bytes: memory.bytes(),
+            max_bytes: memory.max_bytes(),
+            entries: memory.entries(),
+            evictions: tier.evictions,
+            tier,
             reached: self.reached.clone().unwrap_or_default(),
             typed: Vec::new(),
             planned: Vec::new(),
-            unstaged: None,
+            unstaged: why.filter(|_| failed || memory.blocked()),
         }
     }
 
-    pub(crate) fn stores(&self, fork: bool, target: bool) -> bool {
-        self.cache.is_some() && self.policy.stores(fork, target)
+    pub(crate) fn since(&self) -> Counters {
+        self.memory.counters().since(self.since)
+    }
+
+    pub(crate) fn keeps(&self, fork: bool, target: bool, offered: bool) -> bool {
+        self.memory.keeps(fork, target, offered)
     }
 
     pub(crate) fn mark_every(&self) -> usize {
-        self.cache.as_ref().map_or(usize::MAX, Cache::mark_every)
+        self.memory.mark_every()
     }
 
     /// `slot` where a volatile parameter reaches it, `fork` where two values read it.
@@ -175,10 +187,10 @@ impl Recording {
 
     /// Read unnoted; its value notes one lookup.
     pub(crate) fn load(&self, key: Hash, expected: Expected, stamp: Stamp) -> Option<Entry> {
-        self.cache.as_ref()?.load(key, expected, stamp)
+        self.memory.load(key, expected, stamp)
     }
 
-    /// What a value computed, merged into what the store holds of it.
+    /// What a value computed, merged into what memory holds of it.
     pub(crate) fn store(
         &mut self,
         (key, noted): (Hash, Option<usize>),
@@ -186,10 +198,7 @@ impl Recording {
         label: Option<&Label>,
         stamp: Stamp,
     ) {
-        let Some(cache) = &self.cache else {
-            return;
-        };
-        let outcome = match cache.merge(key, payload, label, stamp) {
+        let outcome = match self.memory.merge(key, payload, label, stamp) {
             Kept::Held => Outcome::ComputedStored,
             Kept::Replaced => Outcome::ComputedReplaced,
             Kept::Refused => return,

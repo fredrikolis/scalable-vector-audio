@@ -440,7 +440,7 @@ mod tests {
 
         let config = crate::RenderConfig::seconds(RATE, 0.05);
         let out = |root: &str| -> Vec<u64> {
-            let held = crate::render(&g, root, config.clone(), None)
+            let held = crate::render(&g, root, config.clone(), &crate::Tier::default())
                 .unwrap_or_else(|e| panic!("{root}: {e}"));
             let id = held.id(root).expect("the root");
             let plane = held.output(id).expect("a buffer").plane(0).to_vec();

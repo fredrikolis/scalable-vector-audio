@@ -2,7 +2,7 @@
 
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{PSYCHOACOUSTIC_V1, Profile, Render, RenderConfig};
+use sva_engine::{PSYCHOACOUSTIC_V1, Profile, Render, RenderConfig, Tier};
 
 const RATE: u32 = 8_000;
 
@@ -47,7 +47,8 @@ const SHAPES: [&str; 10] = [
 ];
 
 fn render(g: &Graph, target: &str, config: RenderConfig) -> Render {
-    sva_engine::render(g, target, config, None).unwrap_or_else(|e| panic!("{target}: {e}"))
+    sva_engine::render(g, target, config, &Tier::default())
+        .unwrap_or_else(|e| panic!("{target}: {e}"))
 }
 
 fn plane(r: &Render) -> Vec<f64> {
@@ -179,7 +180,7 @@ fn a_fixed_filter_with_a_pole_near_one_ends() {
 fn a_filter_or_loop_with_no_proven_decay_never_ends() {
     let g = rings();
     for target in ["swept", "open", "echo", "held"] {
-        let refused = sva_engine::render(&g, target, RenderConfig::at(RATE), None)
+        let refused = sva_engine::render(&g, target, RenderConfig::at(RATE), &Tier::default())
             .err()
             .unwrap_or_else(|| panic!("{target} has no end"));
         assert!(
@@ -194,7 +195,7 @@ fn a_filter_or_loop_with_no_proven_decay_never_ends() {
 #[test]
 fn a_retired_term_leaves_a_filter_that_reads_no_note_its_cut() {
     use crate::fixtures::{Now, added, next};
-    use sva_engine::{NoStore, Stream, StreamConfig};
+    use sva_engine::{Stream, StreamConfig};
     let g = rings();
     let expr = |text: &str| sva_ast::parse_expr(text).unwrap_or_else(|e| panic!("{}", e.message));
     let config = StreamConfig {
@@ -202,10 +203,10 @@ fn a_retired_term_leaves_a_filter_that_reads_no_note_its_cut() {
         channels: None,
         render: RenderConfig::at(RATE),
     };
-    let stream = Stream::open(&g, &expr("@notes + @lowpass"), config, None, &NoStore).now();
+    let stream = Stream::open(&g, &expr("@notes + @lowpass"), config, &Tier::default()).now();
     let stream = std::cell::RefCell::new(stream.expect("opens"));
     let add = |text: &str| {
-        added(&stream, &g, &expr(text), &NoStore)
+        added(&stream, &g, &expr(text), &Tier::default())
             .now()
             .unwrap_or_else(|e| panic!("{e}"))
     };

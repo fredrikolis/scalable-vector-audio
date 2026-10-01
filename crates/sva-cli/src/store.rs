@@ -1,11 +1,11 @@
-// Concern: opens a render's one persistent store, persists it on a signal, warns of its failures | Non-concern: the medium (directory.rs), eviction | IO: (CacheAt) -> a Store or none, warnings
+// Concern: opens a render's one memory tier over a store on a path, persists it on a signal, warns of its failures | Non-concern: the medium (directory.rs), eviction | IO: (CacheAt) -> a Tier, warnings
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::Thread;
 
-use sva_core::{CliError, DEFAULT_STORE_BYTES, Diagnostic, Severity, Store, error_envelope};
+use sva_core::{CliError, DEFAULT_STORE_BYTES, Diagnostic, Severity, Store, Tier, error_envelope};
 
 use crate::args::CacheAt;
 use crate::directory::Directory;
@@ -31,7 +31,10 @@ pub fn wait<F: Future>(future: F) -> F::Output {
     }
 }
 
-static OPEN: OnceLock<Store<Directory>> = OnceLock::new();
+static OPEN: OnceLock<Tier<Directory>> = OnceLock::new();
+
+/// What one render holds in memory before it writes values back to the store.
+const MEMORY_BYTES: u64 = 256 << 20;
 
 fn platform() -> Result<PathBuf, CliError> {
     let set = |name| {
@@ -58,27 +61,27 @@ pub fn warning(code: &str, message: String) -> Diagnostic {
         .helped("pass `--cache <path>` elsewhere, or `--cache none` to keep no store")
 }
 
-/// The process's one store, opened once; a signal persists it before the process exits. One
-/// that cannot open is none.
+/// The process's one memory tier, opened once, over the store on `at`; a signal persists it
+/// before the process exits. One whose store cannot open is memory alone.
 pub fn opened(
     at: &CacheAt,
     warnings: &mut Vec<Diagnostic>,
-) -> Result<Option<&'static Store<Directory>>, CliError> {
+) -> Result<&'static Tier<Directory>, CliError> {
     let path = match at {
-        CacheAt::Off => return Ok(None),
+        CacheAt::Off => return Ok(OPEN.get_or_init(|| Tier::alone(MEMORY_BYTES))),
         CacheAt::Path(path) => path.clone(),
         CacheAt::Platform => platform()?,
     };
     let backend = Directory::at(path.clone());
-    let store = match wait(Store::open(backend, DEFAULT_STORE_BYTES)) {
-        Ok(store) => OPEN.get_or_init(|| store),
+    let tier = match wait(Store::open(backend, DEFAULT_STORE_BYTES)) {
+        Ok(store) => OPEN.get_or_init(|| Tier::over(store, MEMORY_BYTES)),
         Err(why) => {
             let message = format!(
                 "the cache at `{}` is unusable, so this render kept none: {why}",
                 path.display()
             );
             warnings.push(warning("store.unusable", message));
-            return Ok(None);
+            return Ok(OPEN.get_or_init(|| Tier::alone(MEMORY_BYTES)));
         }
     };
     match signal_hook::iterator::Signals::new([
@@ -88,7 +91,7 @@ pub fn opened(
         Ok(mut signals) => {
             std::thread::spawn(move || {
                 if let Some(signal) = signals.forever().next() {
-                    interrupted(store, signal);
+                    interrupted(tier, signal);
                 }
             });
         }
@@ -97,11 +100,11 @@ pub fn opened(
             format!("a signal would not have persisted this render: {e}"),
         )),
     }
-    Ok(Some(store))
+    Ok(tier)
 }
 
-fn interrupted(store: &Store<Directory>, signal: i32) -> ! {
-    let kept = match wait(store.persist()) {
+fn interrupted(tier: &Tier<Directory>, signal: i32) -> ! {
+    let kept = match wait(tier.persist()) {
         Ok(done) => format!("{} value(s) it computed were stored", done.written),
         Err(why) => format!("what it computed could not be stored: {why}"),
     };
@@ -115,9 +118,9 @@ fn interrupted(store: &Store<Directory>, signal: i32) -> ! {
     std::process::exit(1)
 }
 
-/// What a render left in the store's memory, written whatever the render came to.
-pub fn persisted(store: &Store<Directory>, warnings: &mut Vec<Diagnostic>) {
-    if let Err(why) = wait(store.persist()) {
+/// What a render left in memory, written to the store whatever the render came to.
+pub fn persisted(tier: &Tier<Directory>, warnings: &mut Vec<Diagnostic>) {
+    if let Err(why) = wait(tier.persist()) {
         let message = format!("the render's values could not be stored: {why}");
         warnings.push(warning("store.unwritten", message));
     }

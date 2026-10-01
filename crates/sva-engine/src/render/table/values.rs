@@ -1,4 +1,4 @@
-// Concern: a table's values, each in a slot it keeps while held, with its store place and holds | Non-concern: what a value holds (value.rs), when one goes (mod.rs) | IO: (Value) -> slot
+// Concern: a table's values, each in a slot it keeps while held, with its place in memory and holds | Non-concern: what a value holds (value.rs), when one goes (mod.rs) | IO: (Value) -> slot
 use std::collections::{BTreeMap, HashMap};
 use std::ops::{Index, IndexMut};
 

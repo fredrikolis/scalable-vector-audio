@@ -1,4 +1,4 @@
-// Concern: the JS surface — a composition a page fills node by node, renders, warms, streams, persists | Non-concern: the pipeline, the store's medium | IO: (path, text) -> samples, blocks, stores
+// Concern: the JS surface — a composition a page fills node by node, renders, warms, streams, persists | Non-concern: the pipeline, the store's medium | IO: (path, text) -> samples, blocks, counters
 
 //! A page holds no directory: nodes arrive one at a time, so a composition is BUILT rather
 //! than read. A refusal crosses as a thrown `Error`: `name` is the CLI's error code,
@@ -13,12 +13,11 @@ use std::rc::Rc;
 
 use sva_core::{
     Asked, CliError, Diagnostic, Job, Printed, Rendered, Report, Representation, SAMPLE_LIMIT,
-    Warmed, error_envelope, execute, execute_through, query_data, stats_json, stream_stats_json,
+    counters_json, error_envelope, execute_over, query_data, stats_json, stream_stats_json,
     work_json,
 };
 use sva_engine::{
-    Buffer, Cache, CachePolicy, CacheStats, DEFAULT_STORE_BYTES, Extent, Handle, Hash, Placed,
-    PrunePolicy, Store, Stored, Through,
+    CachePolicy, CacheStats, DEFAULT_STORE_BYTES, Handle, Placed, PrunePolicy, Store, Tier,
 };
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
@@ -44,14 +43,14 @@ extern "C" {
     fn warn(message: &str);
 }
 
-/// A failing store fails no call: why goes to the console, and the call runs as over none.
+/// A failing store fails no call: why goes to the console, and memory runs alone.
 fn logged(why: &str) {
     warn(&format!("sva: {why}"));
 }
 
 fn unstaged(stats: Option<&CacheStats>) {
     if let Some(why) = stats.and_then(|stats| stats.unstaged.as_deref()) {
-        logged(&format!("staging what this call computed stopped: {why}"));
+        logged(&format!("writing what this call computed stopped: {why}"));
     }
 }
 
@@ -83,7 +82,6 @@ struct Options {
     flop_budget: Option<u128>,
     until: Option<String>,
     volatile: Vec<String>,
-    cache: Option<CachePolicy>,
     live: bool,
     readings: Vec<String>,
     at: Option<Placed>,
@@ -118,7 +116,6 @@ fn options_of(options: &JsValue, keys: &[&str]) -> Result<Options, JsValue> {
             "channels" => held.channels = Some(whole(&key, &value)?),
             "flop_budget" => held.flop_budget = Some(whole(&key, &value)?),
             "until" => held.until = Some(text(&key, &value)?),
-            "cache" => held.cache = Some(cache_policy(&text(&key, &value)?)?),
             "live" => {
                 held.live = value
                     .as_bool()
@@ -192,7 +189,7 @@ fn representations_of(names: &[String]) -> Result<Vec<Asked>, JsValue> {
         .collect()
 }
 
-/// Nothing in a browser pushes back when a store grows inside the tab's own address space.
+/// Nothing in a browser pushes back when memory grows inside the tab's own address space.
 const DEFAULT_CACHE_BYTES: u64 = 256 << 20;
 
 #[wasm_bindgen]
@@ -209,46 +206,7 @@ pub fn outline(text: &str) -> Result<JsValue, JsValue> {
 #[wasm_bindgen]
 pub struct Composition {
     inner: sva_ast::Composition,
-    store: Cache,
-    persistent: Page,
-}
-
-/// The store a page opened its composition over: what a render or a stream reads.
-#[derive(Clone, Default)]
-enum Page {
-    #[default]
-    None,
-    Open(Rc<Store<opfs::Opfs>>),
-    Failed,
-}
-
-impl Page {
-    fn store(&self) -> Option<&Store<opfs::Opfs>> {
-        match self {
-            Page::Open(store) => Some(store),
-            Page::None | Page::Failed => None,
-        }
-    }
-}
-
-impl Through for Page {
-    async fn lookup(&self, key: Hash) -> Option<Stored> {
-        match self.store() {
-            Some(store) => Through::lookup(store, key).await,
-            None => None,
-        }
-    }
-
-    async fn read(&self, stored: &Stored, over: Extent) -> Option<Vec<Buffer>> {
-        match self.store() {
-            Some(store) => Through::read(store, stored, over).await,
-            None => None,
-        }
-    }
-
-    fn epoch(&self) -> u64 {
-        self.store().map_or(0, Through::epoch)
-    }
+    tier: Rc<Tier<opfs::Opfs>>,
 }
 
 fn unstored(why: String) -> JsValue {
@@ -262,44 +220,41 @@ fn unstored(why: String) -> JsValue {
 impl Composition {
     #[wasm_bindgen(constructor)]
     pub fn new(name: Option<String>) -> Composition {
+        Composition::over(name, Tier::alone(DEFAULT_CACHE_BYTES))
+    }
+
+    fn over(name: Option<String>, tier: Tier<opfs::Opfs>) -> Composition {
         let inner = sva_ast::Composition::new();
         Composition {
             inner: match name {
                 Some(name) => inner.named(name),
                 None => inner,
             },
-            store: Cache::holding(DEFAULT_CACHE_BYTES),
-            persistent: Page::default(),
+            tier: Rc::new(tier),
         }
     }
 
-    /// Over the store in `dir`, an origin-private file system directory, or memory alone
-    /// where there is none or its store will not open.
+    /// Memory over the store in `dir`, an origin-private file system directory; alone where
+    /// none opens.
     pub async fn open(name: Option<String>, dir: Option<DirectoryHandle>) -> Composition {
-        let mut held = Composition::new(name);
-        if let Some(dir) = dir {
-            let backend = opfs::Opfs { dir };
-            held.persistent = match Store::open(backend, DEFAULT_STORE_BYTES).await {
-                Ok(store) => Page::Open(Rc::new(store)),
-                Err(why) => {
-                    logged(&format!("the store would not open, so none is kept: {why}"));
-                    Page::Failed
-                }
-            };
-        }
-        held
+        let Some(dir) = dir else {
+            return Composition::new(name);
+        };
+        let backend = opfs::Opfs { dir };
+        let tier = match Store::open(backend, DEFAULT_STORE_BYTES).await {
+            Ok(store) => Tier::over(store, DEFAULT_CACHE_BYTES),
+            Err(why) => {
+                logged(&format!("the store would not open, so none is kept: {why}"));
+                Tier::alone(DEFAULT_CACHE_BYTES)
+            }
+        };
+        Composition::over(name, tier)
     }
 
-    /// The only write to the directory `open` was handed: every value computed since the last.
+    /// The only commit to the directory `open` was handed.
     pub async fn persist(&self) -> Result<usize, JsValue> {
-        let Some(store) = self.persistent.store() else {
-            return Ok(0);
-        };
-        store
-            .persist()
-            .await
-            .map(|done| done.written)
-            .map_err(unstored)
+        let done = self.tier.persist().await;
+        done.map(|done| done.written).map_err(unstored)
     }
 
     pub fn insert(&mut self, path: &str, text: &str) {
@@ -308,8 +263,8 @@ impl Composition {
 
     /// `target` as `sva-cli render` takes it, `@piano([0, 2b], f0=C4)`; `representations`
     /// what `representations()` answers, `samples` where unset, each a call as
-    /// `--representation` writes it. `options` sets `rate`, `bits`, `flop_budget`, `until`,
-    /// `volatile` and `cache`.
+    /// `--representation` writes it. `options` sets `rate`, `bits`, `flop_budget`, `until` and
+    /// `volatile`.
     pub async fn render(
         &self,
         target: &str,
@@ -318,7 +273,7 @@ impl Composition {
     ) -> Result<Rendering, JsValue> {
         let options = options_of(
             &options,
-            &["rate", "bits", "flop_budget", "until", "volatile", "cache"],
+            &["rate", "bits", "flop_budget", "until", "volatile"],
         )?;
         let names = representations.unwrap_or_else(|| vec!["samples".to_string()]);
         let asked = representations_of(&names)?;
@@ -326,33 +281,23 @@ impl Composition {
             until: options.until.as_deref(),
             rate: options.rate,
             bits: options.bits,
-            cache: Some(&self.store),
-            cache_policy: options.cache,
             asked: &asked,
             flop_budget: options.flop_budget,
             volatile: &options.volatile,
             ..Job::over(&self.inner, target)
         };
-        let rendered = match self.persistent.store() {
-            Some(store) => execute_through(job, store).await,
-            None => execute(job),
-        };
-        let inner = rendered.map_err(|e| thrown(&e))?;
+        let inner = execute_over(job, &*self.tier)
+            .await
+            .map_err(|e| thrown(&e))?;
         unstaged(inner.render.cache_stats.as_ref());
         Ok(Rendering { inner, asked })
     }
 
-    /// `target` staged as `render` would, until `persist`; `{ stats, representations }`,
-    /// the latter `representations()` for `readings`, null unasked. Options: `rate`, `bits`,
-    /// `flop_budget`, `readings`.
+    /// `target` computed into memory as `render` would; `{ stats, representations }`, the
+    /// latter `representations()` for `readings`. Options: `rate`, `bits`, `flop_budget`,
+    /// `readings`.
     pub async fn warm(&self, target: &str, options: JsValue) -> Result<JsValue, JsValue> {
         let options = options_of(&options, &["rate", "bits", "flop_budget", "readings"])?;
-        if let Page::None = self.persistent {
-            return Err(refuse(
-                "`warm` stages into a store, and this composition was opened over none".into(),
-                "open it with `Composition.open(name, dir)` over a directory",
-            ));
-        }
         let asked = representations_of(&options.readings)?;
         if let Some(samples) = asked
             .iter()
@@ -370,10 +315,7 @@ impl Composition {
             asked: &asked,
             ..Job::over(&self.inner, target)
         };
-        let warmed = match self.persistent.store() {
-            Some(store) => sva_core::warm(job, store).await,
-            None => unwarmed(job),
-        };
+        let warmed = sva_core::warm(job, &*self.tier).await;
         let warmed = warmed.map_err(|e| thrown(&e))?;
         unstaged(Some(&warmed.stats));
         let representations = match &warmed.readings {
@@ -387,27 +329,21 @@ impl Composition {
         Ok(out.into())
     }
 
-    /// `target` block by block, through this store. `options`: `rate`, `bits`, `until`, `cache`,
-    /// `live`, `channels`.
+    /// `target` block by block. `options`: `rate`, `bits`, `until`, `live`, `channels`.
     pub async fn stream(
         &self,
         target: &str,
         block: usize,
         options: JsValue,
     ) -> Result<Stream, JsValue> {
-        let options = options_of(
-            &options,
-            &["rate", "bits", "until", "cache", "live", "channels"],
-        )?;
+        let options = options_of(&options, &["rate", "bits", "until", "live", "channels"])?;
         let job = Job {
             until: options.until.as_deref(),
             rate: options.rate,
             bits: options.bits,
-            cache: Some(&self.store),
-            cache_policy: options.cache,
             ..Job::over(&self.inner, target)
         };
-        let opened = sva_core::stream(&job, (block, options.channels), &self.persistent).await;
+        let opened = sva_core::stream(&job, (block, options.channels), &*self.tier).await;
         let mut inner = opened.map_err(|e| thrown(&e))?;
         if options.live {
             inner.go_live();
@@ -415,85 +351,78 @@ impl Composition {
         let edits = Edits {
             inner: Rc::new(RefCell::new(inner)),
             source: Rc::new(self.inner.clone()),
-            store: self.persistent.clone(),
+            tier: Rc::clone(&self.tier),
             freed: Rc::default(),
         };
         let scratch = RefCell::new(Vec::with_capacity(edits.inner.borrow().width() * block));
         Ok(Stream { edits, scratch })
     }
 
+    /// Memory's disk traffic since it opened.
+    pub fn counters(&self) -> Result<JsValue, JsValue> {
+        parse(&counters_json(&self.tier.counters()))
+    }
+
     #[wasm_bindgen(getter)]
     pub fn cache_bytes(&self) -> f64 {
-        self.store.bytes() as f64
+        self.tier.bytes() as f64
     }
 
     #[wasm_bindgen(getter)]
     pub fn cache_max_bytes(&self) -> f64 {
-        self.store.max_bytes() as f64
+        self.tier.max_bytes() as f64
     }
 
     #[wasm_bindgen(setter)]
     pub fn set_cache_max_bytes(&self, max_bytes: f64) {
-        self.store.set_max_bytes(max_bytes.max(0.0) as u64);
+        self.tier.set_max_bytes(max_bytes.max(0.0) as u64);
     }
 
     #[wasm_bindgen(getter)]
     pub fn cache_entries(&self) -> usize {
-        self.store.entries()
+        self.tier.entries()
     }
 
     #[wasm_bindgen(getter)]
     pub fn cache_evictions(&self) -> f64 {
-        self.store.evictions() as f64
+        self.tier.counters().evictions as f64
     }
 
     #[wasm_bindgen(getter)]
     pub fn cache_policy(&self) -> String {
-        self.store.policy().name().to_string()
+        self.tier.policy().name().to_string()
     }
 
     pub fn set_cache_policy(&self, policy: &str) -> Result<(), JsValue> {
-        self.store.set_policy(cache_policy(policy)?);
+        self.tier.set_policy(cache_policy(policy)?);
         Ok(())
     }
 
     #[wasm_bindgen(getter)]
     pub fn prune_policy(&self) -> String {
-        self.store.prune_policy().name().to_string()
+        self.tier.prune_policy().name().to_string()
     }
 
     pub fn set_prune_policy(&self, policy: &str) -> Result<(), JsValue> {
-        self.store.set_prune_policy(prune_policy(policy)?);
+        self.tier.set_prune_policy(prune_policy(policy)?);
         Ok(())
     }
 
     /// `"oldest"` evicts what the latest render neither stored nor read, `"forks"` every value
     /// fewer than two nodes read.
     pub fn prune(&self, policy: &str) -> Result<(), JsValue> {
-        self.store.prune(prune_policy(policy)?);
+        self.tier.prune(prune_policy(policy)?);
         Ok(())
     }
 
     pub fn clear_cache(&self) {
-        self.store.clear();
+        self.tier.clear();
     }
 }
 
 fn placement(options: Option<JsValue>) -> Result<Placed, JsValue> {
     let options = options.unwrap_or(JsValue::UNDEFINED);
     Ok(options_of(&options, &["at"])?.at.unwrap_or(Placed::Written))
-}
-
-/// A warm over a store that would not open: readings, where asked, are a render's over none.
-fn unwarmed(job: Job) -> Result<Warmed, CliError> {
-    let readings = match job.asked.is_empty() {
-        true => None,
-        false => Some(execute(job)?),
-    };
-    Ok(Warmed {
-        stats: CacheStats::default(),
-        readings,
-    })
 }
 
 fn placed(name: &str) -> Result<Placed, JsValue> {
@@ -585,7 +514,7 @@ impl Rendering {
             .map_err(|e| thrown(&e))
     }
 
-    /// Every lookup this render made of the composition's store, and what each came to.
+    /// Every lookup this render made of memory, and what each came to.
     pub fn stats(&self) -> Result<JsValue, JsValue> {
         let none = CacheStats::default();
         parse(&stats_json(
@@ -639,7 +568,7 @@ fn answered(rendered: &Rendered, asked: &[Asked]) -> Result<JsValue, JsValue> {
 /// A target block by block, reading `@notes` as the sum of its terms, as `@hall(t, x=@notes)`.
 /// A key-up replaces a term with one whose release is a number. A term leaves with its handle
 /// once the stream passes its support. An edit lands at the first block boundary
-/// once the store answered it; `read` and getters answer meanwhile.
+/// once memory answered it; `read` and getters answer meanwhile.
 #[wasm_bindgen]
 pub struct Stream {
     edits: Edits,
@@ -651,7 +580,7 @@ pub struct Stream {
 struct Edits {
     inner: Rc<RefCell<sva_core::Stream>>,
     source: Rc<sva_ast::Composition>,
-    store: Page,
+    tier: Rc<Tier<opfs::Opfs>>,
     freed: Rc<Cell<bool>>,
 }
 
@@ -679,7 +608,7 @@ impl Stream {
     pub fn edit(&self, expr: &str) -> impl Future<Output = Result<(), JsValue>> + 'static {
         let (edits, expr) = (self.edits.clone(), expr.to_string());
         async move {
-            let edited = sva_core::edit(&edits.inner, &*edits.source, &expr, &edits.store).await;
+            let edited = sva_core::edit(&edits.inner, &*edits.source, &expr, &*edits.tier).await;
             edits.answered(edited)
         }
     }
@@ -693,7 +622,7 @@ impl Stream {
         async move {
             let at = placement(options)?;
             let (inner, source) = (&edits.inner, &*edits.source);
-            let added = sva_core::add(inner, source, (&term, at), &edits.store).await;
+            let added = sva_core::add(inner, source, (&term, at), &*edits.tier).await;
             edits.answered(added.map(|handle| handle.0))
         }
     }
@@ -708,7 +637,7 @@ impl Stream {
         async move {
             let replaced = (Handle(handle), term.as_str(), placement(options)?);
             let (inner, source) = (&edits.inner, &*edits.source);
-            let replaced = sva_core::replace(inner, source, replaced, &edits.store).await;
+            let replaced = sva_core::replace(inner, source, replaced, &*edits.tier).await;
             edits.answered(replaced)
         }
     }
@@ -716,21 +645,14 @@ impl Stream {
     pub fn remove(&self, handle: u32) -> impl Future<Output = Result<bool, JsValue>> + 'static {
         let edits = self.edits.clone();
         async move {
-            let removed = sva_core::remove(&edits.inner, Handle(handle), &edits.store).await;
+            let removed = sva_core::remove(&edits.inner, Handle(handle), &*edits.tier).await;
             edits.answered(removed)
         }
     }
 
     pub fn fetch(&self) -> impl Future<Output = ()> + 'static {
         let edits = self.edits.clone();
-        async move {
-            let wanted = edits.inner.borrow().wanted();
-            for (stored, over) in wanted {
-                if let Some(samples) = edits.store.read(&stored, over).await {
-                    edits.inner.borrow_mut().took(stored.key, &samples);
-                }
-            }
-        }
+        async move { sva_core::fetch(&edits.inner, &*edits.tier).await }
     }
 }
 
@@ -816,7 +738,7 @@ impl Stream {
         promised(self.remove(handle))
     }
 
-    /// Reads the stored samples the next second of blocks plays, as the stream plays on.
+    /// Reads what the next second plays, a few disk reads a call at most.
     #[wasm_bindgen(js_name = fetch, unchecked_return_type = "Promise<void>")]
     pub fn fetch_promise(&self) -> js_sys::Promise {
         let fetched = self.fetch();
@@ -844,7 +766,7 @@ impl Stream {
     }
 
     /// `late`: edits landed late; `demands`: reads working out the note sum's asks; `built`:
-    /// what the latest change did anew.
+    /// what the latest change did anew; `tier`: memory's disk traffic since it opened.
     pub fn counts(&self) -> Result<JsValue, JsValue> {
         let counts = self.edits.inner.borrow().counts();
         let whole = |pairs: &[(&str, usize)]| -> Result<js_sys::Object, JsValue> {
@@ -871,6 +793,8 @@ impl Stream {
             ("lookups", built.lookups),
         ])?;
         js_sys::Reflect::set(&out, &"built".into(), &built)?;
+        let tier = parse(&counters_json(&counts.tier))?;
+        js_sys::Reflect::set(&out, &"tier".into(), &tier)?;
         Ok(out.into())
     }
 

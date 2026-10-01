@@ -1,6 +1,6 @@
 // Concern: states where a changed stream's typing and table differ from a build of all it plays that carries nothing over | Non-concern: the samples either plays | IO: (Stream) -> differences
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use super::world::{Walked, Wanted, World};
 use super::{STREAMED, Stream};
@@ -30,13 +30,11 @@ impl Stream {
             term: None,
             from: None,
         };
-        let (missed, mut again) = (|_| Some(None), BTreeSet::new());
-        let plan = loop {
-            match fresh.plan(&wanted, (&missed, &again)) {
-                Ok(Walked::Asks(keys)) => again.extend(keys),
-                Ok(Walked::Planned(plan)) => break plan,
-                Err(e) => panic!("what a stream plays plans: {e}"),
-            }
+        let missed = |_| crate::cache::Known::Miss;
+        let plan = match fresh.plan(&wanted, &missed) {
+            Ok(Walked::Planned(plan)) => plan,
+            Ok(Walked::Asks(_)) => unreachable!("every key a miss"),
+            Err(e) => panic!("what a stream plays plans: {e}"),
         };
         let theirs = &mut fresh.typing;
         theirs
@@ -161,6 +159,6 @@ fn kind(kind: &Kind) -> String {
         Kind::Frames { window, hop } => format!("frames {window} {hop}"),
         Kind::Istft => "istft".to_string(),
         Kind::Spectrum(_) => "spectrum".to_string(),
-        Kind::Stored(stored) => format!("stored {}", stored.key),
+        Kind::Resident(stored) => format!("stored {}", stored.key),
     }
 }

@@ -27,9 +27,9 @@ pub use arguments::{Argument, Arguments, Called, Chosen};
 pub use bindings::Binding;
 pub use cache::log::cache_log;
 pub use cache::{
-    Backend, Cache, CachePolicy, CacheStats, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY,
-    DEFAULT_STORE_BYTES, Hash, INDEX_NAME, Lookup, NoStore, Outcome, PayloadKind, Persisted,
-    PrunePolicy, STORE_FORMAT, Store, Stored, Through,
+    Backend, CachePolicy, CacheStats, Counters, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY,
+    DEFAULT_STORE_BYTES, FETCH_READS, Hash, INDEX_NAME, Lookup, Nothing, Outcome, PayloadKind,
+    Persisted, PrunePolicy, STORE_FORMAT, Store, Stored, Tier,
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
@@ -40,8 +40,8 @@ pub use refs::{identity, nodes_in, spectral_sum_of, symbolic_hash};
 pub use render::until::{Cmp, Term};
 pub use render::{
     Block, Built, Change, Changed, Counts, Handle, LATEST, NOTES, Placed, Range, Render,
-    RenderConfig, STREAMED, Stream, StreamConfig, Until, answer, answer_buffer, change, ends, plan,
-    render, render_through, sketch_atom, warm,
+    RenderConfig, STREAMED, Stream, StreamConfig, Until, answer, answer_buffer, change, ends,
+    fetch, plan, render, render_over, sketch_atom, warm,
 };
 pub use schedule::{Order, Schedule, schedule_from};
 pub use sva_formula::{C64, Codomain, Held, Line, NodeId, SpectralSum, Ty, Var};

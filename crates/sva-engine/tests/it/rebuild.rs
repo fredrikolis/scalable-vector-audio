@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 
 use sva_ast::{Expr, Graph};
-use sva_engine::{Built, Handle, NoStore, RenderConfig, Stream, StreamConfig};
+use sva_engine::{Built, Handle, RenderConfig, Stream, StreamConfig, Tier};
 
 use crate::fixtures::{Now, added, edited, graph_of, next, removed, replaced};
 
@@ -56,7 +56,7 @@ fn opened(graph: &Graph, target: &str) -> RefCell<Stream> {
         channels: None,
         render: RenderConfig::at(RATE),
     };
-    let stream = Stream::open(graph, &expr(target), config, None, &NoStore).now();
+    let stream = Stream::open(graph, &expr(target), config, &Tier::default()).now();
     RefCell::new(stream.unwrap_or_else(|e| panic!("{e}")))
 }
 
@@ -65,7 +65,7 @@ fn built(stream: &RefCell<Stream>) -> Built {
 }
 
 fn add(stream: &RefCell<Stream>, graph: &Graph, term: &str) -> Handle {
-    let handle = added(stream, graph, &expr(term), &NoStore).now();
+    let handle = added(stream, graph, &expr(term), &Tier::default()).now();
     handle.unwrap_or_else(|e| panic!("`{term}`: {e}"))
 }
 
@@ -136,12 +136,17 @@ fn a_replace_or_remove_names_walks_and_copies_only_its_share() {
         next(&mut stream.borrow_mut()).expect("a block");
         let again = (held, &expr(&note(0, 645)));
         assert_eq!(
-            replaced(&stream, &graph, again, &NoStore).now().ok(),
+            replaced(&stream, &graph, again, &Tier::default())
+                .now()
+                .ok(),
             Some(true)
         );
         let replace = built(&stream);
         next(&mut stream.borrow_mut()).expect("a block");
-        assert_eq!(removed(&stream, held, &NoStore).now().ok(), Some(true));
+        assert_eq!(
+            removed(&stream, held, &Tier::default()).now().ok(),
+            Some(true)
+        );
         seen.push((replace, built(&stream)));
     }
     assert_eq!(seen[0], seen[1], "independent of the master and the terms");
@@ -175,7 +180,7 @@ fn an_edit_of_one_parameter_builds_only_the_target() {
     for (branches, terms) in [(2, 3), (60, 200)] {
         let (graph, stream) = holding(branches, terms);
         let edit = |target: &str| {
-            let done = edited(&stream, &graph, &expr(target), &NoStore).now();
+            let done = edited(&stream, &graph, &expr(target), &Tier::default()).now();
             done.unwrap_or_else(|e| panic!("`{target}`: {e}"));
             built(&stream)
         };

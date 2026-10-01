@@ -1,7 +1,7 @@
 // Concern: proves a reading may name the file a composer wrote, not only the instance it expanded into | Non-concern: which instances exist (instantiate.rs) | IO: (a file name) -> a reading
 
 use crate::fixtures::graph_of;
-use sva_engine::{Ask, EngineError, Output, RenderConfig, Representation, answer, render};
+use sva_engine::{Ask, EngineError, Output, RenderConfig, Representation, Tier, answer, render};
 
 /// One instance under another name still answers to the name on disk.
 #[test]
@@ -20,7 +20,7 @@ fn a_node_with_a_default_line_renders_by_name() {
             node: "voice".to_string(),
             representation: Representation::Lines,
         }]),
-        None,
+        &Tier::default(),
     )
     .expect("a node that declares defaults renders");
     let id = held.id("voice").expect("the file names its one instance");
@@ -46,7 +46,13 @@ fn a_file_two_invocations_share_is_named_by_neither() {
             ("master", "@voice + @voice(t, f0=220)\n"),
         ],
     );
-    let held = render(&g, "master", RenderConfig::seconds(44_100, 0.05), None).expect("two voices");
+    let held = render(
+        &g,
+        "master",
+        RenderConfig::seconds(44_100, 0.05),
+        &Tier::default(),
+    )
+    .expect("two voices");
     let refused = held.node("voice").expect_err("the file names neither");
     assert!(
         matches!(&refused, EngineError::AmbiguousNode(file, names) if file == "voice" && names.len() == 2),

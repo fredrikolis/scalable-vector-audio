@@ -2,7 +2,7 @@
 use std::f64::consts::TAU;
 
 use crate::fixtures::graph_of;
-use sva_engine::{Ask, Cache, CachePolicy, RenderConfig, Representation, render};
+use sva_engine::{Ask, RenderConfig, Representation, Tier, render};
 
 const RATES: [u32; 4] = [8_000, 44_100, 48_000, 96_000];
 
@@ -33,8 +33,13 @@ fn plane(held: &sva_engine::Render, node: &str) -> Vec<f64> {
 fn every_node_is_held_at_the_rate_asked_for() {
     let g = composition();
     for rate in RATES {
-        let held = render(&g, "mix", RenderConfig::seconds(rate, 0.05), None)
-            .unwrap_or_else(|e| panic!("{rate}: {e}"));
+        let held = render(
+            &g,
+            "mix",
+            RenderConfig::seconds(rate, 0.05),
+            &Tier::default(),
+        )
+        .unwrap_or_else(|e| panic!("{rate}: {e}"));
         assert_eq!(plane(&held, "mix").len(), rate as usize / 20, "{rate}");
         for (id, buffer) in &held.buffers {
             assert_eq!(buffer.rate, rate, "{rate}: {}", held.tys.name(*id));
@@ -51,7 +56,7 @@ fn an_open_range_ends_at_the_crops_exact_sample_count() {
         &[("cut", "crop(sample(sin(2*pi*100*t)), 0s, 0.8s)\n")],
     );
     for rate in RATES {
-        let held = render(&g, "cut", RenderConfig::at(rate), None)
+        let held = render(&g, "cut", RenderConfig::at(rate), &Tier::default())
             .unwrap_or_else(|e| panic!("{rate}: {e}"));
         assert_eq!(plane(&held, "cut").len(), rate as usize * 4 / 5, "{rate}");
     }
@@ -62,8 +67,13 @@ fn an_open_range_ends_at_the_crops_exact_sample_count() {
 fn an_indexed_loop_steps_at_the_render_rate() {
     let g = composition();
     for rate in RATES {
-        let held = render(&g, "decay", RenderConfig::seconds(rate, 0.001), None)
-            .unwrap_or_else(|e| panic!("{rate}: {e}"));
+        let held = render(
+            &g,
+            "decay",
+            RenderConfig::seconds(rate, 0.001),
+            &Tier::default(),
+        )
+        .unwrap_or_else(|e| panic!("{rate}: {e}"));
         let decay = plane(&held, "decay");
         for (n, v) in decay.iter().enumerate().take(8) {
             assert_eq!(*v, 0.5f64.powi(n as i32), "{rate}: sample {n}");
@@ -77,7 +87,7 @@ fn a_formula_read_at_any_instant_is_exact() {
     let g = composition();
     for rate in RATES {
         let config = RenderConfig::seconds(rate, 0.02);
-        let scaled = render(&g, "scaled", config.clone(), None).expect("a scaled read");
+        let scaled = render(&g, "scaled", config.clone(), &Tier::default()).expect("a scaled read");
         for (n, v) in plane(&scaled, "scaled").iter().enumerate() {
             let at = 0.37 * n as f64 / f64::from(rate) - 0.012_345_6;
             assert!((v - (TAU * 220.0 * at).sin()).abs() < 1e-9, "{rate}: {n}");
@@ -90,7 +100,7 @@ fn a_formula_read_at_any_instant_is_exact() {
             }],
             ..config
         };
-        let held = render(&g, "vibrato", config, None).expect("a moving read");
+        let held = render(&g, "vibrato", config, &Tier::default()).expect("a moving read");
         let lfo = held
             .buffers
             .get(&held.id("lfo").expect("the lfo"))
@@ -134,7 +144,7 @@ fn a_stateful_node_read_between_its_steps_reads_the_nearest_whole_sample() {
     ] {
         let config = RenderConfig::seconds(rate, 0.3);
         let at = |target: &str| {
-            let held = render(&g, target, config.clone(), None)
+            let held = render(&g, target, config.clone(), &Tier::default())
                 .unwrap_or_else(|e| panic!("{target} at {rate}: {e}"));
             plane(&held, target)
         };
@@ -164,10 +174,20 @@ fn a_stateful_node_read_at_half_speed_steps_at_half_the_step() {
         ],
     );
     for rate in [8_000, 22_050, 24_000, 48_000] {
-        let slow = render(&g, "slow", RenderConfig::seconds(rate, 0.05), None)
-            .unwrap_or_else(|e| panic!("{rate}: {e}"));
-        let fast = render(&g, "filtered", RenderConfig::seconds(2 * rate, 0.025), None)
-            .unwrap_or_else(|e| panic!("{rate}: {e}"));
+        let slow = render(
+            &g,
+            "slow",
+            RenderConfig::seconds(rate, 0.05),
+            &Tier::default(),
+        )
+        .unwrap_or_else(|e| panic!("{rate}: {e}"));
+        let fast = render(
+            &g,
+            "filtered",
+            RenderConfig::seconds(2 * rate, 0.025),
+            &Tier::default(),
+        )
+        .unwrap_or_else(|e| panic!("{rate}: {e}"));
         close(
             &plane(&slow, "slow"),
             &plane(&fast, "filtered"),
@@ -201,14 +221,11 @@ fn a_stateful_node_read_at_a_moving_time_refuses_at_typing() {
 #[test]
 fn a_store_answers_a_stepped_node_only_at_its_own_rate() {
     let g = composition();
-    let cache = Cache::new();
-    let at = |rate: u32, cache: Option<&Cache>| {
-        let config = RenderConfig {
-            cache_policy: Some(CachePolicy::All),
-            ..RenderConfig::seconds(rate, 0.05)
-        };
+    let cache = Tier::default();
+    let at = |rate: u32, cache: &Tier| {
+        let config = RenderConfig::seconds(rate, 0.05);
         plane(&render(&g, "mix", config, cache).expect("a render"), "mix")
     };
-    at(44_100, Some(&cache));
-    assert_eq!(at(48_000, Some(&cache)), at(48_000, None));
+    at(44_100, &cache);
+    assert_eq!(at(48_000, &cache), at(48_000, &Tier::default()));
 }

@@ -1,10 +1,9 @@
-// Concern: proves a released note reads the held note's run up to its release and computes only the rest, bit for bit | Non-concern: the store's cap (stores.rs) | IO: (a store, renders) -> samples, work
+// Concern: proves a released note reads the held note's run up to its release and computes only the rest, bit for bit | Non-concern: memory's cap (stores.rs) | IO: (a tier, renders) -> samples, work
 
 use crate::fixtures::{Now, graph_of, next};
 use sva_ast::Graph;
 use sva_engine::{
-    Cache, CacheStats, NoStore, Outcome, PayloadKind, Range, RenderConfig, Stream, StreamConfig,
-    render,
+    CacheStats, Outcome, PayloadKind, Range, RenderConfig, Stream, StreamConfig, Tier, render,
 };
 
 const RATE: u32 = 8_000;
@@ -34,7 +33,7 @@ fn outcomes(stats: &CacheStats) -> Vec<Outcome> {
     runs.map(|l| l.outcome).collect()
 }
 
-fn whole(g: &Graph, target: &str, cache: Option<&Cache>) -> (Vec<f64>, Vec<Outcome>) {
+fn whole(g: &Graph, target: &str, cache: &Tier) -> (Vec<f64>, Vec<Outcome>) {
     let mut g = g.clone();
     assert!(g.define("target", sva_ast::parse_expr(target).expect("a target")));
     let config = RenderConfig::seconds(RATE, LEN as f64 / f64::from(RATE));
@@ -46,7 +45,7 @@ fn whole(g: &Graph, target: &str, cache: Option<&Cache>) -> (Vec<f64>, Vec<Outco
     )
 }
 
-fn streamed(g: &Graph, target: &str, cache: Option<&Cache>) -> (Vec<f64>, u128, Vec<Outcome>) {
+fn streamed(g: &Graph, target: &str, cache: &Tier) -> (Vec<f64>, u128, Vec<Outcome>) {
     let config = StreamConfig {
         block: 1_024,
         channels: None,
@@ -59,7 +58,7 @@ fn streamed(g: &Graph, target: &str, cache: Option<&Cache>) -> (Vec<f64>, u128, 
         },
     };
     let target = sva_ast::parse_expr(target).expect("a target");
-    let mut stream = Stream::open(g, &target, config, cache, &NoStore)
+    let mut stream = Stream::open(g, &target, config, cache)
         .now()
         .unwrap_or_else(|e| panic!("{e}"));
     let mut heard = Vec::new();
@@ -75,13 +74,13 @@ fn streamed(g: &Graph, target: &str, cache: Option<&Cache>) -> (Vec<f64>, u128, 
 #[test]
 fn each_release_reads_the_held_run_and_computes_only_its_tail() {
     let g = composition();
-    let cache = Cache::new();
+    let cache = Tier::default();
     cache.set_mark_every(EVERY);
-    whole(&g, "@held(t)", Some(&cache));
+    whole(&g, "@held(t)", &cache);
     for release in [0.3, 0.5123] {
         let target = format!("@released(t, release={release})");
-        let (cold, cold_work, _) = streamed(&g, &target, None);
-        let (heard, work, found) = streamed(&g, &target, Some(&cache));
+        let (cold, cold_work, _) = streamed(&g, &target, &Tier::default());
+        let (heard, work, found) = streamed(&g, &target, &cache);
         assert_eq!(heard, cold, "release at {release}");
         assert!(
             found.contains(&Outcome::Prefix),
@@ -92,9 +91,13 @@ fn each_release_reads_the_held_run_and_computes_only_its_tail() {
             work * LEN as u128 <= cold_work * tail as u128,
             "release at {release}: {work} of {cold_work} computed, past its tail"
         );
-        let (first, _) = whole(&g, &target, Some(&cache));
-        assert_eq!(first, whole(&g, &target, None).0, "release at {release}");
-        let (again, found) = whole(&g, &target, Some(&cache));
+        let (first, _) = whole(&g, &target, &cache);
+        assert_eq!(
+            first,
+            whole(&g, &target, &Tier::default()).0,
+            "release at {release}"
+        );
+        let (again, found) = whole(&g, &target, &cache);
         assert_eq!(again, first, "release at {release}, again");
         assert!(found.iter().all(|o| *o == Outcome::Hit), "{found:?}");
     }

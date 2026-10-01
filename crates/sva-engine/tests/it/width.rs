@@ -1,7 +1,7 @@
 // Concern: proves a width-1 operand broadcasts into every lane of the operator it meets | Non-concern: how a width is inferred (typing.rs) | IO: (a composition) -> the planes each channel holds
 
 use crate::fixtures::graph_of;
-use sva_engine::{RenderConfig, render};
+use sva_engine::{RenderConfig, Tier, render};
 
 fn planes(name: &str, master: &str) -> (Vec<f64>, Vec<f64>) {
     let g = graph_of(
@@ -12,8 +12,13 @@ fn planes(name: &str, master: &str) -> (Vec<f64>, Vec<f64>) {
             ("master", master),
         ],
     );
-    let held = render(&g, "master", RenderConfig::seconds(8_000, 1.0), None)
-        .unwrap_or_else(|e| panic!("{name}: {e}"));
+    let held = render(
+        &g,
+        "master",
+        RenderConfig::seconds(8_000, 1.0),
+        &Tier::default(),
+    )
+    .unwrap_or_else(|e| panic!("{name}: {e}"));
     let id = held.id("master").expect("the root");
     let buffer = held.output(id).expect("a rendered master");
     assert_eq!(buffer.width, 2, "{name} is a pair");
@@ -79,8 +84,13 @@ fn a_component_past_a_sampled_width_refuses_at_typing() {
 fn a_constant_counts_toward_the_width_it_meets_a_stream_in() {
     let lane = |name: &str, master: &str| {
         let g = graph_of(name, &[("master", master)]);
-        let held = render(&g, "master", RenderConfig::seconds(8_000, 1.0), None)
-            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let held = render(
+            &g,
+            "master",
+            RenderConfig::seconds(8_000, 1.0),
+            &Tier::default(),
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
         let buffer = held
             .output(held.id("master").expect("the root"))
             .expect("a master");

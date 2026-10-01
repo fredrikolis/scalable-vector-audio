@@ -1,4 +1,4 @@
-// Concern: what a lookup answers of a stored node: its meta and where its samples lie | Non-concern: reading those samples, the bytes (codec.rs) | IO: (identity, rate) -> key; Stored -> extents
+// Concern: what the tier answers of a node, and where a disk entry lays its samples | Non-concern: reading them, the bytes (codec.rs) | IO: (identity, rate) -> key; Header -> extents
 
 use sva_formula::{Codomain, Hash};
 use sva_samples::{Extent, Grid, Label};
@@ -17,7 +17,39 @@ pub struct Stored {
     /// The most seconds a read under it moved to land on a sample.
     pub moved: f64,
     pub readable: bool,
-    pub(crate) samples: Samples,
+    pub(crate) held: Vec<Extent>,
+}
+
+impl Stored {
+    pub(crate) fn extents(&self) -> &[Extent] {
+        &self.held
+    }
+
+    pub(crate) fn holds(&self, over: Extent) -> bool {
+        let mut from = over.start;
+        for part in &self.held {
+            if from >= over.end || part.start > from {
+                break;
+            }
+            from = from.max(part.end);
+        }
+        from >= over.end
+    }
+
+    pub(crate) fn holding(&self, mut held: Vec<Extent>) -> Stored {
+        held.sort_by_key(|e| e.start);
+        Stored {
+            held,
+            ..self.clone()
+        }
+    }
+}
+
+/// Only the disk tier and the memory tier read a layout. What it holds is its layout's alone.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Header {
+    stored: Stored,
+    samples: Samples,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -55,9 +87,9 @@ impl Laid {
     }
 }
 
-impl Stored {
-    pub(crate) fn extents(&self) -> Vec<Extent> {
-        let mut out: Vec<Extent> = match &self.samples {
+impl Samples {
+    fn extents(&self) -> Vec<Extent> {
+        match self {
             Samples::None | Samples::Of { .. } => Vec::new(),
             Samples::Entry { runs, shift, .. } => runs
                 .iter()
@@ -66,36 +98,30 @@ impl Stored {
             Samples::Staged { chunks, shift } => {
                 chunks.iter().map(|(_, e)| e.shifted(*shift)).collect()
             }
-        };
-        out.sort_by_key(|e| e.start);
-        out
-    }
-
-    pub(crate) fn referring(self, key: Hash, by: i64) -> Stored {
-        let samples = Samples::Of { key, by };
-        Stored { samples, ..self }
-    }
-
-    pub(crate) fn file(&self) -> Option<(Hash, i64)> {
-        match self.samples {
-            Samples::Entry { file, shift, .. } => Some((file, shift)),
-            _ => None,
         }
+    }
+}
+
+impl Header {
+    pub(crate) fn new(stored: Stored, samples: Samples) -> Header {
+        let stored = stored.holding(samples.extents());
+        Header { stored, samples }
+    }
+
+    pub(crate) fn stored(&self) -> &Stored {
+        &self.stored
+    }
+
+    pub(crate) fn samples(&self) -> &Samples {
+        &self.samples
+    }
+
+    pub(crate) fn into_parts(self) -> (Stored, Samples) {
+        (self.stored, self.samples)
     }
 
     pub(crate) fn refers(&self) -> bool {
         matches!(self.samples, Samples::Of { .. })
-    }
-
-    pub(crate) fn holds(&self, over: Extent) -> bool {
-        let mut from = over.start;
-        for part in self.extents() {
-            if from >= over.end || part.start > from {
-                break;
-            }
-            from = from.max(part.end);
-        }
-        from >= over.end
     }
 }
 

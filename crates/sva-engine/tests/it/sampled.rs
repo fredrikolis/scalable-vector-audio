@@ -1,7 +1,7 @@
 // Concern: proves a discrete node steps at the rate a render asks for, accumulator and all | Non-concern: any solver's own grid (sva-samples) | IO: (a composition, rate) -> a Buffer
 
 use crate::fixtures::graph_of;
-use sva_engine::{RenderConfig, render};
+use sva_engine::{RenderConfig, Tier, render};
 
 /// A low rate keeps these tests fast; the filter and limiter tests keep 44.1 kHz.
 const RATE: u32 = 8_000;
@@ -11,8 +11,13 @@ const RATE: u32 = 8_000;
 fn an_fd_node_renders_at_the_observation_rate() {
     let g = graph_of("fd", &[("body", "chaigne_askenfelt(261.63)\n")]);
     for rate in [RATE, 11_025] {
-        let held = render(&g, "body", RenderConfig::seconds(rate, 0.02), None)
-            .unwrap_or_else(|e| panic!("{rate}: {e}"));
+        let held = render(
+            &g,
+            "body",
+            RenderConfig::seconds(rate, 0.02),
+            &Tier::default(),
+        )
+        .unwrap_or_else(|e| panic!("{rate}: {e}"));
         let root = held.id("body").expect("the root");
         let buffer = held.output(root).expect("a rendered solver");
         assert_eq!(buffer.rate, rate);
@@ -35,7 +40,7 @@ fn a_one_step_accumulator_renders() {
         &g,
         "acc",
         RenderConfig::seconds(RATE, 10.0 / f64::from(RATE)),
-        None,
+        &Tier::default(),
     )
     .expect("a recurrence");
     let root = held.id("acc").expect("the root");
@@ -57,7 +62,13 @@ fn a_filter_over_samples_runs_on_the_grid() {
         "biquad",
         &[("voice", "lowpass(sample(sin(2*pi*4000*t)), 200, 0.7)\n")],
     );
-    let held = render(&g, "voice", RenderConfig::seconds(44_100, 0.05), None).expect("a biquad");
+    let held = render(
+        &g,
+        "voice",
+        RenderConfig::seconds(44_100, 0.05),
+        &Tier::default(),
+    )
+    .expect("a biquad");
     let root = held.id("voice").expect("the root");
     let buffer = held.output(root).expect("a rendered filter");
     let tail: f64 = buffer.plane(0)[2_000..]
@@ -80,8 +91,13 @@ fn a_one_pole_smoother_written_with_sp_renders_at_two_rates() {
         )],
     );
     let level = |rate: u32| -> f64 {
-        let held = render(&g, "smooth", RenderConfig::seconds(rate, 0.02), None)
-            .unwrap_or_else(|e| panic!("{rate}: {e}"));
+        let held = render(
+            &g,
+            "smooth",
+            RenderConfig::seconds(rate, 0.02),
+            &Tier::default(),
+        )
+        .unwrap_or_else(|e| panic!("{rate}: {e}"));
         let root = held.id("smooth").expect("the root");
         held.output(root)
             .expect("a rendered loop")
@@ -114,8 +130,13 @@ fn a_swept_cutoff_on_samples_renders() {
             "lowpass(sample(sin(2*pi*1000*t)), cutoff=150 + 7800*t, q=0.707)\n",
         )],
     );
-    let held =
-        render(&g, "filtered", RenderConfig::seconds(44_100, 0.5), None).expect("a swept filter");
+    let held = render(
+        &g,
+        "filtered",
+        RenderConfig::seconds(44_100, 0.5),
+        &Tier::default(),
+    )
+    .expect("a swept filter");
     let root = held.id("filtered").expect("the root");
     let buffer = held.output(root).expect("a rendered recurrence");
     let peak = |from: f64, to: f64| {
@@ -145,7 +166,7 @@ fn a_self_read_is_founded_sample_by_sample_without_a_block() {
         &g,
         "acc",
         RenderConfig::seconds(RATE, 10.0 / f64::from(RATE)),
-        None,
+        &Tier::default(),
     )
     .expect("a recurrence");
     let root = held.id("acc").expect("the root");
@@ -168,7 +189,7 @@ fn a_self_read_is_founded_sample_by_sample_without_a_block() {
 }
 
 fn plane(g: &sva_ast::Graph, node: &str) -> Vec<f64> {
-    let held = render(g, node, RenderConfig::seconds(RATE, 0.05), None)
+    let held = render(g, node, RenderConfig::seconds(RATE, 0.05), &Tier::default())
         .unwrap_or_else(|e| panic!("{node}: {e}"));
     let id = held.id(node).unwrap_or_else(|| panic!("{node} typed"));
     held.output(id).expect("a rendered node").plane(0).to_vec()
@@ -221,7 +242,12 @@ fn a_sampled_crop_refuses_the_shoulders_a_closed_form_refuses() {
             "crop(sample(sin(2*pi*220*t)), 10ms, 20ms, rise=6ms, fall=6ms)\n",
         )],
     );
-    let Err(refused) = render(&g, "body", RenderConfig::seconds(RATE, 0.05), None) else {
+    let Err(refused) = render(
+        &g,
+        "body",
+        RenderConfig::seconds(RATE, 0.05),
+        &Tier::default(),
+    ) else {
         panic!("two shoulders longer than their window render nothing");
     };
     assert!(
@@ -243,7 +269,7 @@ fn an_sp_limiter_releases_after_the_same_steps_at_every_rate() {
         ],
     );
     let at = |rate: u32| {
-        let held = render(&g, "gr", RenderConfig::seconds(rate, 0.3), None)
+        let held = render(&g, "gr", RenderConfig::seconds(rate, 0.3), &Tier::default())
             .unwrap_or_else(|e| panic!("{rate}: {e}"));
         held.output(held.root).expect("a gain").plane(0).to_vec()
     };
@@ -273,8 +299,13 @@ fn a_render_at_any_rate_steps_its_nodes_at_that_rate() {
     );
     let rate = 11_025;
     let read = |node: &str| {
-        let held = render(&g, node, RenderConfig::seconds(rate, 0.02), None)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let held = render(
+            &g,
+            node,
+            RenderConfig::seconds(rate, 0.02),
+            &Tier::default(),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
         held.output(held.root)
             .unwrap_or_else(|e| panic!("{node}: {e}"))
     };
@@ -293,8 +324,13 @@ fn rand_draws_its_seed_at_each_sample_index() {
     let g = graph_of("keyed", &[("noise", "crop(rand(t, seed=5), 0s, 10ms)\n")]);
     for rate in [RATE, 11_025] {
         let read = || {
-            let held = render(&g, "noise", RenderConfig::seconds(rate, 0.01), None)
-                .unwrap_or_else(|e| panic!("{e}"));
+            let held = render(
+                &g,
+                "noise",
+                RenderConfig::seconds(rate, 0.01),
+                &Tier::default(),
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
             held.output(held.root).expect("a buffer").plane(0).to_vec()
         };
         let drawn = read();
@@ -316,8 +352,13 @@ fn rand_draws_its_seed_at_each_sample_index() {
 fn rand_between_steps_draws_the_nearest_step() {
     for (key, step) in [("2.5sp", 2), ("3.5sp", 4), ("3.4sp", 3)] {
         let g = graph_of("between", &[("still", &format!("rand({key}, seed=5)\n"))]);
-        let held = render(&g, "still", RenderConfig::seconds(RATE, 0.001), None)
-            .unwrap_or_else(|e| panic!("{key}: {e}"));
+        let held = render(
+            &g,
+            "still",
+            RenderConfig::seconds(RATE, 0.001),
+            &Tier::default(),
+        )
+        .unwrap_or_else(|e| panic!("{key}: {e}"));
         let drawn = held.output(held.root).expect("a buffer").plane(0).to_vec();
         let want = sva_formula::draw(5, step);
         assert!(
@@ -339,7 +380,7 @@ fn a_time_wrapped_by_an_exact_period_reads_whole_samples() {
         ],
     );
     let read = |node: &str| {
-        let held = render(&g, node, RenderConfig::seconds(RATE, 0.1), None)
+        let held = render(&g, node, RenderConfig::seconds(RATE, 0.1), &Tier::default())
             .unwrap_or_else(|e| panic!("{e}"));
         held.output(held.root).expect("a buffer").plane(0).to_vec()
     };

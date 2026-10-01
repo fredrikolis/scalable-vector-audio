@@ -5,8 +5,8 @@ use std::cell::RefCell;
 use crate::fixtures::{Now, added, graph_of};
 use sva_ast::Graph;
 use sva_engine::{
-    Change, Changed, EngineError, NoStore, Placed, Range, RenderConfig, Stream, StreamConfig,
-    change, render,
+    Change, Changed, EngineError, Placed, Range, RenderConfig, Stream, StreamConfig, Tier, change,
+    render,
 };
 
 const RATE: u32 = 8_000;
@@ -44,7 +44,7 @@ fn opened(g: &Graph, target: &str, live: bool) -> RefCell<Stream> {
             ..RenderConfig::at(RATE)
         },
     };
-    let mut stream = Stream::open(g, &expr(target), config, None, &NoStore)
+    let mut stream = Stream::open(g, &expr(target), config, &Tier::default())
         .now()
         .unwrap_or_else(|e| panic!("{e}"));
     if live {
@@ -60,7 +60,7 @@ fn endless(g: &Graph, target: &str) -> RefCell<Stream> {
         channels: None,
         render: RenderConfig::at(RATE),
     };
-    let mut stream = Stream::open(g, &expr(target), config, None, &NoStore)
+    let mut stream = Stream::open(g, &expr(target), config, &Tier::default())
         .now()
         .unwrap_or_else(|e| panic!("{e}"));
     stream.go_live();
@@ -71,14 +71,14 @@ fn endless(g: &Graph, target: &str) -> RefCell<Stream> {
 fn landing(stream: &RefCell<Stream>, g: &Graph, term: &str) -> sva_engine::Handle {
     let build =
         |_: &Stream| Ok::<_, EngineError>(Change::Add(g.clone(), expr(term), Placed::Landing));
-    let Ok(Changed::Added(note)) = change(stream, build, &NoStore).now() else {
+    let Ok(Changed::Added(note)) = change(stream, build, &Tier::default()).now() else {
         panic!("an add answers its handle");
     };
     note
 }
 
 fn add(stream: &RefCell<Stream>, g: &Graph, term: &str) {
-    added(stream, g, &expr(term), &NoStore)
+    added(stream, g, &expr(term), &Tier::default())
         .now()
         .unwrap_or_else(|e| panic!("`{term}`: {e}"));
 }
@@ -101,8 +101,13 @@ fn whole(g: &Graph, text: &str, samples: usize) -> Vec<f64> {
     let mut g = g.clone();
     assert!(g.define("whole", expr(text)));
     let secs = samples as f64 / f64::from(RATE);
-    let held = render(&g, "whole", RenderConfig::seconds(RATE, secs), None)
-        .unwrap_or_else(|e| panic!("`{text}`: {e}"));
+    let held = render(
+        &g,
+        "whole",
+        RenderConfig::seconds(RATE, secs),
+        &Tier::default(),
+    )
+    .unwrap_or_else(|e| panic!("`{text}`: {e}"));
     let id = held.id("whole").expect("the root");
     held.output(id).expect("a buffer").plane(0).to_vec()
 }
@@ -191,7 +196,7 @@ fn a_term_placed_at_its_landing_keeps_its_time_across_a_skip() {
     read(&stream, 0);
     let build =
         |_: &Stream| Ok::<_, EngineError>(Change::Add(g.clone(), expr("@slow"), Placed::Landing));
-    let Ok(Changed::Added(note)) = change(&stream, build, &NoStore).now() else {
+    let Ok(Changed::Added(note)) = change(&stream, build, &Tier::default()).now() else {
         panic!("an add answers its handle");
     };
     assert_eq!(stream.borrow().landed(note), Some(BLOCK as i64));

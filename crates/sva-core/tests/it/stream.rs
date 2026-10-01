@@ -5,7 +5,7 @@ use std::cell::RefCell;
 
 use sva_ast::{Composition, Listing, Source};
 use sva_core::{Job, Placed, Stream};
-use sva_engine::NoStore;
+use sva_engine::Tier;
 
 /// A composition counting each node text it hands out.
 struct Counted {
@@ -57,7 +57,7 @@ fn source() -> Counted {
 fn add(stream: &RefCell<Stream>, source: &Counted, term: &str) -> Vec<String> {
     source.read.borrow_mut().clear();
     let at = (term, Placed::Written);
-    now(sva_core::add(stream, source, at, &NoStore)).unwrap_or_else(|e| panic!("{e:?}"));
+    now(sva_core::add(stream, source, at, &Tier::default())).unwrap_or_else(|e| panic!("{e:?}"));
     source.read.borrow().clone()
 }
 
@@ -67,7 +67,7 @@ fn add(stream: &RefCell<Stream>, source: &Counted, term: &str) -> Vec<String> {
 fn an_add_reads_off_its_source_only_what_the_stream_lacks() {
     let source = source();
     let job = Job::over(&source, "@notes + @bed");
-    let stream = now(sva_core::stream(&job, (64, None), &NoStore)).expect("a stream");
+    let stream = now(sva_core::stream(&job, (64, None), &Tier::default())).expect("a stream");
     let stream = RefCell::new(stream);
     assert_eq!(add(&stream, &source, "@blip(t, f0=100)"), ["blip"]);
     assert_eq!(stream.borrow().counts().built.parsed, 2);

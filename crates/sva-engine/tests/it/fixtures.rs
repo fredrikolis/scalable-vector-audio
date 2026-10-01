@@ -11,12 +11,12 @@ use std::cell::RefCell;
 
 use sva_ast::{Expr, Graph};
 use sva_engine::{
-    Block, Change, Changed, EngineError, Handle, Placed, Render, Stream, Through, change,
+    Backend, Block, Change, Changed, EngineError, Handle, Placed, Render, Stream, Tier, change,
 };
 
 static RUN: AtomicU32 = AtomicU32::new(0);
 
-/// A future with nothing to wait on, as a stream over no store: one poll finishes it.
+/// A future with nothing to wait on, as one over memory alone: one poll finishes it.
 pub trait Now: Future + Sized {
     fn now(self) -> Self::Output {
         let mut future = std::pin::pin!(self);
@@ -26,7 +26,7 @@ pub trait Now: Future + Sized {
             .poll(&mut std::task::Context::from_waker(waker))
         {
             std::task::Poll::Ready(out) => out,
-            std::task::Poll::Pending => panic!("a future over no store never waits"),
+            std::task::Poll::Pending => panic!("a future over memory alone never waits"),
         }
     }
 }
@@ -34,26 +34,26 @@ pub trait Now: Future + Sized {
 impl<F: Future> Now for F {}
 
 /// Each stream edit a suite makes, through `change` as a page's would.
-pub async fn added(
+pub async fn added<B: Backend>(
     stream: &RefCell<Stream>,
     graph: &Graph,
     term: &Expr,
-    store: &impl Through,
+    tier: &Tier<B>,
 ) -> Result<Handle, EngineError> {
     let build = |_: &Stream| {
         Ok::<_, EngineError>(Change::Add(graph.clone(), term.clone(), Placed::Written))
     };
-    match change(stream, build, store).await? {
+    match change(stream, build, tier).await? {
         Changed::Added(handle) => Ok(handle),
         other => panic!("an add answered {other:?}"),
     }
 }
 
-pub async fn replaced(
+pub async fn replaced<B: Backend>(
     stream: &RefCell<Stream>,
     graph: &Graph,
     (handle, term): (Handle, &Expr),
-    store: &impl Through,
+    tier: &Tier<B>,
 ) -> Result<bool, EngineError> {
     let build = |_: &Stream| {
         Ok(Change::Replace(
@@ -63,26 +63,26 @@ pub async fn replaced(
             Placed::Written,
         ))
     };
-    Ok(change(stream, build, store).await? == Changed::Held(true))
+    Ok(change(stream, build, tier).await? == Changed::Held(true))
 }
 
-pub async fn removed(
+pub async fn removed<B: Backend>(
     stream: &RefCell<Stream>,
     handle: Handle,
-    store: &impl Through,
+    tier: &Tier<B>,
 ) -> Result<bool, EngineError> {
     let build = |_: &Stream| Ok(Change::Remove(handle));
-    Ok(change(stream, build, store).await? == Changed::Held(true))
+    Ok(change(stream, build, tier).await? == Changed::Held(true))
 }
 
-pub async fn edited(
+pub async fn edited<B: Backend>(
     stream: &RefCell<Stream>,
     graph: &Graph,
     target: &Expr,
-    store: &impl Through,
+    tier: &Tier<B>,
 ) -> Result<(), EngineError> {
     let build = |_: &Stream| Ok(Change::Target(graph.clone(), target.clone()));
-    change(stream, build, store).await.map(|_| ())
+    change(stream, build, tier).await.map(|_| ())
 }
 
 pub fn dir_of(name: &str, files: &[(&str, &str)]) -> PathBuf {

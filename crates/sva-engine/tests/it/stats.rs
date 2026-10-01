@@ -1,10 +1,10 @@
-// Concern: proves a render reports every lookup it made and what each came to | Non-concern: the store's cap and prunes (stores.rs) | IO: (a composition, a store) -> CacheStats
+// Concern: proves a render reports every lookup it made and what each came to | Non-concern: memory's cap and prunes (stores.rs) | IO: (a composition, a tier) -> CacheStats
 
 use std::collections::BTreeSet;
 
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{Cache, CacheStats, Hash, Outcome, RenderConfig, render};
+use sva_engine::{CacheStats, Hash, Outcome, RenderConfig, Tier, render};
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
@@ -23,16 +23,11 @@ fn demo(name: &str) -> Graph {
     )
 }
 
-fn stats(graph: &Graph, root: &str, cache: &Cache) -> CacheStats {
-    render(
-        graph,
-        root,
-        RenderConfig::seconds(RATE, SECONDS),
-        Some(cache),
-    )
-    .unwrap_or_else(|e| panic!("rendering `{root}`: {e}"))
-    .cache_stats
-    .expect("a render handed a store reports on it")
+fn stats(graph: &Graph, root: &str, cache: &Tier) -> CacheStats {
+    render(graph, root, RenderConfig::seconds(RATE, SECONDS), cache)
+        .unwrap_or_else(|e| panic!("rendering `{root}`: {e}"))
+        .cache_stats
+        .expect("a render handed a store reports on it")
 }
 
 fn keys(stats: &CacheStats) -> BTreeSet<(Hash, String)> {
@@ -43,17 +38,25 @@ fn keys(stats: &CacheStats) -> BTreeSet<(Hash, String)> {
         .collect()
 }
 
-/// With no store, a render still notes each read, every one after the first a reuse.
+/// Over a memory that keeps nothing, a render still notes each read, every one after the first
+/// a reuse.
 #[test]
-fn a_render_handed_no_store_reports_its_own_reuse_and_no_store() {
+fn a_render_over_a_memory_keeping_nothing_reports_its_own_reuse() {
     let graph = demo("no-store");
-    let held = render(&graph, "b", RenderConfig::seconds(RATE, SECONDS), None).expect("a render");
+    let held = render(
+        &graph,
+        "b",
+        RenderConfig::seconds(RATE, SECONDS),
+        &Tier::new(0),
+    )
+    .expect("a render");
     let stats = held
         .cache_stats
         .expect("every render reports what it asked");
     assert_eq!((stats.bytes, stats.entries), (0, 0));
     assert!(stats.computed() > 0 && stats.stored() == 0, "{stats:?}");
-    let pad: Vec<_> = stats.lookups.iter().filter(|l| l.node == "pad").collect();
+    let pad = stats.lookups.iter().filter(|l| l.node == "pad");
+    let pad: Vec<_> = pad.filter(|l| l.store.is_none()).collect();
     assert_eq!(pad.len(), 1, "one read of the pad: {stats:?}");
 }
 
@@ -61,7 +64,7 @@ fn a_render_handed_no_store_reports_its_own_reuse_and_no_store() {
 #[test]
 fn an_identical_second_render_is_all_hits() {
     let graph = demo("identical");
-    let cache = Cache::new();
+    let cache = Tier::default();
     let cold = stats(&graph, "b", &cache);
     let warm = stats(&graph, "b", &cache);
     assert!(!warm.lookups.is_empty());
@@ -84,7 +87,13 @@ fn a_reuse_is_noted_where_its_read_first_sounds() {
             ("song", "@note(t) + @note(t - 2s) + @note(t - 4s)\n"),
         ],
     );
-    let held = render(&graph, "song", RenderConfig::seconds(RATE, 6.0), None).expect("a render");
+    let held = render(
+        &graph,
+        "song",
+        RenderConfig::seconds(RATE, 6.0),
+        &Tier::default(),
+    )
+    .expect("a render");
     let stats = held
         .cache_stats
         .expect("every render reports what it asked");
@@ -122,7 +131,13 @@ fn a_read_through_a_moved_node_is_a_lookup_of_the_node_it_moves() {
             ("song", "@b(t) + @b(t - 2s)\n"),
         ],
     );
-    let held = render(&graph, "song", RenderConfig::seconds(RATE, 4.0), None).expect("a render");
+    let held = render(
+        &graph,
+        "song",
+        RenderConfig::seconds(RATE, 4.0),
+        &Tier::new(0),
+    )
+    .expect("a render");
     let stats = held
         .cache_stats
         .expect("every render reports what it asked");
@@ -130,7 +145,7 @@ fn a_read_through_a_moved_node_is_a_lookup_of_the_node_it_moves() {
         stats
             .lookups
             .iter()
-            .filter(|l| l.node == node)
+            .filter(|l| l.node == node && l.store.is_none())
             .map(|l| l.outcome)
             .collect::<Vec<_>>()
     };

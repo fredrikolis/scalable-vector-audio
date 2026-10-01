@@ -99,7 +99,10 @@ fn a_draw_with_no_key_refuses() {
         found[0].message.contains("rand(t, seed=k)"),
         "the repair is named"
     );
-    let rendered = sva_core::execute(sva_core::Job::over(&sva_ast::Dir::at(&dir), "@still"));
+    let rendered = sva_core::execute(
+        sva_core::Job::over(&sva_ast::Dir::at(&dir), "@still"),
+        &sva_core::Tier::default(),
+    );
     let Err(refused) = rendered else {
         panic!("a render of the keyless draw refuses too")
     };

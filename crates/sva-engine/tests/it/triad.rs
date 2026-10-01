@@ -1,7 +1,9 @@
 // Concern: proves the three ways to lowpass one chord end where FORMAT 7.3 says they end | Non-concern: the filter response itself (sva-formula) | IO: (a composition) -> a reading or a refusal
 
 use crate::fixtures::graph_of;
-use sva_engine::{Ask, EngineError, Output, RenderConfig, Representation, Source, answer, render};
+use sva_engine::{
+    Ask, EngineError, Output, RenderConfig, Representation, Source, Tier, answer, render,
+};
 
 /// 261.63, 329.63 and 392 Hz: a C major triad, one line each.
 const CHORD: &str = "sin(2*pi*261.63*t) + sin(2*pi*329.63*t) + sin(2*pi*392*t)\n";
@@ -12,7 +14,8 @@ fn lines(name: &str, body: &str) -> Vec<(f64, f64)> {
         node: "voiced".to_string(),
         representation: Representation::Lines,
     }]);
-    let held = render(&g, "voiced", config, None).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let held =
+        render(&g, "voiced", config, &Tier::default()).unwrap_or_else(|e| panic!("{name}: {e}"));
     let id = held.id("voiced").expect("the root");
     let found = answer(&held, id, Representation::Lines).expect("lines");
     assert_eq!(found.source, Source::Exact, "{name}");
@@ -75,7 +78,12 @@ fn the_quotient_row_refuses_and_names_the_cast() {
             ("voiced", "ifourier(@chord/(1 + pow(f/300, 8)))\n"),
         ],
     );
-    let Err(refused) = render(&g, "voiced", RenderConfig::seconds(44_100, 1.0), None) else {
+    let Err(refused) = render(
+        &g,
+        "voiced",
+        RenderConfig::seconds(44_100, 1.0),
+        &Tier::default(),
+    ) else {
         panic!("a quotient of a law leaves A");
     };
     let EngineError::Refused(d) = &refused else {
@@ -96,8 +104,13 @@ fn a_lowpass_over_a_second_long_crop_holds_its_response() {
             ("voiced", "lp(crop(sin(2*pi*100*t), 0s, 1s), cutoff=200)\n"),
         ],
     );
-    let held = render(&g, "voiced", RenderConfig::seconds(44_100, 0.5), None)
-        .expect("a cropped pair through a pole");
+    let held = render(
+        &g,
+        "voiced",
+        RenderConfig::seconds(44_100, 0.5),
+        &Tier::default(),
+    )
+    .expect("a cropped pair through a pole");
     let id = held.id("voiced").expect("the root");
     let buffer = held.output(id).expect("a collapsed law");
     let peak = (4_410..buffer.len())

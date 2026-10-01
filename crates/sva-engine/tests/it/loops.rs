@@ -4,8 +4,8 @@ use std::f64::consts::TAU;
 
 use crate::fixtures::graph_of;
 use sva_engine::{
-    Ask, Detail, EngineError, Held, Output, RenderConfig, Representation, Source, Value, When,
-    answer, render, types,
+    Ask, Detail, EngineError, Held, Output, RenderConfig, Representation, Source, Tier, Value,
+    When, answer, render, types,
 };
 use sva_formula::Body;
 
@@ -95,8 +95,13 @@ const RATES: [u32; 4] = [8_000, 44_100, 48_000, 96_000];
 
 fn at_rate(files: &[(&str, &str)], root: &str, rate: u32, secs: f64) -> sva_engine::Render {
     let g = graph_of("rated", files);
-    render(&g, root, RenderConfig::seconds(rate, secs), None)
-        .unwrap_or_else(|e| panic!("{root} at {rate}: {e}"))
+    render(
+        &g,
+        root,
+        RenderConfig::seconds(rate, secs),
+        &Tier::default(),
+    )
+    .unwrap_or_else(|e| panic!("{root} at {rate}: {e}"))
 }
 
 /// Over a formula, `x + 0.5*self(t - 17ms)` is its delay-equation series, exact at every
@@ -216,7 +221,7 @@ fn a_karplus_strong_loop_with_an_allpass_fraction_is_its_recurrence() {
         }],
         ..RenderConfig::seconds(RATE, 0.05)
     };
-    let held = render(&g, "string", config, None).unwrap_or_else(|e| panic!("{e}"));
+    let held = render(&g, "string", config, &Tier::default()).unwrap_or_else(|e| panic!("{e}"));
     let plane = |node: &str| {
         held.output(held.id(node).expect("held"))
             .expect("a buffer")
@@ -398,7 +403,13 @@ fn a_closed_loop_renders_its_comb_and_reports_its_tail() {
         "comb",
         &[("loop", "sin(2*pi*220*t) + 0.5*self(t - 0.01s)\n")],
     );
-    let held = render(&g, "loop", RenderConfig::seconds(8_000, 0.05), None).expect("a comb");
+    let held = render(
+        &g,
+        "loop",
+        RenderConfig::seconds(8_000, 0.05),
+        &Tier::default(),
+    )
+    .expect("a comb");
     let id = held.id("loop").expect("the root");
     let buffer = held.output(id).expect("a rendered comb");
     assert_eq!(held.labels[&id].source, Source::Exact);
@@ -476,8 +487,13 @@ fn two_nested_loops_expand_under_indices_of_their_own() {
             ("outer", "@comb(t, x=@inner, delay=0.013, g=0.25)\n"),
         ],
     );
-    let held = render(&g, "outer", RenderConfig::seconds(44_100, 0.001), None)
-        .expect("two nested Neumann series render");
+    let held = render(
+        &g,
+        "outer",
+        RenderConfig::seconds(44_100, 0.001),
+        &Tier::default(),
+    )
+    .expect("two nested Neumann series render");
     let buffer = held
         .output(held.id("outer").expect("the root"))
         .expect("a rendered loop");
@@ -506,7 +522,13 @@ const SHIFT: f64 = 0.003;
 fn a_shifted_comb_costs_its_unshifted_route() {
     let routed = |files: &[(&str, &str)]| {
         let g = graph_of("shifted-route", files);
-        let held = render(&g, "loop", RenderConfig::seconds(8_000, 0.05), None).expect("a comb");
+        let held = render(
+            &g,
+            "loop",
+            RenderConfig::seconds(8_000, 0.05),
+            &Tier::default(),
+        )
+        .expect("a comb");
         let id = held.id("loop").expect("the root");
         let label = held.labels[&id].clone();
         let Detail::Lines { terms, .. } = label.detail else {
@@ -525,7 +547,13 @@ fn a_shifted_comb_costs_its_unshifted_route() {
 
     let sounding = |files: &[(&str, &str)]| {
         let g = graph_of("shifted-window", files);
-        let held = render(&g, "loop", RenderConfig::seconds(8_000, 0.05), None).expect("a comb");
+        let held = render(
+            &g,
+            "loop",
+            RenderConfig::seconds(8_000, 0.05),
+            &Tier::default(),
+        )
+        .expect("a comb");
         let id = held.id("loop").expect("the root");
         let plane = held.output(id).expect("a rendered comb").plane(0).to_vec();
         let at = |v: &[f64]| {
@@ -557,7 +585,13 @@ fn a_shifted_comb_costs_its_unshifted_route() {
 fn a_shifted_comb_keeps_its_lines() {
     let listed = |files: &[(&str, &str)]| {
         let g = graph_of("shifted-lines", files);
-        let held = render(&g, "loop", RenderConfig::seconds(8_000, 0.05), None).expect("a comb");
+        let held = render(
+            &g,
+            "loop",
+            RenderConfig::seconds(8_000, 0.05),
+            &Tier::default(),
+        )
+        .expect("a comb");
         let id = held.id("loop").expect("the root");
         let found = answer(&held, id, Representation::Lines).expect("an exact line list");
         assert_eq!(found.source, Source::Exact);

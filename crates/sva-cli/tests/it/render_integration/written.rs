@@ -177,10 +177,13 @@ fn a_non_audio_reading_at_a_wav_path_refuses_the_same_way_on_both_sides() {
 
     let source = sva_ast::Dir::at(fixture("basic"));
     let asked = [sva_core::asked(&sva_core::call("lines").expect("a call")).expect("a reading")];
-    let rendered = sva_core::execute(sva_core::Job {
-        asked: &asked,
-        ..sva_core::Job::over(&source, "sin(2*pi*440*t)")
-    })
+    let rendered = sva_core::execute(
+        sva_core::Job {
+            asked: &asked,
+            ..sva_core::Job::over(&source, "sin(2*pi*440*t)")
+        },
+        &sva_core::Tier::default(),
+    )
     .expect("a probe");
     let answer = rendered
         .answer(sva_core::PROBE, Representation::Lines)

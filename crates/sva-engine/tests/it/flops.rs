@@ -1,7 +1,7 @@
 // Concern: proves a render counts its operations off the schedule and refuses past the budget | Non-concern: what a row computes (sva-samples) | IO: (a composition) -> a cost tree or a refusal
 
 use crate::fixtures::graph_of;
-use sva_engine::{Ask, Output, Render, RenderConfig, Representation, Source, answer, render};
+use sva_engine::{Ask, Output, Render, RenderConfig, Representation, Source, Tier, answer, render};
 
 const RATE: u32 = 8_192;
 
@@ -23,7 +23,7 @@ fn counting(secs: f64, budget: Option<u128>) -> RenderConfig {
 
 fn rendered(name: &str, files: &[(&str, &str)], config: RenderConfig) -> Render {
     let g = graph_of(name, files);
-    render(&g, "node", config, None).unwrap_or_else(|e| panic!("{name}: {e}"))
+    render(&g, "node", config, &Tier::default()).unwrap_or_else(|e| panic!("{name}: {e}"))
 }
 
 fn counted(render: &Render) -> sva_engine::FlopTree {
@@ -72,7 +72,7 @@ fn a_render_over_budget_refuses_naming_the_dominating_node() {
     assert!(tree.total > 1_000, "the count itself is never refused");
 
     let g = graph_of("flops-budget-render", files);
-    let (code, text) = match render(&g, "node", config(1.0, Some(1_000)), None) {
+    let (code, text) = match render(&g, "node", config(1.0, Some(1_000)), &Tier::default()) {
         Err(refusal) => (refusal.code().to_string(), refusal.to_string()),
         Ok(_) => panic!("a render past its budget refuses"),
     };
@@ -113,7 +113,7 @@ fn a_sampled_node_counts_the_law_it_reads_beside_its_own_program() {
     );
 
     let g = graph_of("flops-sampled-render", files);
-    let code = match render(&g, "node", config(1.0, Some(500)), None) {
+    let code = match render(&g, "node", config(1.0, Some(500)), &Tier::default()) {
         Err(refusal) => refusal.code().to_string(),
         Ok(_) => panic!("the referenced law's cost is the render's cost too"),
     };
@@ -126,7 +126,7 @@ fn the_flag_admits_the_cost_and_the_label_carries_it() {
     let budget = 1_000;
     let g = graph_of("flops-admitted", files);
     assert!(
-        render(&g, "node", config(1.0, Some(budget)), None).is_err(),
+        render(&g, "node", config(1.0, Some(budget)), &Tier::default()).is_err(),
         "under budget it refuses"
     );
 
@@ -162,7 +162,7 @@ fn flops_tree_names_the_law_read_through_a_filter() {
     assert!(law.subtree > 500, "the law it reads is what costs");
 
     let g = graph_of("flops-filtered-render", files);
-    let text = match render(&g, "node", config(1.0, Some(500)), None) {
+    let text = match render(&g, "node", config(1.0, Some(500)), &Tier::default()) {
         Err(refusal) => refusal.to_string(),
         Ok(_) => panic!("the referenced law's cost is the render's cost too"),
     };

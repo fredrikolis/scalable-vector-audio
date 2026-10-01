@@ -42,7 +42,7 @@ pub(crate) fn demand(values: &Values, asked: &[(usize, Extent)]) -> Vec<Need> {
                     }
                 }
             }
-            Kind::Stored { .. } => {
+            Kind::Resident { .. } => {
                 for read in &value.reads {
                     holds[*read].union(&compute);
                 }

@@ -1,10 +1,10 @@
-// Concern: proves each cache policy stores what it names, and a warm render under any is the cold one | Non-concern: evicting (stores.rs) | IO: (a composition, a policy) -> what the store holds
+// Concern: proves each cache policy keeps what it names, and a warm render under any is the cold one | Non-concern: evicting (stores.rs) | IO: (a composition, a policy) -> what memory holds
 
 use std::collections::BTreeSet;
 
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{Cache, CachePolicy, Hash, Outcome, Render, RenderConfig, render};
+use sva_engine::{CachePolicy, Hash, Outcome, Render, RenderConfig, Tier, render};
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
@@ -23,9 +23,8 @@ fn forked(master: &str) -> Graph {
     )
 }
 
-fn rendered(graph: &Graph, cache: Option<&Cache>, policy: Option<CachePolicy>) -> Render {
-    let mut config = RenderConfig::seconds(RATE, SECONDS);
-    config.cache_policy = policy;
+fn rendered(graph: &Graph, cache: &Tier) -> Render {
+    let config = RenderConfig::seconds(RATE, SECONDS);
     render(graph, "master", config, cache).expect("a render")
 }
 
@@ -53,7 +52,7 @@ fn stored(render: &Render) -> BTreeSet<Hash> {
     stats
         .lookups
         .iter()
-        .filter(|l| l.outcome == Outcome::ComputedStored)
+        .filter(|l| l.store.is_none() && l.outcome == Outcome::ComputedStored)
         .map(|l| l.key)
         .collect()
 }
@@ -70,9 +69,9 @@ fn root(render: &Render) -> Vec<f64> {
 fn each_policy_stores_what_it_names() {
     let graph = forked("@a + @b\n");
     for policy in CachePolicy::ALL {
-        let cache = Cache::new();
+        let cache = Tier::default();
         cache.set_policy(policy);
-        let cold = rendered(&graph, Some(&cache), None);
+        let cold = rendered(&graph, &cache);
         let stats = cold.cache_stats.as_ref().expect("stats");
         let named: BTreeSet<Hash> = match policy {
             CachePolicy::All => {
@@ -81,38 +80,22 @@ fn each_policy_stores_what_it_names() {
             }
             CachePolicy::Forks => [own(&cold, "x"), own(&cold, "y"), own(&cold, "master")].into(),
             CachePolicy::Target => [own(&cold, "master")].into(),
-            CachePolicy::None => BTreeSet::new(),
         };
         assert_eq!(stored(&cold), named, "{policy:?}");
-        assert_eq!(cache.entries(), named.len(), "{policy:?}");
+        assert!(named.iter().all(|key| cache.holds(*key)), "{policy:?}");
     }
-}
-
-#[test]
-fn a_render_names_its_own_policy_over_the_stores() {
-    let graph = forked("@a + @b\n");
-    let cache = Cache::new();
-    let held = rendered(&graph, Some(&cache), Some(CachePolicy::None));
-    assert!(stored(&held).is_empty());
-    assert_eq!(cache.entries(), 0);
-    let held = rendered(&graph, Some(&cache), Some(CachePolicy::Target));
-    assert_eq!(stored(&held), [own(&held, "master")].into());
 }
 
 #[test]
 fn a_warm_render_is_the_cold_one_byte_for_byte_under_every_policy() {
     let graph = forked("@a + @b\n");
-    let uncached = rendered(&graph, None, None);
+    let uncached = rendered(&graph, &Tier::default());
     let cold = root(&uncached);
     for policy in CachePolicy::ALL {
-        let cache = Cache::new();
+        let cache = Tier::default();
         cache.set_policy(policy);
-        assert_eq!(
-            root(&rendered(&graph, Some(&cache), None)),
-            cold,
-            "{policy:?}"
-        );
-        let warm = rendered(&graph, Some(&cache), None);
+        assert_eq!(root(&rendered(&graph, &cache)), cold, "{policy:?}");
+        let warm = rendered(&graph, &cache);
         assert_eq!(root(&warm), cold, "{policy:?} warm");
         assert_eq!(
             warm.labels[&warm.root].detail, uncached.labels[&uncached.root].detail,
@@ -124,17 +107,17 @@ fn a_warm_render_is_the_cold_one_byte_for_byte_under_every_policy() {
 /// A value the store answers covers everything it was built from: nothing under it is run.
 #[test]
 fn a_hit_covers_what_it_was_built_from() {
-    let cache = Cache::new();
+    let cache = Tier::default();
     cache.set_policy(CachePolicy::Target);
-    rendered(&forked("@a + @b\n"), Some(&cache), None);
-    let warm = rendered(&forked("@a + @b\n"), Some(&cache), None);
+    rendered(&forked("@a + @b\n"), &cache);
+    let warm = rendered(&forked("@a + @b\n"), &cache);
     let stats = warm.cache_stats.expect("stats");
     assert_eq!((stats.lookups.len(), stats.hits()), (1, 1), "{stats:?}");
 
-    let cache = Cache::new();
+    let cache = Tier::default();
     cache.set_policy(CachePolicy::Forks);
-    let first = rendered(&forked("@a + @b\n"), Some(&cache), None);
-    let edited = rendered(&forked("@a - @b\n"), Some(&cache), None);
+    rendered(&forked("@a + @b\n"), &cache);
+    let edited = rendered(&forked("@a - @b\n"), &cache);
     let stats = edited.cache_stats.as_ref().expect("stats");
     let outcome = |key: Hash| {
         stats
@@ -144,7 +127,8 @@ fn a_hit_covers_what_it_was_built_from() {
             .map(|l| l.outcome)
     };
     for fork in ["x", "y"] {
-        assert_eq!(outcome(own(&first, fork)), Some(Outcome::Hit), "`{fork}`");
+        let hit = |l: &&sva_engine::Lookup| l.node == fork && l.outcome == Outcome::Hit;
+        assert!(stats.lookups.iter().any(|l| hit(&l)), "`{fork}`: {stats:?}");
     }
     for single in ["a", "b"] {
         assert_eq!(

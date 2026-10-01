@@ -1,7 +1,7 @@
 // Concern: proves a closed form answers off its own spectral sum with no buffer behind it | Non-concern: what a collapse produces (sva-samples) | IO: (a composition) -> Answer
 
 use crate::fixtures::graph_of;
-use sva_engine::{Ask, Cache, Output, RenderConfig, Representation, Source, answer, render};
+use sva_engine::{Ask, Output, RenderConfig, Representation, Source, Tier, answer, render};
 
 const CHORD: &str = "sin(2*pi*256*t) + sin(2*pi*512*t) + sin(2*pi*768*t)\n";
 
@@ -12,7 +12,7 @@ fn lines_answers_without_collapse() {
         node: "chord".to_string(),
         representation: Representation::Lines,
     }]);
-    let held = render(&g, "chord", config, None).expect("a law renders nothing");
+    let held = render(&g, "chord", config, &Tier::default()).expect("a law renders nothing");
     assert!(
         held.buffers.is_empty(),
         "a line list allocates no buffer: {:?}",
@@ -40,7 +40,7 @@ fn spectrum_of_a_pair_is_exact() {
         node: "chord".to_string(),
         representation: Representation::Lines,
     }]);
-    let held = render(&g, "chord", config, None).expect("a law");
+    let held = render(&g, "chord", config, &Tier::default()).expect("a law");
     let root = held.id("chord").expect("the root");
     let found = answer(
         &held,
@@ -66,7 +66,13 @@ fn spectrum_of_a_pair_is_exact() {
 #[test]
 fn the_render_root_collapses_when_the_caller_asks_for_audio() {
     let g = graph_of("audio", &[("chord", CHORD)]);
-    let held = render(&g, "chord", RenderConfig::seconds(8_192, 1.0), None).expect("audio");
+    let held = render(
+        &g,
+        "chord",
+        RenderConfig::seconds(8_192, 1.0),
+        &Tier::default(),
+    )
+    .expect("audio");
     let root = held.id("chord").expect("the root");
     let buffer = held.output(root).expect("the root is materialized");
     assert_eq!(buffer.len(), 8_192);
@@ -77,13 +83,13 @@ fn the_render_root_collapses_when_the_caller_asks_for_audio() {
 #[test]
 fn a_warm_collapse_is_the_cold_one_byte_for_byte() {
     let g = graph_of("warm", &[("chord", CHORD)]);
-    let store = Cache::new();
+    let store = Tier::default();
     let config = || RenderConfig::seconds(8_192, 0.5);
-    let cold = render(&g, "chord", config(), Some(&store)).expect("a cold render");
+    let cold = render(&g, "chord", config(), &store).expect("a cold render");
     let cold_root = cold.id("chord").expect("the root");
     let cold_samples = cold.output(cold_root).expect("a buffer").clone();
 
-    let warm = render(&g, "chord", config(), Some(&store)).expect("a warm render");
+    let warm = render(&g, "chord", config(), &store).expect("a warm render");
     let warm_root = warm.id("chord").expect("the root");
     assert_eq!(warm.output(warm_root).expect("a buffer"), cold_samples);
 }
@@ -99,8 +105,13 @@ fn noise_through_a_bandpass_is_a_pair_with_shaped_lines() {
             ("band", "bandpass(@flat, cutoff=1200, q=2)\n"),
         ],
     );
-    let held = render(&g, "band", RenderConfig::seconds(44_100, 1.0), None)
-        .expect("a series through a filter");
+    let held = render(
+        &g,
+        "band",
+        RenderConfig::seconds(44_100, 1.0),
+        &Tier::default(),
+    )
+    .expect("a series through a filter");
     let root = held.id("band").expect("the root");
     assert!(held.tys.ty(root).has_dual());
 
@@ -154,7 +165,7 @@ fn pitch_of_a_pure_sine_is_exact() {
             node: "tone".to_string(),
             representation: reading,
         }]);
-        let held = render(&g, "tone", config, None).expect("a tone");
+        let held = render(&g, "tone", config, &Tier::default()).expect("a tone");
         let root = held.id("tone").expect("the root");
         answer(&held, root, reading).expect("a pitch reading")
     };
@@ -199,7 +210,7 @@ fn spectrum_of_a_pair_is_its_full_line_list_or_labeled_measured() {
         node: "chord".to_string(),
         representation: Representation::Lines,
     }]);
-    let held = render(&g, "chord", config, None).expect("a law");
+    let held = render(&g, "chord", config, &Tier::default()).expect("a law");
     let root = held.id("chord").expect("the root");
 
     let Output::Lines(listed) = answer(&held, root, Representation::Lines)
@@ -256,7 +267,7 @@ fn envelope_of_a_damped_stack_is_measured_not_refused() {
             node: "node".to_string(),
             representation: Representation::Envelope { frame_secs: None },
         }]);
-        let held = render(&g, "node", config, None).expect("a law renders");
+        let held = render(&g, "node", config, &Tier::default()).expect("a law renders");
         let root = held.id("node").expect("the root");
         answer(&held, root, Representation::Envelope { frame_secs: None })
             .unwrap_or_else(|e| panic!("{name}: {e}"))
@@ -297,7 +308,7 @@ fn envelope_of_a_rational_in_t_is_measured() {
         node: "node".to_string(),
         representation: Representation::Envelope { frame_secs: None },
     }]);
-    let held = render(&g, "node", config, None).expect("a rational in t renders");
+    let held = render(&g, "node", config, &Tier::default()).expect("a rational in t renders");
     let root = held.id("node").expect("the root");
     let taken = answer(&held, root, Representation::Envelope { frame_secs: None })
         .expect("an envelope off the grid, not a refusal");
@@ -328,8 +339,13 @@ fn a_steep_decay_cropped_at_a_late_onset_reads_its_value_there() {
         ("struck", "crop(string(220, at=3s), 0s, 4s)\n"),
     ] {
         let g = graph_of(name, &[("decay", decay)]);
-        let held = render(&g, "decay", RenderConfig::seconds(44_100, 4.0), None)
-            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let held = render(
+            &g,
+            "decay",
+            RenderConfig::seconds(44_100, 4.0),
+            &Tier::default(),
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
         let root = held.id("decay").expect("the root");
         let samples = held.output(root).expect("a buffer").plane(0).to_vec();
         assert!(samples[..3 * 44_100].iter().all(|v| *v == 0.0), "{name}");
@@ -337,7 +353,13 @@ fn a_steep_decay_cropped_at_a_late_onset_reads_its_value_there() {
         assert!(samples[3 * 44_100..].iter().any(|v| *v != 0.0), "{name}");
     }
     let g = graph_of("onset", &[("decay", "crop(exp(-(t - 3s)*400), 3s, 4s)\n")]);
-    let held = render(&g, "decay", RenderConfig::seconds(44_100, 4.0), None).expect("renders");
+    let held = render(
+        &g,
+        "decay",
+        RenderConfig::seconds(44_100, 4.0),
+        &Tier::default(),
+    )
+    .expect("renders");
     let samples = held
         .output(held.id("decay").expect("the root"))
         .expect("a buffer");

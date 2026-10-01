@@ -130,7 +130,7 @@ fn route(table: &Table, at: usize) -> &'static str {
         Kind::Frames { .. } => "short-time transform",
         Kind::Istft => "inverse short-time transform",
         Kind::Spectrum(_) => "inverse spectrum",
-        Kind::Stored { .. } => "stored",
+        Kind::Resident { .. } => "stored",
     }
 }
 

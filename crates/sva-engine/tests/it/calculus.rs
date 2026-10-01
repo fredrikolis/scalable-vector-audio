@@ -1,7 +1,7 @@
 // Concern: proves a symbolic derivative agrees with the slope of the closed form it came from | Non-concern: differentiating an atom (sva-formula) | IO: (a Render) -> a derivative
 
 use crate::fixtures::graph_of;
-use sva_engine::{Ask, Output, RenderConfig, Representation, Source, answer, render};
+use sva_engine::{Ask, Output, RenderConfig, Representation, Source, Tier, answer, render};
 use sva_samples::{AliasScore, Extent, PSYCHOACOUSTIC_V1, of_spectral_sum};
 
 /// A four-times-oversampled five-point difference of the closed form itself is the reference, its
@@ -16,7 +16,7 @@ fn a_symbolic_derivative_agrees_with_a_four_times_finite_difference() {
         node: "tone".to_string(),
         representation: Representation::Lines,
     }]);
-    let held = render(&g, "tone", config, None).expect("a law");
+    let held = render(&g, "tone", config, &Tier::default()).expect("a law");
     let id = held.id("tone").expect("the root");
 
     let found = answer(&held, id, Representation::Derivative).expect("a derivative");
@@ -66,7 +66,7 @@ fn a_laws_envelope_is_symbolic_and_positive() {
         node: "tone".to_string(),
         representation: Representation::Envelope { frame_secs: None },
     }]);
-    let held = render(&g, "tone", config, None).expect("a law");
+    let held = render(&g, "tone", config, &Tier::default()).expect("a law");
     let id = held.id("tone").expect("the root");
     let found = answer(&held, id, Representation::Envelope { frame_secs: None }).expect("one");
     let Output::Symbolic(squared) = found.value else {

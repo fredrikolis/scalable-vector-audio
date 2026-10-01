@@ -4,11 +4,12 @@ mod answer;
 pub(crate) mod bound;
 mod drive;
 mod frontier;
+mod offer;
+mod run;
 mod slots;
 mod stream;
 pub(crate) mod table;
 mod terms;
-mod through;
 pub mod until;
 mod volatile;
 
@@ -21,7 +22,7 @@ use sva_samples::{
 };
 
 use crate::bindings::Binding;
-use crate::cache::{Cache, CachePolicy, CacheStats, Recording};
+use crate::cache::{CacheStats, Memory, Recording, Tier, now};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate;
 use crate::query::Ask;
@@ -49,9 +50,8 @@ pub struct RenderConfig {
     pub asks: Vec<Ask>,
     /// The operation count this render may pay.
     pub flop_budget: u128,
-    /// What reads one of these keeps one value in the store, its last.
+    /// What reads one of these keeps one value in memory, its last.
     pub volatile: Vec<String>,
-    pub cache_policy: Option<CachePolicy>,
 }
 
 impl RenderConfig {
@@ -64,7 +64,6 @@ impl RenderConfig {
             asks: Vec::new(),
             flop_budget: PSYCHOACOUSTIC_V1.flop_budget,
             volatile: Vec::new(),
-            cache_policy: None,
         }
     }
 
@@ -87,11 +86,11 @@ impl RenderConfig {
 
 pub use answer::{answer, answer_buffer, sketch_atom};
 pub use drive::Block;
+pub use run::{render_over, warm};
 pub use stream::{
-    Built, Change, Changed, Counts, LATEST, Placed, STREAMED, Stream, StreamConfig, change,
+    Built, Change, Changed, Counts, LATEST, Placed, STREAMED, Stream, StreamConfig, change, fetch,
 };
 pub use terms::{Handle, NOTES};
-pub use through::{render_through, warm};
 pub use until::Until;
 
 /// Samples a whole render pulls at once; any size writes the same bits.
@@ -144,7 +143,7 @@ impl Render {
         }
     }
 
-    /// What its schedule prices: every value once over the range, whatever the store answered.
+    /// What its schedule prices: every value once over the range, whatever memory answered.
     pub fn work(&self) -> crate::flops::Work {
         crate::flops::Work {
             samples: self.range.map_or(0, |range| range.len() as u64),
@@ -208,22 +207,14 @@ impl Render {
     }
 }
 
-/// Nothing is materialized that no reading asked for.
+/// `render_over` memory alone. Nothing is materialized that no reading asked for.
 pub fn render(
     graph: &Graph,
     target: &str,
     config: RenderConfig,
-    cache: Option<&Cache>,
+    tier: &Tier,
 ) -> Result<Render, EngineError> {
-    let recording = Recording::over(cache, config.cache_policy);
-    let mut held = planned(
-        prepared(graph, target, config.rate)?,
-        config,
-        &BTreeSet::new(),
-    )?;
-    pulled(&mut held, recording)?;
-    closed(&mut held)?;
-    Ok(held)
+    now(render_over(graph, target, config, tier))
 }
 
 fn closed(held: &mut Render) -> Result<(), EngineError> {
@@ -430,6 +421,7 @@ fn affordable(held: &Render) -> Result<(), EngineError> {
 }
 
 /// Every wanted value pulled over the range, block by block, until `until` stops it.
+#[cfg(test)]
 fn pulled(held: &mut Render, recording: Recording) -> Result<(), EngineError> {
     if let Some(mut driver) = driving(held, recording)? {
         while driver.pull()? {}
@@ -457,7 +449,6 @@ fn driving(held: &mut Render, recording: Recording) -> Result<Option<drive::Driv
     )))
 }
 
-/// `keep`: each wanted value's samples copied out of the table.
 fn drove(held: &mut Render, driver: drive::Driver, keep: bool) {
     let range = held.range.expect("a pulled render has a range");
     held.held_bytes = driver.most_bytes();
@@ -496,7 +487,7 @@ pub(crate) fn finer(
     let profile = &render.config.profile;
     let mut table = Table::finer(&render.tys, node, &[node], profile, i128::from(fine))?;
     let at = table.root;
-    table.pull(over, &mut Recording::over(None, None))?;
+    table.pull(over, &mut Recording::over(&Memory::holding(0)))?;
     let mut held = table.samples(at, over);
     held.rate = render.config.rate * fine;
     Ok(held)
@@ -544,15 +535,14 @@ pub(crate) fn render_apart(
         table.plan(range);
         held.table = Some(table);
     }
-    pulled(&mut held, Recording::over(None, None))?;
+    pulled(&mut held, Recording::over(&Memory::holding(0)))?;
     Ok(held)
 }
 
-/// A node's value pulled over `over` in a table of its own.
 pub(crate) fn sampled(render: &Render, node: NodeId, over: Extent) -> Result<Buffer, EngineError> {
     let mut table = Table::build(&render.tys, node, &[node], &render.config.profile)?;
     let at = table.root;
-    table.pull(over, &mut Recording::over(None, None))?;
+    table.pull(over, &mut Recording::over(&Memory::holding(0)))?;
     Ok(table.samples(at, over))
 }
 

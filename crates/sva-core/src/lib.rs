@@ -14,7 +14,7 @@ mod tempo;
 mod until;
 
 pub use answer::{
-    Printed, Report, SAMPLE_LIMIT, answer_json, label_json, query_data, stats_json,
+    Printed, Report, SAMPLE_LIMIT, answer_json, counters_json, label_json, query_data, stats_json,
     stream_stats_json, value_json, work_json,
 };
 pub use builtins::{Builtins, Callable, Crossing, builtins, builtins_data};
@@ -36,15 +36,15 @@ use std::path::Path;
 use sva_ast::{Dir, Graph, Refusal, Source};
 use sva_engine::{
     Ask, Change, Changed, DEFAULT_SAMPLE_RATE, EngineError, Range, RenderConfig, StreamConfig,
-    render, render_through,
+    render, render_over,
 };
 
 pub use sva_engine::{Handle, Placed, Stream, Until};
 
 pub use sva_engine::{Answer, Extent, Label, Output, Representation};
 pub use sva_engine::{
-    Backend, Cache, CachePolicy, CacheStats, DEFAULT_STORE_BYTES, NoStore, Persisted, PrunePolicy,
-    Store, Through,
+    Backend, CachePolicy, CacheStats, Counters, DEFAULT_CACHE_BYTES, DEFAULT_STORE_BYTES,
+    FETCH_READS, Nothing, Persisted, PrunePolicy, Store, Tier,
 };
 
 pub const ROOT: &str = "master";
@@ -91,8 +91,6 @@ pub struct Job<'a> {
     pub until: Option<&'a str>,
     pub rate: Option<u32>,
     pub bits: Option<i32>,
-    pub cache: Option<&'a Cache>,
-    pub cache_policy: Option<CachePolicy>,
     pub asked: &'a [Asked],
     /// The operation count the caller acknowledges paying; the profile's own where `None`.
     pub flop_budget: Option<u128>,
@@ -107,8 +105,6 @@ impl<'a> Job<'a> {
             until: None,
             rate: None,
             bits: None,
-            cache: None,
-            cache_policy: None,
             asked: &[],
             flop_budget: None,
             volatile: &[],
@@ -166,7 +162,6 @@ fn settle(job: &Job) -> Result<(Graph, RenderConfig), CliError> {
         config.profile.precision_bits = precision(bits)?;
     }
     config.volatile = job.volatile.to_vec();
-    config.cache_policy = job.cache_policy;
     config.asks = job
         .asked
         .iter()
@@ -211,19 +206,16 @@ fn instance_read(graph: &Graph, text: &str) -> Option<sva_ast::Expr> {
     sva_ast::parse_expr(&format!("@{path}(t, {binds})")).ok()
 }
 
-pub fn execute(job: Job) -> Result<Rendered, CliError> {
+pub fn execute(job: Job, tier: &Tier) -> Result<Rendered, CliError> {
     let (graph, config) = settle(&job)?;
-    let render = render(&graph, PROBE, config, job.cache);
+    let render = render(&graph, PROBE, config, tier);
     rendered(&job, graph, render)
 }
 
-/// `execute` reading through `store` in place of `job`'s own cache; only `persist` writes it.
-pub async fn execute_through<B: Backend>(
-    job: Job<'_>,
-    store: &Store<B>,
-) -> Result<Rendered, CliError> {
+/// `job` over `tier`; only `persist` commits what it offers a disk beneath.
+pub async fn execute_over<B: Backend>(job: Job<'_>, tier: &Tier<B>) -> Result<Rendered, CliError> {
     let (graph, config) = settle(&job)?;
-    let render = render_through(&graph, PROBE, config, store).await;
+    let render = render_over(&graph, PROBE, config, tier).await;
     rendered(&job, graph, render)
 }
 
@@ -232,19 +224,19 @@ pub struct Warmed {
     pub readings: Option<Rendered>,
 }
 
-/// Readings, where asked, are `execute_through`'s, the root computed for them.
-pub async fn warm<B: Backend>(job: Job<'_>, store: &Store<B>) -> Result<Warmed, CliError> {
+/// Readings, where asked, are `execute_over`'s, the root computed for them.
+pub async fn warm<B: Backend>(job: Job<'_>, tier: &Tier<B>) -> Result<Warmed, CliError> {
     if !job.asked.is_empty() {
-        let mut read = execute_through(job, store).await?;
+        let mut read = execute_over(job, tier).await?;
         let stats = read.render.cache_stats.take();
-        let stats = stats.expect("a render through a store reports on it");
+        let stats = stats.expect("a render reports");
         return Ok(Warmed {
             stats,
             readings: Some(read),
         });
     }
     let (graph, config) = settle(&job)?;
-    let stats = sva_engine::warm(&graph, PROBE, config, store).await;
+    let stats = sva_engine::warm(&graph, PROBE, config, tier).await;
     let stats = stats.map_err(|e| CliError::Engine(as_written(e, job.target)))?;
     Ok(Warmed {
         stats,
@@ -281,10 +273,10 @@ pub fn types(job: &Job) -> Result<(), CliError> {
 }
 
 /// `channels`: what it plays, the target's own where `None`.
-pub async fn stream(
+pub async fn stream<B: Backend>(
     job: &Job<'_>,
     (block, channels): (usize, Option<usize>),
-    store: &impl Through,
+    tier: &Tier<B>,
 ) -> Result<Stream, CliError> {
     let (graph, config) = settle(job)?;
     let target = graph
@@ -296,80 +288,82 @@ pub async fn stream(
         channels,
         render: config,
     };
-    Stream::open(&graph, &target, config, job.cache, store)
+    Stream::open(&graph, &target, config, tier)
         .await
         .map_err(|e| CliError::Engine(as_written(e, job.target)))
 }
 
 /// `target`, an expression over `source` with no interval of its own, in place of what
 /// `stream` plays. Each edit here is `sva_engine::change`'s: the stream plays on meanwhile.
-pub async fn edit(
+pub async fn edit<B: Backend>(
     stream: &RefCell<Stream>,
     source: &dyn Source,
     target: &str,
-    store: &impl Through,
+    tier: &Tier<B>,
 ) -> Result<(), CliError> {
     let build = |s: &Stream| {
         let (graph, expr) = streamed(s, source, target)?;
         Ok(Change::Target(graph, expr))
     };
-    changed(stream, build, Some(target), store)
-        .await
-        .map(|_| ())
+    changed(stream, build, Some(target), tier).await.map(|_| ())
 }
 
 /// `term` summed into the stream's `@notes`, its sample 0 placed `at`.
-pub async fn add(
+pub async fn add<B: Backend>(
     stream: &RefCell<Stream>,
     source: &dyn Source,
     (term, at): (&str, Placed),
-    store: &impl Through,
+    tier: &Tier<B>,
 ) -> Result<Handle, CliError> {
     let build = |s: &Stream| {
         let (graph, expr) = streamed(s, source, term)?;
         Ok(Change::Add(graph, expr, at))
     };
-    match changed(stream, build, Some(term), store).await? {
+    match changed(stream, build, Some(term), tier).await? {
         Changed::Added(handle) => Ok(handle),
         _ => unreachable!("an add answers its handle"),
     }
 }
 
 /// False where the stream no longer holds `handle`.
-pub async fn replace(
+pub async fn replace<B: Backend>(
     stream: &RefCell<Stream>,
     source: &dyn Source,
     (handle, term, at): (Handle, &str, Placed),
-    store: &impl Through,
+    tier: &Tier<B>,
 ) -> Result<bool, CliError> {
     let build = |s: &Stream| {
         let (graph, expr) = streamed(s, source, term)?;
         Ok(Change::Replace(handle, graph, expr, at))
     };
-    Ok(changed(stream, build, Some(term), store).await? == Changed::Held(true))
+    Ok(changed(stream, build, Some(term), tier).await? == Changed::Held(true))
 }
 
 /// False where the stream no longer holds `handle`.
-pub async fn remove(
+pub async fn remove<B: Backend>(
     stream: &RefCell<Stream>,
     handle: Handle,
-    store: &impl Through,
+    tier: &Tier<B>,
 ) -> Result<bool, CliError> {
     let build = |_: &Stream| Ok(Change::Remove(handle));
-    Ok(changed(stream, build, None, store).await? == Changed::Held(true))
+    Ok(changed(stream, build, None, tier).await? == Changed::Held(true))
 }
 
-async fn changed(
+async fn changed<B: Backend>(
     stream: &RefCell<Stream>,
     build: impl FnMut(&Stream) -> Result<Change, CliError>,
     text: Option<&str>,
-    store: &impl Through,
+    tier: &Tier<B>,
 ) -> Result<Changed, CliError> {
-    let changed = sva_engine::change(stream, build, store).await;
+    let changed = sva_engine::change(stream, build, tier).await;
     changed.map_err(|e| match (e, text) {
         (CliError::Engine(e), Some(text)) => CliError::Engine(as_written(e, text)),
         (e, _) => e,
     })
+}
+
+pub async fn fetch<B: Backend>(stream: &RefCell<Stream>, tier: &Tier<B>) {
+    sva_engine::fetch(stream, tier).await;
 }
 
 /// `text` with no interval, and each node it reads that `stream` does not hold yet, read and
@@ -450,7 +444,7 @@ fn as_written(refused: EngineError, target: &str) -> EngineError {
 }
 
 pub fn probe(dir: &Path, expression: &str) -> Result<Rendered, CliError> {
-    execute(Job::over(&Dir::at(dir), expression))
+    execute(Job::over(&Dir::at(dir), expression), &Tier::default())
 }
 
 pub fn cwd() -> Result<std::path::PathBuf, CliError> {

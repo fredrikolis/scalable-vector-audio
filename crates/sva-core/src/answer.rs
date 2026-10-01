@@ -4,9 +4,9 @@ use std::path::Path;
 
 use sva_engine::{
     Alias, AliasBand, Answer, Arguments, BandCrest, BandTrack, Bands, Binding, Buffer, CacheStats,
-    Cost, Crest, Detail, EnvelopeFrame, FormantFrame, Label, LedgerEntry, Loudness, LoudnessFrame,
-    Outcome, Output, PayloadKind, Pruned, Source, SpectralSum, Spectrum, StereoFrame, StereoImage,
-    Work,
+    Cost, Counters, Crest, Detail, EnvelopeFrame, FormantFrame, Label, LedgerEntry, Loudness,
+    LoudnessFrame, Outcome, Output, PayloadKind, Pruned, Source, SpectralSum, Spectrum,
+    StereoFrame, StereoImage, Work,
 };
 
 use crate::json::{NONE, capped, escape, latest, list, num};
@@ -495,8 +495,9 @@ pub fn work_json(work: &Work) -> String {
     )
 }
 
-/// `computed` counts every miss, `stored` the misses the store kept and `replaced` the volatile
-/// misses kept in place of their last value; the store's figures are as the render left it.
+/// `computed` counts every miss, `stored` the misses memory kept and `replaced` the volatile
+/// misses kept in place of their last value; memory's figures are as the render left it, and
+/// `tier` what passed between memory and the disk meanwhile.
 pub fn stats_json(stats: &CacheStats) -> String {
     stats_with(stats, "")
 }
@@ -542,7 +543,7 @@ fn stats_with(stats: &CacheStats, extra: &str) -> String {
     format!(
         "{{ \"nodes\": {}, \"hits\": {}, \"computed\": {}, \"stored\": {}, \"replaced\": {}, \"extended\": {}, \
          \"bytes\": {}, \"max_bytes\": {}, \"entries\": {}, \"evictions\": {}, \
-         \"lookups\": {lookups}{extra} }}",
+         \"tier\": {}, \"lookups\": {lookups}{extra} }}",
         stats.nodes(),
         stats.hits(),
         stats.computed(),
@@ -552,7 +553,22 @@ fn stats_with(stats: &CacheStats, extra: &str) -> String {
         stats.bytes,
         stats.max_bytes,
         stats.entries,
-        stats.evictions
+        stats.evictions,
+        counters_json(&stats.tier)
+    )
+}
+
+/// What passed between memory and the disk beneath it.
+pub fn counters_json(counters: &Counters) -> String {
+    format!(
+        "{{ \"disk_lookups\": {}, \"disk_reads\": {}, \"disk_read_bytes\": {}, \
+         \"promotions\": {}, \"writebacks\": {}, \"evictions\": {} }}",
+        counters.disk_lookups,
+        counters.disk_reads,
+        counters.disk_read_bytes,
+        counters.promotions,
+        counters.writebacks,
+        counters.evictions
     )
 }
 

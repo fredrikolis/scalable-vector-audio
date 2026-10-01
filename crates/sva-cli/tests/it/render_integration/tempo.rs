@@ -4,7 +4,7 @@ use crate::helpers::{fixture, plane, put, scratch, secs};
 use sva_ast::Dir;
 use sva_cli::CliError;
 use sva_core::{Job, PROBE, execute, probe};
-use sva_engine::Cache;
+use sva_engine::Tier;
 
 /// `bpm` reaches the samples only by rewriting a grid's row shifts, so a tempo change must
 /// re-render exactly the bar-timed nodes and leave the rest byte-identical.
@@ -17,13 +17,15 @@ fn a_bpm_change_re_renders_bar_resolved_timing_and_nothing_else() {
     put(&dir, "pattern-1b", "@kick*1.0\n@kick*0.5\n\n@kick*0.7\n");
     put(&dir, "master", "crop(@pattern-1b(t), 0s, 3s) + @tone*0.2\n");
 
-    let cache = Cache::new();
+    let cache = Tier::default();
     let source = Dir::at(&dir);
     let at = |target: &'static str| {
-        execute(Job {
-            cache: Some(&cache),
-            ..Job::over(&source, target)
-        })
+        execute(
+            Job {
+                ..Job::over(&source, target)
+            },
+            &cache,
+        )
         .expect("the target renders")
     };
     let job = || at("@master([0, 3s])");
@@ -116,10 +118,13 @@ fn a_bar_at_128_bpm_lands_on_a_sample_only_at_the_rate_that_divides_it() {
     let dir = fixture("bar-grid");
     for (hz, exact) in [(44_100u32, false), (48_000u32, true)] {
         let source = Dir::at(&dir);
-        let rendered = execute(Job {
-            rate: Some(hz),
-            ..Job::over(&source, "@hit-1b([0, 1b])")
-        })
+        let rendered = execute(
+            Job {
+                rate: Some(hz),
+                ..Job::over(&source, "@hit-1b([0, 1b])")
+            },
+            &Tier::default(),
+        )
         .unwrap();
         let bar = 1.875 * f64::from(hz);
         assert_eq!(bar.fract() == 0.0, exact, "{hz} Hz puts a bar at {bar}");

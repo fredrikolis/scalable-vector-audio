@@ -1,4 +1,4 @@
-// Concern: what the store answers a value with before it computes, and what it leaves there after | Non-concern: the store's cap and evictions | IO: (value, Recording) -> samples loaded, entries
+// Concern: what memory answers a value with before it computes, what it keeps after, and the nodes it stands on | Non-concern: memory's cap and evictions | IO: (value, Recording) -> samples, needs
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -6,11 +6,12 @@ use std::sync::Arc;
 use sva_formula::Hash;
 use sva_samples::{Buffer, Extent, Machine, MachineState, NodeRenderer, Tape};
 
+use super::Table;
 use super::segments::Segments;
 use super::value::{Held, Kind, Value};
-use crate::cache::{Expected, Outcome, Payload, PayloadKind, Recording, Run, frames_key};
+use crate::cache::{Expected, Offered, Outcome, Payload, PayloadKind, Recording, Run, frames_key};
 
-/// Where a value sits in the store: its key, and what a policy weighs of it.
+/// Where a value sits in memory: its key, and what a policy weighs of it.
 #[derive(Clone, Debug)]
 pub(crate) struct Place {
     pub(crate) key: Hash,
@@ -19,6 +20,8 @@ pub(crate) struct Place {
     pub(crate) segments: Vec<(i64, Hash)>,
     pub(crate) fork: bool,
     pub(crate) target: bool,
+    /// Offered to memory as a node, so kept whatever its policy.
+    pub(crate) offered: bool,
     pub(crate) slot: Option<Hash>,
     /// Its own reads its samples have not yet run.
     pub(crate) unread: Vec<Unread>,
@@ -66,11 +69,11 @@ impl Place {
     }
 }
 
-/// What the store holds of `value`, laid in beside what it holds itself; `false` where the
-/// store answered nothing.
+/// What memory holds of `value`, laid in beside what it holds itself; `false` where memory
+/// answered nothing.
 pub(crate) fn load(value: &mut Value, place: &mut Place, recording: &Recording) -> bool {
     place.looked = true;
-    if matches!(value.kind, Kind::Stored { .. }) {
+    if matches!(value.kind, Kind::Resident { .. }) {
         return false;
     }
     let kind = Place::kind(value);
@@ -176,7 +179,7 @@ fn resumed(value: &mut Value, place: &mut Place, recording: &Recording) -> bool 
 
 /// The first time a value is asked: one lookup, answered by what it computes now.
 pub(crate) fn noted(value: &Value, place: &mut Place, computes: bool, recording: &mut Recording) {
-    if place.noted.is_some() || matches!(value.kind, Kind::Stored { .. }) {
+    if place.noted.is_some() || matches!(value.kind, Kind::Resident { .. }) {
         return;
     }
     let (kind, key) = (Place::kind(value), place.keyed(value));
@@ -239,8 +242,8 @@ pub(crate) fn reached(
     out
 }
 
-/// What a value computed, stored where the policy keeps it: a run segment by segment, each
-/// with the states it marked.
+/// What a value computed, kept where memory takes it: a run segment by segment, each with the
+/// states it marked.
 pub(crate) fn stored(
     value: &mut Value,
     place: &Place,
@@ -248,8 +251,9 @@ pub(crate) fn stored(
     recording: &mut Recording,
 ) {
     let kind = Place::kind(value);
-    let stored = matches!(value.kind, Kind::Stored { .. });
-    if computed.is_empty() || stored || !value.pure || !recording.stores(place.fork, place.target) {
+    let stored = matches!(value.kind, Kind::Resident { .. });
+    let keeps = recording.keeps(place.fork, place.target, place.offered);
+    if computed.is_empty() || stored || !value.pure || !keeps {
         return;
     }
     let stamp = recording.stamp(place.slot, place.fork, kind);
@@ -303,7 +307,6 @@ pub(crate) fn stored(
     recording.store((key, place.noted), payload, label.as_ref(), stamp);
 }
 
-/// `buffer` over `e` where it holds all of it: the part itself where `e` is all it holds.
 fn over(buffer: &Arc<Buffer>, e: Extent) -> Option<Arc<Buffer>> {
     let held = buffer.extent();
     if e.is_empty() || e.start < held.start || held.end < e.end {
@@ -315,7 +318,6 @@ fn over(buffer: &Arc<Buffer>, e: Extent) -> Option<Arc<Buffer>> {
     })
 }
 
-/// What `tape` holds over `e`, where it holds all of it: only those samples are copied.
 fn taped(tape: &Tape, rate: u32, e: Extent) -> Option<Buffer> {
     if e.is_empty() || e.start < tape.base() || tape.end() < e.end {
         return None;
@@ -327,4 +329,93 @@ fn taped(tape: &Tape, rate: u32, e: Extent) -> Option<Buffer> {
     let mut out = Buffer::of_planes(rate, planes);
     out.start = e.start;
     Some(out)
+}
+
+impl Table {
+    /// Where memory finds the samples value `at` holds, `by` samples on, through each value it
+    /// only moves; what computes them it keeps from now on. None where they repeat a period.
+    pub(crate) fn offered(&mut self, mut at: usize) -> Option<Offered> {
+        let mut by = 0;
+        while let Some((read, shift)) = self.values[at].alias() {
+            (at, by) = (read, by + shift);
+        }
+        let (value, place) = self.values.placed(at);
+        if value.period.is_some() {
+            return None;
+        }
+        place.offered = true;
+        let keys = match &value.held {
+            Held::Run(_) => place.segments.clone(),
+            _ => vec![(i64::MIN, place.keyed(value))],
+        };
+        Some(Offered::Values { keys, by })
+    }
+
+    pub(crate) fn slot(&mut self, at: usize) -> Option<Hash> {
+        self.values.placed(at).1.slot
+    }
+
+    /// Each node memory holds that `window` asks samples of no value holds: its key, and the
+    /// stretch.
+    pub(crate) fn needs(&self, window: Extent) -> Vec<(Hash, Extent)> {
+        if !self.lacks() {
+            return Vec::new();
+        }
+        let needs = self.demand(window);
+        let ats: Vec<usize> = self.values.ordered().collect();
+        self.lacking(&ats, &needs)
+    }
+
+    pub(crate) fn needs_made(&self, root: usize, window: Extent) -> Vec<(Hash, Extent)> {
+        let needs = super::demand::demand(&self.values, &[(root, window)]);
+        self.lacking(self.made(), &needs)
+    }
+
+    /// Whether a node memory holds lacks samples a value standing on it may yet be asked.
+    fn lacks(&self) -> bool {
+        self.values.iter().any(|(_, value)| {
+            matches!(value.kind, Kind::Resident(_)) && !value.holding().covers(&value.covers())
+        })
+    }
+
+    fn lacking(&self, ats: &[usize], needs: &[super::Need]) -> Vec<(Hash, Extent)> {
+        let mut out = Vec::new();
+        for at in ats {
+            let value = &self.values[*at];
+            let Kind::Resident(stored) = &value.kind else {
+                continue;
+            };
+            let lacks = needs[*at].hold.minus(&value.holding());
+            for run in value.covers().iter() {
+                let asked = lacks.intersect(run);
+                if !asked.is_empty() {
+                    out.push((stored.key, asked.hull()));
+                }
+            }
+        }
+        out
+    }
+
+    /// Samples memory handed out for `key`, laid into each value standing on that node where
+    /// it lacks them, shared wherever a part falls whole within what it lacks.
+    pub(crate) fn took(&mut self, key: Hash, parts: &[Arc<Buffer>]) {
+        for at in self.values.ordered().collect::<Vec<_>>() {
+            let value = &mut self.values[at];
+            let Kind::Resident(stored) = &value.kind else {
+                continue;
+            };
+            if stored.key != key {
+                continue;
+            }
+            for part in parts {
+                let lacks = value.covers().minus(&value.holding());
+                for e in lacks.intersect(part.extent()).iter() {
+                    match e == part.extent() {
+                        true => value.hold_shared(Arc::clone(part)),
+                        false => value.hold(part.over(e, part.extent())),
+                    }
+                }
+            }
+        }
+    }
 }

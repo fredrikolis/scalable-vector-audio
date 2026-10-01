@@ -3,7 +3,7 @@
 use crate::fixtures::{Now, graph_of, next};
 use sva_ast::{Graph, PerBar};
 use sva_engine::{
-    Extent, NoStore, Outcome, Range, RenderConfig, Stream, StreamConfig, identity, render,
+    Extent, Outcome, Range, RenderConfig, Stream, StreamConfig, Tier, identity, render,
 };
 
 const RATE: u32 = 44_100;
@@ -53,7 +53,8 @@ fn a_note_read_at_three_placements_is_computed_once_at_either_tempo() {
             ),
         ] {
             let g = at_tempo("placement", &[("n", note), ("song", song)], bar);
-            let held = render(&g, "song", RenderConfig::at(RATE), None).expect("a song");
+            let held =
+                render(&g, "song", RenderConfig::at(RATE), &Tier::default()).expect("a song");
             let n = held.id("n").expect("the note");
             let computed = held.evaluated(n);
             assert_eq!(
@@ -70,7 +71,7 @@ fn a_note_read_at_three_placements_is_computed_once_at_either_tempo() {
             let asked: Vec<Outcome> = stats
                 .lookups
                 .iter()
-                .filter(|l| l.node == "n")
+                .filter(|l| l.node == "n" && l.store.is_none())
                 .map(|l| l.outcome)
                 .collect();
             assert_eq!(asked.len(), reads, "{bpm}: one lookup per read: {asked:?}");
@@ -88,7 +89,7 @@ fn a_crop_prunes_what_it_reads_before_it_is_computed() {
             ("cut", "crop(@long(t), 0s, 1s)\n"),
         ],
     );
-    let held = render(&g, "cut", RenderConfig::at(RATE), None).expect("a crop");
+    let held = render(&g, "cut", RenderConfig::at(RATE), &Tier::default()).expect("a crop");
     let long = held.id("long").expect("the decay");
     let computed = held.evaluated(long);
     assert_eq!(
@@ -117,7 +118,7 @@ fn streamed(
         },
     };
     let at = sva_ast::parse_expr(target).expect("a target");
-    let mut stream = Stream::open(g, &at, config, None, &NoStore)
+    let mut stream = Stream::open(g, &at, config, &Tier::default())
         .now()
         .expect("it streams");
     while let Some(block) = next(&mut stream).expect("a block") {

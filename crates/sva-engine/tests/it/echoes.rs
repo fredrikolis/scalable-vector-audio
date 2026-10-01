@@ -3,7 +3,7 @@
 use std::f64::consts::TAU;
 
 use crate::fixtures::graph_of;
-use sva_engine::{RenderConfig, render};
+use sva_engine::{RenderConfig, Tier, render};
 
 const RATE: u32 = 8_000;
 
@@ -17,7 +17,7 @@ fn rendered(files: &[(&str, &str)], root: &str, secs: f64) -> Vec<f64> {
         },
         ..RenderConfig::seconds(RATE, secs)
     };
-    let held = render(&g, root, config, None).unwrap_or_else(|e| panic!("{root}: {e}"));
+    let held = render(&g, root, config, &Tier::default()).unwrap_or_else(|e| panic!("{root}: {e}"));
     let id = held.id(root).expect("the root");
     held.output(id).expect("a buffer").plane(0).to_vec()
 }

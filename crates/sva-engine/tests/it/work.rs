@@ -2,7 +2,7 @@
 
 use crate::fixtures::{Now, graph_of, next};
 use sva_ast::Graph;
-use sva_engine::{NoStore, Range, RenderConfig, Stream, StreamConfig, Work, render};
+use sva_engine::{Range, RenderConfig, Stream, StreamConfig, Tier, Work, render};
 
 const RATE: u32 = 44_100;
 
@@ -39,7 +39,7 @@ fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Work {
         },
     };
     let target = sva_ast::parse_expr(&format!("@{target}")).expect("a ref");
-    let mut stream = Stream::open(g, &target, config, None, &NoStore)
+    let mut stream = Stream::open(g, &target, config, &Tier::default())
         .now()
         .expect("a stream");
     while stream.position() < samples as i64 {
@@ -83,7 +83,7 @@ fn a_stream_prices_each_sample_as_a_whole_render_prices_it() {
     let samples = 4_410;
     let secs = samples as f64 / f64::from(RATE);
     let config = RenderConfig::seconds(RATE, secs);
-    let whole = render(&g, "wrapped", config, None).expect("a render");
+    let whole = render(&g, "wrapped", config, &Tier::default()).expect("a render");
     let work = whole.work();
     assert_eq!(work.samples, samples as u64);
     assert!(work.priced_flops > 0);
@@ -110,7 +110,7 @@ fn a_render_holds_what_its_readers_still_reach_and_its_output() {
                 ("line", &format!("{}\n", line.join(" + "))),
             ],
         );
-        let held = render(&g, "line", RenderConfig::at(RATE), None).expect("a render");
+        let held = render(&g, "line", RenderConfig::at(RATE), &Tier::default()).expect("a render");
         let output = held.output(held.root).expect("the root");
         held.held_bytes - size_of_val(output.plane(0))
     };
@@ -158,7 +158,7 @@ fn a_late_window_streams_its_history_and_holds_no_more_the_later_it_starts() {
             },
             ..RenderConfig::at(RATE)
         };
-        let held = render(&g, "dry", config, None).expect("a render");
+        let held = render(&g, "dry", config, &Tier::default()).expect("a render");
         let output = held.output(held.root).expect("the root").plane(0).to_vec();
         (held.held_bytes - output.len() * size_of::<f64>(), output)
     };

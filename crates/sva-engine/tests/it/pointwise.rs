@@ -3,7 +3,7 @@
 use std::f64::consts::TAU;
 
 use crate::fixtures::graph_of;
-use sva_engine::{Ask, Detail, RenderConfig, Representation, Rule, Source, render};
+use sva_engine::{Ask, Detail, RenderConfig, Representation, Rule, Source, Tier, render};
 
 /// The operand crossed `ifourier`, so there is no spectral sum and no written closed form either.
 #[test]
@@ -15,8 +15,13 @@ fn a_nonlinearity_over_a_filtered_pair_point_samples() {
             ("body", "sat(lowpass(@src, cutoff=800, q=0.7))\n"),
         ],
     );
-    let held = render(&g, "body", RenderConfig::seconds(44_100, 0.05), None)
-        .expect("a point-sampled nonlinearity");
+    let held = render(
+        &g,
+        "body",
+        RenderConfig::seconds(44_100, 0.05),
+        &Tier::default(),
+    )
+    .expect("a point-sampled nonlinearity");
     let root = held.id("body").expect("the root");
     let buffer = held.output(root).expect("a rendered law");
     assert_eq!(buffer.len(), 2_205);
@@ -43,7 +48,7 @@ fn the_point_sampled_label_carries_alias_db() {
         node: "body".to_string(),
         representation: Representation::Alias { oversample: 4 },
     }]);
-    let held = render(&g, "body", asked, None).expect("a reading");
+    let held = render(&g, "body", asked, &Tier::default()).expect("a reading");
     let root = held.id("body").expect("the root");
     let label = held.labels.get(&root).expect("a label beside the buffer");
     assert_eq!(label.source, Source::Measured);
@@ -80,8 +85,13 @@ fn the_identity_burst_shape_renders() {
             ),
         ],
     );
-    let held = render(&g, "burst", RenderConfig::seconds(44_100, 0.05), None)
-        .expect("the burst shape renders");
+    let held = render(
+        &g,
+        "burst",
+        RenderConfig::seconds(44_100, 0.05),
+        &Tier::default(),
+    )
+    .expect("the burst shape renders");
     let root = held.id("burst").expect("the root");
     let buffer = held.output(root).expect("a rendered burst");
     assert_eq!(buffer.len(), 2_205);
@@ -106,7 +116,13 @@ fn a_joined_pair_point_samples_each_component_it_names() {
             ("picked", "ch(@wide, 1)\n"),
         ],
     );
-    let held = render(&g, "wide", RenderConfig::seconds(8_000, 0.01), None).expect("a join");
+    let held = render(
+        &g,
+        "wide",
+        RenderConfig::seconds(8_000, 0.01),
+        &Tier::default(),
+    )
+    .expect("a join");
     let wide = held
         .output(held.id("wide").expect("the root"))
         .expect("both");
@@ -120,7 +136,13 @@ fn a_joined_pair_point_samples_each_component_it_names() {
         "the left component is the saturated tone"
     );
 
-    let held = render(&g, "picked", RenderConfig::seconds(8_000, 0.01), None).expect("a channel");
+    let held = render(
+        &g,
+        "picked",
+        RenderConfig::seconds(8_000, 0.01),
+        &Tier::default(),
+    )
+    .expect("a channel");
     let picked = held
         .output(held.id("picked").expect("the root"))
         .expect("one component");
@@ -143,8 +165,13 @@ fn a_neumann_series_under_a_product_renders() {
             ("node", "@echo(t)*tanh(t)\n"),
         ],
     );
-    let held = render(&g, "node", RenderConfig::seconds(44_100, 0.05), None)
-        .expect("a series under a product");
+    let held = render(
+        &g,
+        "node",
+        RenderConfig::seconds(44_100, 0.05),
+        &Tier::default(),
+    )
+    .expect("a series under a product");
     let root = held.id("node").expect("the root");
     let buffer = held.output(root).expect("a point-sampled law");
     let precision = sva_samples::PSYCHOACOUSTIC_V1.half_lsb();
@@ -173,8 +200,13 @@ fn sample_and_hold_noise_renders_measured() {
         "sample-and-hold",
         &[("held", "rand(t - t % 0.0625, seed=17)\n")],
     );
-    let held = render(&g, "held", RenderConfig::seconds(44_100, 0.25), None)
-        .expect("a keyed hash of a moving key renders");
+    let held = render(
+        &g,
+        "held",
+        RenderConfig::seconds(44_100, 0.25),
+        &Tier::default(),
+    )
+    .expect("a keyed hash of a moving key renders");
     let id = held.id("held").expect("the root");
     let buffer = held.output(id).expect("a rendered hold");
     let label = held.labels.get(&id).expect("a label");
@@ -219,8 +251,13 @@ fn a_panned_ct_law_point_samples_both_lanes() {
             ("pan", "join(@src*cos(0.3), @src*sin(0.3))\n"),
         ],
     );
-    let held = render(&g, "pan", RenderConfig::seconds(44_100, 0.01), None)
-        .expect("a joined law point-samples");
+    let held = render(
+        &g,
+        "pan",
+        RenderConfig::seconds(44_100, 0.01),
+        &Tier::default(),
+    )
+    .expect("a joined law point-samples");
     let id = held.id("pan").expect("the root");
     let buffer = held.output(id).expect("a rendered pan");
     assert_eq!(buffer.width, 2, "the join names two components");
@@ -256,8 +293,13 @@ fn a_supersaw_stack_of_series_point_samples() {
             ),
         ],
     );
-    let held = render(&g, "stack", RenderConfig::seconds(44_100, 0.02), None)
-        .expect("a stack of warped series reaches the grid");
+    let held = render(
+        &g,
+        "stack",
+        RenderConfig::seconds(44_100, 0.02),
+        &Tier::default(),
+    )
+    .expect("a stack of warped series reaches the grid");
     let root = held.id("stack").expect("the root");
     let buffer = held.output(root).expect("a rendered stack");
     assert_eq!(buffer.len(), 882);
@@ -286,8 +328,13 @@ fn a_shut_crop_zeroes_a_factor_too_large_for_a_double() {
             "crop(crop(tanh(t - 3s), 3s, inf)*exp(-(t - 3s)*400), 0s, 4s)\n",
         )],
     );
-    let held = render(&g, "gated", RenderConfig::seconds(44_100, 4.0), None)
-        .expect("a shut crop is zero before its window");
+    let held = render(
+        &g,
+        "gated",
+        RenderConfig::seconds(44_100, 4.0),
+        &Tier::default(),
+    )
+    .expect("a shut crop is zero before its window");
     let samples = held
         .output(held.id("gated").expect("the root"))
         .expect("a buffer");

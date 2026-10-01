@@ -1,23 +1,25 @@
-// Concern: declares what a store holds under a content hash and how a value's key is built | Non-concern: what the store keeps and evicts (store.rs) | IO: (Hash) -> a payload
+// Concern: declares what memory and a disk hold under a content hash and how a value's key is built | Non-concern: what memory keeps and evicts (memory.rs) | IO: (Hash) -> a payload
 
 mod codec;
 mod index;
 pub(crate) mod log;
+mod memory;
 mod persist;
 mod stats;
-mod store;
 mod stored;
+mod tier;
 
 pub use codec::STORE_FORMAT;
-pub use persist::{
-    Backend, DEFAULT_STORE_BYTES, INDEX_NAME, NoStore, Persisted, Store, Stored, Through,
-};
+pub use memory::{CachePolicy, Counters, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY, PrunePolicy};
+pub(crate) use memory::{Known, Memory, Offered};
+pub use persist::{Backend, DEFAULT_STORE_BYTES, INDEX_NAME, Persisted, Store};
 pub(crate) use stats::Recording;
 pub use stats::{CacheStats, Lookup, Outcome};
-pub(crate) use store::joined;
-pub use store::{Cache, CachePolicy, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY, PrunePolicy};
+pub use stored::Stored;
 pub(crate) use stored::node_key;
 pub use sva_formula::Hash;
+pub(crate) use tier::now;
+pub use tier::{FETCH_READS, Nothing, Tier};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -160,4 +162,29 @@ pub(crate) fn mixed(seed: Hash, parts: &[u64]) -> Hash {
         lanes.word(*part);
     }
     lanes.finish()
+}
+
+/// `more` laid among `parts`, each touching pair joined into one; a shared part is copied only
+/// to grow.
+pub(crate) fn joined(parts: &mut Vec<Arc<Buffer>>, more: Vec<Arc<Buffer>>) {
+    for part in more {
+        parts.push(part);
+    }
+    parts.sort_by_key(|b| b.start);
+    let mut out: Vec<Arc<Buffer>> = Vec::with_capacity(parts.len());
+    for part in parts.drain(..) {
+        match out.last_mut() {
+            Some(last) if last.extent().end >= part.start => {
+                let from = (last.extent().end - part.start) as usize;
+                if from < part.len() {
+                    let last = Arc::make_mut(last);
+                    for (held, more) in last.planes.iter_mut().zip(&part.planes) {
+                        held.extend_from_slice(&more[from.min(more.len())..]);
+                    }
+                }
+            }
+            _ => out.push(part),
+        }
+    }
+    *parts = out;
 }

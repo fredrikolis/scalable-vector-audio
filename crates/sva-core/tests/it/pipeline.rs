@@ -3,7 +3,7 @@
 use sva_core::{
     CliError, Edge, Job, Output, PROBE, Representation, execute, prepared, roots_of, target, until,
 };
-use sva_engine::{Cmp, Term, Until};
+use sva_engine::{Cmp, Term, Tier, Until};
 
 fn composition(files: &[(&str, &str)]) -> sva_ast::Composition {
     files.iter().copied().collect()
@@ -115,13 +115,13 @@ fn asking<'a>(held: &'a sva_ast::Composition, target: &'a str) -> Job<'a> {
 #[test]
 fn an_interval_that_holds_no_sample_or_names_bars_with_no_tempo_refuses() {
     let held = composition(&[("tone", "crop(sin(2*pi*220*t), 0s, 1s)\n")]);
-    assert!(execute(asking(&held, "@tone([0, 0.5s])")).is_ok());
+    assert!(execute(asking(&held, "@tone([0, 0.5s])"), &Tier::default()).is_ok());
     assert!(matches!(
-        execute(asking(&held, "@tone([1s, 0.5s])")),
+        execute(asking(&held, "@tone([1s, 0.5s])"), &Tier::default()),
         Err(CliError::Usage(_))
     ));
     assert!(matches!(
-        execute(asking(&held, "@tone([0, 1b])")),
+        execute(asking(&held, "@tone([0, 1b])"), &Tier::default()),
         Err(CliError::BadTempo(_))
     ));
 }
@@ -209,7 +209,7 @@ fn a_bar_span_is_settled_by_a_whole_tempo_pair_and_by_nothing_less() {
 #[test]
 fn a_refusal_names_the_target_as_written() {
     let held = composition(&[("tone", "sin(2*pi*220*t)\n")]);
-    let Err(refused) = execute(asking(&held, "@tone")) else {
+    let Err(refused) = execute(asking(&held, "@tone"), &Tier::default()) else {
         panic!("nothing ends an endless tone");
     };
     let message = refused.message();
@@ -227,12 +227,12 @@ fn a_target_answers_off_the_expression_it_is() {
         ("sin(q*t)", "validation_error"),
         ("sum(k, 1, 3, k*", "validation_error"),
     ] {
-        let Err(refused) = execute(asking(&held, text)) else {
+        let Err(refused) = execute(asking(&held, text), &Tier::default()) else {
             panic!("`{text}` renders nothing");
         };
         assert_eq!(refused.code(), code, "{text}: {refused:?}");
     }
-    let Err(refused) = execute(asking(&held, "sin(q*t)")) else {
+    let Err(refused) = execute(asking(&held, "sin(q*t)"), &Tier::default()) else {
         panic!("`q` is bound nowhere, so nothing renders");
     };
     assert!(
@@ -240,7 +240,7 @@ fn a_target_answers_off_the_expression_it_is() {
         "the engine's own message names the free variable: {}",
         refused.message()
     );
-    assert!(execute(asking(&held, "@master")).is_ok());
+    assert!(execute(asking(&held, "@master"), &Tier::default()).is_ok());
 }
 
 /// A level is every channel's: a tone in the second channel beside silence in the first is
@@ -252,7 +252,7 @@ fn a_level_reads_every_channel() {
         until: Some("envelope(t) < -60db"),
         ..asking(&held, "join(0, crop(sample(sin(2*pi*441*t)), 0s, 0.5s))")
     };
-    let rendered = execute(job).expect("a stereo tone");
+    let rendered = execute(job, &Tier::default()).expect("a stereo tone");
     let envelope = Representation::Envelope {
         frame_secs: Some(0.1),
     };

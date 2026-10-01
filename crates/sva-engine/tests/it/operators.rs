@@ -1,13 +1,18 @@
 // Concern: proves each unary name reaches its signature, renderer and point sampler, and what step and inf mean | Non-concern: what the others compute (sva-formula, sva-samples) | IO: (a name) -> Buffer
 
 use crate::fixtures::graph_of;
-use sva_engine::{RenderConfig, render};
+use sva_engine::{RenderConfig, Tier, render};
 use sva_formula::Unary;
 
 fn rendered(name: &str, body: &str) -> Vec<f64> {
     let g = graph_of(name, &[("src", "2*sin(2*pi*300*t)\n"), ("node", body)]);
-    let held = render(&g, "node", RenderConfig::seconds(8_000, 0.01), None)
-        .unwrap_or_else(|e| panic!("{name} in `{body}`: {e}"));
+    let held = render(
+        &g,
+        "node",
+        RenderConfig::seconds(8_000, 0.01),
+        &Tier::default(),
+    )
+    .unwrap_or_else(|e| panic!("{name} in `{body}`: {e}"));
     let root = held.id("node").expect("the root");
     held.output(root)
         .unwrap_or_else(|e| panic!("{name}: {e}"))
@@ -49,7 +54,12 @@ fn every_unary_operator_reaches_the_renderer_and_the_point_sampler_by_its_one_na
 
 fn at_rate(files: &[(&str, &str)]) -> Result<Vec<f64>, sva_engine::EngineError> {
     let g = graph_of("step", files);
-    let held = render(&g, "node", RenderConfig::seconds(8_000, 0.5), None)?;
+    let held = render(
+        &g,
+        "node",
+        RenderConfig::seconds(8_000, 0.5),
+        &Tier::default(),
+    )?;
     let root = held.id("node").expect("the root");
     Ok(held.output(root).expect("a buffer").plane(0).to_vec())
 }

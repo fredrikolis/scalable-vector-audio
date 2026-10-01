@@ -1,7 +1,7 @@
 // Concern: proves an argument reaches its slot as the number its text names | Non-concern: what a builtin does with the number (vocabulary.rs) | IO: (a composition) -> the number that arrived
 
 use crate::fixtures::graph_of;
-use sva_engine::{EngineError, Held, RenderConfig, Value, Var, render, types};
+use sva_engine::{EngineError, Held, RenderConfig, Tier, Value, Var, render, types};
 use sva_formula::Body;
 
 fn form(name: &str, body: &str) -> (Held, bool) {
@@ -13,7 +13,13 @@ fn form(name: &str, body: &str) -> (Held, bool) {
 
 fn peak(name: &str, body: &str) -> f64 {
     let g = graph_of(name, &[("body", body)]);
-    let held = render(&g, "body", RenderConfig::seconds(44_100, 0.05), None).expect("a render");
+    let held = render(
+        &g,
+        "body",
+        RenderConfig::seconds(44_100, 0.05),
+        &Tier::default(),
+    )
+    .expect("a render");
     let root = held.id("body").expect("the root");
     held.output(root)
         .expect("a rendered law")
@@ -95,7 +101,12 @@ fn a_constant_that_names_no_number_refuses() {
         "sin(2*pi*300*t) * exp(710)\n",
     ] {
         let g = graph_of("no-number", &[("body", written)]);
-        let Err(refused) = render(&g, "body", RenderConfig::seconds(44_100, 0.01), None) else {
+        let Err(refused) = render(
+            &g,
+            "body",
+            RenderConfig::seconds(44_100, 0.01),
+            &Tier::default(),
+        ) else {
             panic!("{written} names no number and renders nothing");
         };
         let EngineError::Refused(d) = &refused else {
@@ -136,8 +147,13 @@ fn a_crop_bound_may_be_a_constant_expression() {
         ],
     );
     let ends = |node: &str| {
-        let held = render(&g, node, RenderConfig::seconds(8_192, 2.0), None)
-            .unwrap_or_else(|e| panic!("{node}: {e}"));
+        let held = render(
+            &g,
+            node,
+            RenderConfig::seconds(8_192, 2.0),
+            &Tier::default(),
+        )
+        .unwrap_or_else(|e| panic!("{node}: {e}"));
         let id = held.id(node).unwrap_or_else(|| panic!("{node} typed"));
         let plane = held.output(id).expect("a rendered law").plane(0).to_vec();
         let last = plane.iter().rposition(|s| *s != 0.0).expect("some sound");
@@ -169,8 +185,13 @@ fn a_filter_cutoff_may_be_a_scalar_variable() {
         ],
     );
     let plane = |node: &str| {
-        let held = render(&g, node, RenderConfig::seconds(8_192, 0.05), None)
-            .unwrap_or_else(|e| panic!("{node}: {e}"));
+        let held = render(
+            &g,
+            node,
+            RenderConfig::seconds(8_192, 0.05),
+            &Tier::default(),
+        )
+        .unwrap_or_else(|e| panic!("{node}: {e}"));
         let id = held.id(node).unwrap_or_else(|| panic!("{node} typed"));
         held.output(id).expect("a rendered law").plane(0).to_vec()
     };
@@ -182,8 +203,13 @@ fn a_filter_cutoff_may_be_a_scalar_variable() {
 }
 
 fn plane_of(g: &sva_ast::Graph, node: &str) -> Vec<f64> {
-    let held = render(g, node, RenderConfig::seconds(44_100, 0.02), None)
-        .unwrap_or_else(|e| panic!("{node}: {e}"));
+    let held = render(
+        g,
+        node,
+        RenderConfig::seconds(44_100, 0.02),
+        &Tier::default(),
+    )
+    .unwrap_or_else(|e| panic!("{node}: {e}"));
     let id = held.id(node).unwrap_or_else(|| panic!("{node} typed"));
     held.output(id).expect("a rendered solve").plane(0).to_vec()
 }
@@ -233,7 +259,12 @@ fn a_negative_whole_power_inside_a_solver_argument_is_the_number_it_names() {
 #[test]
 fn a_negative_whole_power_of_zero_names_no_number() {
     let g = graph_of("zero-power", &[("body", "sin(2*pi*300*t) * pow(0, -2)\n")]);
-    let Err(refused) = render(&g, "body", RenderConfig::seconds(44_100, 0.01), None) else {
+    let Err(refused) = render(
+        &g,
+        "body",
+        RenderConfig::seconds(44_100, 0.01),
+        &Tier::default(),
+    ) else {
         panic!("0^-2 names no number and renders nothing");
     };
     assert!(
@@ -251,7 +282,7 @@ fn arguments_of(g: &sva_ast::Graph, target: &str) -> (Vec<sva_engine::Arguments>
         g,
         target,
         RenderConfig::seconds(8_000, 0.05).asking(asks),
-        None,
+        &Tier::default(),
     )
     .expect("a render");
     let id = held.id(target).expect("the target");
@@ -358,7 +389,13 @@ fn the_bore_reads_its_positional_as_a_length() {
     let (found, _) = arguments_of(&g, "body");
     let first = &found[0].calls[0].arguments[0];
     assert_eq!((first.name.as_str(), first.value), ("length", 0.3));
-    let held = render(&g, "body", RenderConfig::seconds(44_100, 0.05), None).expect("a render");
+    let held = render(
+        &g,
+        "body",
+        RenderConfig::seconds(44_100, 0.05),
+        &Tier::default(),
+    )
+    .expect("a render");
     let id = held.id("body").expect("the root");
     let rendered = held.output(id).expect("a solve").plane(0).to_vec();
     let params = sva_samples::Params::DarabunditScavone(
@@ -385,8 +422,13 @@ fn a_whole_power_past_the_order_cap_is_no_polynomial() {
             ("signal", "pow(sin(2*pi*300*t), 2000000000)\n"),
         ],
     );
-    let held = render(&g, "constant", RenderConfig::seconds(8_000, 0.01), None)
-        .expect("a constant base folds by powf");
+    let held = render(
+        &g,
+        "constant",
+        RenderConfig::seconds(8_000, 0.01),
+        &Tier::default(),
+    )
+    .expect("a constant base folds by powf");
     let id = held.id("constant").expect("the node");
     let peak = held
         .output(id)
@@ -422,8 +464,13 @@ fn a_reciprocal_power_is_the_quotient_bit_for_bit() {
             ],
         );
         let plane = |node: &str| {
-            let held = render(&g, node, RenderConfig::seconds(8_000, 0.01), None)
-                .unwrap_or_else(|e| panic!("{node}: {e}"));
+            let held = render(
+                &g,
+                node,
+                RenderConfig::seconds(8_000, 0.01),
+                &Tier::default(),
+            )
+            .unwrap_or_else(|e| panic!("{node}: {e}"));
             let id = held.id(node).expect("the node");
             held.output(id).expect("a buffer").plane(0).to_vec()
         };
