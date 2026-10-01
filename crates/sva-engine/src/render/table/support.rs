@@ -76,7 +76,8 @@ impl<'a> Supports<'a> {
             return exact;
         }
         let grid = self.grid(id);
-        let Some(tail) = Tail::of(self.tys, (self.profile, grid.rate), id) else {
+        let ends = |n: NodeId| self.of(n);
+        let Some(tail) = Tail::of(self.tys, (self.profile, grid.rate), id, &ends) else {
             return exact;
         };
         let level = self.profile.prune_level();

@@ -148,6 +148,13 @@ impl Typing {
         self.sum = Some((node, slots));
     }
 
+    /// Whether the note sum holds a term it retired.
+    pub(crate) fn retires(&self) -> bool {
+        self.sum
+            .as_ref()
+            .is_some_and(|(_, slots)| slots.iter().any(|slot| matches!(slot, SumSlot::Retired(_))))
+    }
+
     pub(crate) fn sum_slots(&self, node: NodeId) -> Option<&[SumSlot]> {
         self.sum
             .as_ref()

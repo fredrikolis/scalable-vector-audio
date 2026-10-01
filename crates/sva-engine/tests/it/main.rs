@@ -28,6 +28,7 @@ mod pruning;
 mod refs;
 mod refusals;
 mod release;
+mod ringing;
 mod sampled;
 mod segments;
 mod skip;

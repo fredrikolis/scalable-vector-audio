@@ -167,3 +167,22 @@ fn a_reserved_variable_is_no_sound() {
         .collect();
     assert_eq!(codes, [] as [(&str, &str); 0], "{codes:?}");
 }
+
+/// A fixed filter's ringing past its input's end decays at its poles' rate, so the prune
+/// ends it; a moving cutoff proves no decay and still never ends.
+#[test]
+fn a_fixed_filter_over_a_cropped_input_is_bounded() {
+    let dir = composition(
+        "filtered",
+        &[
+            ("src", "crop(sin(2*pi*440*t), 0s, 1s)\n"),
+            ("soft", "lowpass(sample(@src), 800hz)\n"),
+            ("swept", "lowpass(sample(@src), 800hz + 400*sin(2*pi*t))\n"),
+        ],
+    );
+    let subjects: Vec<String> = found(&dir, LintCode::SupportNeverEnds)
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect();
+    assert_eq!(subjects, ["swept"]);
+}

@@ -1,0 +1,143 @@
+// Concern: proves a fixed filter's ringing past its input's end is cut where its pole bound stays under the prune level | Non-concern: deriving the bound | IO: (a composition) -> samples, the cut
+
+use crate::fixtures::graph_of;
+use sva_ast::Graph;
+use sva_engine::{PSYCHOACOUSTIC_V1, Profile, Render, RenderConfig};
+
+const RATE: u32 = 8_000;
+
+fn rings() -> Graph {
+    graph_of(
+        "ringing",
+        &[
+            ("src", "crop(sin(2*pi*440*t), 0s, 0.25s)\n"),
+            ("lp", "lp(sample(@src), 300hz)\n"),
+            ("lowpass", "lowpass(sample(@src), 300hz)\n"),
+            ("highpass", "highpass(sample(@src), 300hz)\n"),
+            ("bandpass", "bandpass(sample(@src), 440hz, 20)\n"),
+            ("notch", "notch(sample(@src), 440hz, 2)\n"),
+            ("peaking", "peaking(sample(@src), 440hz, 2, 12)\n"),
+            ("lowshelf", "lowshelf(sample(@src), 300hz, 0.7, -6)\n"),
+            ("highshelf", "highshelf(sample(@src), 300hz, 0.7, 6)\n"),
+            (
+                "cascade",
+                "highpass(lowpass(sample(@src), 2000hz), 100hz)\n",
+            ),
+            ("shaped", "crop(tanh(3*sin(2*pi*200*t)), 0s, 0.25s)\n"),
+            ("saturated", "lowpass(sample(@shaped), 300hz)\n"),
+            ("swept", "lowpass(sample(@src), 800hz + 400*sin(2*pi*t))\n"),
+            ("open", "lowpass(sample(sin(2*pi*440*t)), 300hz)\n"),
+            ("echo", "sample(@src) + 0.5*self[idx(t) - 400]\n"),
+            ("held", "sample(@src) + self[idx(t) - 400]\n"),
+        ],
+    )
+}
+
+const SHAPES: [&str; 10] = [
+    "lp",
+    "lowpass",
+    "highpass",
+    "bandpass",
+    "notch",
+    "peaking",
+    "lowshelf",
+    "highshelf",
+    "cascade",
+    "saturated",
+];
+
+fn render(g: &Graph, target: &str, config: RenderConfig) -> Render {
+    sva_engine::render(g, target, config, None).unwrap_or_else(|e| panic!("{target}: {e}"))
+}
+
+fn plane(r: &Render) -> Vec<f64> {
+    r.output(r.root).expect("the root").plane(0).to_vec()
+}
+
+/// Each shape over a cropped input ends where its own cut says, past the input's end, and
+/// the render states the level it cut at.
+#[test]
+fn a_fixed_filter_over_a_cropped_input_ends() {
+    let g = rings();
+    for shape in SHAPES {
+        let bare = render(&g, shape, RenderConfig::at(RATE));
+        let pruned = bare.labels[&bare.root]
+            .pruned
+            .clone()
+            .expect("a stated level");
+        assert_eq!(pruned.db, -120.0, "{shape}");
+        let samples = plane(&bare);
+        let cut = samples.len() as i64;
+        assert!(
+            pruned
+                .cuts
+                .iter()
+                .any(|(node, at)| node == shape && *at == cut),
+            "{shape} ends at its own cut: {cut}, {:?}",
+            pruned.cuts
+        );
+        let input_end = RATE as usize / 4;
+        assert!(cut as usize > input_end, "{shape} rings past its input");
+        assert!(
+            samples[input_end..].iter().any(|v| *v != 0.0),
+            "{shape} rings on after its input"
+        );
+        assert!(cut < 20 * RATE as i64, "{shape} cut at {cut}");
+    }
+}
+
+/// The cut changes nothing before it: a render over a long fixed range has the same bits
+/// there, and only zeros after.
+#[test]
+fn the_bare_render_is_the_long_render_up_to_its_cut() {
+    let g = rings();
+    for shape in SHAPES {
+        let bare = plane(&render(&g, shape, RenderConfig::at(RATE)));
+        let long = plane(&render(&g, shape, RenderConfig::seconds(RATE, 20.0)));
+        assert!(long.len() > bare.len(), "{shape}");
+        for (n, (a, b)) in bare.iter().zip(&long).enumerate() {
+            assert_eq!(a.to_bits(), b.to_bits(), "{shape} sample {n}");
+        }
+        assert!(
+            long[bare.len()..].iter().all(|v| v.to_bits() == 0),
+            "{shape}"
+        );
+    }
+}
+
+/// What the cut zeroes was already under -120 dBFS: rendered with a far lower level, every
+/// sample from the -120 dBFS cut on is under it.
+#[test]
+fn what_the_cut_zeroes_is_under_the_level() {
+    let g = rings();
+    let deep = RenderConfig {
+        profile: Profile {
+            prune_db: -300.0,
+            ..PSYCHOACOUSTIC_V1
+        },
+        ..RenderConfig::seconds(RATE, 20.0)
+    };
+    for shape in SHAPES {
+        let cut = plane(&render(&g, shape, RenderConfig::at(RATE))).len();
+        let unpruned = plane(&render(&g, shape, deep.clone()));
+        let loudest = unpruned[cut..].iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        assert!(loudest < 1e-6, "{shape}: {loudest} past {cut}");
+        assert!(unpruned[..cut].iter().any(|v| v.abs() > 0.0), "{shape}");
+    }
+}
+
+/// A moving cutoff, an input that never ends, and a loop have no proven decay: each bare
+/// render still refuses for want of an end.
+#[test]
+fn a_filter_or_loop_with_no_proven_decay_never_ends() {
+    let g = rings();
+    for target in ["swept", "open", "echo", "held"] {
+        let refused = sva_engine::render(&g, target, RenderConfig::at(RATE), None)
+            .err()
+            .unwrap_or_else(|| panic!("{target} has no end"));
+        assert!(
+            refused.to_string().contains("no end"),
+            "{target}: {refused}"
+        );
+    }
+}
