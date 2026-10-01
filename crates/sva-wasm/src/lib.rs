@@ -438,9 +438,14 @@ fn placed(name: &str) -> Result<Placed, JsValue> {
 
 fn cache_policy(name: &str) -> Result<CachePolicy, JsValue> {
     CachePolicy::named(name).ok_or_else(|| {
+        let names: Vec<String> = CachePolicy::ALL
+            .iter()
+            .map(|p| format!("\"{}\"", p.name()))
+            .collect();
+        let (last, rest) = names.split_last().expect("a policy");
         refuse(
             format!("`{name}` names no cache policy"),
-            "pass \"all\", \"forks\", \"target\" or \"none\"",
+            &format!("pass {} or {last}", rest.join(", ")),
         )
     })
 }

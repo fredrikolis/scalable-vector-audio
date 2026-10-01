@@ -446,7 +446,15 @@ fn the_cache_budget_is_the_pages_own_and_survives_a_clear() {
 fn a_cache_policy_crosses_by_name_and_no_render_names_its_own() {
     let held = page();
     assert_eq!(held.cache_policy(), "all");
-    assert!(held.set_cache_policy("none").is_err(), "memory stays on");
+    let none = held.set_cache_policy("none").err();
+    let none = none.unwrap_or_else(|| unreachable!("memory stays on"));
+    let diagnostic = items(&field(&field(&none, "refusal"), "data"), "diagnostics").get(0);
+    let help = field(&diagnostic, "help").as_string().unwrap_or_default();
+    let offered: Vec<&str> = help.split('"').skip(1).step_by(2).collect();
+    assert_eq!(offered, ["all", "forks", "target"], "{help}");
+    for name in offered {
+        assert!(held.set_cache_policy(name).is_ok(), "{name} is offered");
+    }
     assert!(held.set_cache_policy("some").is_err());
     held.set_cache_policy("target")
         .unwrap_or_else(|_| unreachable!("target is a policy"));
