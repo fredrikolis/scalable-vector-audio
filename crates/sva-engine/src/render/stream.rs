@@ -445,7 +445,8 @@ struct Prospect {
 
 /// `build`'s change, holding the stream only to apply it, between two blocks, once the store
 /// answered what it brings in: an exact stream pulled only once its edit is done plays it where
-/// it was issued. `build` runs again whenever the stream changed under it.
+/// it was issued. `build` runs again whenever the stream changed under it. One that would change
+/// the channels the stream plays is refused.
 pub async fn change<E: From<EngineError>>(
     stream: &RefCell<Stream>,
     mut build: impl FnMut(&Stream) -> Result<Change, E>,
@@ -477,6 +478,15 @@ pub async fn change<E: From<EngineError>>(
         let (graph, target) = (&prospect.graph, &prospect.target);
         let config = &prospect.render;
         let mut shelled = shelled(graph, target, &prospect.terms, config, walk).await?;
+        let (width, plays) = (stream.borrow().width(), shelled.width());
+        if plays != width {
+            return Err(refused(
+                "engine.stream_width",
+                format!("this edit plays {plays} channel(s), and the stream plays {width}"),
+                "keep the stream's channels, or open a new stream for the edit",
+            )
+            .into());
+        }
         let standing = (prospect.generation, prospect.landing);
         loop {
             for (key, samples) in &fetched {
@@ -591,6 +601,12 @@ async fn shelled(
         table,
         hits,
     })
+}
+
+impl Shelled {
+    fn width(&self) -> usize {
+        self.table.values[self.table.root].width
+    }
 }
 
 /// `path` and every node reading it, however far down.

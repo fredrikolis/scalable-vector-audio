@@ -795,6 +795,20 @@ fn a_live_stream_reads_past_its_position_to_skip_there() {
     );
 }
 
+/// A stream's `channels` hold from its opening: an add that would widen it rejects, coded,
+/// and the stream reads on in the frames it opened with.
+#[wasm_bindgen_test]
+fn an_add_that_would_widen_a_stream_rejects_and_its_channels_hold() {
+    let held = page();
+    let stream = now(held.stream("@notes([0, 1s])", BLOCK, options(&[])))
+        .unwrap_or_else(|e| unreachable!("it streams: {}", as_text(&e)));
+    now(stream.add("@partials/one", None)).unwrap_or_else(|e| unreachable!("{}", as_text(&e)));
+    refused_as(now(stream.add("@wide", None)).err(), "engine.stream_width");
+    assert_eq!(stream.channels(), 1);
+    let whole = plane(&render(&held, "partials/one"));
+    assert_eq!(read(&stream)[..], whole[..BLOCK]);
+}
+
 /// A live stream past everything it plays never ends: a read far ahead fills `out` with
 /// silence there, the stream stands past it, and an add lands where it stands.
 #[wasm_bindgen_test]

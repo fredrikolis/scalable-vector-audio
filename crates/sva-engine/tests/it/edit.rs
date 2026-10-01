@@ -796,3 +796,43 @@ fn a_live_term_reading_a_value_twice_starts_it_where_the_earliest_read_stands() 
     );
     assert_eq!(heard[now..], whole[now..]);
 }
+
+/// A stream plays as many channels as it opened with: an add or an edit that would change
+/// them is refused, coded, and the stream plays on as it was; a mono term sums into a stereo
+/// stream as into any stereo sum.
+#[test]
+fn an_edit_that_would_change_the_stream_s_width_is_refused() {
+    let g = graph_of(
+        "widths",
+        &[
+            ("mono", "crop(sin(2*pi*200*t), 0s, 0.1s)\n"),
+            (
+                "pair",
+                "crop(join(sin(2*pi*300*t), sin(2*pi*301*t)), 0s, 0.1s)\n",
+            ),
+        ],
+    );
+    let add = |stream: &RefCell<Stream>, term: &str| added(stream, &g, &expr(term), &NoStore).now();
+    let mono = opened(&g, "@notes", None);
+    mono.borrow_mut().go_live();
+    add(&mono, "@mono(t - 512sp)").unwrap_or_else(|e| panic!("{e}"));
+    let widened = add(&mono, "@pair(t - 1024sp)").expect_err("a stereo term widens it");
+    assert_eq!(widened.code(), "engine.stream_width", "{widened}");
+    let edit = edited(&mono, &g, &expr("join(@notes, @notes)"), &NoStore).now();
+    let widened = edit.expect_err("a stereo target widens it");
+    assert_eq!(widened.code(), "engine.stream_width", "{widened}");
+    assert_eq!(
+        (mono.borrow().width(), mono.borrow().counts().terms),
+        (1, 1)
+    );
+    let heard = blocks(&mono, 8);
+    let mut whole_g = g.clone();
+    assert!(whole_g.define("final", expr("@mono(t - 512sp)")));
+    assert_eq!(heard, whole(&whole_g, "final", heard.len()), "plays on");
+
+    let stereo = opened(&g, "@notes + join(0, 0)", None);
+    for term in ["@mono(t - 512sp)", "@pair(t - 1024sp)"] {
+        add(&stereo, term).unwrap_or_else(|e| panic!("`{term}`: {e}"));
+        assert_eq!(stereo.borrow().width(), 2, "{term}");
+    }
+}
