@@ -25,6 +25,15 @@ pub fn from_roots<'g>(
     roots: &[String],
     rate: u32,
 ) -> Result<(Instances<'g>, Vec<String>), EngineError> {
+    let unbound = roots.iter().map(|root| (root.as_str(), Vec::new()));
+    built(graph, unbound.collect(), rate)
+}
+
+fn built<'g>(
+    graph: &'g Graph,
+    roots: Vec<(&str, Vec<(String, Thunk<'g>)>)>,
+    rate: u32,
+) -> Result<(Instances<'g>, Vec<String>), EngineError> {
     let mut b = Builder {
         graph,
         out: Instances {
@@ -42,12 +51,12 @@ pub fn from_roots<'g>(
         chained: BTreeSet::new(),
     };
     let mut named: Vec<String> = Vec::with_capacity(roots.len());
-    for root in roots {
-        let name = b.intern(root, Vec::new(), None)?;
+    for (root, binds) in roots {
+        let name = b.intern(root, binds, None)?;
         b.site
             .entry(name.clone())
             .or_insert_with(|| (root.to_string(), None));
-        b.out.own_terms.insert(root.clone(), name.clone());
+        b.out.own_terms.insert(root.to_string(), name.clone());
         named.push(name);
     }
     b.out.root = named.first().cloned().unwrap_or_default();
@@ -104,10 +113,36 @@ pub fn from_roots<'g>(
 /// Whether `file` names a parameter its own defaults leave unbound: a library node, which only
 /// a reader's invocation instantiates.
 pub fn has_free_parameter(graph: &Graph, file: &str) -> bool {
-    matches!(
-        from_roots(graph, &[file.to_string()], crate::DEFAULT_SAMPLE_RATE),
-        Err(EngineError::Binding { fault: BindingFault::Unbound(ref owner, _), .. }) if owner == file
-    )
+    !free_parameters(graph, file).is_empty()
+}
+
+static FOUND: Expr = Expr::Lit(sva_ast::Literal::Num(0.0));
+
+/// Each parameter `file`'s defaults leave unbound, as the scan meets them: each one found is
+/// bound and the walk retaken, up to its first other fault.
+pub fn free_parameters(graph: &Graph, file: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    loop {
+        let binds = found.iter().map(|name| {
+            let held = Thunk {
+                expr: &FOUND,
+                scope: NO_PARAMS,
+            };
+            (name.clone(), held)
+        });
+        let walked = built(
+            graph,
+            vec![(file, binds.collect())],
+            crate::DEFAULT_SAMPLE_RATE,
+        );
+        match walked {
+            Err(EngineError::Binding {
+                fault: BindingFault::Unbound(owner, name),
+                ..
+            }) if owner == file && !found.contains(&name) => found.push(name),
+            _ => return found,
+        }
+    }
 }
 
 /// Whether an expression names any of the parameters bound so far.

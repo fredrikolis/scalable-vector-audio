@@ -85,10 +85,14 @@ pub(crate) fn entry_points(graph: &Graph) -> Vec<String> {
     graph
         .paths()
         .filter(|p| !reached.contains(*p))
-        .filter(|p| !sva_core::RESERVED_VARIABLES.contains(&p.rsplit('/').next().unwrap_or(p)))
+        .filter(|p| !reserved_variable(p))
         .filter(|p| !sva_engine::instantiate::has_free_parameter(graph, p))
         .map(str::to_string)
         .collect()
+}
+
+pub(crate) fn reserved_variable(path: &str) -> bool {
+    sva_core::RESERVED_VARIABLES.contains(&path.rsplit('/').next().unwrap_or(path))
 }
 
 fn collect_refs(from: &str, expr: &Expr, out: &mut BTreeSet<String>) {

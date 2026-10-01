@@ -63,6 +63,7 @@ fn lint_files(source: &dyn Source, graph: Graph) -> Result<LintReport, CliError>
 fn per_file(graph: &Graph) -> Vec<Finding> {
     let mut findings = grid_row_counts(graph);
     findings.extend(crate::variables::key_findings(graph));
+    findings.extend(crate::bare::bare_findings(graph));
     findings
 }
 

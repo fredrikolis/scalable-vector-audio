@@ -2,6 +2,7 @@
 
 mod args;
 mod arity;
+mod bare;
 mod composition;
 mod destination;
 mod directory;

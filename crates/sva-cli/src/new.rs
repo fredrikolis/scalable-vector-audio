@@ -29,10 +29,11 @@ C3
     ),
     (
         "voice/tone",
-        r"; Models: one voice's timbre, three harmonics rolled off by a lowpass at the third | Neglects: the envelope, which lib/env owns; every parameter carries a default, so `render voice/tone` resolves to one instance instead of refusing as ambiguous | IO: (t, f0, vel) -> amplitude | Tags: voice, harmonics
+        r"; Models: one voice's timbre, three harmonics rolled off by a lowpass at the third, held for len | Neglects: the envelope, which lib/env owns; every parameter carries a default and the crop ends it, so a bare `@voice/tone` plays | IO: (t, f0, vel, len) -> amplitude | Tags: voice, harmonics
 f0 = @../variables/key
 vel = 0.2
-lowpass(vel*(sin(2*pi*f0*t) + 0.5*sin(2*pi*2*f0*t) + 0.3333*sin(2*pi*3*f0*t)), 3*f0)
+len = 0.5s
+crop(lowpass(vel*(sin(2*pi*f0*t) + 0.5*sin(2*pi*2*f0*t) + 0.3333*sin(2*pi*3*f0*t)), 3*f0), 0s, len)
 ",
     ),
     (
@@ -51,7 +52,7 @@ crop(exp(-t/decay), 0s, len, rise=attack, fall=fade)
 f0 = @../variables/key
 vel = 0.2
 len = 0.5s
-@../voice/tone(t, f0=f0, vel=vel) * @../lib/env(t, len=len)
+@../voice/tone(t, f0=f0, vel=vel, len=len) * @../lib/env(t, len=len)
 ",
     ),
     (
@@ -82,8 +83,8 @@ crop(gain*noise(1, period=0.5, color=1), 0s, 0.4s, rise=0.002s, fall=0.2s)
     ),
     (
         "fx/glue",
-        r"; Models: the pitched layers glued by one short feedback -- the pitched chain's one crossing into samples, and the last thing that chain does, because `self` may read only what `sample` has already written | Neglects: the hats, which master sums in beside this under a `sample` of their own | IO: (t) -> amplitude | Tags: fx, feedback
-sample(0.5*@../chord/home(t) + @../grid/phrase-2b(t)) + 0.3*self[idx(t) - 1]
+        r"; Models: the pitched layers glued by one short feedback -- the pitched chain's one crossing into samples, and the last thing that chain does, because `self` may read only what `sample` has already written | Neglects: the hats, which master sums in beside this under a `sample` of their own; a loop rings on forever, so it is cropped to the two bars it plays | IO: (t) -> amplitude | Tags: fx, feedback
+crop(sample(0.5*@../chord/home(t) + @../grid/phrase-2b(t)) + 0.3*self[idx(t) - 1], 0s, 2b)
 ",
     ),
     (
@@ -100,7 +101,7 @@ crop(0.6*(@fx/glue(t) + sample(@perc/hat(t)) + sample(@perc/hat(t - 1b))), 0s, 2
 pub const NEXT: [(&str, &str); 9] = [
     (
         "sva-cli lint",
-        "structure, comments, grid rows, key; refuses before any audio",
+        "structure, comments, grid rows, key, whether each node plays bare; refuses before any audio",
     ),
     (
         "sva-cli builtins",
@@ -111,11 +112,11 @@ pub const NEXT: [(&str, &str); 9] = [
         "what master reads, and why it is samples",
     ),
     (
-        "sva-cli render '@voice/tone' --representation lines",
-        "exact off the closed form, no buffer allocated",
+        "sva-cli render 'sample(@voice/tone)' --representation spectrum(peaks=3)",
+        "the three harmonics the lowpass leaves, measured off its samples",
     ),
     (
-        "sva-cli render '@chord/home' --representation lines",
+        "sva-cli render 'sample(@chord/home)' --representation spectrum(peaks=9)",
         "the same triad follows variables/key",
     ),
     (

@@ -30,7 +30,7 @@ fn a_lint_finding_names_its_line() {
     std::fs::write(
         dir.join("master"),
         format!(
-            "{}sin(2*pi*220*t)\n{block}",
+            "{}crop(sin(2*pi*220*t), 0s, 1s)\n{block}",
             doc("a tone under a long note")
         ),
     )
@@ -133,8 +133,8 @@ fn lint_of_a_node_with_a_default_resolves() {
     let dir = composition(
         "defaulted-node",
         &[
-            ("plain", "sin(2*pi*440*t)\n"),
-            ("voice", "f0 = 440\nsin(2*pi*f0*t)\n"),
+            ("plain", "crop(sin(2*pi*440*t), 0s, 1s)\n"),
+            ("voice", "f0 = 440\ncrop(sin(2*pi*f0*t), 0s, 1s)\n"),
         ],
     );
 

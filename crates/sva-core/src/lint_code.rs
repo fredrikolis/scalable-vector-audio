@@ -13,6 +13,8 @@ pub enum LintCode {
     LiteralSampleRate,
     Arity,
     KeyIsNotAPitch,
+    ParameterHasNoDefault,
+    SupportNeverEnds,
 }
 
 impl LintCode {
@@ -26,6 +28,8 @@ impl LintCode {
         LintCode::LiteralSampleRate,
         LintCode::Arity,
         LintCode::KeyIsNotAPitch,
+        LintCode::ParameterHasNoDefault,
+        LintCode::SupportNeverEnds,
     ];
 
     pub fn code_str(self) -> &'static str {
@@ -39,6 +43,8 @@ impl LintCode {
             LintCode::LiteralSampleRate => "literal-sample-rate",
             LintCode::Arity => "arity",
             LintCode::KeyIsNotAPitch => "key-is-not-a-pitch",
+            LintCode::ParameterHasNoDefault => "parameter-has-no-default",
+            LintCode::SupportNeverEnds => "support-never-ends",
         }
     }
 
@@ -63,6 +69,12 @@ impl LintCode {
             LintCode::Arity => "give the call what its builtin reads, as `sva-cli builtins` lists",
             LintCode::KeyIsNotAPitch => {
                 "hold one note name or a number of hertz in `variables/key`"
+            }
+            LintCode::ParameterHasNoDefault => {
+                "give the parameter a `name = value` line above the expression, so the node plays bare"
+            }
+            LintCode::SupportNeverEnds => {
+                "crop it, or shape it to decay, so a bare render of it ends"
             }
         }
     }

@@ -175,6 +175,11 @@ LINT:
                                  into its filename's bar span
            key-is-not-a-pitch    `variables/key` holds neither a note name nor
                                  a number of hertz
+           parameter-has-no-default
+                                 a node reads a parameter no `name = value` line
+                                 binds, so a bare `@node` cannot play
+           support-never-ends    a node's support, pruned at the profile's
+                                 floor, has no end for a bare render to stop at
 
 TRACE:
   sva-cli trace <node|expression>
@@ -219,7 +224,7 @@ EXAMPLES:
   sva-cli render '@master([0, 8b])' --representation 'ledger(depth=2),loudness'
   sva-cli render '@voice/note([0, inf), f0=C4, len=2s)' \
     --until 'envelope(t) < -60db and t > 1s' --representation samples=/tmp/note.wav
-  sva-cli render '@chord/home' --representation 'spectrum(peaks=8)' --rate 48000
+  sva-cli render 'sample(@chord/home)' --representation 'spectrum(peaks=8)' --rate 48000
   sva-cli lint
   sva-cli lint '@master'
   sva-cli trace grid/phrase-2b

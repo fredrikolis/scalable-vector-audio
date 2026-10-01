@@ -1,6 +1,7 @@
 // Concern: gathers every sva-cli integration suite into one test binary | Non-concern: what any suite asserts (its own module) | IO: none
 
 mod analyze_integration;
+mod bare;
 mod composition_dir;
 mod envelope;
 mod help;

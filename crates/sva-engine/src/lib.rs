@@ -40,7 +40,7 @@ pub use refs::{identity, nodes_in, spectral_sum_of, symbolic_hash};
 pub use render::until::{Cmp, Term};
 pub use render::{
     Block, Change, Changed, Counts, Handle, LATEST, NOTES, Placed, Range, Render, RenderConfig,
-    STREAMED, Stream, StreamConfig, Until, answer, answer_buffer, change, plan, render,
+    STREAMED, Stream, StreamConfig, Until, answer, answer_buffer, change, ends, plan, render,
     render_through, sketch_atom, warm,
 };
 pub use schedule::{Order, Schedule, schedule_from};

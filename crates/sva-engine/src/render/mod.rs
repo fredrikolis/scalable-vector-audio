@@ -304,6 +304,28 @@ pub fn plan(graph: &Graph, target: &str, config: RenderConfig) -> Result<Render,
     )
 }
 
+/// The sample each of `roots` read bare would end at, `None` where its support, pruning
+/// included, never ends and such a render refuses for it. Typed together, and no sample.
+pub fn ends(
+    graph: &Graph,
+    roots: &[String],
+    config: &RenderConfig,
+) -> Result<Vec<Option<i64>>, EngineError> {
+    let (instances, named) = instantiate::from_roots(graph, roots, config.rate)?;
+    let order = schedule::schedule_from(&instances, &named)?;
+    let tys = typing::infer_all(&instances, &order)?;
+    let supports = Supports::new(&tys, &config.profile);
+    named
+        .iter()
+        .map(|held| {
+            let id = tys
+                .id(held)
+                .ok_or_else(|| EngineError::UnknownNode(held.clone()))?;
+            Ok(default_end(supports.of(id)))
+        })
+        .collect()
+}
+
 /// A reading of samples or of their cost needs the range; lines and structure never do.
 fn ranged(held: &mut Render, bounds: &BTreeSet<NodeId>) -> Result<(), EngineError> {
     let counts = counts(&held.config.asks);
