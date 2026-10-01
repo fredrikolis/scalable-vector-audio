@@ -120,8 +120,20 @@ fn interrupted(tier: &Tier<Directory>, signal: i32) -> ! {
 
 /// What a render left in memory, written to the store whatever the render came to.
 pub fn persisted(tier: &Tier<Directory>, warnings: &mut Vec<Diagnostic>) {
-    if let Err(why) = wait(tier.persist()) {
-        let message = format!("the render's values could not be stored: {why}");
-        warnings.push(warning("store.unwritten", message));
+    match wait(tier.persist()) {
+        Err(why) => {
+            let message = format!("the render's values could not be stored: {why}");
+            warnings.push(warning("store.unwritten", message));
+        }
+        Ok(done) if done.refused > 0 => warnings.push(refused(done.refused)),
+        Ok(_) => {}
     }
+}
+
+fn refused(values: usize) -> Diagnostic {
+    let message =
+        format!("{values} value(s) were larger than the store's whole budget, so none was stored");
+    Diagnostic::new("store.refused", message)
+        .with_severity(Severity::Warning)
+        .helped("render a shorter interval, or give the store a larger budget")
 }

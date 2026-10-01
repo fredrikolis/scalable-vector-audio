@@ -307,6 +307,19 @@ fn a_node_persisted_twice_holds_what_both_persists_sent() {
     assert_eq!(samples(&cold), samples(&warm));
 }
 
+/// A value larger than the store's whole budget is never stored, and the persist counts it.
+#[test]
+fn a_value_past_the_whole_budget_is_refused_and_counted() {
+    let (_, one) = persisted_tone(&Memory::default(), u64::MAX, 100);
+    let memory = Memory::default();
+    let store = opened(&memory, one / 2);
+    rendered(&tone("tone-large", 100), &store);
+    let done = now(store.persist()).expect("persisted");
+    assert_eq!(done.written, 0, "{done:?}");
+    assert!(done.refused > 0, "{done:?}");
+    assert!(memory.entries().is_empty());
+}
+
 /// Two stores over one directory, as two workers of a page open it: what one persists, the
 /// other, opened before, answers from.
 #[test]

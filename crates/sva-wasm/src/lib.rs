@@ -253,8 +253,14 @@ impl Composition {
 
     /// The only commit to the directory `open` was handed.
     pub async fn persist(&self) -> Result<usize, JsValue> {
-        let done = self.tier.persist().await;
-        done.map(|done| done.written).map_err(unstored)
+        let done = self.tier.persist().await.map_err(unstored)?;
+        if done.refused > 0 {
+            logged(&format!(
+                "{} value(s) were larger than the store's whole budget, so none was stored",
+                done.refused
+            ));
+        }
+        Ok(done.written)
     }
 
     pub fn insert(&mut self, path: &str, text: &str) {

@@ -71,12 +71,15 @@ enum Committed {
     Moved { bytes: u64 },
     Busy,
     Dropped,
+    Refused,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Persisted {
     pub written: usize,
     pub evicted: usize,
+    /// Values larger than the whole budget.
+    pub refused: usize,
 }
 
 fn locked<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -259,6 +262,7 @@ impl<B: Backend> Store<B> {
                     done.written += 1;
                 }
                 Committed::Dropped => {}
+                Committed::Refused => done.refused += 1,
             }
             for (chunk, _) in &held.chunks {
                 self.staging.delete(chunk).await?;
@@ -305,7 +309,7 @@ impl<B: Backend> Store<B> {
         }
         let bytes = codec::entry(&head, &runs);
         if bytes.len() as u64 > self.max_bytes {
-            return Ok(Committed::Dropped);
+            return Ok(Committed::Refused);
         }
         self.staging.put(&name, &bytes).await?;
         Ok(match self.staging.rename(&name, &self.backend).await? {
