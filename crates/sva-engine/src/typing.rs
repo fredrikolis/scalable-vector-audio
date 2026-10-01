@@ -135,16 +135,15 @@ impl PartialEq for Numbers {
     }
 }
 
-/// One term of a stream's note sum: its node, or the identity and support it had before it
-/// ended.
+/// One term of a stream's note sum: its node, or the hull of the supports of those it retired.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum SumSlot {
     Node(NodeId),
-    Retired(sva_formula::Hash, sva_samples::Extent),
+    Retired(sva_samples::Extent),
 }
 
 impl Typing {
-    /// `node` named by its terms in place, an ended one by the identity it had.
+    /// `node` named by its terms in place.
     pub(crate) fn name_sum(&mut self, node: NodeId, slots: Vec<SumSlot>) {
         self.sum = Some((node, slots));
     }

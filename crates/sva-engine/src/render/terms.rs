@@ -1,9 +1,8 @@
-// Concern: a stream's note sum, one node per term, each retired term kept as its identity | Non-concern: when a term's support ends (stream.rs), rebuilding nodes | IO: (Expr) -> Handle; (gone) -> ()
+// Concern: a stream's note sum, one node per term, those it retired folded into one slot | Non-concern: when a term's support ends (stream.rs), rebuilding nodes | IO: (Expr) -> Handle; (gone) -> ()
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use sva_ast::{Address, Arg, BinOp, ByteSpan, Expr, Literal};
-use sva_formula::Hash;
 use sva_samples::Extent;
 
 use crate::typing::{SumSlot, Typing};
@@ -38,70 +37,52 @@ impl Term {
     }
 }
 
-#[derive(Clone)]
-enum Slot {
-    Live(Term),
-    Retired(Hash, Extent),
-}
-
 #[derive(Clone, Default)]
 pub(super) struct Terms {
-    slots: Vec<Slot>,
+    terms: Vec<Term>,
+    /// The hull of the supports of every term it retired.
+    retired: Option<Extent>,
 }
 
 impl Terms {
-    fn live(&self) -> impl Iterator<Item = &Term> {
-        self.slots.iter().filter_map(|s| match s {
-            Slot::Live(t) => Some(t),
-            Slot::Retired(..) => None,
-        })
-    }
-
-    fn live_mut(&mut self) -> impl Iterator<Item = &mut Term> {
-        self.slots.iter_mut().filter_map(|s| match s {
-            Slot::Live(t) => Some(t),
-            Slot::Retired(..) => None,
-        })
-    }
-
     pub(super) fn count(&self) -> usize {
-        self.live().count()
+        self.terms.len()
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.live().next().is_none()
+        self.terms.is_empty()
     }
 
     pub(super) fn exprs(&self) -> impl Iterator<Item = &Expr> {
-        self.live().map(|t| &t.expr)
+        self.terms.iter().map(|t| &t.expr)
     }
 
     pub(super) fn nodes(&self) -> impl Iterator<Item = (String, Expr)> {
-        self.live().map(|t| (t.handle.node(), t.expr.clone()))
+        self.terms.iter().map(|t| (t.handle.node(), t.expr.clone()))
     }
 
     pub(super) fn handles(&self) -> impl Iterator<Item = Handle> {
-        self.live().map(|t| t.handle)
+        self.terms.iter().map(|t| t.handle)
     }
 
     pub(super) fn added(&self, expr: Expr) -> (Terms, Handle) {
         let mut next = self.clone();
         let handle = Handle(HANDLES.fetch_add(1, Ordering::Relaxed));
-        next.slots.push(Slot::Live(Term {
+        next.terms.push(Term {
             handle,
             expr,
             addressed: true,
             landed: 0,
-        }));
+        });
         (next, handle)
     }
 
     fn held(&mut self, handle: Handle) -> Option<&mut Term> {
-        self.live_mut().find(|t| t.holds(handle))
+        self.terms.iter_mut().find(|t| t.holds(handle))
     }
 
     pub(super) fn landed(&self, handle: Handle) -> Option<i64> {
-        Some(self.live().find(|t| t.holds(handle))?.landed)
+        Some(self.terms.iter().find(|t| t.holds(handle))?.landed)
     }
 
     pub(super) fn land(&mut self, handle: Handle, at: i64) {
@@ -141,7 +122,8 @@ impl Terms {
     }
 
     pub(super) fn sum(&self) -> Expr {
-        self.live()
+        self.terms
+            .iter()
             .map(|t| Expr::Ref {
                 path: t.handle.node(),
                 arg: Box::new(Expr::Var("t".to_string())),
@@ -153,38 +135,35 @@ impl Terms {
             .unwrap_or(Expr::Lit(Literal::Num(0.0)))
     }
 
-    /// `notes` named by its slots, a retired term by the identity and support it had.
+    /// `notes` named by its terms, and by the supports of those it retired.
     pub(super) fn name(&self, tys: &mut Typing) {
         let Some(notes) = tys.id(NOTES) else {
             return;
         };
-        let slots = self.slots.iter().map(|s| match s {
-            Slot::Live(t) => tys.id(&t.handle.node()).map(SumSlot::Node),
-            Slot::Retired(h, support) => Some(SumSlot::Retired(*h, *support)),
-        });
-        if let Some(slots) = slots.collect::<Option<Vec<_>>>() {
+        let live = self.terms.iter();
+        let live = live.map(|t| tys.id(&t.handle.node()).map(SumSlot::Node));
+        let retired = self.retired.map(|support| Some(SumSlot::Retired(support)));
+        if let Some(slots) = live.chain(retired).collect::<Option<Vec<_>>>() {
             tys.name_sum(notes, slots);
         }
     }
 
-    /// Retires every term `gone` names, each as the identity and support `named` gives it.
-    /// True where any went.
+    /// Drops every term `gone` names, its support, as `support` gives it, kept in the hull of
+    /// those retired. True where any went.
     pub(super) fn prune(
         &mut self,
         gone: &dyn Fn(Handle) -> bool,
-        named: &dyn Fn(Handle) -> Option<(Hash, Extent)>,
+        support: &dyn Fn(Handle) -> Option<Extent>,
     ) -> bool {
-        let live = self.live().count();
-        self.slots = std::mem::take(&mut self.slots)
+        let live = self.terms.len();
+        let (went, kept): (Vec<Term>, _) = std::mem::take(&mut self.terms)
             .into_iter()
-            .filter_map(|slot| match slot {
-                Slot::Live(t) if gone(t.handle) => {
-                    named(t.handle).map(|(identity, support)| Slot::Retired(identity, support))
-                }
-                other => Some(other),
-            })
-            .collect();
-        self.live().count() != live
+            .partition(|t| gone(t.handle));
+        self.terms = kept;
+        for ended in went.iter().filter_map(|t| support(t.handle)) {
+            self.retired = Some(self.retired.map_or(ended, |hull| hull.hull(ended)));
+        }
+        self.terms.len() != live
     }
 }
 
@@ -238,5 +217,38 @@ pub(super) fn placed(expr: &Expr, at: i64) -> Expr {
             arg: moved(arg),
             span: *span,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// However many terms came and went, `notes` is named by those sounding and one slot for
+    /// the rest: the hull of their supports.
+    #[test]
+    fn notes_is_named_by_its_sounding_terms_and_one_retired_slot() {
+        let mut terms = Terms::default();
+        let mut last = None;
+        for k in 0..1_000 {
+            let (next, handle) = terms.added(Expr::Lit(Literal::Num(1.0)));
+            terms = next;
+            let ended = |h: Handle| Some(h) == last;
+            assert_eq!(terms.prune(&ended, &|_| Some(Extent::new(k, k + 1))), k > 0);
+            last = Some(handle);
+        }
+        let dir = std::env::temp_dir().join(format!("sva-terms-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory");
+        std::fs::write(dir.join("one"), "1\n").expect("a node file");
+        let mut graph = sva_ast::parse_composition(&dir).expect("a composition");
+        for (name, body) in std::iter::once((NOTES.to_string(), terms.sum())).chain(terms.nodes()) {
+            assert!(graph.define(&name, body));
+        }
+        let mut tys = crate::types(&graph, NOTES).expect("typed");
+        terms.name(&mut tys);
+        let (notes, sounding) = (tys.id(NOTES), last.and_then(|h| tys.id(&h.node())));
+        let slots = notes.and_then(|notes| tys.sum_slots(notes)).expect("named");
+        let sounding = SumSlot::Node(sounding.expect("the last term"));
+        assert_eq!(slots, [sounding, SumSlot::Retired(Extent::new(1, 1_000))]);
     }
 }

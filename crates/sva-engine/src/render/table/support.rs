@@ -63,7 +63,7 @@ impl<'a> Supports<'a> {
     fn retired(&self, id: NodeId) -> impl Iterator<Item = Extent> {
         let slots = self.tys.sum_slots(id).unwrap_or_default().iter();
         slots.filter_map(|slot| match slot {
-            SumSlot::Retired(_, support) => Some(*support),
+            SumSlot::Retired(support) => Some(*support),
             SumSlot::Node(_) => None,
         })
     }

@@ -355,14 +355,8 @@ impl Stream {
             let support = supports.get(&handle);
             support.is_some_and(|s| s.end <= now && asked.is_none_or(|from| s.end <= from))
         };
-        let named = |handle: Handle| {
-            let id = tys.id(&handle.node())?;
-            Some((
-                crate::refs::identity(tys, id).ok()?,
-                *supports.get(&handle)?,
-            ))
-        };
-        if self.terms.prune(&gone, &named) {
+        let support = |handle: Handle| supports.get(&handle).copied();
+        if self.terms.prune(&gone, &support) {
             self.generation += 1;
         }
     }
