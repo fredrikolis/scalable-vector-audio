@@ -1,5 +1,7 @@
 // Concern: gives every node one Ty and the value it lowered to | Non-concern: the per-term judgment (sva-formula), lowering (lower/) | IO: (Instances, Order) -> Ty per node
 
+mod carry;
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -16,6 +18,9 @@ use crate::instantiate::Instances;
 use crate::lower;
 use crate::schedule::Order;
 use crate::time::Grid;
+
+use carry::Span;
+pub(crate) use carry::{Carried, Prior};
 
 /// A closed form is cast-free on one axis; every crossing is its own node.
 #[derive(Clone, Debug, PartialEq)]
@@ -123,6 +128,8 @@ pub struct Typing {
     numbers: Numbers,
     /// Every node lowered from its source, in order.
     lowered: Vec<String>,
+    /// What each path's group wrote, lowered or taken from a prior typing.
+    spans: BTreeMap<String, Span>,
 }
 
 /// Each node's folded number, derived from the nodes alone; a settle evicts it all.
@@ -406,22 +413,59 @@ pub(crate) fn infer_over(
     order: &Order,
     stored: &BTreeMap<String, Arc<Stored>>,
 ) -> Result<Typing, EngineError> {
+    Ok(inferred(inst, order, stored, None)?.0)
+}
+
+/// Each group `prior` typed from the same sources, reading only groups taken too, taken from
+/// it as it was lowered there; the rest lowered.
+pub(crate) fn infer_beside(
+    inst: &Instances,
+    order: &Order,
+    prior: &Prior<'_>,
+) -> Result<(Typing, Carried), EngineError> {
+    let (typing, carried) = inferred(inst, order, &BTreeMap::new(), Some(prior))?;
+    Ok((typing, carried.expect("a prior to take from")))
+}
+
+fn inferred(
+    inst: &Instances,
+    order: &Order,
+    stored: &BTreeMap<String, Arc<Stored>>,
+    prior: Option<&Prior<'_>>,
+) -> Result<(Typing, Option<Carried>), EngineError> {
     let mut typing = Typing::default();
+    let mut carried = prior.map(|prior| Carried::over(prior.typing));
+    if let Some(prior) = prior {
+        typing.indices = prior.typing.indices;
+    }
     for group in &order.groups {
-        match (order.is_loop(group), group.as_slice()) {
-            (false, [path]) if let Some(held) = stored.get(path) => {
+        let (nodes, origins) = (typing.nodes.len() as u32, typing.origins.len() as u32);
+        let taken = match (prior, &mut carried) {
+            (Some(prior), Some(carried)) => typing.carry(prior, order, group, carried),
+            _ => false,
+        };
+        match (taken, order.is_loop(group), group.as_slice()) {
+            (true, _, _) => {}
+            (false, false, [path]) if let Some(held) = stored.get(path) => {
                 typing.push(standing(path, held), Some(path));
             }
-            (true, _) => settle_loop(&mut typing, inst, group)?,
-            (false, _) => {
+            (false, true, _) => settle_loop(&mut typing, inst, group)?,
+            (false, false, _) => {
                 for path in group {
                     lower::node(path, inst, &mut typing)?;
                 }
             }
         }
+        let span = Span {
+            nodes: nodes..typing.nodes.len() as u32,
+            origins: origins..typing.origins.len() as u32,
+        };
+        for path in group {
+            typing.spans.insert(path.clone(), span.clone());
+        }
     }
     name_files(&mut typing, inst);
-    Ok(typing)
+    Ok((typing, carried))
 }
 
 fn standing(path: &str, held: &Arc<Stored>) -> Node {

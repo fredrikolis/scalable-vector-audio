@@ -11,9 +11,9 @@ use sva_samples::{Buffer, Extent};
 use super::drive::{Block, Driver};
 use super::frontier::{Frontier, Known};
 use super::table::support::Supports;
-use super::table::{Table, edit};
+use super::table::{Beside, Table, edit};
 use super::terms::{Handle, NOTES, Terms, placed};
-use super::{Ends, Render, RenderConfig, range_of, through};
+use super::{Ends, Render, RenderConfig, range_over, through};
 use crate::cache::{Cache, CacheStats, Lookup, Outcome, Recording, Stored, Through};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::flops::Work;
@@ -21,6 +21,9 @@ use crate::instantiate;
 use crate::recent::Recent;
 use crate::schedule;
 use crate::typing;
+
+#[cfg(test)]
+mod rebuilt;
 
 pub const STREAMED: &str = "streamed";
 
@@ -40,7 +43,7 @@ pub struct StreamConfig {
 /// looked up once; a node reading the stream's own note sum never, as no store holds one.
 pub struct Stream {
     config: StreamConfig,
-    shell: Render,
+    played: Played,
     driver: Driver,
     graph: Graph,
     expr: Expr,
@@ -53,7 +56,12 @@ pub struct Stream {
     dropped: Recent<String>,
     late: usize,
     built: Built,
-    /// Each instance's store key, and what it reads, as the stream plays it.
+}
+
+/// What a stream plays, as its latest build left it: the typed composition, and each
+/// instance's store key and what it reads.
+struct Played {
+    shell: Render,
     keys: BTreeMap<String, Hash>,
     reads: BTreeMap<String, Vec<String>>,
 }
@@ -108,13 +116,11 @@ impl Met {
 }
 
 struct Shelled {
-    shell: Render,
+    played: Played,
     range: Extent,
     table: Table,
     hits: Vec<Lookup>,
     built: Built,
-    keys: BTreeMap<String, Hash>,
-    reads: BTreeMap<String, Vec<String>>,
 }
 
 impl Stream {
@@ -166,11 +172,9 @@ impl Stream {
             dropped: Recent::keeping(LATEST),
             late: 0,
             built: found.built,
-            keys: found.keys,
-            reads: found.reads,
             driver,
             config,
-            shell: found.shell,
+            played: found.played,
         })
     }
 
@@ -201,7 +205,7 @@ impl Stream {
                 (graph, self.expr.clone(), terms, Changed::Held(true))
             }
             Change::Remove(handle) => {
-                let at = self.driver.at as f64 / f64::from(self.shell.rate());
+                let at = self.driver.at as f64 / f64::from(self.played.shell.rate());
                 let terms = self.terms.removed(handle, at);
                 let terms = terms.ok_or(Changed::Held(false))?;
                 (
@@ -251,16 +255,13 @@ impl Stream {
         fetched: &[(Hash, Vec<Buffer>)],
     ) {
         let Shelled {
-            shell,
+            played,
             range,
             mut table,
             hits,
             built,
-            keys,
-            reads,
         } = shelled;
         self.built = built;
-        (self.keys, self.reads) = (keys, reads);
         let old = std::mem::replace(&mut self.driver.table, Table::empty());
         let dropped = edit::carried(&mut table, old, self.driver.at, self.live);
         for (key, samples) in fetched {
@@ -273,15 +274,15 @@ impl Stream {
         let last = self.last(range.end);
         self.driver.replace(table, last);
         self.driver.recording.found(hits);
-        self.shell = shell;
+        self.played = played;
         self.graph = prospect.graph;
         self.expr = prospect.target;
         self.terms = prospect.terms;
         if let Changed::Added(handle) = prospect.answer {
             self.terms.land(handle, self.driver.at);
         }
-        let supports = Supports::new(&self.shell.tys, &self.shell.config.profile);
-        let tys = &self.shell.tys;
+        let (tys, profile) = (&self.played.shell.tys, &self.played.shell.config.profile);
+        let supports = Supports::over(tys, profile, Some(&self.driver.table.supports));
         let support = |handle: Handle| Some((handle, supports.of(tys.id(&handle.node())?)));
         self.supports = self.terms.handles().filter_map(support).collect();
         self.generation += 1;
@@ -380,7 +381,7 @@ impl Stream {
     /// Retires every term whose support, pruned as a render prunes it, ended by now and before
     /// the first sample of `notes` the root's window from now on asks, as its demand finds it.
     fn prune(&mut self) {
-        let (table, tys) = (&self.driver.table, &self.shell.tys);
+        let (table, tys) = (&self.driver.table, &self.played.shell.tys);
         let (now, last) = (self.driver.at, self.driver.last());
         let asked = match tys.id(NOTES).and_then(|notes| table.of(notes)) {
             Some(notes) if now < last => {
@@ -404,7 +405,8 @@ impl Stream {
     /// Every segment of its own clock the stream computed of `node`'s value, in order.
     pub fn evaluated(&self, node: &str) -> Vec<sva_samples::Extent> {
         let table = &self.driver.table;
-        self.shell
+        self.played
+            .shell
             .tys
             .id(node)
             .and_then(|id| table.of(id))
@@ -628,10 +630,32 @@ async fn shelled<'s>(
         found.unstored(terms.handles().map(Handle::node));
     }
     if let Some(prior) = prior() {
-        found.asking(anew((&prior.keys, &prior.reads), &keys, &order));
+        found.asking(anew(
+            (&prior.played.keys, &prior.played.reads),
+            &keys,
+            &order,
+        ));
     }
     walk(&mut found).await;
-    let mut tys = typing::infer_over(&instances, &order.within(&found.visited), &BTreeMap::new())?;
+    let within = order.within(&found.visited);
+    let prior = prior();
+    let (mut tys, carried) = match &prior {
+        Some(prior) => {
+            let (held, now) = (&prior.played.keys, &keys);
+            let same = |path: &str| held.get(path) == now.get(path);
+            let typing = &prior.played.shell.tys;
+            let prior_typing = typing::Prior {
+                typing,
+                same: &same,
+            };
+            let (tys, carried) = typing::infer_beside(&instances, &within, &prior_typing)?;
+            (tys, Some(carried))
+        }
+        None => (
+            typing::infer_over(&instances, &within, &BTreeMap::new())?,
+            None,
+        ),
+    };
     let id = tys
         .id(&root)
         .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;
@@ -642,8 +666,15 @@ async fn shelled<'s>(
         .collect();
     let schedule = schedule::plan(&tys, id, &[]);
     let shell = Render::shell(tys, id, config.clone(), schedule);
-    let range = range_of(&shell, Ends::Pulled)?;
-    let table = Table::prefixed(&shell.tys, shell.root, &shell.config.profile, &prefixes)?;
+    let profile = &shell.config.profile;
+    let beside = match (&prior, &carried) {
+        (Some(prior), Some(carried)) => Beside::of(&prior.driver.table, &carried.nodes),
+        _ => Beside::default(),
+    };
+    let table = Table::prefixed(&shell.tys, shell.root, profile, (&prefixes, beside))?;
+    drop(prior);
+    let support = Supports::over(&shell.tys, profile, Some(&table.supports)).of(shell.root);
+    let range = range_over(&shell, support, Ends::Pulled)?;
     let hits = std::mem::take(&mut found.lookups).into_iter();
     let hits = hits.filter(|l| l.outcome == Outcome::Hit).collect();
     drop(found);
@@ -653,14 +684,13 @@ async fn shelled<'s>(
         values: table.built,
         lookups: 0,
     };
+    let reads = order.into_deps();
     Ok(Shelled {
-        shell,
+        played: Played { shell, keys, reads },
         range,
         table,
         hits,
         built,
-        keys,
-        reads: order.into_deps(),
     })
 }
 

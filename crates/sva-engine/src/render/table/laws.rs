@@ -1,7 +1,12 @@
-// Concern: proves a render writes the same bits shared or apart, whole or streamed, over random trees of shifts, crops and loops | Non-concern: one node's arithmetic | IO: (a seed) -> three renders
+// Concern: proves a render writes the same bits shared or apart, whole or streamed, and a changed stream builds as anew, over random trees | Non-concern: one node's arithmetic | IO: (a seed) -> renders
+
+use std::cell::RefCell;
 
 use crate::cache::NoStore;
-use crate::render::{Range, RenderConfig, Stream, StreamConfig, render, render_apart};
+use crate::render::{
+    Change, Changed, Handle, Placed, Range, RenderConfig, Stream, StreamConfig, change, render,
+    render_apart,
+};
 
 /// Nothing to wait on over no store: one poll finishes it.
 fn now<F: Future>(future: F) -> F::Output {
@@ -183,4 +188,86 @@ fn a_tree_is_the_same_bits_shared_or_apart_whole_or_streamed() {
         );
     }
     assert!(rendered >= 20, "only {rendered} of 24 trees rendered");
+}
+
+fn expr(text: &str) -> sva_ast::Expr {
+    sva_ast::parse_expr(text).expect("an expression")
+}
+
+/// One random change: an add, a replace or a remove of a term, or an edit of the target.
+fn changed(stream: &RefCell<Stream>, g: &sva_ast::Graph, draw: &mut Draw, held: &mut Vec<Handle>) {
+    let reads: Vec<String> = g.paths().map(str::to_string).collect();
+    let at = stream.borrow().position();
+    let term = format!(
+        "@{}(t - {}sp)",
+        draw.pick(&reads),
+        at + draw.below(300) as i64
+    );
+    let placed = match draw.below(2) {
+        0 => Placed::Written,
+        _ => Placed::Landing,
+    };
+    let edit = match (draw.below(5), held.len()) {
+        (0, _) => Change::Target(
+            g.clone(),
+            expr(&format!("@notes + 0.{}*@root", 1 + draw.below(9))),
+        ),
+        (1, n) if n > 0 => Change::Replace(
+            held[draw.below(n as u64) as usize],
+            g.clone(),
+            expr(&term),
+            placed,
+        ),
+        (2, n) if n > 0 => Change::Remove(held.remove(draw.below(n as u64) as usize)),
+        _ => Change::Add(g.clone(), expr(&term), placed),
+    };
+    let mut edit = Some(edit);
+    let build = |_: &Stream| Ok::<_, crate::EngineError>(edit.take().expect("built once"));
+    if let Ok(Changed::Added(handle)) = now(change(stream, build, &NoStore)) {
+        held.push(handle);
+    }
+}
+
+/// However its terms and target changed, a stream holds the typing and table a build of all it
+/// plays, carrying nothing over, would: what a change carries over is what it would build.
+#[test]
+fn a_changed_stream_holds_what_a_build_of_all_it_plays_would() {
+    let mut checked = 0;
+    for seed in 1..=12u64 {
+        let mut composition = sva_ast::Composition::new();
+        for (name, body) in &tree(seed) {
+            composition.insert(name, body);
+        }
+        let g = sva_ast::load(&composition).expect("a composition");
+        let config = StreamConfig {
+            block: 100,
+            channels: None,
+            render: RenderConfig::at(RATE),
+        };
+        let Ok(stream) = now(Stream::open(
+            &g,
+            &expr("@notes + @root"),
+            config,
+            None,
+            &NoStore,
+        )) else {
+            continue;
+        };
+        let (stream, mut draw, mut held) = (RefCell::new(stream), Draw(seed | 1), Vec::new());
+        if seed % 2 == 0 {
+            stream.borrow_mut().go_live();
+        }
+        for _ in 0..16 {
+            changed(&stream, &g, &mut draw, &mut held);
+            for _ in 0..draw.below(4) {
+                let at = stream.borrow().position();
+                stream.borrow_mut().read(at, 100).expect("a block");
+            }
+            if let Some(unlike) = now(stream.borrow().unlike_rebuilt()) {
+                assert_eq!(unlike, Vec::<String>::new(), "{seed}");
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked >= 150, "only {checked} changes checked");
 }

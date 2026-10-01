@@ -114,7 +114,7 @@ pub(super) fn isolated(
     let held = |id: BufId| kept.contains(&id);
     match kept.is_empty() || !separable(&program.renderer, &held) {
         true => Ok(None),
-        false => Ok(Some((program.renderer.clone(), kept))),
+        false => Ok(Some(((*program.renderer).clone(), kept))),
     }
 }
 

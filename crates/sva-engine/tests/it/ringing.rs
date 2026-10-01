@@ -175,9 +175,10 @@ fn a_retired_term_leaves_a_filter_that_reads_no_note_its_cut() {
     assert!(cut_whole.is_some(), "the filter rings out");
     add("crop(sin(2*pi*500*t), 0s, 0.01s)");
     assert_eq!(cut(), cut_whole);
-    while stream.borrow().counts().terms > 0 {
+    for _ in 0..8 {
         next(&mut stream.borrow_mut()).expect("a block");
     }
+    assert_eq!(stream.borrow().counts().terms, 0, "the note ended");
     add("crop(sin(2*pi*700*t), 0.5s, 0.6s)");
     assert_eq!(
         cut(),

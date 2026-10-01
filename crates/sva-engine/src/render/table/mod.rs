@@ -24,7 +24,7 @@ use sva_samples::{
 };
 
 pub(crate) use demand::Need;
-pub(crate) use value::{Held, Key, Kind, Value};
+pub(crate) use value::{Held, Key, Kind, Made, Value};
 
 use crate::cache::{Recording, Stored};
 use crate::cast::Cast;
@@ -33,7 +33,7 @@ use crate::refs;
 use crate::time::Lattice;
 use crate::typing::{Typing, Value as Typed};
 use program::Source;
-use support::Supports;
+use support::{Memo, Supports};
 use value::Program;
 
 pub(crate) struct Table {
@@ -52,6 +52,40 @@ pub(crate) struct Table {
     pub(crate) cuts: Vec<(String, i64)>,
     /// The values it built from their node or formula.
     pub(crate) built: usize,
+    /// Each support and identity its build found, by the node of the typing it was built from.
+    pub(crate) supports: Memo,
+    named: BTreeMap<NodeId, Hash>,
+    index: HashMap<Key, usize>,
+}
+
+/// How much finer than its own step each value is, the nodes standing as values of their own,
+/// and the samples the store holds of each.
+type Bounds<'b> = (
+    i128,
+    &'b BTreeSet<NodeId>,
+    &'b BTreeMap<NodeId, Arc<Stored>>,
+);
+
+/// A prior table a new one is built beside, with the supports and identities it found of each
+/// node the new typing took over, renamed to it.
+#[derive(Default)]
+pub(crate) struct Beside<'p> {
+    supports: Memo,
+    named: BTreeMap<NodeId, Hash>,
+    prior: Option<(&'p Table, &'p HashMap<NodeId, NodeId>)>,
+}
+
+impl<'p> Beside<'p> {
+    /// `prior`'s, each node renamed as `map` takes it into the new typing.
+    pub(crate) fn of(prior: &'p Table, map: &'p HashMap<NodeId, NodeId>) -> Beside<'p> {
+        let named = prior.named.iter();
+        let named = named.filter_map(|(id, hash)| Some((*map.get(id)?, *hash)));
+        Beside {
+            supports: prior.supports.renamed(map),
+            named: named.collect(),
+            prior: Some((prior, map)),
+        }
+    }
 }
 
 impl Table {
@@ -72,10 +106,10 @@ impl Table {
         tys: &Typing,
         root: NodeId,
         profile: &Profile,
-        prefixes: &BTreeMap<NodeId, Arc<Stored>>,
+        (prefixes, beside): (&BTreeMap<NodeId, Arc<Stored>>, Beside<'_>),
     ) -> Result<Table, EngineError> {
         let bounds = (1, &BTreeSet::new(), prefixes);
-        Table::built(tys, (root, &[]), profile, bounds, false)
+        Table::built_beside(tys, (root, &[]), profile, (bounds, false), beside)
     }
 
     /// The same, each of `bounds` a value of its own wherever it is read, never inlined.
@@ -122,10 +156,27 @@ impl Table {
         tys: &Typing,
         (root, wanted): (NodeId, &[NodeId]),
         profile: &Profile,
-        (fine, bounds, prefixes): (i128, &BTreeSet<NodeId>, &BTreeMap<NodeId, Arc<Stored>>),
+        bounds: Bounds<'_>,
         apart: bool,
     ) -> Result<Table, EngineError> {
-        let supports = Supports::new(tys, profile);
+        let beside = Beside::default();
+        Table::built_beside(tys, (root, wanted), profile, (bounds, apart), beside)
+    }
+
+    /// Each value `beside` holds under the same key taken from it rather than built again.
+    fn built_beside(
+        tys: &Typing,
+        (root, wanted): (NodeId, &[NodeId]),
+        profile: &Profile,
+        ((fine, bounds, prefixes), apart): (Bounds<'_>, bool),
+        beside: Beside<'_>,
+    ) -> Result<Table, EngineError> {
+        let Beside {
+            supports: mut found,
+            named,
+            prior,
+        } = beside;
+        let supports = Supports::over(tys, profile, Some(&found));
         let mut building = Building {
             tys,
             supports: &supports,
@@ -136,8 +187,9 @@ impl Table {
             apart,
             copies: 0,
             built: 0,
+            prior,
             reading: Vec::new(),
-            named: BTreeMap::new(),
+            named,
             keys: HashMap::new(),
             open: Vec::new(),
             values: Vec::new(),
@@ -155,17 +207,31 @@ impl Table {
         let cuts = cuts
             .map(|(id, at)| (tys.name(id).to_string(), at))
             .collect();
+        let Building {
+            values,
+            nodes,
+            moved,
+            built,
+            named,
+            keys: index,
+            ..
+        } = building;
+        let more = supports.into_memo();
+        found.extend(more);
         Ok(Table {
-            values: building.values,
-            nodes: building.nodes,
+            values,
+            nodes,
             root,
             wanted,
             planned: Vec::new(),
             places,
             profile: *profile,
-            moved: building.moved,
+            moved,
             cuts,
-            built: building.built,
+            built,
+            supports: found,
+            named,
+            index,
         })
     }
 
@@ -201,6 +267,9 @@ impl Table {
             moved: 0.0,
             cuts: Vec::new(),
             built: 0,
+            supports: Memo::default(),
+            named: BTreeMap::new(),
+            index: HashMap::new(),
         }
     }
 
@@ -451,7 +520,7 @@ impl Table {
             && let NodeRenderer::Read {
                 slot: Slot::Read(slot),
                 ..
-            } = program.renderer
+            } = *program.renderer
         {
             return self.label(value.reads[slot.0 as usize]);
         }
@@ -493,6 +562,8 @@ struct Building<'a> {
     copies: u64,
     /// Values built from their node or formula so far.
     built: usize,
+    /// A table built before, and each of its typing's nodes this typing took over.
+    prior: Option<(&'a Table, &'a HashMap<NodeId, NodeId>)>,
     /// The nodes whose reads are being built, apart.
     reading: Vec<NodeId>,
     named: BTreeMap<NodeId, Hash>,
@@ -548,6 +619,7 @@ impl Building<'_> {
             switches: Vec::new(),
             moved: stored.moved,
             pure: true,
+            made: Made::of(Vec::new(), Some(stored.label.clone()), of.support),
         };
         value.evaluated = value.covers().iter().collect();
         self.moved = self.moved.max(stored.moved);
@@ -638,14 +710,75 @@ impl Building<'_> {
             return Err(refs::cyclic(self.tys, id));
         }
         self.open.push(key);
-        self.built += 1;
-        let built = self.built(key, &source, grid, name);
+        let built = match self.carried(key, &source, grid, name) {
+            Some(carried) => carried,
+            None => {
+                self.built += 1;
+                self.built(key, &source, grid, name)
+            }
+        };
         self.open.pop();
         let value = built?;
         self.values.push(value);
         let at = self.values.len() - 1;
         self.keys.insert(key, at);
         Ok(at)
+    }
+
+    /// The value the prior table built under `key`, its reads renamed into this typing; `None`
+    /// where it built none, or one it reads was not taken over.
+    fn carried(
+        &mut self,
+        key: Key,
+        source: &Source,
+        grid: Grid,
+        name: &str,
+    ) -> Option<Result<Value, EngineError>> {
+        let (prior, map) = self.prior?;
+        let old = &prior.values[*prior.index.get(&key)?];
+        let renamed = |source: &Source| match source {
+            Source::Node(id) => Some(Source::Node(*map.get(id)?)),
+            Source::Formula(form) => Some(Source::Formula(form.clone())),
+        };
+        let made = &old.made;
+        let sources: Vec<Source> = made.sources.iter().map(renamed).collect::<Option<_>>()?;
+        let kind = old.kind.unrun();
+        let held = match &kind {
+            Kind::Frames { .. } => Held::Frames(None),
+            Kind::Program(program) if let Some(start) = program.start => {
+                Held::Run(Tape::new(old.width, 0, start.min(made.support.start)))
+            }
+            _ => Held::Segments(Vec::new()),
+        };
+        let mut value = Value {
+            key,
+            node: match source {
+                Source::Node(id) => Some(*id),
+                Source::Formula(_) => None,
+            },
+            name: name.to_string(),
+            grid,
+            width: old.width,
+            support: made.support,
+            period: old.period,
+            kind,
+            reads: Vec::with_capacity(sources.len()),
+            held,
+            evaluated: Vec::new(),
+            label: made.label.clone(),
+            switches: old.switches.clone(),
+            moved: old.moved,
+            pure: true,
+            made: Made::of(sources.clone(), made.label.clone(), made.support),
+        };
+        self.moved = self.moved.max(value.moved);
+        for source in &sources {
+            match self.source(source, grid, &value.name) {
+                Ok(at) => value.reads.push(at),
+                Err(e) => return Some(Err(e)),
+            }
+        }
+        Some(Ok(value))
     }
 
     fn built(
@@ -655,6 +788,19 @@ impl Building<'_> {
         grid: Grid,
         name: &str,
     ) -> Result<Value, EngineError> {
+        let (mut value, sources) = self.building(key, source, grid, name)?;
+        value.made = Made::of(sources, value.label.clone(), value.support);
+        Ok(value)
+    }
+
+    /// A value, and what each of its reads reads.
+    fn building(
+        &mut self,
+        key: Key,
+        source: &Source,
+        grid: Grid,
+        name: &str,
+    ) -> Result<(Value, Vec<Source>), EngineError> {
         let tys = self.tys;
         let (node, support, width) = match source {
             Source::Node(id) => (
@@ -680,13 +826,15 @@ impl Building<'_> {
             switches: Vec::new(),
             moved: 0.0,
             pure: true,
+            made: Made::of(Vec::new(), None, support),
         };
+        let none = |value| Ok((value, Vec::new()));
         let Source::Node(id) = source else {
             let Source::Formula(form) = source else {
                 unreachable!("a node or a formula");
             };
             let sum = sva_formula::normalize_closed_form(form).ok();
-            return self.formula(value, sum, Some(form));
+            return none(self.formula(value, sum, Some(form))?);
         };
         let id = *id;
         match (tys.ty(id).held, tys.value(id)) {
@@ -695,7 +843,7 @@ impl Building<'_> {
                 value.moved = held.moved;
                 value.label = Some(held.label.clone());
                 value.kind = Kind::Stored(Arc::clone(held));
-                Ok(value)
+                none(value)
             }
             (Representation::Frames, Typed::Cast(Cast::Stft { window, hop }, of)) => {
                 value.kind = Kind::Frames {
@@ -706,28 +854,28 @@ impl Building<'_> {
                 value.held = Held::Frames(None);
                 value.support = self.support(*of);
                 match value.support.is_bounded() {
-                    true => Ok(value),
+                    true => Ok((value, vec![Source::Node(*of)])),
                     false => Err(unbounded(&value.name)),
                 }
             }
             (_, Typed::Cast(Cast::Istft, frames)) => {
                 value.reads = vec![self.node(*frames)?];
-                Ok(value)
+                Ok((value, vec![Source::Node(*frames)]))
             }
-            (_, Typed::ClosedForm(form)) if form.var == Var::F => self.spectrum(value, id),
+            (_, Typed::ClosedForm(form)) if form.var == Var::F => none(self.spectrum(value, id)?),
             (_, Typed::Op { name, .. }) if tys.var(id) == Var::F => {
                 Err(refs::across(tys, id, name))
             }
             (_, Typed::Cast(Cast::Fourier | Cast::IFourier, _)) if tys.var(id) == Var::F => {
-                self.spectrum(value, id)
+                none(self.spectrum(value, id)?)
             }
             (_, Typed::ClosedForm(form)) if refs::nodes_in(&form.body).is_empty() => {
                 let sum = sva_formula::normalize_closed_form(form).ok();
-                self.formula(value, sum, Some(form))
+                none(self.formula(value, sum, Some(form))?)
             }
             (_, Typed::Cast(Cast::Fourier | Cast::IFourier, _)) => {
                 let sum = refs::spectral_sum_of(tys, id, Var::T)?;
-                self.formula(value, Some(sum), None)
+                none(self.formula(value, Some(sum), None)?)
             }
             _ => self.program(value, id),
         }
@@ -739,7 +887,7 @@ impl Building<'_> {
         if let Ok(sum) = refs::spectral_sum_of(self.tys, id, Var::T) {
             return self.formula(value, Some(sum), None);
         }
-        value.kind = Kind::Spectrum(Box::new(refs::spectral_sum_of(self.tys, id, Var::F)?));
+        value.kind = Kind::Spectrum(Arc::new(refs::spectral_sum_of(self.tys, id, Var::F)?));
         Ok(value)
     }
 
@@ -763,7 +911,7 @@ impl Building<'_> {
                 value.width = rows.width();
                 value.period = period::period(written, &rows, grid);
                 value.label = Some(rows.label(self.profile));
-                value.kind = Kind::Rows(Box::new(rows));
+                value.kind = Kind::Rows(Arc::new(rows));
                 Ok(value)
             }
             Some(Err(e)) => Err(eval::collapse_refused(&value.name, &e)),
@@ -791,7 +939,11 @@ impl Building<'_> {
     }
 
     /// A closed form's program point-samples it; any other program is a reading of samples.
-    fn program(&mut self, mut value: Value, id: NodeId) -> Result<Value, EngineError> {
+    fn program(
+        &mut self,
+        mut value: Value,
+        id: NodeId,
+    ) -> Result<(Value, Vec<Source>), EngineError> {
         if self.tys.ty(id).is_closed_form() {
             value.label = Some(Label::new(
                 sva_samples::Source::Measured,
@@ -831,7 +983,8 @@ impl Building<'_> {
             true => refs::switches(self.tys, id, &mut self.named)?,
             false => Vec::new(),
         };
-        self.running(value, renderer, reads, built.sites, start)
+        let value = self.running(value, renderer, reads, built.sites, start)?;
+        Ok((value, built.reads))
     }
 
     fn running(
@@ -869,9 +1022,9 @@ impl Building<'_> {
         value.kind = Kind::Program(Box::new(Program {
             alias,
             own: own_reach(&renderer),
-            renderer,
-            spanned,
-            layout,
+            renderer: Arc::new(renderer),
+            spanned: Arc::new(spanned),
+            layout: Arc::new(layout),
             start,
             machine: None,
             marks: Default::default(),

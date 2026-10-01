@@ -6,6 +6,9 @@ use sva_samples::{
     Buffer, Extent, Frames, Grid, Label, Machine, NodeRenderer, Rows, Spanned, Tape, Window,
 };
 
+use std::sync::Arc;
+
+use super::program::Source;
 use super::segments::Segments;
 use crate::error::{Diagnostic, EngineError, Located};
 
@@ -16,22 +19,63 @@ pub(crate) struct Key {
 }
 
 pub(crate) enum Kind {
-    Rows(Box<Rows>),
+    Rows(Arc<Rows>),
     Program(Box<Program>),
     Frames {
         window: usize,
         hop: usize,
     },
     Istft,
-    Spectrum(Box<SpectralSum>),
+    Spectrum(Arc<SpectralSum>),
     /// Stored samples, loaded as asked; a value it reads computes what they miss.
-    Stored(std::sync::Arc<crate::cache::Stored>),
+    Stored(Arc<crate::cache::Stored>),
+}
+
+impl Kind {
+    /// The same, run nowhere yet.
+    pub(crate) fn unrun(&self) -> Kind {
+        match self {
+            Kind::Rows(rows) => Kind::Rows(Arc::clone(rows)),
+            Kind::Program(program) => Kind::Program(Box::new(Program {
+                renderer: Arc::clone(&program.renderer),
+                spanned: Arc::clone(&program.spanned),
+                layout: Arc::clone(&program.layout),
+                machine: None,
+                marks: Default::default(),
+                ..**program
+            })),
+            Kind::Frames { window, hop } => Kind::Frames {
+                window: *window,
+                hop: *hop,
+            },
+            Kind::Istft => Kind::Istft,
+            Kind::Spectrum(sum) => Kind::Spectrum(Arc::clone(sum)),
+            Kind::Stored(stored) => Kind::Stored(Arc::clone(stored)),
+        }
+    }
+}
+
+/// What a value was built as, before any run: what each read reads, and its label and support.
+pub(crate) struct Made {
+    pub(crate) sources: Vec<Source>,
+    pub(crate) label: Option<Label>,
+    pub(crate) support: Extent,
+}
+
+impl Made {
+    pub(crate) fn of(sources: Vec<Source>, label: Option<Label>, support: Extent) -> Arc<Made> {
+        Arc::new(Made {
+            sources,
+            label,
+            support,
+        })
+    }
 }
 
 pub(crate) struct Program {
-    pub(crate) renderer: NodeRenderer,
-    pub(crate) spanned: Spanned,
-    pub(crate) layout: Layout,
+    pub(crate) renderer: Arc<NodeRenderer>,
+    pub(crate) spanned: Arc<Spanned>,
+    pub(crate) layout: Arc<Layout>,
     /// Where a stateful value's run starts.
     pub(crate) start: Option<i64>,
     pub(crate) own: i64,
@@ -75,6 +119,7 @@ pub(crate) struct Value {
     /// Its samples are its identity's alone; one an edit carried on, or anything reading one,
     /// holds a history no key names, so the store neither answers nor keeps it.
     pub(crate) pure: bool,
+    pub(crate) made: Arc<Made>,
 }
 
 impl Value {
@@ -101,7 +146,7 @@ impl Value {
             rise,
             fall,
             ..
-        } = &program.renderer
+        } = &*program.renderer
         else {
             return None;
         };
@@ -341,6 +386,7 @@ mod tests {
             switches: Vec::new(),
             moved: 0.0,
             pure: true,
+            made: Made::of(Vec::new(), None, Extent::EVERYWHERE),
         }
     }
 

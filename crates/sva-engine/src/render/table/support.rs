@@ -1,7 +1,7 @@
 // Concern: where each node can be nonzero or is pruned, in whole samples of its own clock | Non-concern: where a reader asks for it, deriving a bound | IO: (NodeId) -> Extent, a state's start, cuts
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use sva_formula::{Body, C64, Fold, NodeId, Unary, exp_zero_at};
 use sva_samples::{Extent, Grid, Profile, Round};
@@ -17,24 +17,88 @@ use crate::typing::{Step, SumSlot, Typing, Value, When};
 pub(crate) struct Supports<'a> {
     tys: &'a Typing,
     profile: &'a Profile,
-    held: RefCell<BTreeMap<NodeId, Extent>>,
+    base: Option<&'a Memo>,
+    held: RefCell<HashMap<NodeId, Found>>,
     open: RefCell<BTreeSet<NodeId>>,
-    cuts: RefCell<BTreeMap<NodeId, i64>>,
+    /// What each support being found asked, innermost last.
+    asking: RefCell<Vec<Vec<NodeId>>>,
+    /// Each node asked, or that one asked was found from.
+    asked: RefCell<BTreeSet<NodeId>>,
+}
+
+/// Each support found, with its cut and the supports it was found from.
+#[derive(Default)]
+pub(crate) struct Memo(HashMap<NodeId, Found>);
+
+#[derive(Clone)]
+struct Found {
+    support: Extent,
+    cut: Option<i64>,
+    from: Vec<NodeId>,
+}
+
+impl Memo {
+    /// Each support of a node `map` renames, found from ones it renames, renamed.
+    pub(crate) fn renamed(&self, map: &HashMap<NodeId, NodeId>) -> Memo {
+        let renamed = |found: &Found| {
+            let from = found.from.iter().map(|id| map.get(id).copied());
+            Some(Found {
+                from: from.collect::<Option<Vec<_>>>()?,
+                ..found.clone()
+            })
+        };
+        let each = self.0.iter();
+        Memo(
+            each.filter_map(|(id, f)| Some((*map.get(id)?, renamed(f)?)))
+                .collect(),
+        )
+    }
+
+    pub(crate) fn extend(&mut self, more: Memo) {
+        self.0.extend(more.0);
+    }
 }
 
 impl<'a> Supports<'a> {
     pub(crate) fn new(tys: &'a Typing, profile: &'a Profile) -> Supports<'a> {
+        Supports::over(tys, profile, None)
+    }
+
+    pub(crate) fn over(tys: &'a Typing, profile: &'a Profile, base: Option<&'a Memo>) -> Self {
         Supports {
             tys,
             profile,
+            base,
             held: RefCell::default(),
             open: RefCell::default(),
-            cuts: RefCell::default(),
+            asking: RefCell::default(),
+            asked: RefCell::default(),
         }
     }
 
+    /// Each node asked that was pruned under the profile's level.
     pub(crate) fn cuts(&self) -> BTreeMap<NodeId, i64> {
-        self.cuts.borrow().clone()
+        let asked = self.asked.borrow();
+        let cut = |id: &NodeId| Some((*id, self.found(*id)?.cut?));
+        asked.iter().filter_map(cut).collect()
+    }
+
+    pub(crate) fn into_memo(self) -> Memo {
+        Memo(self.held.into_inner())
+    }
+
+    fn found(&self, id: NodeId) -> Option<Found> {
+        let held = self.held.borrow().get(&id).cloned();
+        held.or_else(|| self.base?.0.get(&id).cloned())
+    }
+
+    fn ask(&self, id: NodeId) {
+        let mut open = vec![id];
+        while let Some(id) = open.pop() {
+            if self.asked.borrow_mut().insert(id) {
+                open.extend(self.found(id).map_or(Vec::new(), |found| found.from));
+            }
+        }
     }
 
     fn grid(&self, id: NodeId) -> Grid {
@@ -42,20 +106,28 @@ impl<'a> Supports<'a> {
     }
 
     pub(crate) fn of(&self, id: NodeId) -> Extent {
-        if let Some(held) = self.held.borrow().get(&id) {
-            return *held;
+        if let Some(asking) = self.asking.borrow_mut().last_mut() {
+            asking.push(id);
+        }
+        if let Some(found) = self.found(id) {
+            self.ask(id);
+            return found.support;
         }
         if !self.open.borrow_mut().insert(id) {
             return Extent::EVERYWHERE;
         }
-        let found = match schedule::holds_self(self.tys, id, &mut BTreeSet::new()) {
-            true => self.looped(id),
+        self.asking.borrow_mut().push(Vec::new());
+        let (support, cut) = match schedule::holds_self(self.tys, id, &mut BTreeSet::new()) {
+            true => (self.looped(id), None),
             false => self.pruned(id, self.fresh(id)),
         };
-        let found = self.retired(id).fold(found, Extent::hull);
+        let support = self.retired(id).fold(support, Extent::hull);
+        let from = self.asking.borrow_mut().pop().expect("its own asks");
         self.open.borrow_mut().remove(&id);
+        self.asked.borrow_mut().insert(id);
+        let found = Found { support, cut, from };
         self.held.borrow_mut().insert(id, found);
-        found
+        support
     }
 
     /// Where a stream's note sum was nonzero through the terms it retired: a reader carrying
@@ -71,14 +143,14 @@ impl<'a> Supports<'a> {
     /// The approved exception to exact supports: zero from a sample where its bound over every
     /// later instant is under the prune level; first such sample where the bound falls
     /// monotonically. A node with no such bound keeps its exact support.
-    fn pruned(&self, id: NodeId, exact: Extent) -> Extent {
+    fn pruned(&self, id: NodeId, exact: Extent) -> (Extent, Option<i64>) {
         if exact.is_empty() {
-            return exact;
+            return (exact, None);
         }
         let grid = self.grid(id);
         let ends = |n: NodeId| self.of(n);
         let Some(tail) = Tail::of(self.tys, (self.profile, grid.rate), id, &ends) else {
-            return exact;
+            return (exact, None);
         };
         let level = self.profile.prune_level();
         let under = |n: i64| tail.from(grid.instant(n)) < level;
@@ -90,7 +162,7 @@ impl<'a> Supports<'a> {
             _ => under(last).then_some(last),
         };
         let Some(far) = far else {
-            return exact;
+            return (exact, None);
         };
         let (mut no, mut yes) = (from, far);
         if under(from) {
@@ -103,11 +175,11 @@ impl<'a> Supports<'a> {
                 false => no = mid,
             }
         }
-        self.cuts.borrow_mut().insert(id, yes);
-        match exact.start < yes {
+        let support = match exact.start < yes {
             true => Extent::new(exact.start, yes),
             false => Extent::NOWHERE,
-        }
+        };
+        (support, Some(yes))
     }
 
     /// A closed form a node wrote inside its own body, as a value of its own on `grid`.

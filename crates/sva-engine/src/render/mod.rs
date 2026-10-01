@@ -365,6 +365,15 @@ pub(crate) enum Ends {
 
 pub(crate) fn range_of(held: &Render, ends: Ends) -> Result<Extent, EngineError> {
     let support = Supports::new(&held.tys, &held.config.profile).of(held.root);
+    range_over(held, support, ends)
+}
+
+/// The range of a root of `support`.
+pub(crate) fn range_over(
+    held: &Render,
+    support: Extent,
+    ends: Ends,
+) -> Result<Extent, EngineError> {
     let start = held
         .config
         .range

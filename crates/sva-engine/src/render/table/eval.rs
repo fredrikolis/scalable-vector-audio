@@ -267,9 +267,9 @@ pub(crate) fn rerun(
     let spanned = sva_samples::Spanned::new(renderer, &program.layout, (from, over.end), &live)
         .map_err(|e| sample_refused(&value.name, &e))?;
     let rerun = Program {
-        renderer: renderer.clone(),
-        spanned,
-        layout: program.layout.clone(),
+        renderer: std::sync::Arc::new(renderer.clone()),
+        spanned: std::sync::Arc::new(spanned),
+        layout: std::sync::Arc::clone(&program.layout),
         start: program.start,
         own: program.own,
         alias: None,
