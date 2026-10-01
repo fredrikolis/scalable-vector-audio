@@ -385,7 +385,7 @@ impl Composition {
 
     #[wasm_bindgen(getter)]
     pub fn cache_evictions(&self) -> f64 {
-        self.tier.counters().evictions as f64
+        self.tier.counters().evictions() as f64
     }
 
     #[wasm_bindgen(getter)]
@@ -395,16 +395,6 @@ impl Composition {
 
     pub fn set_cache_policy(&self, policy: &str) -> Result<(), JsValue> {
         self.tier.set_policy(cache_policy(policy)?);
-        Ok(())
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn prune_policy(&self) -> String {
-        self.tier.prune_policy().name().to_string()
-    }
-
-    pub fn set_prune_policy(&self, policy: &str) -> Result<(), JsValue> {
-        self.tier.set_prune_policy(prune_policy(policy)?);
         Ok(())
     }
 

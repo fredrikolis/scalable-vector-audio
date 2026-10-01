@@ -40,7 +40,7 @@ pub async fn warm<B: Backend>(
     Ok(
         match run(graph, target, config, tier, Keep::Nothing).await? {
             Reached::Render(mut held) => held.cache_stats.take().expect("a render reports"),
-            Reached::Held(stats) => stats,
+            Reached::Held(stats) => *stats,
         },
     )
 }
@@ -53,7 +53,7 @@ enum Keep {
 
 enum Reached {
     Render(Box<Render>),
-    Held(CacheStats),
+    Held(Box<CacheStats>),
 }
 
 async fn run<B: Backend>(
@@ -73,7 +73,7 @@ async fn run<B: Backend>(
     found.walked(tier, round).await;
     if keep == Keep::Nothing && found.stored.contains_key(&root) {
         recording.found(found.lookups);
-        return Ok(Reached::Held(recording.stats()));
+        return Ok(Reached::Held(Box::new(recording.stats())));
     }
     let (mut held, typed) = loop {
         found.walked(tier, round).await;

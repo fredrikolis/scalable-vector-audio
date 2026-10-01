@@ -11,7 +11,7 @@ use super::Stored;
 use super::stored::{Header, Laid, Samples};
 
 /// Bumped by, and only by, a change to a stored value's bytes.
-pub const STORE_FORMAT: u32 = 11;
+pub const STORE_FORMAT: u32 = 12;
 
 /// Every entry opens with its format, so one another format wrote is never read as a value,
 /// even where a wipe left it.
@@ -239,6 +239,21 @@ pub(crate) fn read_chunks(bytes: &[u8], run: &Laid, from: usize, to: usize) -> O
     let mut out = Buffer::of_planes(run.rate, planes);
     out.start = run.start + first as i64;
     Some(out)
+}
+
+/// Every run an entry under `key` lays out; `None` where any is corrupt.
+pub(crate) fn read_runs(bytes: &[u8], key: Hash) -> Option<Vec<Buffer>> {
+    let (head, _) = read_head(bytes, key)?;
+    let Samples::Entry { runs, .. } = head.samples() else {
+        return Some(Vec::new());
+    };
+    let read = |run: &Laid| {
+        let n = run.len.div_ceil(CHUNK);
+        let (at, len) = span_of(run, 0, n);
+        let span = bytes.get(at as usize..(at + len) as usize)?;
+        read_chunks(span, run, 0, n)
+    };
+    runs.iter().map(read).collect()
 }
 
 pub(crate) fn chunk(samples: &Buffer) -> Vec<u8> {

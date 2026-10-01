@@ -162,7 +162,7 @@ fn opening_a_store_reads_its_index_alone() {
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
-const PINNED: (u32, u64) = (11, 5012063367105198311);
+const PINNED: (u32, u64) = (12, 5341375668263400292);
 
 /// A change to how a value is encoded, or to what the engine computes for any construct here,
 /// fails this until `STORE_FORMAT` is bumped and the digest pinned again: rows, a filter, a
@@ -276,13 +276,35 @@ fn past_its_budget_the_store_evicts_the_least_recently_used_first() {
     let (b, _) = persisted_tone(&memory, budget, 200);
     persisted_tone(&memory, budget, 100);
     let (c, _) = persisted_tone(&memory, budget, 300);
-    eprintln!(
-        "DEBUG one {one} a {a:?} b {b:?} c {c:?} entries {:?}",
-        memory.entries()
-    );
     assert!(all_held(&memory, &a), "read since, so kept");
     assert!(!all_held(&memory, &b), "least recently used, so gone");
     assert!(all_held(&memory, &c), "just written, so kept");
+}
+
+/// A node rendered short and persisted, then rendered longer and persisted by the same memory,
+/// sends the disk only what it lacks, and the entry holds both: a new process renders the
+/// longer range off the disk alone.
+#[test]
+fn a_node_persisted_twice_holds_what_both_persists_sent() {
+    let memory = Memory::default();
+    let graph = tone("tone-longer", 100);
+    let range = |secs: f64| RenderConfig::seconds(RATE, secs);
+    let store = opened(&memory, u64::MAX);
+    for secs in [SECONDS, 2.0 * SECONDS] {
+        now(render_over(&graph, "master", range(secs), &store)).expect("a render");
+        now(store.persist()).expect("persisted");
+    }
+    let cold = now(render_over(
+        &graph,
+        "master",
+        range(2.0 * SECONDS),
+        &Tier::default(),
+    ));
+    let next = opened(&memory, u64::MAX);
+    let warm = now(render_over(&graph, "master", range(2.0 * SECONDS), &next));
+    let (cold, warm) = (cold.expect("a render"), warm.expect("a render"));
+    assert_eq!(stats(&warm).computed(), 0, "{:?}", stats(&warm));
+    assert_eq!(samples(&cold), samples(&warm));
 }
 
 /// Two stores over one directory, as two workers of a page open it: what one persists, the

@@ -562,13 +562,17 @@ fn stats_with(stats: &CacheStats, extra: &str) -> String {
 pub fn counters_json(counters: &Counters) -> String {
     format!(
         "{{ \"disk_lookups\": {}, \"disk_reads\": {}, \"disk_read_bytes\": {}, \
-         \"promotions\": {}, \"writebacks\": {}, \"evictions\": {} }}",
+         \"promotions\": {}, \"writebacks\": {}, \"hits\": {}, \"evictions\": {}, \
+         \"probation_evictions\": {}, \"protected_evictions\": {} }}",
         counters.disk_lookups,
         counters.disk_reads,
         counters.disk_read_bytes,
         counters.promotions,
         counters.writebacks,
-        counters.evictions
+        counters.hits,
+        counters.evictions(),
+        counters.probation_evictions,
+        counters.protected_evictions
     )
 }
 

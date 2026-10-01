@@ -139,7 +139,7 @@ impl Recording {
             bytes: memory.bytes(),
             max_bytes: memory.max_bytes(),
             entries: memory.entries(),
-            evictions: tier.evictions,
+            evictions: tier.evictions(),
             tier,
             reached: self.reached.clone().unwrap_or_default(),
             typed: Vec::new(),

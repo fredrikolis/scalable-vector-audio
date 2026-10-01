@@ -286,21 +286,27 @@ impl<B: Backend> Store<B> {
         Ok(done)
     }
 
-    /// `key`'s staged value moved whole into the store; none past budget.
+    /// `key`'s staged value joined with its entry's, moved whole into the store.
     async fn committed(&self, key: Hash, held: &Staged) -> Result<Committed, String> {
         let whole = match held.meta {
             true => self.staged_value_of(key, held).await?,
             false => None,
         };
         let whole = whole.filter(|(head, runs)| !runs.is_empty() || head.refers());
-        let Some((head, runs)) = whole else {
+        let Some((head, mut runs)) = whole else {
             return Ok(Committed::Dropped);
         };
+        let name = name_of(key);
+        if !head.refers() {
+            let held = self.backend.get(&name).await?;
+            if let Some(held) = held.and_then(|bytes| codec::read_runs(&bytes, key)) {
+                runs = joined_runs(runs, held);
+            }
+        }
         let bytes = codec::entry(&head, &runs);
         if bytes.len() as u64 > self.max_bytes {
             return Ok(Committed::Dropped);
         }
-        let name = name_of(key);
         self.staging.put(&name, &bytes).await?;
         Ok(match self.staging.rename(&name, &self.backend).await? {
             true => Committed::Moved {
@@ -332,6 +338,12 @@ impl<B: Backend> Store<B> {
         let runs = runs.into_iter().map(Arc::unwrap_or_clone).collect();
         Ok(Some((head, runs)))
     }
+}
+
+fn joined_runs(staged: Vec<Buffer>, held: Vec<Buffer>) -> Vec<Buffer> {
+    let mut runs: Vec<Arc<Buffer>> = held.into_iter().map(Arc::new).collect();
+    joined(&mut runs, staged.into_iter().map(Arc::new).collect());
+    runs.into_iter().map(Arc::unwrap_or_clone).collect()
 }
 
 fn staged_name(key: Hash, part: &str) -> String {

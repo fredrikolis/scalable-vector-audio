@@ -167,7 +167,7 @@ fn bits(render: &Render) -> Vec<u64> {
 }
 
 /// A render the disk answered, made again over the same memory, calls the disk not once: every
-/// header and sample it read is resident.
+/// header and sample it read is resident, and memory answers its root, one hit.
 #[test]
 fn a_second_identical_render_makes_no_disk_call() {
     let memory = Memory::default();
@@ -183,7 +183,11 @@ fn a_second_identical_render_makes_no_disk_call() {
     assert_eq!(read(&memory), Vec::<String>::new(), "no read");
     assert_eq!(memory.lists.load(Ordering::Relaxed), 0, "no listing");
     assert!(*memory.held.lock().unwrap() == held, "no write");
-    assert_eq!(tier.counters(), counters);
+    let hit = Counters {
+        hits: counters.hits + 1,
+        ..counters
+    };
+    assert_eq!(tier.counters(), hit);
     assert_eq!(bits(&first), bits(&second));
 }
 
@@ -200,7 +204,7 @@ fn memory_capped_below_a_note_evicts_it_and_reads_it_again() {
     tier.set_max_bytes(800 * 8 / 2);
     let first = now(render_over(&graph, "warm", over(800), &tier)).expect("a render");
     let once: Counters = tier.counters();
-    assert!(once.evictions > 0 && once.promotions > 0, "{once:?}");
+    assert!(once.evictions() > 0 && once.promotions > 0, "{once:?}");
     assert!(tier.bytes() <= tier.max_bytes());
     let second = now(render_over(&graph, "warm", over(800), &tier)).expect("a render");
     let twice = tier.counters().since(once);
@@ -302,4 +306,74 @@ fn a_render_the_store_answers_whole_prices_nothing() {
     assert_eq!(held.work().priced_flops, 0, "{:?}", held.work());
     assert_eq!(held.work().samples, cold.work().samples);
     assert_eq!(bits(&held), bits(&cold));
+}
+
+/// A note larger than memory's whole cap still lands whole on the disk: each eviction sends
+/// the disk what it lacks, so the next process renders it off the disk alone, bit for bit.
+#[test]
+fn a_node_larger_than_memory_lands_whole_on_the_disk() {
+    let memory = Memory::default();
+    let graph = graph_of(
+        "larger",
+        &[(
+            "long",
+            "crop(lowpass(sample(sin(2*pi*110*t)), cutoff=2000, q=0.7), 0s, 2s)\n",
+        )],
+    );
+    let end = 2 * i64::from(RATE);
+    let cold = now(render_over(&graph, "long", over(end), &Tier::default())).expect("a render");
+    let small = opened(&memory, u64::MAX);
+    small.set_max_bytes(end as u64 * 8 / 3);
+    now(render_over(&graph, "long", over(end), &small)).expect("a render");
+    assert!(small.counters().evictions() > 0, "{:?}", small.counters());
+    now(small.persist()).expect("persisted");
+    let next = opened(&memory, u64::MAX);
+    let held = now(render_over(&graph, "long", over(end), &next)).expect("a render");
+    let stats = held.cache_stats.as_ref().expect("stats");
+    assert_eq!(stats.computed(), 0, "{stats:?}");
+    assert_eq!(held.work().priced_flops, 0);
+    assert_eq!(bits(&held), bits(&cold));
+}
+
+fn chain(name: &str, n3: &str) -> Graph {
+    graph_of(
+        name,
+        &[
+            ("n1", "sample(sin(2*pi*110*t))*0.5\n"),
+            ("n2", "lowpass(@n1, cutoff=900, q=0.7)\n"),
+            ("n3", n3),
+            ("master", "@n3*0.5\n"),
+        ],
+    )
+}
+
+/// Rendered under a cap its values pass, persisted, then edited and rendered by a new process:
+/// the node the edit left alone is read off the disk, and only what the edit reaches computes.
+#[test]
+fn a_new_process_reuses_the_disk_for_each_node_an_edit_left_alone() {
+    let memory = Memory::default();
+    let first = opened(&memory, u64::MAX);
+    first.set_max_bytes(10_000);
+    let before = chain("process", "lowpass(@n2, cutoff=600, q=0.7)\n");
+    now(render_over(&before, "master", over(800), &first)).expect("a render");
+    assert!(first.counters().evictions() > 0, "{:?}", first.counters());
+    now(first.persist()).expect("persisted");
+    let after = chain("process", "lowpass(@n2, cutoff=500, q=0.7)\n");
+    let cold = now(render_over(&after, "master", over(800), &Tier::default())).expect("a render");
+    let next = opened(&memory, u64::MAX);
+    let edited = now(render_over(&after, "master", over(800), &next)).expect("a render");
+    let stats = edited.cache_stats.as_ref().expect("stats");
+    let answered = |node: &str| {
+        let looked = stats.lookups.iter().filter(|l| l.node == node);
+        looked.filter_map(|l| l.store).collect::<Vec<bool>>()
+    };
+    assert_eq!(answered("n2"), [true], "{stats:?}");
+    assert_eq!(answered("n3"), [false]);
+    assert_eq!(
+        answered("n1"),
+        Vec::<bool>::new(),
+        "under a hit, never asked"
+    );
+    assert!(next.counters().disk_reads > 0, "{:?}", next.counters());
+    assert_eq!(bits(&edited), bits(&cold));
 }

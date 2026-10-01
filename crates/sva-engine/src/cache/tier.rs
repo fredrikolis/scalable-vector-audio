@@ -230,7 +230,7 @@ impl<B: Backend> Tier<B> {
     }
 
     pub fn evictions(&self) -> u64 {
-        self.memory.counters().evictions
+        self.memory.counters().evictions()
     }
 
     pub fn holds(&self, key: Hash) -> bool {
@@ -245,15 +245,7 @@ impl<B: Backend> Tier<B> {
         self.memory.set_policy(policy);
     }
 
-    pub fn prune_policy(&self) -> PrunePolicy {
-        self.memory.prune_policy()
-    }
-
-    pub fn set_prune_policy(&self, policy: PrunePolicy) {
-        self.memory.set_prune_policy(policy);
-    }
-
-    /// Evicts every entry `policy` names, and more where the cap still needs it.
+    /// Evicts every entry `policy` names.
     pub fn prune(&self, policy: PrunePolicy) {
         self.memory.prune(policy);
     }

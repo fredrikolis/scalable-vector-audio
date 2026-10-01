@@ -73,7 +73,7 @@ impl PrunePolicy {
     }
 }
 
-/// What passed between memory and the disk beneath it.
+/// What passed between memory and the disk beneath it, and what memory let go.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counters {
     pub disk_lookups: u64,
@@ -82,7 +82,10 @@ pub struct Counters {
     /// Disk answers made resident: a header looked up, or samples read.
     pub promotions: u64,
     pub writebacks: u64,
-    pub evictions: u64,
+    /// Every entry's hits, summed: each answer of a node or a value memory held.
+    pub hits: u64,
+    pub probation_evictions: u64,
+    pub protected_evictions: u64,
 }
 
 impl Counters {
@@ -93,10 +96,20 @@ impl Counters {
             disk_read_bytes: self.disk_read_bytes - then.disk_read_bytes,
             promotions: self.promotions - then.promotions,
             writebacks: self.writebacks - then.writebacks,
-            evictions: self.evictions - then.evictions,
+            hits: self.hits - then.hits,
+            probation_evictions: self.probation_evictions - then.probation_evictions,
+            protected_evictions: self.protected_evictions - then.protected_evictions,
         }
     }
+
+    pub fn evictions(self) -> u64 {
+        self.probation_evictions + self.protected_evictions
+    }
 }
+
+/// The protected segment holds at most this share of the cap, so probation always has a
+/// quarter for a new entry to earn its first hit in.
+const PROTECTED: (u64, u64) = (3, 4);
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Stamp {
@@ -151,8 +164,10 @@ enum Item {
     },
     Node {
         source: Source,
-        dirty: bool,
         slot: Option<Hash>,
+        /// Holds what the disk may lack: a node a render still computes always does.
+        dirty: bool,
+        settled: bool,
     },
 }
 
@@ -179,8 +194,25 @@ impl Source {
 struct Held {
     item: Item,
     read: u64,
+    since: u64,
+    hit_round: u64,
+    protected: bool,
     tree: u64,
     fork: bool,
+}
+
+impl Held {
+    fn admitted(item: Item, at: u64, tree: u64, fork: bool) -> Held {
+        Held {
+            item,
+            read: at,
+            since: at,
+            hit_round: 0,
+            protected: false,
+            tree,
+            fork,
+        }
+    }
 }
 
 fn planes(b: &Buffer) -> u64 {
@@ -220,7 +252,6 @@ struct State {
     bytes: u64,
     max_bytes: u64,
     policy: CachePolicy,
-    prune: PrunePolicy,
     clock: u64,
     tree: u64,
     round: u64,
@@ -238,16 +269,17 @@ impl State {
     }
 
     fn stands(&self, key: Hash) -> bool {
-        let doomed = self.doomed(key);
-        doomed.iter().skip(1).any(|at| {
-            matches!(
-                self.entries.get(at),
-                Some(Held {
-                    item: Item::Node { dirty: true, .. },
-                    ..
-                })
-            )
-        })
+        self.disk && self.doomed(key).len() > 1
+    }
+
+    fn unsettled(&self, key: Hash) -> bool {
+        matches!(
+            self.entries.get(&key),
+            Some(Held {
+                item: Item::Node { settled: false, .. },
+                ..
+            })
+        )
     }
 
     /// The values and nodes reading `key`'s samples, and theirs, `key` first.
@@ -278,8 +310,8 @@ impl State {
         out
     }
 
-    /// `key` and everything reading its samples gone, each node not yet on the disk sent
-    /// there first.
+    /// `key` and everything reading its samples gone, each dirty node flushed first; a node a
+    /// render still computes stays, to send the rest.
     fn remove(&mut self, key: Hash) -> bool {
         if !self.entries.contains_key(&key) {
             return false;
@@ -289,7 +321,9 @@ impl State {
             self.flush(*at);
         }
         for at in doomed {
-            self.discard(at);
+            if at == key || !self.unsettled(at) {
+                self.discard(at);
+            }
         }
         true
     }
@@ -307,26 +341,24 @@ impl State {
         }
     }
 
+    /// A dirty node's header and what memory holds of it, on their way to the disk; a node a
+    /// render still computes stays dirty, for the samples it has yet to send.
     fn flush(&mut self, key: Hash) {
-        let dirty = matches!(
-            self.entries.get(&key),
-            Some(Held {
-                item: Item::Node { dirty: true, .. },
-                ..
-            })
-        );
-        if !dirty {
-            return;
-        }
-        if let Some(back) = self.written(key) {
-            self.pending.push(back);
-        }
-        if let Some(Held {
-            item: Item::Node { dirty, .. },
+        let Some(Held {
+            item:
+                Item::Node {
+                    dirty: dirty @ true,
+                    settled,
+                    ..
+                },
             ..
         }) = self.entries.get_mut(&key)
-        {
-            *dirty = false;
+        else {
+            return;
+        };
+        *dirty = !*settled;
+        if let Some(back) = self.written(key) {
+            self.pending.push(back);
         }
     }
 
@@ -351,7 +383,9 @@ impl State {
             _ => Writeback {
                 key,
                 head: head(Samples::None),
-                parts: self.offered_parts(offered, Extent::EVERYWHERE)?,
+                parts: self
+                    .offered_parts(offered, Extent::EVERYWHERE)
+                    .unwrap_or_default(),
             },
         })
     }
@@ -472,34 +506,29 @@ impl State {
     }
 
     fn evict(&mut self, key: Hash) {
-        let disk = match self.entries.get_mut(&key) {
-            Some(Held {
-                item:
-                    Item::Node {
-                        source: Source::Disk { chunks, .. },
-                        ..
-                    },
-                ..
-            }) => Some(std::mem::take(chunks)),
-            _ => None,
+        let Some(held) = self.entries.get_mut(&key) else {
+            return;
         };
-        match disk {
-            Some(chunks) => {
-                self.bytes -= chunks.iter().map(|c| planes(c)).sum::<u64>();
-                self.counters.evictions += 1;
+        let protected = held.protected;
+        let gone = match &mut held.item {
+            Item::Node {
+                source: Source::Disk { chunks, .. },
+                ..
+            } => {
+                let freed: u64 = std::mem::take(chunks).iter().map(|c| planes(c)).sum();
+                self.bytes -= freed;
+                true
             }
-            None => {
-                if self.remove(key) {
-                    self.counters.evictions += 1;
-                }
-            }
+            _ => self.remove(key),
+        };
+        match (gone, protected) {
+            (false, _) => {}
+            (true, false) => self.counters.probation_evictions += 1,
+            (true, true) => self.counters.protected_evictions += 1,
         }
     }
 
-    /// Every entry `policy` names, oldest-read first, until `bytes` is at most `to`; then whole
-    /// trees oldest-first, until the cap holds. A node off the disk keeps its header; one that
-    /// holds no bytes goes only where everything named goes.
-    fn prune(&mut self, policy: PrunePolicy, to: u64) {
+    fn prune(&mut self, policy: PrunePolicy) {
         let newest = self.tree;
         let mut named: Vec<(u64, Hash)> = self
             .entries
@@ -508,38 +537,111 @@ impl State {
                 PrunePolicy::Oldest => held.tree != newest,
                 PrunePolicy::Forks => !held.fork,
             })
-            .filter(|(_, held)| to == 0 || held.bytes() > 0)
             .map(|(key, held)| (held.read, *key))
             .collect();
         named.sort_unstable();
         for (_, key) in named {
-            if self.bytes <= to && to > 0 {
-                break;
-            }
             self.evict(key);
         }
-        let mut trees: Vec<u64> = self.entries.values().map(|held| held.tree).collect();
-        trees.sort_unstable();
-        trees.dedup();
-        for tree in trees {
-            if self.bytes <= self.max_bytes {
+        self.bounded();
+    }
+
+    /// A hit on `key` and on every entry whose samples it answers with: each moves to the
+    /// protected segment, whose least recent move back to probation past its share.
+    fn hit(&mut self, key: Hash, round: Option<u64>) {
+        let tick = self.tick();
+        let mut promoted = false;
+        for at in self.under(key) {
+            let Some(held) = self.entries.get_mut(&at) else {
+                continue;
+            };
+            held.read = tick;
+            if round.is_some_and(|round| held.hit_round == round) {
+                continue;
+            }
+            held.hit_round = round.unwrap_or(0);
+            promoted |= !std::mem::replace(&mut held.protected, true);
+            self.counters.hits += 1;
+        }
+        if promoted {
+            self.shared();
+        }
+    }
+
+    fn under(&self, key: Hash) -> Vec<Hash> {
+        let mut out = vec![key];
+        let mut k = 0;
+        while k < out.len() {
+            if let Some(Item::Node {
+                source: Source::Offered { offered, .. },
+                ..
+            }) = self.entries.get(&out[k]).map(|held| &held.item)
+            {
+                let more: Vec<Hash> = match offered {
+                    Offered::Values { keys, .. } => keys.iter().map(|(_, key)| *key).collect(),
+                    Offered::Moves { of, .. } => vec![*of],
+                    Offered::Held(_) => Vec::new(),
+                };
+                for at in more {
+                    if !out.contains(&at) {
+                        out.push(at);
+                    }
+                }
+            }
+            k += 1;
+        }
+        out
+    }
+
+    /// Protected within its share: its least recent move back to probation, as its newest.
+    fn shared(&mut self) {
+        let most =
+            (u128::from(self.max_bytes) * u128::from(PROTECTED.0) / u128::from(PROTECTED.1)) as u64;
+        let mut protected: Vec<(u64, Hash, u64)> = self
+            .entries
+            .iter()
+            .filter(|(_, held)| held.protected)
+            .map(|(key, held)| (held.read, *key, held.bytes()))
+            .collect();
+        let mut bytes: u64 = protected.iter().map(|(_, _, b)| b).sum();
+        protected.sort_unstable();
+        for (_, key, held) in protected {
+            if bytes <= most {
                 break;
             }
-            let whole: Vec<Hash> = self
-                .entries
-                .iter()
-                .filter(|(_, held)| held.tree == tree && held.bytes() > 0)
-                .map(|(key, _)| *key)
-                .collect();
-            for key in whole {
-                self.evict(key);
+            let tick = self.tick();
+            if let Some(entry) = self.entries.get_mut(&key) {
+                entry.protected = false;
+                entry.since = tick;
+                bytes -= held;
             }
         }
     }
 
+    /// Under the cap: an entry too large for it goes first, then probation oldest first,
+    /// then protected least recently read.
     fn bounded(&mut self) {
-        if self.bytes > self.max_bytes {
-            self.prune(self.prune, self.max_bytes);
+        if self.bytes <= self.max_bytes {
+            return;
+        }
+        self.shared();
+        let max = self.max_bytes;
+        let mut order: Vec<(u8, u64, Hash)> = self
+            .entries
+            .iter()
+            .filter(|(_, held)| held.bytes() > 0)
+            .map(|(key, held)| match (held.bytes() > max, held.protected) {
+                (true, _) => (0, held.since, *key),
+                (false, false) => (1, held.since, *key),
+                (false, true) => (2, held.read, *key),
+            })
+            .collect();
+        order.sort_unstable();
+        for (_, _, key) in order {
+            if self.bytes <= self.max_bytes {
+                break;
+            }
+            self.evict(key);
         }
     }
 }
@@ -631,17 +733,8 @@ impl Memory {
         self.locked().policy = policy;
     }
 
-    pub(crate) fn prune_policy(&self) -> PrunePolicy {
-        self.locked().prune
-    }
-
-    pub(crate) fn set_prune_policy(&self, policy: PrunePolicy) {
-        self.locked().prune = policy;
-    }
-
-    /// Evicts every entry `policy` names, and more where the cap still needs it.
     pub(crate) fn prune(&self, policy: PrunePolicy) {
-        self.locked().prune(policy, 0);
+        self.locked().prune(policy);
     }
 
     /// Everything gone, each node not yet on the disk sent there first.
@@ -712,10 +805,9 @@ impl Memory {
         let mut state = self.locked();
         let covered = state.coverage(key, 0);
         if let Some(held) = covered.clone().filter(|held| !held.is_empty()) {
-            let tick = state.tick();
-            let found = state.entries.get_mut(&key).expect("a node it covers");
-            found.read = tick;
-            let Item::Node { source, .. } = &found.item else {
+            state.hit(key, Some(round));
+            let Some(Item::Node { source, .. }) = state.entries.get(&key).map(|held| &held.item)
+            else {
                 unreachable!("only a node covers");
             };
             return Known::Hit(Arc::new(source.stored().holding(held)));
@@ -760,16 +852,13 @@ impl Memory {
                 head: Box::new(head),
                 chunks: Vec::new(),
             },
-            dirty: false,
             slot: None,
+            dirty: false,
+            settled: true,
         };
-        let held = Held {
-            item,
-            read,
-            tree,
-            fork: false,
-        };
-        state.entries.insert(key, held);
+        state
+            .entries
+            .insert(key, Held::admitted(item, read, tree, false));
     }
 
     pub(crate) fn promote_samples(&self, key: Hash, read: Vec<Buffer>) -> Vec<Arc<Buffer>> {
@@ -819,9 +908,9 @@ impl Memory {
     }
 
     /// A node a render computes, standing on samples memory holds, in place of the last one
-    /// offered under `slot`. Until `settled` it holds what is computed so far, and a write
-    /// back sends that much; settled, it goes where memory holds none of its samples and has
-    /// no disk to name it to.
+    /// offered under `slot` or `key`, keeping the segment that one earned. Until `settled` it
+    /// holds what is computed so far, and each eviction sends that much to the disk; settled,
+    /// it goes where memory holds none of its samples and has no disk to name it to.
     pub(crate) fn offer(
         &self,
         stored: Stored,
@@ -830,28 +919,30 @@ impl Memory {
     ) {
         let mut state = self.locked();
         let key = stored.key;
+        let (read, tree) = (state.tick(), state.tree);
+        let earned = state.entries.get(&key);
+        let (since, protected) = earned.map_or((read, false), |held| (held.since, held.protected));
         state.discard(key);
-        let (read, tree, dirty) = (state.tick(), state.tree, state.disk);
         let slot = slot.map(|slot| super::mixed(slot, &[0x6e_6f_64_65]));
         let item = Item::Node {
             source: Source::Offered {
                 stored: Box::new(stored),
                 offered,
             },
-            dirty,
             slot,
+            dirty: state.disk,
+            settled,
         };
         let held = Held {
-            item,
-            read,
-            tree,
-            fork: false,
+            since,
+            protected,
+            ..Held::admitted(item, read, tree, false)
         };
         state.bytes += held.bytes();
         state.entries.insert(key, held);
         state.misses.remove(&key);
         let covered = state.coverage(key, 0).is_some_and(|held| !held.is_empty());
-        if settled && !covered && !dirty {
+        if settled && !covered && !state.disk {
             state.discard(key);
             return;
         }
@@ -928,10 +1019,9 @@ impl Memory {
         }
     }
 
-    /// What `key` holds, shared, never copied.
+    /// What `key` holds, shared, never copied: a hit.
     pub(crate) fn load(&self, key: Hash, expected: Expected, stamp: Stamp) -> Option<Entry> {
         let mut state = self.locked();
-        let tick = state.tick();
         let held = state.entries.get_mut(&key)?;
         let Item::Value { payload, label, .. } = &held.item else {
             return None;
@@ -944,9 +1034,9 @@ impl Memory {
             payload: payload.clone(),
             label: label.clone(),
         };
-        held.read = tick;
         held.tree = stamp.tree;
         held.fork = stamp.fork;
+        state.hit(key, None);
         Some(entry)
     }
 
@@ -1011,8 +1101,8 @@ impl Memory {
         }
     }
 
-    /// A value too large to stay is refused, unless a node not yet on the disk stands on it:
-    /// then it is kept only to be evicted, and so written back.
+    /// A value too large to stay is refused, unless a node over the disk stands on it: then
+    /// it is kept only to be evicted, and so written back.
     pub(crate) fn store(
         &self,
         key: Hash,
@@ -1030,16 +1120,12 @@ impl Memory {
             Some(last) if last != key => state.remove(last),
             _ => false,
         };
-        let held = Held {
-            item: Item::Value {
-                payload,
-                label: label.cloned(),
-                slot: stamp.slot,
-            },
-            read,
-            tree: stamp.tree,
-            fork: stamp.fork,
+        let item = Item::Value {
+            payload,
+            label: label.cloned(),
+            slot: stamp.slot,
         };
+        let held = Held::admitted(item, read, stamp.tree, stamp.fork);
         if let Some(old) = state.entries.insert(key, held) {
             state.bytes -= old.bytes();
         }

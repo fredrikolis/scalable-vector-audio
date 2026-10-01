@@ -470,17 +470,10 @@ fn a_cache_policy_crosses_by_name_and_no_render_names_its_own() {
     refused_as(named.err(), "wasm.bad_argument");
 }
 
-/// A prune policy crosses by name: the default one a render over the cap prunes by, and the
-/// one a page passes to prune by now.
+/// A prune policy crosses by name: the one a page passes to prune by now.
 #[wasm_bindgen_test]
 fn a_prune_policy_crosses_by_name() {
     let held = page();
-    assert_eq!(held.prune_policy(), "oldest");
-    held.set_prune_policy("forks")
-        .unwrap_or_else(|_| unreachable!("forks is a policy"));
-    assert_eq!(held.prune_policy(), "forks");
-    assert!(held.set_prune_policy("newest").is_err());
-
     render(&held, "wide");
     render(&held, "master");
     let before = held.cache_evictions();
@@ -1291,11 +1284,15 @@ async fn a_stream_reads_a_note_another_worker_persisted() {
         "disk_read_bytes",
         "promotions",
         "writebacks",
+        "hits",
         "evictions",
+        "probation_evictions",
+        "protected_evictions",
     ] {
         assert!(field(&counters, key).as_f64().is_some(), "{key}");
     }
     assert!(field(&counters, "promotions").as_f64() > Some(0.0));
+    assert!(field(&counters, "hits").as_f64() > Some(0.0));
 }
 
 /// An edit awaits the store without holding the stream: the stream plays and answers
