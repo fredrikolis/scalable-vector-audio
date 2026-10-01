@@ -1,10 +1,10 @@
 // Concern: proves the content address ignores where a closed form was written and follows the table version | Non-concern: what a hash keys (sva-engine) | IO: (a SpectralSum) -> its Hash
 
-use crate::fixtures::{part, sine, terms};
+use crate::fixtures::{line, part, sine, terms};
 use sva_formula::{
-    Body, ClosedForm, Lanes, Origin, Part, TABLE_VERSION, Var, hash::hash_closed_form_under,
-    hash::hash_spectral_sum_under, hash_closed_form, hash_spectral_sum, normalize,
-    normalize_closed_form,
+    Body, Bound, ClosedForm, IndexId, Lanes, Origin, Part, Series, TABLE_VERSION, Var,
+    hash::hash_closed_form_under, hash::hash_spectral_sum_under, hash_closed_form,
+    hash_spectral_sum, normalize, normalize_closed_form,
 };
 
 #[test]
@@ -86,4 +86,47 @@ fn each_address_space_stays_its_own_under_the_shared_mixer() {
     assert_ne!(plain, further.finish(), "23 is not 0");
     assert_ne!(staggered.finish(), further.finish(), "17 is not 23");
     assert_eq!(plain, of(Lanes::default()), "and each is a function");
+}
+
+/// `sum(k, 1, 3, k*t*sum(j, 1, 2, j))` with its two indices numbered as a typing drew them.
+fn nested(outer: u32, inner: u32, product: [u32; 2]) -> ClosedForm {
+    let index = |k: u32| part(Body::Index(IndexId(k)));
+    let series = |k: u32, hi: i64, term: Body| {
+        Body::Series(Box::new(Series {
+            index: IndexId(k),
+            lo: 1,
+            hi: Bound::Finite(hi),
+            term: part(term),
+        }))
+    };
+    let inside = series(
+        inner,
+        2,
+        Body::Mul(vec![index(product[0]), index(product[1])]),
+    );
+    ClosedForm {
+        var: Var::T,
+        body: series(
+            outer,
+            3,
+            Body::Mul(vec![index(outer), part(line()), part(inside)]),
+        ),
+        origin: Origin::new(0),
+    }
+}
+
+/// A typing numbers each index it lowers, so one node lowered after others holds other
+/// numbers; its address names each index by the series binding it, whatever its number.
+#[test]
+fn an_index_is_hashed_by_the_series_binding_it_never_by_its_number() {
+    let first = nested(1, 2, [1, 2]);
+    assert_eq!(
+        hash_closed_form(&first),
+        hash_closed_form(&nested(40, 7, [40, 7]))
+    );
+    assert_ne!(
+        hash_closed_form(&first),
+        hash_closed_form(&nested(1, 2, [2, 2])),
+        "a term reading the inner index twice is another law"
+    );
 }

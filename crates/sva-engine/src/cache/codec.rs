@@ -11,7 +11,7 @@ use super::Stored;
 use super::stored::{Laid, Samples};
 
 /// Bumped by, and only by, a change to a stored value's bytes.
-pub const STORE_FORMAT: u32 = 8;
+pub const STORE_FORMAT: u32 = 9;
 
 /// Every entry opens with its format, so one another format wrote is never read as a value,
 /// even where a wipe left it.

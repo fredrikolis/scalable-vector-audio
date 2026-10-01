@@ -454,3 +454,22 @@ fn reads_of_a_stateful_node_at_any_offset_share_one_value() {
     let later = kick("later");
     assert!(!later.is_empty() && later.iter().all(hit), "{later:?}");
 }
+
+/// A series' index is numbered by the typing that lowers it, so a node lowered after another
+/// series holds other numbers; its key is the node's own, wherever it is read from.
+#[test]
+fn a_series_keys_alike_whatever_was_lowered_before_it() {
+    let graph = crate::fixtures::graph_of(
+        "series-key",
+        &[
+            ("a", "sum(j, 1, 50, (1/j)*sin(2*pi*30*j*t))\n"),
+            ("b", "sum(k, 1, 400, (1/k)*sin(2*pi*100*k*t))\n"),
+            ("song", "@a + @b\n"),
+        ],
+    );
+    let key = |root: &str| {
+        let tys = sva_engine::types(&graph, root).expect("typed");
+        sva_engine::identity(&tys, tys.id("b").expect("b")).expect("an identity")
+    };
+    assert_eq!(key("song"), key("b"));
+}

@@ -3,8 +3,8 @@
 use std::fmt;
 
 use crate::closed_form::{
-    Body, Bound, ClosedForm, Edge, Excitation, Fold, ModalBank, Mode, Part, Rational, Series,
-    Unary, Var,
+    Body, Bound, ClosedForm, Edge, Excitation, Fold, IndexId, ModalBank, Mode, Part, Rational,
+    Series, Unary, Var,
 };
 use crate::complex::{C64, canonical};
 use crate::env::NodeId;
@@ -79,6 +79,9 @@ pub fn draw_nearest(seed: u64, key: f64) -> Option<f64> {
 struct Sink<'a> {
     lanes: Lanes<0>,
     node: Option<&'a mut dyn FnMut(NodeId) -> Hash>,
+    /// The series indices bound around the term being hashed, innermost last: an index is
+    /// hashed by which binder it names, never by the number a typing drew for it.
+    bound: Vec<IndexId>,
 }
 
 impl<'a> Sink<'a> {
@@ -86,6 +89,7 @@ impl<'a> Sink<'a> {
         let mut s = Sink {
             lanes: Lanes::default(),
             node: None,
+            bound: Vec::new(),
         };
         s.byte(tag);
         s.u64(table_version);
@@ -198,7 +202,6 @@ impl<'a> Sink<'a> {
     }
 
     fn series(&mut self, s: &Series) {
-        self.u64(u64::from(s.index.0));
         self.i64(s.lo);
         match s.hi {
             Bound::Finite(n) => {
@@ -207,7 +210,9 @@ impl<'a> Sink<'a> {
             }
             Bound::Infinite => self.byte(1),
         }
+        self.bound.push(s.index);
         self.formula(&s.term.body);
+        self.bound.pop();
     }
 
     fn amps(&mut self, amps: &[C64]) {
@@ -272,8 +277,9 @@ impl<'a> Sink<'a> {
             }
             Body::Line => self.byte(0x11),
             Body::Index(i) => {
+                let depth = self.bound.iter().rev().position(|b| b == i);
                 self.byte(0x12);
-                self.u64(u64::from(i.0));
+                self.u64(depth.expect("an index inside the series binding it") as u64);
             }
             Body::Param(p) => {
                 self.byte(0x13);
