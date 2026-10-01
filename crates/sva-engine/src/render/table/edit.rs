@@ -1,6 +1,6 @@
 // Concern: which old value each value of an edited table carries on, and from where | Non-concern: building either table | IO: (new table, old table, now) -> the new table carried, those started silent
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use sva_samples::{Machine, NodeRenderer, Slot};
 
@@ -32,7 +32,14 @@ pub(crate) fn carried(new: &mut Table, old: Table, now: i64, live: bool) -> Vec<
         .iter()
         .map(|v| keys.get(&v.key).copied())
         .collect();
-    let kept: Vec<usize> = same.iter().flatten().copied().collect();
+    let kept: HashSet<usize> = same.iter().flatten().copied().collect();
+    let mapped: Vec<Vec<(usize, sva_samples::Map)>> = new.values.iter().map(reads).collect();
+    let mut readers: Vec<Vec<(usize, usize, sva_samples::Map)>> = vec![Vec::new(); count];
+    for (reader, each) in mapped.iter().enumerate() {
+        for (slot, map) in each {
+            readers[new.values[reader].reads[*slot]].push((reader, *slot, *map));
+        }
+    }
     let mut paired: Vec<Option<usize>> = vec![None; count];
     let mut latest: Vec<Option<i64>> = vec![None; count];
     let mut first: Vec<Option<i64>> = vec![None; count];
@@ -42,7 +49,7 @@ pub(crate) fn carried(new: &mut Table, old: Table, now: i64, live: bool) -> Vec<
     for at in (0..count).rev() {
         let candidates = match same[at] {
             Some(was) => vec![was],
-            None => predecessors(new, &shapes, &paired, at, &kept),
+            None => predecessors(&readers[at], &shapes, &paired, &kept),
         };
         paired[at] = paired[at].or(candidates.first().copied());
         let went_on = match same[at] {
@@ -70,7 +77,7 @@ pub(crate) fn carried(new: &mut Table, old: Table, now: i64, live: bool) -> Vec<
         };
         let here = latest[at];
         let from = if went_on { here } else { first[at] };
-        for (slot, map) in reads(&new.values[at]) {
+        for (slot, map) in mapped[at].iter().copied() {
             let read = new.values[at].reads[slot];
             latest[read] = latest[read].max(here.map(|n| map.at(n)));
             first[read] = earliest(first[read], from.map(|n| map.at(n)));
@@ -139,28 +146,23 @@ fn indexed(value: &Value) -> Vec<(usize, Option<(i64, i64)>)> {
 /// An old value's reads, and each read's slot and map.
 type Shape = (Vec<usize>, Vec<(usize, sva_samples::Map)>);
 
-/// The old values each carried reader of `at` read through the same map, same slot first.
+/// The old values each carried reader of a value, of `readers` in order, read through the same
+/// map, same slot first.
 fn predecessors(
-    new: &Table,
+    readers: &[(usize, usize, sva_samples::Map)],
     old: &[Shape],
     paired: &[Option<usize>],
-    at: usize,
-    kept: &[usize],
+    kept: &HashSet<usize>,
 ) -> Vec<usize> {
     let mut ranked = Vec::new();
-    for (reader, was) in paired.iter().enumerate().skip(at + 1) {
-        let Some((before, theirs)) = was.map(|w| &old[w]) else {
+    for (reader, slot, map) in readers {
+        let Some((before, theirs)) = paired[*reader].map(|w| &old[w]) else {
             continue;
         };
-        for (slot, map) in reads(&new.values[reader]) {
-            if new.values[reader].reads[slot] != at {
-                continue;
-            }
-            for (their, their_map) in theirs {
-                let read = before[*their];
-                if *their_map == map && !kept.contains(&read) {
-                    ranked.push((*their != slot, read));
-                }
+        for (their, their_map) in theirs {
+            let read = before[*their];
+            if their_map == map && !kept.contains(&read) {
+                ranked.push((their != slot, read));
             }
         }
     }
