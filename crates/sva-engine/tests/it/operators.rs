@@ -87,3 +87,34 @@ fn step_is_the_crop_at_its_zero_and_a_window_at_inf_holds_nothing() {
         assert_eq!(e.code(), "engine.infinite_value", "{undefined}: {e}");
     }
 }
+
+/// `x - x % 1` is `floor(x)`: over samples bit for bit; a closed form, read on its own
+/// route, a whole step within one below it.
+#[test]
+fn a_value_rounds_to_steps_by_its_remainder() {
+    let steps = 4.0;
+    for (name, signal, exact) in [
+        ("sampled", "sample(2*sin(2*pi*300*t))", true),
+        ("filtered", "lowpass(@src, cutoff=800, q=0.7)", true),
+        ("written", "2*sin(2*pi*300*t)", false),
+    ] {
+        let x = format!("{signal}*{steps}");
+        let body = format!("({x} - ({x}) % 1)/{steps}\n");
+        let crushed = rendered(name, &body);
+        let plain = rendered(name, &format!("{signal}\n"));
+        assert!(
+            crushed.iter().any(|v| *v != 0.0),
+            "{name}: silence tests nothing"
+        );
+        for (n, (c, x)) in crushed.iter().zip(&plain).enumerate() {
+            let want = (x * steps).floor() / steps;
+            match exact {
+                true => assert_eq!(c.to_bits(), want.to_bits(), "{name} sample {n}: {c}"),
+                false => {
+                    assert_eq!((c * steps).fract(), 0.0, "{name} sample {n}: {c}");
+                    assert!(*c <= x + 1e-12 && x - c < 1.0 / steps + 1e-12, "{name} {n}");
+                }
+            }
+        }
+    }
+}
