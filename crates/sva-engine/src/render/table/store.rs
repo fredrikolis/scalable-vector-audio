@@ -1,6 +1,7 @@
 // Concern: what the store answers a value with before it computes, and what it leaves there after | Non-concern: the store's cap and evictions | IO: (value, Recording) -> samples loaded, entries
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use sva_formula::Hash;
 use sva_samples::{Buffer, Extent, Machine, MachineState, NodeRenderer, Tape};
@@ -91,7 +92,7 @@ pub(crate) fn load(value: &mut Value, place: &mut Place, recording: &Recording) 
     match entry.payload {
         Payload::Segments(parts) => {
             for part in parts {
-                value.hold(part);
+                value.hold_shared(part);
             }
             true
         }
@@ -261,7 +262,7 @@ pub(crate) fn stored(
                 .flat_map(|e| parts.iter().filter_map(move |b| over(b, *e)))
                 .collect(),
         ),
-        Held::Frames(Some(frames)) => Payload::Frames(frames.clone()),
+        Held::Frames(Some(frames)) => Payload::Frames(Arc::clone(frames)),
         Held::Frames(None) => return,
         Held::Run(tape) => {
             let (Some(from), Kind::Program(program)) = (computed.first(), &mut value.kind) else {
@@ -271,7 +272,6 @@ pub(crate) fn stored(
                 return;
             };
             program.marks.insert(tape.end(), machine.state());
-            let samples = tape.clone().into_buffer(value.grid.rate);
             let marks = std::mem::take(&mut program.marks);
             for (k, (start, segment)) in place.segments.iter().enumerate() {
                 let (lo, hi) = (from.start.max(*start), tape.end().min(place.end(k)));
@@ -279,11 +279,11 @@ pub(crate) fn stored(
                     continue;
                 }
                 let piece = Extent::new(lo, hi);
-                let Some(chunk) = over(&samples, piece) else {
+                let Some(chunk) = taped(tape, value.grid.rate, piece) else {
                     continue;
                 };
                 let run = Run {
-                    samples: chunk,
+                    samples: Arc::new(chunk),
                     marks: marks
                         .range(piece.start..=piece.end)
                         .map(|(at, m)| (*at, m.clone()))
@@ -292,7 +292,7 @@ pub(crate) fn stored(
                 };
                 recording.store(
                     (*segment, place.noted),
-                    Payload::Run(Box::new(run)),
+                    Payload::Run(Arc::new(run)),
                     None,
                     stamp,
                 );
@@ -303,8 +303,28 @@ pub(crate) fn stored(
     recording.store((key, place.noted), payload, label.as_ref(), stamp);
 }
 
-/// `buffer` over `e` where it holds all of it.
-fn over(buffer: &Buffer, e: Extent) -> Option<Buffer> {
+/// `buffer` over `e` where it holds all of it: the part itself where `e` is all it holds.
+fn over(buffer: &Arc<Buffer>, e: Extent) -> Option<Arc<Buffer>> {
     let held = buffer.extent();
-    (!e.is_empty() && held.start <= e.start && e.end <= held.end).then(|| buffer.over(e, held))
+    if e.is_empty() || e.start < held.start || held.end < e.end {
+        return None;
+    }
+    Some(match e == held {
+        true => Arc::clone(buffer),
+        false => Arc::new(buffer.over(e, held)),
+    })
+}
+
+/// What `tape` holds over `e`, where it holds all of it: only those samples are copied.
+fn taped(tape: &Tape, rate: u32, e: Extent) -> Option<Buffer> {
+    if e.is_empty() || e.start < tape.base() || tape.end() < e.end {
+        return None;
+    }
+    let len = e.len();
+    let planes = (0..tape.width())
+        .map(|c| tape.since(c, e.start)[..len].to_vec())
+        .collect();
+    let mut out = Buffer::of_planes(rate, planes);
+    out.start = e.start;
+    Some(out)
 }

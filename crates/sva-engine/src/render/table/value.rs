@@ -52,9 +52,9 @@ impl Program {
 }
 
 pub(crate) enum Held {
-    Segments(Vec<Buffer>),
+    Segments(Vec<Arc<Buffer>>),
     Run(Tape),
-    Frames(Option<Box<Frames>>),
+    Frames(Option<Arc<Frames>>),
 }
 
 pub(crate) struct Value {
@@ -177,7 +177,7 @@ impl Value {
     pub(crate) fn bytes(&self) -> usize {
         let planes = |b: &Buffer| b.len() * b.width * size_of::<f64>();
         let held = match &self.held {
-            Held::Segments(parts) => parts.iter().map(planes).sum(),
+            Held::Segments(parts) => parts.iter().map(|b| planes(b)).sum(),
             Held::Run(tape) => tape.capacity() * tape.width() * size_of::<f64>(),
             Held::Frames(Some(frames)) => {
                 frames.width * frames.frames * frames.bins * 2 * size_of::<f64>()
@@ -202,6 +202,7 @@ impl Value {
             Held::Segments(parts) => {
                 let meets: Vec<&Buffer> = parts
                     .iter()
+                    .map(|b| &**b)
                     .filter(|b| !b.extent().intersect(over).is_empty())
                     .collect();
                 match meets.as_slice() {
@@ -248,8 +249,8 @@ impl Value {
                 for part in parts.drain(..) {
                     for e in kept.intersect(part.extent()).iter() {
                         out.push(match e == part.extent() {
-                            true => part.clone(),
-                            false => part.over(e, part.extent()),
+                            true => Arc::clone(&part),
+                            false => Arc::new(part.over(e, part.extent())),
                         });
                     }
                 }
@@ -273,6 +274,11 @@ impl Value {
     /// A segment continuing the one before it grows that one in place, amortised O(1) a
     /// sample, as a value computed block by block is; any other overlap is laid anew.
     pub(crate) fn hold(&mut self, buffer: Buffer) {
+        self.hold_shared(Arc::new(buffer));
+    }
+
+    /// `hold`, shared; copied only to grow.
+    pub(crate) fn hold_shared(&mut self, buffer: Arc<Buffer>) {
         let Held::Segments(parts) = &mut self.held else {
             unreachable!("only a value with no state holds segments");
         };
@@ -282,15 +288,16 @@ impl Value {
         match &mut parts[first..last] {
             [] => parts.insert(first, buffer),
             [held] if held.extent().end == at.start && held.width == buffer.width => {
+                let held = Arc::make_mut(held);
                 for (plane, more) in held.planes.iter_mut().zip(&buffer.planes) {
                     plane.extend_from_slice(more);
                 }
             }
             touching => {
-                let mut merged: Vec<&Buffer> = touching.iter().collect();
+                let mut merged: Vec<&Buffer> = touching.iter().map(|b| &**b).collect();
                 merged.push(&buffer);
                 let joined = laid(&merged, self.width, self.grid.rate);
-                parts.splice(first..last, [joined]);
+                parts.splice(first..last, [Arc::new(joined)]);
             }
         }
     }

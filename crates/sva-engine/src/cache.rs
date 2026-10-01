@@ -20,15 +20,17 @@ pub(crate) use stored::node_key;
 pub use sva_formula::Hash;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use sva_samples::{Buffer, Frames, Label, MachineState};
 
-/// A value's segments, a stateful value's run, or one analysis of a value.
+/// A value's segments, a stateful value's run, or one analysis of a value, each shared: a clone
+/// hands out the same samples, never a copy of them.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Payload {
-    Segments(Vec<Buffer>),
-    Frames(Box<Frames>),
-    Run(Box<Run>),
+    Segments(Vec<Arc<Buffer>>),
+    Frames(Arc<Frames>),
+    Run(Arc<Run>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,7 +43,7 @@ pub enum PayloadKind {
 /// One segment of a run: samples, marked states, and the segment before it.
 #[derive(Clone)]
 pub struct Run {
-    pub samples: Buffer,
+    pub samples: Arc<Buffer>,
     pub marks: BTreeMap<i64, MachineState>,
     pub parent: Option<Hash>,
 }
@@ -88,9 +90,9 @@ pub struct Entry {
 }
 
 impl Payload {
-    pub fn run(self) -> Option<Run> {
+    pub fn run(self) -> Option<Arc<Run>> {
         match self {
-            Payload::Run(run) => Some(*run),
+            Payload::Run(run) => Some(run),
             _ => None,
         }
     }

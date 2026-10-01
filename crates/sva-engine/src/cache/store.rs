@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use sva_formula::Hash;
-use sva_samples::Label;
+use sva_samples::{Buffer, Label};
 
 use super::{Entry, Expected, Payload};
 
@@ -304,6 +304,7 @@ impl Cache {
         state.tree
     }
 
+    /// What `key` holds, shared, never copied.
     pub(crate) fn load(&self, key: Hash, expected: Expected, stamp: Stamp) -> Option<Entry> {
         let mut state = self.locked();
         let tick = state.tick();
@@ -342,11 +343,13 @@ impl Cache {
                     }
                     (Payload::Run(run), Payload::Run(more)) if overlaps(run, &more) => {
                         let from = (run.end() - more.samples.start).max(0) as usize;
-                        for (held, more) in run.samples.planes.iter_mut().zip(&more.samples.planes)
-                        {
+                        let run = Arc::make_mut(run);
+                        let samples = Arc::make_mut(&mut run.samples);
+                        for (held, more) in samples.planes.iter_mut().zip(&more.samples.planes) {
                             held.extend_from_slice(&more[from.min(more.len())..]);
                         }
-                        run.marks.extend(more.marks);
+                        run.marks
+                            .extend(more.marks.iter().map(|(at, m)| (*at, m.clone())));
                         None
                     }
                     (_, payload) => Some(payload),
@@ -372,7 +375,7 @@ impl Cache {
             }
             Err(payload) => {
                 drop(state);
-                self.store(key, &payload, label, stamp)
+                self.store(key, payload, label, stamp)
             }
         }
     }
@@ -380,7 +383,7 @@ impl Cache {
     pub(crate) fn store(
         &self,
         key: Hash,
-        payload: &Payload,
+        payload: Payload,
         label: Option<&Label>,
         stamp: Stamp,
     ) -> Kept {
@@ -395,7 +398,7 @@ impl Cache {
             _ => false,
         };
         let held = Held {
-            payload: payload.clone(),
+            payload,
             label: label.cloned(),
             read,
             tree: stamp.tree,
@@ -421,19 +424,23 @@ fn overlaps(held: &super::Run, more: &super::Run) -> bool {
     a <= more.samples.start && more.samples.start <= b
 }
 
-/// `more` laid among `parts`, each touching pair joined into one.
-pub(crate) fn joined(parts: &mut Vec<sva_samples::Buffer>, more: Vec<sva_samples::Buffer>) {
+/// `more` laid among `parts`, each touching pair joined into one; a shared part is copied only
+/// to grow.
+pub(crate) fn joined(parts: &mut Vec<Arc<Buffer>>, more: Vec<Arc<Buffer>>) {
     for part in more {
         parts.push(part);
     }
     parts.sort_by_key(|b| b.start);
-    let mut out: Vec<sva_samples::Buffer> = Vec::with_capacity(parts.len());
+    let mut out: Vec<Arc<Buffer>> = Vec::with_capacity(parts.len());
     for part in parts.drain(..) {
         match out.last_mut() {
             Some(last) if last.extent().end >= part.start => {
                 let from = (last.extent().end - part.start) as usize;
-                for (held, more) in last.planes.iter_mut().zip(&part.planes) {
-                    held.extend_from_slice(&more[from.min(more.len())..]);
+                if from < part.len() {
+                    let last = Arc::make_mut(last);
+                    for (held, more) in last.planes.iter_mut().zip(&part.planes) {
+                        held.extend_from_slice(&more[from.min(more.len())..]);
+                    }
                 }
             }
             _ => out.push(part),
@@ -445,7 +452,31 @@ pub(crate) fn joined(parts: &mut Vec<sva_samples::Buffer>, more: Vec<sva_samples
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sva_samples::Buffer;
+
+    /// Every load shares the one stored part.
+    #[test]
+    fn a_load_shares_the_samples_it_holds() {
+        let cache = Cache::new();
+        let key = Hash(3, 5);
+        let stamp = Stamp {
+            tree: cache.begin_tree(),
+            fork: false,
+            slot: None,
+        };
+        let part = Arc::new(Buffer::mono(8_000, vec![0.5; 64]));
+        cache.store(key, Payload::Segments(vec![Arc::clone(&part)]), None, stamp);
+        let asked = Expected::Segments {
+            rate: 8_000,
+            width: 1,
+        };
+        for _ in 0..2 {
+            let loaded = cache.load(key, asked, stamp).expect("a hit");
+            let Payload::Segments(parts) = loaded.payload else {
+                panic!("segments were stored");
+            };
+            assert!(Arc::ptr_eq(&parts[0], &part), "the stored part itself");
+        }
+    }
 
     /// Only a colliding key reaches this, so no render can: the entry is a miss, and goes.
     #[test]
@@ -457,9 +488,9 @@ mod tests {
             fork: false,
             slot: None,
         };
-        let four = Payload::Segments(vec![Buffer::mono(8_000, vec![0.25; 4])]);
+        let four = Payload::Segments(vec![Arc::new(Buffer::mono(8_000, vec![0.25; 4]))]);
         for (rate, width) in [(48_000, 1), (8_000, 2)] {
-            cache.store(key, &four, None, stamp);
+            cache.store(key, four.clone(), None, stamp);
             let asked = Expected::Segments { rate, width };
             assert!(cache.load(key, asked, stamp).is_none());
             assert!(!cache.holds(key));

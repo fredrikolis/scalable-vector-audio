@@ -202,7 +202,7 @@ fn frames(value: &mut Value, segment: Extent, done: &Values) -> Result<u128, Eng
     let frames =
         stft::forward(&source, window, hop).map_err(|e| sample_refused(&value.name, &e))?;
     let count = segment.len().div_ceil(hop.max(1)) as u128;
-    value.held = Held::Frames(Some(Box::new(frames)));
+    value.held = Held::Frames(Some(std::sync::Arc::new(frames)));
     Ok(count * sva_samples::collapse::transform_flops(window.max(1)))
 }
 

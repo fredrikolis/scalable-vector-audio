@@ -1,7 +1,7 @@
 // Concern: node values on a backend, staged then committed: version, budget, eviction | Non-concern: the bytes' medium (a Backend) | IO: (key) -> Stored; samples -> staged; persist() -> commits
 
 use std::collections::BTreeMap;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use sva_formula::Hash;
 use sva_samples::{Buffer, Extent};
@@ -373,10 +373,11 @@ impl<B: Backend> Store<B> {
         for (chunk, _) in &held.chunks {
             let bytes = self.staging.get(chunk).await?;
             match bytes.as_deref().and_then(codec::read_chunk) {
-                Some(samples) => joined(&mut runs, vec![samples]),
+                Some(samples) => joined(&mut runs, vec![Arc::new(samples)]),
                 None => return Ok(None),
             }
         }
+        let runs = runs.into_iter().map(Arc::unwrap_or_clone).collect();
         Ok(Some((stored, runs)))
     }
 }
