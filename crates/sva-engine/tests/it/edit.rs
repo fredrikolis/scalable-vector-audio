@@ -771,3 +771,28 @@ fn a_live_term_reading_a_stateful_value_at_a_moving_index_computes_it_whole() {
     assert!(whole_g.define("final", expr(&term)));
     assert_eq!(heard, whole(&whole_g, "final", heard.len()));
 }
+
+/// A term added live reading one stateful value at two shifts: the later read reaches only
+/// samples of it that later instants ask, so the value starts where the earlier read stands,
+/// never where the later one does, and from the add on the stream plays the whole render.
+#[test]
+fn a_live_term_reading_a_value_twice_starts_it_where_the_earliest_read_stands() {
+    let g = composition(1.0);
+    let stream = opened(&g, "@notes", None);
+    stream.borrow_mut().go_live();
+    let mut heard = blocks(&stream, 4);
+    let term = "@blip(t - 1000sp, f0=300) + @blip(t - 1500sp, f0=300)";
+    added(&stream, &g, &expr(term), &NoStore)
+        .now()
+        .unwrap_or_else(|e| panic!("{e}"));
+    heard.extend(blocks(&stream, 16));
+    let mut whole_g = g.clone();
+    assert!(whole_g.define("final", expr(term)));
+    let whole = whole(&whole_g, "final", heard.len());
+    let now = 4 * BLOCK;
+    assert!(
+        whole[now..].iter().any(|v| *v != 0.0),
+        "silence tests nothing"
+    );
+    assert_eq!(heard[now..], whole[now..]);
+}

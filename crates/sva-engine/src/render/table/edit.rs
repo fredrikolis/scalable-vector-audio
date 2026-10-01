@@ -9,9 +9,9 @@ use super::program::leaves;
 use super::value::{Held, Kind, Value};
 
 /// Readers first, each value carries on the old value of its key whole; a stateful one no old
-/// value names takes the state of the value its carried reader read through the same map,
-/// where its call sites take it. One that takes none steps again from its start, or, `live`,
-/// starts silent where the stream stands: those are returned.
+/// value names takes the state of the value its carried reader read through the same map. One
+/// that takes none steps again from its start, or, `live`, starts silent at the first sample
+/// any reader reads of it from now on: those are returned.
 pub(crate) fn carried(new: &mut Table, old: Table, now: i64, live: bool) -> Vec<usize> {
     let keys: HashMap<_, usize> = old
         .values
@@ -34,9 +34,10 @@ pub(crate) fn carried(new: &mut Table, old: Table, now: i64, live: bool) -> Vec<
         .collect();
     let kept: Vec<usize> = same.iter().flatten().copied().collect();
     let mut paired: Vec<Option<usize>> = vec![None; count];
-    let mut local: Vec<Option<i64>> = vec![None; count];
+    let mut latest: Vec<Option<i64>> = vec![None; count];
+    let mut first: Vec<Option<i64>> = vec![None; count];
     paired[new.root] = Some(old_root);
-    local[new.root] = Some(now);
+    (latest[new.root], first[new.root]) = (Some(now), Some(now));
     let mut dropped = Vec::new();
     for at in (0..count).rev() {
         let candidates = match same[at] {
@@ -44,43 +45,46 @@ pub(crate) fn carried(new: &mut Table, old: Table, now: i64, live: bool) -> Vec<
             None => predecessors(new, &shapes, &paired, at, &kept),
         };
         paired[at] = paired[at].or(candidates.first().copied());
-        let here = local[at];
+        let went_on = match same[at] {
+            Some(was) => {
+                let old = old[was].take().expect("an old value carries on once");
+                take(&mut new.values[at], old);
+                true
+            }
+            None if !stateful(&new.values[at]) => false,
+            None => {
+                let at_now = latest[at].unwrap_or(now);
+                let taken = candidates.iter().find_map(|was| {
+                    let held = old[*was].as_ref()?;
+                    continues(&new.values[at], held, at_now).then_some(*was)
+                });
+                if let Some(was) = taken {
+                    let old = old[was].take().expect("a predecessor carries on once");
+                    carry(&mut new.values[at], old);
+                    paired[at] = Some(was);
+                } else if live && start_silent(&mut new.values[at], first[at].unwrap_or(now)) {
+                    dropped.push(at);
+                }
+                taken.is_some()
+            }
+        };
+        let here = latest[at];
+        let from = if went_on { here } else { first[at] };
         for (slot, map) in reads(&new.values[at]) {
             let read = new.values[at].reads[slot];
-            let there = here.map(|n| map.at(n));
-            local[read] = local[read].max(there);
+            latest[read] = latest[read].max(here.map(|n| map.at(n)));
+            first[read] = earliest(first[read], from.map(|n| map.at(n)));
         }
         for (slot, reach) in indexed(&new.values[at]) {
             let read = new.values[at].reads[slot];
-            let there = here.map(|n| reach.map_or(i64::MIN, |(least, _)| n.saturating_add(least)));
-            local[read] = local[read].max(there);
+            let least = reach.map_or(i64::MIN, |(least, _)| least);
+            first[read] = earliest(first[read], from.map(|n| n.saturating_add(least)));
         }
         if let Kind::Stored { .. } = new.values[at].kind {
             for read in new.values[at].reads.clone() {
-                local[read] = local[read].max(here);
+                latest[read] = latest[read].max(here);
+                first[read] = earliest(first[read], from);
             }
-        }
-        if let Some(was) = same[at] {
-            let old = old[was].take().expect("an old value carries on once");
-            take(&mut new.values[at], old);
-            continue;
-        }
-        if !stateful(&new.values[at]) {
-            continue;
-        }
-        let at_now = local[at].unwrap_or(now);
-        let taken = candidates.iter().find_map(|was| {
-            let held = old[*was].as_ref()?;
-            continues(&new.values[at], held, at_now).then_some(*was)
-        });
-        match taken {
-            Some(was) => {
-                let old = old[was].take().expect("a predecessor carries on once");
-                carry(&mut new.values[at], old);
-                paired[at] = Some(was);
-            }
-            None if live && start_silent(&mut new.values[at], at_now) => dropped.push(at),
-            None => {}
         }
     }
     for at in 0..count {
@@ -88,6 +92,13 @@ pub(crate) fn carried(new: &mut Table, old: Table, now: i64, live: bool) -> Vec<
         new.values[at].pure &= !reads_carried;
     }
     dropped
+}
+
+fn earliest(held: Option<i64>, there: Option<i64>) -> Option<i64> {
+    match (held, there) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 /// Each read of `value`'s program, by slot and map, where it reads through one.
