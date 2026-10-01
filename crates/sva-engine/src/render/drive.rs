@@ -94,7 +94,7 @@ impl Driver {
             start: range.start,
             at: range.start,
             heard: range.start,
-            output: true,
+            output: !super::dropped(config),
             last: range.end,
             block,
             keep: config.until.as_ref().map_or(0, |_| frame as i64),
@@ -109,10 +109,6 @@ impl Driver {
             },
             recording,
         }
-    }
-
-    pub(super) fn output(self, output: bool) -> Driver {
-        Driver { output, ..self }
     }
 
     /// Ends at `last`, unless `until` already stopped it.

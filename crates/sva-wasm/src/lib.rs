@@ -319,7 +319,7 @@ impl Composition {
             .await
             .map_err(|e| thrown(&e))?;
         unstaged(inner.render.cache_stats.as_ref());
-        Ok(Rendering { inner, asked, out })
+        Ok(Rendering { inner, asked })
     }
 
     /// `target` block by block. `options`: `rate`, `bits`, `until`, `live`, `channels`.
@@ -446,7 +446,6 @@ fn prune_policy(name: &str) -> Result<PrunePolicy, JsValue> {
 pub struct Rendering {
     inner: Rendered,
     asked: Vec<Asked>,
-    out: Out,
 }
 
 #[wasm_bindgen]
@@ -481,7 +480,7 @@ impl Rendering {
 
     pub fn samples(&self, channel: usize) -> Result<Vec<f32>, JsValue> {
         let render = &self.inner.render;
-        if self.out == Out::Dropped {
+        if self.inner.config.out == Out::Dropped {
             return Err(refuse(
                 format!("`{}` was rendered with `out: null`", self.inner.expression),
                 "render without `out` to read its samples",

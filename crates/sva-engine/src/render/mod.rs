@@ -55,7 +55,8 @@ pub struct RenderConfig {
     pub out: Out,
 }
 
-/// Whether a render hands back its root's samples.
+/// Whether a render hands back its root's samples; dropped, with no reading asked, it holds
+/// none past each block.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Out {
     #[default]
@@ -453,8 +454,13 @@ fn driving(held: &mut Render, recording: Recording) -> Result<Option<drive::Driv
         held.table = Some(table);
         return Ok(None);
     }
-    let driver = drive::Driver::new(table, range, BLOCK, &held.config, recording);
-    Ok(Some(driver.output(!dropped(&held.config))))
+    Ok(Some(drive::Driver::new(
+        table,
+        range,
+        BLOCK,
+        &held.config,
+        recording,
+    )))
 }
 
 pub(crate) fn dropped(config: &RenderConfig) -> bool {
