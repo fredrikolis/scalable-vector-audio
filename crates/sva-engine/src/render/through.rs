@@ -70,7 +70,7 @@ async fn through<B: Backend>(
     let root = instances.instance_of(target)?;
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&root))?;
     let keys = keys(graph, &instances, &order, &config);
-    let mut found = frontier::Frontier::from((&instances, &order), &keys, &root, (&config, false));
+    let mut found = frontier::Frontier::from((&instances, &order), &keys, &root, &config);
     let mut known = frontier::Known::new();
     found.walked(&mut known, store).await;
     if keep == Keep::Nothing && found.stored.contains_key(&root) {
@@ -119,8 +119,8 @@ async fn through<B: Backend>(
     }
     let computed = held.table.as_ref().map_or(Vec::new(), |table| {
         let computed = table.values.iter();
-        let computed = computed.filter(|v| !matches!(v.kind, table::Kind::Stored { .. }));
-        computed.map(|v| v.name.clone()).collect()
+        let computed = computed.filter(|(_, v)| !matches!(v.kind, table::Kind::Stored { .. }));
+        computed.map(|(_, v)| v.name.clone()).collect()
     });
     let mut lookups = found.lookups;
     for lookup in &mut lookups {
@@ -184,11 +184,10 @@ fn short(table: &Table, range: sva_samples::Extent) -> Vec<String> {
     table
         .values
         .iter()
-        .zip(&needs)
-        .filter(|(value, need)| {
-            matches!(value.kind, table::Kind::Stored { .. }) && !need.compute.is_empty()
+        .filter(|(at, value)| {
+            matches!(value.kind, table::Kind::Stored { .. }) && !needs[*at].compute.is_empty()
         })
-        .map(|(value, _)| value.name.clone())
+        .map(|(_, value)| value.name.clone())
         .collect()
 }
 
@@ -277,7 +276,7 @@ fn staging(
             codomain: ty.codomain,
             rate: ty.rate,
             grid: tys.grid(id),
-            support: value.support,
+            support: value.support(),
             priced,
             moved,
             readable,

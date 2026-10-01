@@ -1,9 +1,10 @@
 // Concern: holds one instance per argument tuple and resolves a name inside one | Non-concern: building the table (build.rs), writing a resolved walk out (resolved.rs) | IO: (path) -> a body, a Node
 
 mod build;
+mod edges;
 mod resolved;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use sva_ast::{Address, Arg, BinOp, ByteSpan, Defined, Expr, Literal};
@@ -12,7 +13,9 @@ use crate::error::EngineError;
 use crate::time::Grid;
 use sva_ast::is_builtin;
 
+use build::Journal;
 pub use build::{from_roots, instantiate};
+use edges::Edges;
 
 pub(crate) type ScopeId = u32;
 
@@ -34,13 +37,10 @@ pub(crate) struct Written {
 
 impl Written {
     /// `line` 0 is the body, `k` the default line `k - 1`.
-    pub(crate) fn of(defined: &Arc<Defined>, line: u32, path: &[u32]) -> Written {
-        let mut at = Vec::with_capacity(path.len() + 1);
-        at.push(line);
-        at.extend_from_slice(path);
+    pub(crate) fn of(defined: &Arc<Defined>, line: u32) -> Written {
         Written {
             defined: Arc::clone(defined),
-            path: at.into(),
+            path: [line].into(),
         }
     }
 
@@ -50,14 +50,35 @@ impl Written {
             0 => &self.defined.body,
             k => &self.defined.defaults[k as usize - 1].1,
         };
-        path.iter().fold(top, |e, k| {
-            child(e, *k).expect("a path taken down this expression")
-        })
+        let mut at = top;
+        for k in path {
+            at = child(at, *k).expect("a path down this expression");
+        }
+        at
     }
 }
 
-/// The `k`th child: an operand, an argument, a read's time then its binds.
-pub(crate) fn child(e: &Expr, k: u32) -> Option<&Expr> {
+/// A child's number on a walk down, as [`child`] reads it.
+#[derive(Clone, Copy)]
+pub(crate) enum Child {
+    First,
+    Right,
+    Arg(u32),
+    Bind(u32),
+}
+
+impl Child {
+    pub(crate) fn index(self) -> u32 {
+        match self {
+            Child::First => 0,
+            Child::Right => 1,
+            Child::Arg(k) => k,
+            Child::Bind(k) => k + 1,
+        }
+    }
+}
+
+fn child(e: &Expr, k: u32) -> Option<&Expr> {
     let k = k as usize;
     match e {
         Expr::Bin(_, l, r) => [l, r].get(k).map(|c| &***c),
@@ -86,12 +107,27 @@ impl Bound {
     }
 }
 
-/// Sorted by name: the tuple names the instance, not the call order.
+/// Sorted by name: the tuple names the instance. Held while owned or read in.
 #[derive(Debug)]
 pub(crate) struct Scope {
     pub(crate) vars: Vec<(String, Bound)>,
     keys: Vec<u64>,
     seen: u64,
+    chained: bool,
+    held: u32,
+    /// The child instance each invocation scanned in it names, by where it is written.
+    sites: HashMap<usize, String>,
+}
+
+/// One instance: what it reads, who reads it, where it was first invoked.
+#[derive(Debug)]
+pub(crate) struct Instance {
+    pub(crate) body: Bound,
+    pub(crate) file: String,
+    given: Vec<String>,
+    site: (String, Option<ByteSpan>),
+    held: u32,
+    scanned: bool,
 }
 
 /// A name's length and first seven bytes in one word, so a lookup costs integer compares.
@@ -111,10 +147,17 @@ fn bit(key: u64) -> u64 {
 }
 
 impl Scope {
-    pub(crate) fn new(vars: Vec<(String, Bound)>) -> Scope {
+    pub(crate) fn new(vars: Vec<(String, Bound)>, chained: bool) -> Scope {
         let keys: Vec<u64> = vars.iter().map(|(k, _)| packed(k)).collect();
         let seen = keys.iter().fold(0, |acc, k| acc | bit(*k));
-        Scope { vars, keys, seen }
+        Scope {
+            vars,
+            keys,
+            seen,
+            chained,
+            held: 0,
+            sites: HashMap::new(),
+        }
     }
 
     /// One bit says no before a key is read. Two names of a length share a key past the
@@ -206,20 +249,36 @@ pub enum Node<'a> {
 }
 
 /// One file's body beside what its parameters stand for: the body is shared, the scope is not.
+/// An instance lasts while a root or a reader holds it.
 #[derive(Debug)]
 pub struct Instances {
-    pub(crate) scopes: Vec<Scope>,
-    pub(crate) sites: HashMap<(usize, ScopeId), String>,
-    pub(crate) nodes: BTreeMap<String, Bound>,
-    pub(crate) origin: BTreeMap<String, String>,
+    pub(crate) scopes: Vec<Option<Scope>>,
+    free: Vec<ScopeId>,
+    nodes: BTreeMap<String, Instance>,
+    edges: Edges,
     pub(crate) own_terms: BTreeMap<String, String>,
-    pub(crate) root: String,
+    files: BTreeMap<String, BTreeSet<String>>,
+    journal: Journal,
     pub(crate) time: Expr,
     /// The rate in use, whose step `sp` is.
     pub(crate) rate: u32,
 }
 
 impl Instances {
+    pub fn new(rate: u32) -> Instances {
+        Instances {
+            scopes: vec![Some(Scope::new(Vec::new(), false))],
+            free: Vec::new(),
+            nodes: BTreeMap::new(),
+            edges: Edges::default(),
+            own_terms: BTreeMap::new(),
+            files: BTreeMap::new(),
+            journal: Journal::default(),
+            time: Expr::Var("t".to_string()),
+            rate,
+        }
+    }
+
     pub(crate) fn rate(&self) -> u32 {
         self.rate
     }
@@ -237,7 +296,42 @@ impl Instances {
     }
 
     pub fn origin(&self, instance: &str) -> Option<&str> {
-        self.origin.get(instance).map(String::as_str)
+        self.nodes.get(instance).map(|held| held.file.as_str())
+    }
+
+    pub fn deps(&self, path: &str) -> &[String] {
+        self.edges.of(path)
+    }
+
+    pub(crate) fn readers(&self, path: &str) -> impl Iterator<Item = &str> {
+        self.edges.readers(path)
+    }
+
+    /// `name` held as `held`, filed under its file: the one way an instance is added.
+    fn insert(&mut self, name: String, held: Instance) {
+        let files = self.files.entry(held.file.clone()).or_default();
+        files.insert(name.clone());
+        self.nodes.insert(name, held);
+    }
+
+    /// `name` let go, reading nothing and filed nowhere: the one way an instance goes.
+    fn remove(&mut self, name: &str) -> (Instance, Vec<String>) {
+        let held = self.nodes.remove(name).expect("an instance held");
+        let files = self
+            .files
+            .get_mut(&held.file)
+            .expect("its file's instances");
+        files.remove(name);
+        if files.is_empty() {
+            self.files.remove(&held.file);
+        }
+        (held, self.edges.cleared(name))
+    }
+
+    pub(crate) fn scope(&self, id: ScopeId) -> &Scope {
+        self.scopes[id as usize]
+            .as_ref()
+            .expect("a scope something holds")
     }
 
     pub fn paths(&self) -> impl Iterator<Item = &str> {
@@ -264,18 +358,17 @@ impl Instances {
     }
 
     pub fn instances_of<'a>(&'a self, file: &'a str) -> impl Iterator<Item = String> + 'a {
-        self.paths()
-            .filter(move |p| self.origin(p) == Some(file))
-            .map(str::to_string)
+        let held = self.files.get(file).into_iter().flatten();
+        held.map(String::clone)
     }
 
     pub fn at<'a>(&'a self, path: &str) -> Option<(&'a Expr, Cx<'a>)> {
-        let thunk = self.nodes.get(path)?.thunk();
+        let thunk = self.nodes.get(path)?.body.thunk();
         Some((thunk.expr, self.cx(thunk.scope)))
     }
 
     pub fn bindings<'a>(&'a self, path: &str) -> Option<Vec<(&'a str, &'a Expr, Cx<'a>)>> {
-        let scope = self.nodes.get(path)?.scope;
+        let scope = self.nodes.get(path)?.body.scope;
         Some(
             self.vars(scope)
                 .map(|(name, value)| (name, value.expr, self.cx(value.scope)))
@@ -285,13 +378,17 @@ impl Instances {
 
     /// Each name `scope` binds, and what it stands for.
     pub(crate) fn vars(&self, scope: ScopeId) -> impl Iterator<Item = (&str, Thunk<'_>)> {
-        let vars = self.scopes[scope as usize].vars.iter();
+        let vars = self.scope(scope).vars.iter();
         vars.map(|(name, bound)| (name.as_str(), bound.thunk()))
     }
 
     /// Every name any scope binds.
     pub(crate) fn bound_names(&self) -> impl Iterator<Item = &str> {
-        let vars = self.scopes.iter().flat_map(|scope| scope.vars.iter());
+        let vars = self
+            .scopes
+            .iter()
+            .flatten()
+            .flat_map(|scope| scope.vars.iter());
         vars.map(|(name, _)| name.as_str())
     }
 }
@@ -318,7 +415,7 @@ fn implicit_time(name: &str) -> bool {
 impl Instances {
     #[inline]
     pub(crate) fn binds(&self, scope: ScopeId, name: &str) -> Option<Thunk<'_>> {
-        let bound = self.scopes[scope as usize].get(name, packed(name))?;
+        let bound = self.scope(scope).get(name, packed(name))?;
         Some(bound.thunk())
     }
 
@@ -412,7 +509,11 @@ impl Instances {
     }
 
     fn site<'a>(&'a self, e: &Expr, scope: ScopeId, written: &'a str) -> &'a str {
-        match self.sites.get(&(std::ptr::from_ref(e) as usize, scope)) {
+        match self
+            .scope(scope)
+            .sites
+            .get(&(std::ptr::from_ref(e) as usize))
+        {
             Some(child) => child,
             None => written,
         }
@@ -432,6 +533,47 @@ impl Instances {
             return r;
         }
         matches!(self.node(e, cx), Node::Name(n) if n == "t")
+    }
+
+    /// One hop down; `self(...)` is no edge.
+    fn direct_deps(&self, path: &str) -> Vec<String> {
+        let (e, cx) = self.at(path).expect("an instance");
+        let mut out = Vec::new();
+        self.direct_refs(e, cx, &mut out);
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    fn direct_refs(&self, e: &Expr, cx: Cx, out: &mut Vec<String>) {
+        if self
+            .follow(e, cx, |e2, cx2| self.direct_refs(e2, cx2, out))
+            .is_some()
+        {
+            return;
+        }
+        match self.node(e, cx) {
+            Node::Lit(_) | Node::Name(_) => {}
+            Node::Bin(_, l, r) => {
+                self.direct_refs(l, cx, out);
+                self.direct_refs(r, cx, out);
+            }
+            Node::Call { args, .. } => {
+                for a in args {
+                    let (Arg::Pos(x) | Arg::Named(_, x)) = a;
+                    self.direct_refs(x, cx, out);
+                }
+            }
+            Node::Read { path, arg, .. } => {
+                out.push(path.to_string());
+                self.direct_refs(arg, cx, out);
+            }
+            Node::Own { arg, .. } => self.direct_refs(arg, cx, out),
+            Node::Signal { of, arg, .. } => {
+                self.direct_refs(of.expr, self.signal(of, cx), out);
+                self.direct_refs(arg, cx, out);
+            }
+        }
     }
 
     pub fn reads_self(&self, path: &str) -> bool {
@@ -572,7 +714,7 @@ impl Instances {
     }
 
     pub(crate) fn same_binds(&self, scope: ScopeId, binds: &[(String, Bound)]) -> bool {
-        let held = &self.scopes[scope as usize].vars;
+        let held = &self.scope(scope).vars;
         held.len() == binds.len()
             && held.iter().zip(binds).all(|((k1, v1), (k2, v2))| {
                 let (v1, v2) = (v1.thunk(), v2.thunk());

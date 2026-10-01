@@ -8,7 +8,6 @@ use sva_samples::{
 
 use std::sync::Arc;
 
-use super::program::Source;
 use super::segments::Segments;
 use crate::error::{Diagnostic, EngineError, Located};
 
@@ -29,47 +28,6 @@ pub(crate) enum Kind {
     Spectrum(Arc<SpectralSum>),
     /// Stored samples, loaded as asked; a value it reads computes what they miss.
     Stored(Arc<crate::cache::Stored>),
-}
-
-impl Kind {
-    /// The same, run nowhere yet.
-    pub(crate) fn unrun(&self) -> Kind {
-        match self {
-            Kind::Rows(rows) => Kind::Rows(Arc::clone(rows)),
-            Kind::Program(program) => Kind::Program(Box::new(Program {
-                renderer: Arc::clone(&program.renderer),
-                spanned: Arc::clone(&program.spanned),
-                layout: Arc::clone(&program.layout),
-                machine: None,
-                marks: Default::default(),
-                ..**program
-            })),
-            Kind::Frames { window, hop } => Kind::Frames {
-                window: *window,
-                hop: *hop,
-            },
-            Kind::Istft => Kind::Istft,
-            Kind::Spectrum(sum) => Kind::Spectrum(Arc::clone(sum)),
-            Kind::Stored(stored) => Kind::Stored(Arc::clone(stored)),
-        }
-    }
-}
-
-/// What a value was built as, before any run: what each read reads, and its label and support.
-pub(crate) struct Made {
-    pub(crate) sources: Vec<Source>,
-    pub(crate) label: Option<Label>,
-    pub(crate) support: Extent,
-}
-
-impl Made {
-    pub(crate) fn of(sources: Vec<Source>, label: Option<Label>, support: Extent) -> Arc<Made> {
-        Arc::new(Made {
-            sources,
-            label,
-            support,
-        })
-    }
 }
 
 pub(crate) struct Program {
@@ -105,7 +63,9 @@ pub(crate) struct Value {
     pub(crate) name: String,
     pub(crate) grid: Grid,
     pub(crate) width: usize,
-    pub(crate) support: Extent,
+    pub(crate) whole: Extent,
+    /// Where a start silent cut `whole`.
+    pub(crate) silent: Option<i64>,
     pub(crate) period: Option<i64>,
     pub(crate) kind: Kind,
     pub(crate) reads: Vec<usize>,
@@ -119,10 +79,16 @@ pub(crate) struct Value {
     /// Its samples are its identity's alone; one an edit carried on, or anything reading one,
     /// holds a history no key names, so the store neither answers nor keeps it.
     pub(crate) pure: bool,
-    pub(crate) made: Arc<Made>,
 }
 
 impl Value {
+    pub(crate) fn support(&self) -> Extent {
+        match self.silent {
+            Some(from) => self.whole.intersect(Extent::from(from)),
+            None => self.whole,
+        }
+    }
+
     /// The value it reads and the shift it reads it at, where it only moves that value.
     pub(crate) fn alias(&self) -> Option<(usize, i64)> {
         match &self.kind {
@@ -159,7 +125,7 @@ impl Value {
         };
         let held = Extent::new(window.0, window.1);
         let bare = *rise <= 0.0 && *fall <= 0.0 && map.a == 1 && map.d == 1;
-        let within = held.intersect(self.support) == self.support;
+        let within = held.intersect(self.support()) == self.support();
         (bare && within && program.start.is_none())
             .then(|| (self.reads[slot.0 as usize], map.at(0)))
     }
@@ -173,7 +139,7 @@ impl Value {
         program.machine = Some(Machine::over(&program.spanned, now)?);
         program.marks.clear();
         self.held = Held::Run(Tape::new(self.width, 0, now));
-        self.support = self.support.intersect(Extent::from(now));
+        self.silent = Some(self.silent.map_or(now, |was| was.max(now)));
         self.pure = false;
         Ok(())
     }
@@ -182,7 +148,7 @@ impl Value {
         let mut out = Segments::default();
         if let Kind::Stored(stored) = &self.kind {
             for e in stored.extents() {
-                out.add(e.intersect(self.support));
+                out.add(e.intersect(self.support()));
             }
         }
         out
@@ -193,7 +159,7 @@ impl Value {
         match &self.held {
             Held::Segments(parts) => parts.iter().for_each(|b| out.add(b.extent())),
             Held::Run(tape) => out.add(Extent::new(tape.base(), tape.end())),
-            Held::Frames(Some(_)) => out.add(self.support),
+            Held::Frames(Some(_)) => out.add(self.support()),
             Held::Frames(None) => {}
         }
         out
@@ -261,10 +227,10 @@ impl Value {
             }
         };
         match &self.held {
-            Held::Run(tape) => lay(tape.within(self.support)),
+            Held::Run(tape) => lay(tape.within(self.support())),
             Held::Segments(parts) => {
                 for part in parts {
-                    lay(Window::of(part, self.support).folded(self.period));
+                    lay(Window::of(part, self.support()).folded(self.period));
                 }
             }
             Held::Frames(_) => {}
@@ -376,7 +342,8 @@ mod tests {
             name: "stream".to_string(),
             grid: Grid::of(8_000),
             width,
-            support: Extent::EVERYWHERE,
+            whole: Extent::EVERYWHERE,
+            silent: None,
             period: None,
             kind: Kind::Istft,
             reads: Vec::new(),
@@ -386,7 +353,6 @@ mod tests {
             switches: Vec::new(),
             moved: 0.0,
             pure: true,
-            made: Made::of(Vec::new(), None, Extent::EVERYWHERE),
         }
     }
 

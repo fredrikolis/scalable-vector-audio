@@ -38,24 +38,15 @@ struct Found {
 }
 
 impl Memo {
-    /// Each support of a node `map` renames, found from ones it renames, renamed.
-    pub(crate) fn renamed(&self, map: &HashMap<NodeId, NodeId>) -> Memo {
-        let renamed = |found: &Found| {
-            let from = found.from.iter().map(|id| map.get(id).copied());
-            Some(Found {
-                from: from.collect::<Option<Vec<_>>>()?,
-                ..found.clone()
-            })
-        };
-        let each = self.0.iter();
-        Memo(
-            each.filter_map(|(id, f)| Some((*map.get(id)?, renamed(f)?)))
-                .collect(),
-        )
-    }
-
     pub(crate) fn extend(&mut self, more: Memo) {
         self.0.extend(more.0);
+    }
+
+    /// Each support found of `freed`, nodes let go, forgotten.
+    pub(crate) fn forget(&mut self, freed: &[NodeId]) {
+        for id in freed {
+            self.0.remove(id);
+        }
     }
 }
 

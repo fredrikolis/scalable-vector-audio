@@ -1,6 +1,5 @@
 // Concern: which stored samples a window asks that no stored value holds yet, and laying them in | Non-concern: reading them off a store | IO: (Table, window) -> wants; (key, samples) -> ()
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use sva_formula::Hash;
@@ -15,7 +14,8 @@ impl Table {
     pub(crate) fn wants(&self, window: Extent) -> Vec<(Arc<Stored>, Extent)> {
         let needs = self.demand(window);
         let mut out = Vec::new();
-        for (value, need) in self.values.iter().zip(&needs) {
+        for (at, value) in self.values.iter() {
+            let need = &needs[at];
             let Kind::Stored(stored) = &value.kind else {
                 continue;
             };
@@ -31,16 +31,30 @@ impl Table {
         out
     }
 
-    pub(crate) fn stored_keys(&self) -> BTreeSet<Hash> {
-        let stored = self.values.iter().filter_map(|value| match &value.kind {
-            Kind::Stored(stored) => Some(stored.key),
-            _ => None,
-        });
-        stored.collect()
+    /// What `window` of `root` asks of each stored value the latest build made, and no value
+    /// holds.
+    pub(crate) fn wants_made(&self, root: usize, window: Extent) -> Vec<(Arc<Stored>, Extent)> {
+        let needs = super::demand::demand(&self.values, &[(root, window)]);
+        let mut out = Vec::new();
+        for at in self.made() {
+            let value = &self.values[*at];
+            let Kind::Stored(stored) = &value.kind else {
+                continue;
+            };
+            let lacks = needs[*at].hold.minus(&value.holding());
+            for run in value.covers().iter() {
+                let asked = lacks.intersect(run);
+                if !asked.is_empty() {
+                    out.push((Arc::clone(stored), asked.hull()));
+                }
+            }
+        }
+        out
     }
 
     pub(crate) fn took(&mut self, key: Hash, samples: &[Buffer]) {
-        for value in &mut self.values {
+        for at in self.values.ordered().collect::<Vec<_>>() {
+            let value = &mut self.values[at];
             let Kind::Stored(stored) = &value.kind else {
                 continue;
             };

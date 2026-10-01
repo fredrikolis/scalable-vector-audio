@@ -112,11 +112,6 @@ impl Driver {
         }
     }
 
-    pub(super) fn replace(&mut self, table: Table, last: i64) {
-        self.table = table;
-        self.bound(last);
-    }
-
     /// Ends at `last`, unless `until` already stopped it.
     pub(super) fn bound(&mut self, last: i64) {
         self.last = last;
@@ -147,9 +142,8 @@ impl Driver {
         }))
     }
 
-    /// Stands at `to`, past where it stood, computing nothing before it, and answers the
-    /// stateful values it started silent: each the rest of the range asks from before its run
-    /// reaches.
+    /// Stands at `to`, computing nothing before it; the stateful values it started silent,
+    /// each asked from before its run reaches.
     pub(super) fn skip(&mut self, to: i64) -> Result<Vec<usize>, EngineError> {
         if self.end.is_some_and(|end| self.at >= end) {
             return Ok(Vec::new());

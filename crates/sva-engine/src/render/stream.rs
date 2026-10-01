@@ -1,6 +1,6 @@
 // Concern: opens a target as a stream over a store, editing it and its terms live | Non-concern: pulling its blocks, what an edit carries on | IO: (Graph, target) -> Stream; (Change) -> Changed
 
-use std::cell::{Ref, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -9,21 +9,20 @@ use sva_formula::{Hash, NodeId};
 use sva_samples::{Buffer, Extent};
 
 use super::drive::{Block, Driver};
-use super::frontier::{Frontier, Known};
+use super::frontier::Known as Met;
+use super::table::Table;
 use super::table::support::Supports;
-use super::table::{Beside, Table, edit};
-use super::terms::{Handle, NOTES, Terms, placed};
-use super::{Ends, Render, RenderConfig, range_over, through};
-use crate::cache::{Cache, CacheStats, Lookup, Outcome, Recording, Stored, Through};
+use super::terms::{Handle, NOTES, Terms, cut, placed};
+use super::{Ends, RenderConfig, range_over, through};
+use crate::cache::{Cache, CacheStats, Recording, Stored, Through};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::flops::Work;
-use crate::instantiate;
 use crate::recent::Recent;
-use crate::schedule;
-use crate::typing;
+use world::{Plan, Walked, Wanted, World};
 
 #[cfg(test)]
 mod rebuilt;
+mod world;
 
 pub const STREAMED: &str = "streamed";
 
@@ -38,62 +37,63 @@ pub struct StreamConfig {
     pub render: RenderConfig,
 }
 
-/// A target rendered block by block off one table. The target may read `@notes`, the sum of
-/// the terms added under handles. A node the store answers plays from its samples. A hit is
-/// looked up once; a node reading the stream's own note sum never, as no store holds one.
+/// A target rendered block by block off one table, reading `@notes`, the sum of the terms
+/// added. A change builds only what it changed or newly reads; the rest stays as it stood.
 pub struct Stream {
     config: StreamConfig,
-    played: Played,
+    world: World,
     driver: Driver,
-    graph: Graph,
     expr: Expr,
     terms: Terms,
     width: usize,
     supports: BTreeMap<Handle, Extent>,
-    met: Met,
+    /// The first sounding term's end, which `supports` evicts.
+    ending: Option<Option<i64>>,
+    met: Lookups,
     generation: u64,
     live: bool,
     dropped: Recent<String>,
     late: usize,
     built: Built,
-}
-
-/// What a stream plays, as its latest build left it: the typed composition, and each
-/// instance's store key and what it reads.
-struct Played {
-    shell: Render,
-    keys: BTreeMap<String, Hash>,
-    reads: BTreeMap<String, Vec<String>>,
+    demands: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub dropped: usize,
-    /// Edits that landed past the sample they were issued at.
+    /// Edits that landed past where issued.
     pub late: usize,
     pub terms: usize,
     /// The latest change's, or the open's.
     pub built: Built,
+    /// The reads that worked out what the root asks of the note sum.
+    pub demands: usize,
 }
 
-/// What one change built anew, not what it carried over.
+/// What one change did anew, not what it carried over.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Built {
+    /// Texts it took in: its expression and each node it newly reads.
+    pub parsed: usize,
     pub instances: usize,
+    /// Instances its walk to the store visited.
+    pub visited: usize,
     pub typed: usize,
     pub values: usize,
+    /// Values it made taking an old one's state.
+    pub copied: usize,
     pub lookups: usize,
 }
 
 /// Each lookup met, until its store moves the samples.
 #[derive(Default)]
-struct Met {
+struct Lookups {
     epoch: u64,
-    known: Known,
+    known: Met,
 }
 
-impl Met {
-    fn over(&mut self, store: &impl Through) -> &Known {
+impl Lookups {
+    fn over(&mut self, store: &impl Through) -> &Met {
         if store.epoch() != self.epoch {
             self.known.clear();
             self.epoch = store.epoch();
@@ -108,19 +108,6 @@ impl Met {
             self.known.insert(key, found.clone());
         }
     }
-
-    fn entries(&mut self, store: &impl Through) -> Vec<(Hash, Option<Arc<Stored>>)> {
-        let entries = self.over(store).iter();
-        entries.map(|(key, found)| (*key, found.clone())).collect()
-    }
-}
-
-struct Shelled {
-    played: Played,
-    range: Extent,
-    table: Table,
-    hits: Vec<Lookup>,
-    built: Built,
 }
 
 impl Stream {
@@ -131,162 +118,283 @@ impl Stream {
         cache: Option<&Cache>,
         store: &impl Through,
     ) -> Result<Stream, EngineError> {
-        let terms = Terms::default();
-        let (mut known, epoch) = (Known::new(), store.epoch());
-        let render = &blocked(&config)?.render;
-        let lookups = std::cell::Cell::new(0);
-        let walk = async |found: &mut Frontier<'_>| {
-            lookups.set(found.walked(&mut known, store).await);
-        };
-        let mut found = shelled(graph, target, &terms, render, (walk, || None)).await?;
-        found.built.lookups = lookups.get();
-        let width = config.channels.unwrap_or(found.width());
-        if width == 0 {
-            return Err(refusal("a stream of no channels".to_string()));
-        }
-        widens(found.width(), width)?;
-        let mut met = Met::default();
-        for (key, found) in known {
-            met.noted(key, &found, epoch, store);
-        }
-        let next = ahead(found.range.start, render.rate);
-        through::load(&mut found.table, store, next, &BTreeSet::new()).await;
-        let mut recording = Recording::over(cache, config.render.cache_policy).latest(LATEST);
-        recording.found(found.hits);
-        let driver = Driver::new(
-            found.table,
-            found.range,
-            config.block,
-            &config.render,
-            recording,
-        );
-        Ok(Stream {
-            graph: graph.clone(),
+        let render = blocked(&config)?.render.clone();
+        let world = World::new(graph, &render)?;
+        let recording = Recording::over(cache, config.render.cache_policy).latest(LATEST);
+        let table = Table::new(&render.profile);
+        let driver = Driver::new(table, Extent::new(0, 0), config.block, &render, recording);
+        let mut stream = Stream {
+            world,
+            driver,
             expr: target.clone(),
-            terms,
-            width,
+            terms: Terms::default(),
+            width: 0,
             supports: BTreeMap::new(),
-            met,
+            ending: None,
+            met: Lookups::default(),
             generation: 0,
             live: false,
             dropped: Recent::keeping(LATEST),
             late: 0,
-            built: found.built,
-            driver,
+            built: Built::default(),
+            demands: 0,
             config,
-            played: found.played,
-        })
+        };
+        let opening = Prospect {
+            target: target.clone(),
+            terms: Terms::default(),
+            term: None,
+            from: None,
+            answer: Changed::Edited,
+            landing: None,
+            parsed: 1,
+        };
+        let mut local = Local::default();
+        loop {
+            match stream.attempt(&opening, &mut local)? {
+                Attempt::Landed(_) => break,
+                Attempt::Asks(keys) => {
+                    let epoch = store.epoch();
+                    local.look(keys, store).await;
+                    for (key, found) in std::mem::take(&mut local.recorded) {
+                        stream.met.noted(key, &found, epoch, store);
+                    }
+                }
+                Attempt::Reads(wants) => local.read(wants, store).await,
+                Attempt::Moved => unreachable!("nothing plays a stream before it opens"),
+            }
+        }
+        let next = ahead(stream.driver.start, render.rate);
+        through::load(&mut stream.driver.table, store, next, &BTreeSet::new()).await;
+        Ok(stream)
     }
 
     pub fn exprs(&self) -> impl Iterator<Item = &Expr> {
-        std::iter::once(&self.expr).chain(self.terms.exprs())
+        let terms = self
+            .terms
+            .handles()
+            .filter_map(|h| self.world.graph.expr(&h.node()));
+        std::iter::once(&self.expr).chain(terms)
+    }
+
+    pub fn graph(&self) -> &Graph {
+        &self.world.graph
     }
 
     fn prospect(&self, change: Change) -> Result<Prospect, Changed> {
-        let mut render = self.config.render.clone();
-        render.range.start = Some(self.driver.start);
         let mut landing = None;
-        let (graph, target, terms, answer) = match change {
-            Change::Target(graph, target) => (graph, target, self.terms.clone(), Changed::Edited),
+        let prospect = |terms, term: Option<(Handle, Expr)>, from: Option<Graph>, answer| {
+            let roots = |(handle, term): &(Handle, Expr)| sva_ast::reads_of(&handle.node(), term);
+            Prospect {
+                target: self.expr.clone(),
+                terms,
+                from: from.map(|graph| (graph, term.as_ref().map(roots).unwrap_or_default())),
+                term,
+                answer,
+                landing: None,
+                parsed: 1,
+            }
+        };
+        Ok(match change {
+            Change::Target(graph, target) => {
+                let roots = sva_ast::reads_of(STREAMED, &target);
+                Prospect {
+                    target,
+                    from: Some((graph, roots)),
+                    ..prospect(self.terms.clone(), None, None, Changed::Edited)
+                }
+            }
             Change::Add(graph, term, at) => {
                 let term = match at {
                     Placed::Written => term,
                     Placed::Landing => placed(&term, *landing.insert(self.driver.at)),
                 };
-                let (terms, handle) = self.terms.added(term);
-                (graph, self.expr.clone(), terms, Changed::Added(handle))
+                let (terms, handle) = self.terms.added();
+                Prospect {
+                    landing,
+                    ..prospect(
+                        terms,
+                        Some((handle, term)),
+                        Some(graph),
+                        Changed::Added(handle),
+                    )
+                }
             }
             Change::Replace(handle, graph, term, at) => {
-                let terms = self.terms.replaced(handle, |landed| match at {
+                let landed = self.terms.landed(handle).ok_or(Changed::Held(false))?;
+                let term = match at {
                     Placed::Written => term,
                     Placed::Landing => placed(&term, landed),
-                });
-                let terms = terms.ok_or(Changed::Held(false))?;
-                (graph, self.expr.clone(), terms, Changed::Held(true))
-            }
-            Change::Remove(handle) => {
-                let at = self.driver.at as f64 / f64::from(self.played.shell.rate());
-                let terms = self.terms.removed(handle, at);
-                let terms = terms.ok_or(Changed::Held(false))?;
-                (
-                    self.graph.clone(),
-                    self.expr.clone(),
+                };
+                let terms = self.terms.clone();
+                prospect(
                     terms,
+                    Some((handle, term)),
+                    Some(graph),
                     Changed::Held(true),
                 )
             }
-        };
-        Ok(Prospect {
-            graph,
-            target,
-            terms,
-            answer,
-            render,
-            generation: self.generation,
-            landing,
+            Change::Remove(handle) => {
+                let at = self.driver.at as f64 / f64::from(self.config.render.rate);
+                let terms = self.terms.removed(handle).ok_or(Changed::Held(false))?;
+                let held = self.world.graph.expr(&handle.node());
+                let term = cut(held.expect("a held term's node"), at);
+                Prospect {
+                    parsed: 0,
+                    ..prospect(terms, Some((handle, term)), None, Changed::Held(true))
+                }
+            }
         })
     }
 
-    /// The stored samples `table` asks over the next second that it brings in and nothing
-    /// holds; `None` where the stream changed since `generation` or left `landing`.
-    fn wanting(
-        &self,
-        (generation, landing): (u64, Option<i64>),
-        table: &Table,
-        unread: &BTreeSet<Hash>,
-    ) -> Option<Vec<(Arc<Stored>, Extent)>> {
-        if generation != self.generation || landing.is_some_and(|at| at != self.driver.at) {
-            return None;
+    /// One try at `prospect`: planned, typed and built beside what plays, then held, or undone
+    /// where the store must answer first.
+    fn attempt(&mut self, prospect: &Prospect, local: &mut Local) -> Result<Attempt, EngineError> {
+        if prospect.landing.is_some_and(|at| at != self.driver.at) {
+            return Ok(Attempt::Moved);
         }
-        let sounding = self.driver.table.stored_keys();
-        let wants = table.wants(ahead(self.driver.at, self.config.render.rate));
-        let brought = wants.into_iter();
-        let brought =
-            brought.filter(|(s, _)| !sounding.contains(&s.key) && !unread.contains(&s.key));
-        Some(brought.collect())
+        let wanted = Wanted {
+            target: &prospect.target,
+            terms: &prospect.terms,
+            term: prospect.term.as_ref().map(|(h, e)| (*h, e)),
+            from: prospect.from.as_ref().map(|(g, roots)| (g, roots.clone())),
+        };
+        let met = &self.met.known;
+        let found = |key: Hash| local.known.get(&key).or_else(|| met.get(&key)).cloned();
+        let walked = self.world.plan(&wanted, (&found, &local.again))?;
+        let mut plan = match walked {
+            Walked::Asks(keys) => return Ok(Attempt::Asks(keys)),
+            Walked::Planned(plan) => plan,
+        };
+        let built = self.built(prospect, &mut plan);
+        let (root, range) = match built {
+            Ok(held) => held,
+            Err(e) => {
+                let freed = self.world.abort();
+                self.driver.table.abort(&freed);
+                return Err(e);
+            }
+        };
+        let window = ahead(self.driver.at.max(range.start), self.config.render.rate);
+        let wants = self.driver.table.wants_made(root, window);
+        let wants: Vec<(Arc<Stored>, Extent)> = wants
+            .into_iter()
+            .filter(|(stored, over)| !local.holds(stored.key, *over))
+            .collect();
+        if !wants.is_empty() {
+            let freed = self.world.abort();
+            self.driver.table.abort(&freed);
+            return Ok(Attempt::Reads(wants));
+        }
+        Ok(Attempt::Landed(self.land(
+            prospect,
+            (plan, root, range),
+            local,
+        )))
     }
 
-    /// Values of the same identity carry on; a changed stateful one takes its predecessor's
-    /// state; the rest start now.
-    fn apply(
+    /// The plan typed and built: the root's value and its range.
+    fn built(
         &mut self,
-        (prospect, issued): (Prospect, i64),
-        shelled: Shelled,
-        fetched: &[(Hash, Vec<Buffer>)],
-    ) {
-        let Shelled {
-            played,
-            range,
-            mut table,
-            hits,
-            built,
-        } = shelled;
-        self.built = built;
-        let old = std::mem::replace(&mut self.driver.table, Table::empty());
-        let dropped = edit::carried(&mut table, old, self.driver.at, self.live);
-        for (key, samples) in fetched {
-            table.took(*key, samples);
+        prospect: &Prospect,
+        plan: &mut Plan,
+    ) -> Result<(usize, Extent), EngineError> {
+        let world = &mut self.world;
+        let typing = &mut world.typing;
+        typing.lower(&world.instances, &plan.groups, &BTreeMap::new())?;
+        let id = typing
+            .id(STREAMED)
+            .ok_or_else(|| EngineError::UnknownNode(STREAMED.to_string()))?;
+        prospect.terms.name(typing);
+        let prefixes: BTreeMap<NodeId, Arc<Stored>> = plan
+            .prefixes
+            .iter()
+            .filter_map(|(path, stored)| Some((typing.id(path)?, Arc::clone(stored))))
+            .collect();
+        let table = &mut self.driver.table;
+        let root = table.grow(typing, id, &prefixes)?;
+        let plays = table.values[root].width;
+        let mut render = self.config.render.clone();
+        match self.width {
+            0 if self.config.channels == Some(0) => {
+                return Err(refusal("a stream of no channels".to_string()));
+            }
+            0 => widens(plays, self.config.channels.unwrap_or(plays))?,
+            width => {
+                widens(plays, width)?;
+                render.range.start = Some(self.driver.start);
+            }
         }
-        for at in dropped {
-            self.dropped.push(table.values[at].name.clone());
+        let profile = &self.config.render.profile;
+        let support = Supports::over(typing, profile, Some(&table.supports)).of(id);
+        let range = range_over((&render, STREAMED), support, Ends::Pulled)?;
+        Ok((root, range))
+    }
+
+    /// The change held, each value it made carrying on what it continues.
+    fn land(
+        &mut self,
+        prospect: &Prospect,
+        (mut plan, root, range): (Plan, usize, Extent),
+        local: &mut Local,
+    ) -> Changed {
+        let freed = self.world.commit(&mut plan);
+        let now = self.driver.at;
+        let carried = self.driver.table.settled(root, &freed, (now, self.live));
+        for (key, samples) in &local.fetched {
+            self.driver.table.took(*key, samples);
         }
-        self.late += usize::from(self.driver.at > issued);
+        for at in &carried.silent {
+            self.dropped
+                .push(self.driver.table.values[*at].name.clone());
+        }
+        match self.width {
+            0 => {
+                let plays = self.driver.table.values[root].width;
+                self.width = self.config.channels.unwrap_or(plays);
+                (self.driver.start, self.driver.at) = (range.start, range.start);
+            }
+            _ => self.late += usize::from(self.driver.at > local.issued),
+        }
         let last = self.last(range.end);
-        self.driver.replace(table, last);
-        self.driver.recording.found(hits);
-        self.played = played;
-        self.graph = prospect.graph;
-        self.expr = prospect.target;
-        self.terms = prospect.terms;
+        self.driver.bound(last);
+        self.driver.recording.found(std::mem::take(&mut plan.hits));
+        self.expr = prospect.target.clone();
+        self.terms = prospect.terms.clone();
         if let Changed::Added(handle) = prospect.answer {
             self.terms.land(handle, self.driver.at);
         }
-        let (tys, profile) = (&self.played.shell.tys, &self.played.shell.config.profile);
-        let supports = Supports::over(tys, profile, Some(&self.driver.table.supports));
-        let support = |handle: Handle| Some((handle, supports.of(tys.id(&handle.node())?)));
-        self.supports = self.terms.handles().filter_map(support).collect();
+        if let Some((handle, _)) = prospect.term {
+            self.supported(handle);
+        }
+        self.built = Built {
+            parsed: prospect.parsed + plan.adopted,
+            instances: plan.named,
+            visited: plan.visited,
+            typed: self.world.typing.lowered().len(),
+            values: self.driver.table.built,
+            copied: carried.taken,
+            lookups: local.lookups,
+        };
         self.generation += 1;
         self.prune();
+        prospect.answer
+    }
+
+    /// `handle`'s support, where it still sounds.
+    fn supported(&mut self, handle: Handle) {
+        self.supports.remove(&handle);
+        self.ending = None;
+        if !self.terms.handles().any(|h| h == handle) {
+            return;
+        }
+        let typing = &self.world.typing;
+        let Some(id) = typing.id(&handle.node()) else {
+            return;
+        };
+        let profile = &self.config.render.profile;
+        let support = Supports::over(typing, profile, Some(&self.driver.table.supports)).of(id);
+        self.supports.insert(handle, support);
     }
 
     /// Loads the stored samples the next second reads; a block reading one not loaded has it
@@ -375,16 +483,26 @@ impl Stream {
             late: self.late,
             terms: self.terms.count(),
             built: self.built,
+            demands: self.demands,
         }
     }
 
-    /// Retires every term whose support, pruned as a render prunes it, ended by now and before
-    /// the first sample of `notes` the root's window from now on asks, as its demand finds it.
+    /// Retires every term whose support ended by now and before the first sample of `notes`
+    /// the root asks from now on; nothing is worked out until a support can have ended.
     fn prune(&mut self) {
-        let (table, tys) = (&self.driver.table, &self.played.shell.tys);
-        let (now, last) = (self.driver.at, self.driver.last());
+        let now = self.driver.at;
+        let supports = &self.supports;
+        let ending = *self
+            .ending
+            .get_or_insert_with(|| supports.values().map(|s| s.end).min());
+        if ending.is_none_or(|end| end > now) {
+            return;
+        }
+        let (table, tys) = (&self.driver.table, &self.world.typing);
+        let last = self.driver.last();
         let asked = match tys.id(NOTES).and_then(|notes| table.of(notes)) {
             Some(notes) if now < last => {
+                self.demands += 1;
                 let needs = table.demand(Extent::new(now, last));
                 needs[notes].hold.iter().next().map(|asked| asked.start)
             }
@@ -397,24 +515,28 @@ impl Stream {
             support.is_some_and(|s| s.end <= now && asked.is_none_or(|from| s.end <= from))
         };
         let support = |handle: Handle| supports.get(&handle).copied();
-        if self.terms.prune(&gone, &support) {
+        let went = self.terms.retire(&gone, &support);
+        if !went.is_empty() {
             self.generation += 1;
+        }
+        for handle in went {
+            self.supports.remove(&handle);
+            self.ending = None;
         }
     }
 
     /// Every segment of its own clock the stream computed of `node`'s value, in order.
     pub fn evaluated(&self, node: &str) -> Vec<sva_samples::Extent> {
         let table = &self.driver.table;
-        self.played
-            .shell
-            .tys
+        self.world
+            .typing
             .id(node)
             .and_then(|id| table.of(id))
             .map_or(Vec::new(), |at| table.values[at].evaluated.clone())
     }
 
     pub fn pruned(&self) -> sva_samples::Pruned {
-        self.driver.table.pruned()
+        self.driver.table.pruned(&self.world.typing)
     }
 
     pub fn landed(&self, handle: Handle) -> Option<i64> {
@@ -475,84 +597,118 @@ pub enum Changed {
     Held(bool),
 }
 
+/// What a change wants played, and what it answers once it lands.
 struct Prospect {
-    graph: Graph,
     target: Expr,
     terms: Terms,
+    term: Option<(Handle, Expr)>,
+    from: Option<(Graph, Vec<String>)>,
     answer: Changed,
-    render: RenderConfig,
-    generation: u64,
     landing: Option<i64>,
+    /// Its own expression, where it brought one.
+    parsed: usize,
 }
 
-/// `build`'s change, holding the stream only to apply it, between two blocks, once the store
-/// answered what it brings in: an exact stream pulled only once its edit is done plays it where
-/// it was issued. `build` runs again whenever the stream changed under it.
+/// What one try at a change came to.
+enum Attempt {
+    Landed(Changed),
+    Asks(Vec<Hash>),
+    Reads(Vec<(Arc<Stored>, Extent)>),
+    /// The stream left the sample it was placed at.
+    Moved,
+}
+
+/// What one change has looked up and read, across its tries.
+#[derive(Default)]
+struct Local {
+    known: Met,
+    /// Keys asked again, a miss met before.
+    again: BTreeSet<Hash>,
+    recorded: Vec<(Hash, Option<Arc<Stored>>)>,
+    fetched: Vec<(Hash, Vec<Buffer>)>,
+    asked: Vec<(Hash, Extent)>,
+    unread: BTreeSet<Hash>,
+    lookups: usize,
+    issued: i64,
+}
+
+impl Local {
+    async fn look(&mut self, keys: Vec<Hash>, store: &impl Through) {
+        for key in keys {
+            self.lookups += 1;
+            let found = store.lookup(key).await.map(Arc::new);
+            self.again.insert(key);
+            self.known.insert(key, found.clone());
+            self.recorded.push((key, found));
+        }
+    }
+
+    async fn read(&mut self, wants: Vec<(Arc<Stored>, Extent)>, store: &impl Through) {
+        for (stored, over) in wants {
+            let again = self
+                .asked
+                .iter()
+                .any(|(key, e)| *key == stored.key && !e.intersect(over).is_empty());
+            self.asked.push((stored.key, over));
+            let read = match again {
+                false => store.read(&stored, over).await,
+                true => None,
+            };
+            match read {
+                Some(samples) => self.fetched.push((stored.key, samples)),
+                None => {
+                    self.unread.insert(stored.key);
+                }
+            }
+        }
+    }
+
+    /// Whether this change already read `key` over `over`, or could not.
+    fn holds(&self, key: Hash, over: Extent) -> bool {
+        self.unread.contains(&key)
+            || self
+                .asked
+                .iter()
+                .any(|(k, e)| *k == key && e.intersect(over) == over)
+    }
+}
+
+/// `build`'s change, the stream held only while each try runs, between two blocks: an exact
+/// stream pulled once its edit is done plays it where issued. `build` runs again whenever the
+/// stream changed under it.
 pub async fn change<E: From<EngineError>>(
     stream: &RefCell<Stream>,
     mut build: impl FnMut(&Stream) -> Result<Change, E>,
     store: &impl Through,
 ) -> Result<Changed, E> {
-    let mut local = Met::default();
-    let mut fetched: Vec<(Hash, Vec<Buffer>)> = Vec::new();
-    let (mut unread, mut asked) = (BTreeSet::new(), Vec::<(Hash, Extent)>::new());
-    let issued = stream.borrow().driver.at;
-    let lookups = std::cell::Cell::new(0);
+    let mut local = Local {
+        issued: stream.borrow().driver.at,
+        ..Local::default()
+    };
     loop {
         let change = build(&stream.borrow())?;
         let prospect = match stream.borrow().prospect(change) {
             Ok(prospect) => prospect,
             Err(answer) => return Ok(answer),
         };
-        for (key, found) in stream.borrow_mut().met.entries(store) {
-            local.noted(key, &found, store.epoch(), store);
-        }
-        let walk = async |found: &mut Frontier<'_>| {
-            while let Some(key) = found.walk(local.over(store)) {
-                let epoch = store.epoch();
-                lookups.set(lookups.get() + 1);
-                let found = store.lookup(key).await.map(Arc::new);
-                stream.borrow_mut().met.noted(key, &found, epoch, store);
-                local.noted(key, &found, epoch, store);
-            }
-        };
-        let (graph, target) = (&prospect.graph, &prospect.target);
-        let config = &prospect.render;
-        let prior = || Some(stream.borrow());
-        let mut shelled = shelled(graph, target, &prospect.terms, config, (walk, prior)).await?;
-        widens(shelled.width(), stream.borrow().width())?;
-        let standing = (prospect.generation, prospect.landing);
+        let generation = stream.borrow().generation;
         loop {
-            for (key, samples) in &fetched {
-                shelled.table.took(*key, samples);
-            }
-            let wants = stream.borrow().wanting(standing, &shelled.table, &unread);
-            let Some(wants) = wants else {
+            if stream.borrow().generation != generation {
                 break;
-            };
-            if wants.is_empty() {
-                let answer = prospect.answer;
-                shelled.built.lookups = lookups.get();
-                stream
-                    .borrow_mut()
-                    .apply((prospect, issued), shelled, &fetched);
-                return Ok(answer);
             }
-            for (stored, over) in wants {
-                let again = asked
-                    .iter()
-                    .any(|(key, e)| *key == stored.key && !e.intersect(over).is_empty());
-                asked.push((stored.key, over));
-                let read = match again {
-                    false => store.read(&stored, over).await,
-                    true => None,
-                };
-                match read {
-                    Some(samples) => fetched.push((stored.key, samples)),
-                    None => {
-                        unread.insert(stored.key);
+            stream.borrow_mut().met.over(store);
+            let attempt = stream.borrow_mut().attempt(&prospect, &mut local)?;
+            match attempt {
+                Attempt::Landed(answer) => return Ok(answer),
+                Attempt::Moved => break,
+                Attempt::Asks(keys) => {
+                    let epoch = store.epoch();
+                    local.look(keys, store).await;
+                    for (key, found) in std::mem::take(&mut local.recorded) {
+                        stream.borrow_mut().met.noted(key, &found, epoch, store);
                     }
                 }
+                Attempt::Reads(wants) => local.read(wants, store).await,
             }
         }
     }
@@ -580,168 +736,7 @@ fn blocked(config: &StreamConfig) -> Result<&StreamConfig, EngineError> {
     }
 }
 
-/// The graph with `streamed` defined as `target` and `notes` as `terms`. A composition's own
-/// `notes` stands while there is no term.
-fn wrapped(graph: &Graph, target: &Expr, terms: &Terms) -> Result<Graph, EngineError> {
-    let mut wrapped = graph.clone();
-    if !terms.is_empty() && graph.defines(NOTES) {
-        return Err(EngineError::refused(Diagnostic {
-            code: "engine.no_stream".to_string(),
-            message: format!(
-                "a term is added to `@{NOTES}`, and this composition defines its own `{NOTES}`"
-            ),
-            location: Located::at(NOTES, None),
-            help: format!("rename the composition's `{NOTES}`, or play it without adding terms"),
-        }));
-    }
-    let own = terms.is_empty() && graph.defines(NOTES);
-    let sum = (!own).then(|| (NOTES.to_string(), terms.sum()));
-    let defined = std::iter::once((STREAMED.to_string(), target.clone()));
-    for (name, body) in defined.chain(sum).chain(terms.nodes()) {
-        if !wrapped.define(&name, body) {
-            return Err(refusal(format!(
-                "this composition already has a node named `{name}`"
-            )));
-        }
-    }
-    Ok(wrapped)
-}
-
-/// The wrapped graph typed whole, each node the store answers standing on its samples.
-async fn shelled<'s>(
-    graph: &Graph,
-    target: &Expr,
-    terms: &Terms,
-    config: &RenderConfig,
-    (walk, prior): (
-        impl AsyncFnOnce(&mut Frontier<'_>),
-        impl Fn() -> Option<Ref<'s, Stream>>,
-    ),
-) -> Result<Shelled, EngineError> {
-    let wrapped = wrapped(graph, target, terms)?;
-    let instances = instantiate::instantiate(&wrapped, STREAMED, config.rate)?;
-    let named = instances.paths().count();
-    let root = instances.instance_of(STREAMED)?;
-    let order = schedule::schedule_from(&instances, std::slice::from_ref(&root))?;
-    let keys = through::keys(&wrapped, &instances, &order, config);
-    let mut found = Frontier::from((&instances, &order), &keys, &root, (config, true));
-    if !terms.is_empty() {
-        found.unstored(reading(&order, &instances.instance_of(NOTES)?));
-        found.unstored(terms.handles().map(Handle::node));
-    }
-    if let Some(prior) = prior() {
-        found.asking(anew(
-            (&prior.played.keys, &prior.played.reads),
-            &keys,
-            &order,
-        ));
-    }
-    walk(&mut found).await;
-    let within = order.within(&found.visited);
-    let prior = prior();
-    let (mut tys, carried) = match &prior {
-        Some(prior) => {
-            let (held, now) = (&prior.played.keys, &keys);
-            let same = |path: &str| held.get(path) == now.get(path);
-            let typing = &prior.played.shell.tys;
-            let prior_typing = typing::Prior {
-                typing,
-                same: &same,
-            };
-            let (tys, carried) = typing::infer_beside(&instances, &within, &prior_typing)?;
-            (tys, Some(carried))
-        }
-        None => (
-            typing::infer_over(&instances, &within, &BTreeMap::new())?,
-            None,
-        ),
-    };
-    let id = tys
-        .id(&root)
-        .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;
-    terms.name(&mut tys);
-    let prefixes: BTreeMap<NodeId, Arc<Stored>> = std::mem::take(&mut found.stored)
-        .into_iter()
-        .map(|(path, stored)| (tys.id(&path).expect("a walked node is typed"), stored))
-        .collect();
-    let schedule = schedule::plan(&tys, id, &[]);
-    let shell = Render::shell(tys, id, config.clone(), schedule);
-    let profile = &shell.config.profile;
-    let beside = match (&prior, &carried) {
-        (Some(prior), Some(carried)) => Beside::of(&prior.driver.table, &carried.nodes),
-        _ => Beside::default(),
-    };
-    let table = Table::prefixed(&shell.tys, shell.root, profile, (&prefixes, beside))?;
-    drop(prior);
-    let support = Supports::over(&shell.tys, profile, Some(&table.supports)).of(shell.root);
-    let range = range_over(&shell, support, Ends::Pulled)?;
-    let hits = std::mem::take(&mut found.lookups).into_iter();
-    let hits = hits.filter(|l| l.outcome == Outcome::Hit).collect();
-    drop(found);
-    let built = Built {
-        instances: named,
-        typed: shell.tys.lowered().len(),
-        values: table.built,
-        lookups: 0,
-    };
-    let reads = order.into_deps();
-    Ok(Shelled {
-        played: Played { shell, keys, reads },
-        range,
-        table,
-        hits,
-        built,
-    })
-}
-
-/// The key of each read a changed node makes and did not in `prior`: any holder may fill a
-/// miss, so one read anew is asked again.
-fn anew(
-    (prior, reads): (&BTreeMap<String, Hash>, &BTreeMap<String, Vec<String>>),
-    keys: &BTreeMap<String, Hash>,
-    order: &schedule::Order,
-) -> BTreeSet<Hash> {
-    let changed = keys
-        .iter()
-        .filter(|(path, key)| prior.get(*path) != Some(key));
-    let mut out = BTreeSet::new();
-    for (path, _) in changed {
-        let before = reads.get(path).map_or(&[][..], Vec::as_slice);
-        let new = order
-            .deps(path)
-            .iter()
-            .filter(|read| !before.contains(read));
-        out.extend(new.filter_map(|read| keys.get(read)));
-    }
-    out
-}
-
-impl Shelled {
-    fn width(&self) -> usize {
-        self.table.values[self.table.root].width
-    }
-}
-
-/// `path` and every node reading it, however far down.
-fn reading(order: &schedule::Order, path: &str) -> BTreeSet<String> {
-    let mut out = BTreeSet::from([path.to_string()]);
-    loop {
-        let more: Vec<String> = order
-            .groups
-            .iter()
-            .flatten()
-            .filter(|node| !out.contains(*node))
-            .filter(|node| order.deps(node).iter().any(|read| out.contains(read)))
-            .cloned()
-            .collect();
-        if more.is_empty() {
-            return out;
-        }
-        out.extend(more);
-    }
-}
-
-fn refusal(what: String) -> EngineError {
+pub(super) fn refusal(what: String) -> EngineError {
     refused(
         "engine.no_stream",
         format!("this target opens no stream: {what}"),

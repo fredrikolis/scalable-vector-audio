@@ -15,99 +15,79 @@ use crate::schedule::Order;
 pub(crate) type Known = BTreeMap<Hash, Option<Arc<Stored>>>;
 
 pub(crate) struct Frontier<'w> {
-    order: &'w Order,
+    order: &'w Order<'w>,
     keys: &'w BTreeMap<String, Hash>,
     root: &'w str,
     config: &'w RenderConfig,
-    streaming: bool,
     pinned: BTreeSet<String>,
-    again: BTreeSet<Hash>,
-    /// Walked beneath a streamed hit, not looked up.
-    unlooked: BTreeSet<String>,
     stack: Vec<Step>,
     pub(crate) stored: BTreeMap<String, Arc<Stored>>,
     pub(crate) visited: BTreeSet<String>,
     pub(crate) lookups: Vec<Lookup>,
 }
 
-/// Each flags a lookup: nothing beneath a streamed hit is looked up.
 enum Step {
-    Visit(String, bool),
-    Close(String, bool),
+    Visit(String),
+    Close(String),
 }
 
 impl<'w> Frontier<'w> {
     pub(crate) fn from(
-        (inst, order): (&Instances, &'w Order),
+        (inst, order): (&Instances, &'w Order<'w>),
         keys: &'w BTreeMap<String, Hash>,
         root: &'w str,
-        (config, streaming): (&'w RenderConfig, bool),
+        config: &'w RenderConfig,
     ) -> Frontier<'w> {
         Frontier {
             order,
             keys,
             root,
             config,
-            streaming,
             pinned: pinned(inst, order, config),
-            again: BTreeSet::new(),
-            unlooked: BTreeSet::new(),
-            stack: vec![Step::Visit(root.to_string(), true)],
+            stack: vec![Step::Visit(root.to_string())],
             stored: BTreeMap::new(),
             visited: BTreeSet::new(),
             lookups: Vec::new(),
         }
     }
 
-    /// A hit ends the walk down its branch, or streaming, the lookups; a miss walks on. It
-    /// pauses at the first key `known` lacks, answering it.
+    /// A hit ends the walk down its branch; a miss walks on. It pauses at the first key
+    /// `known` lacks, answering it.
     pub(crate) fn walk(&mut self, known: &Known) -> Option<Hash> {
         while let Some(step) = self.stack.pop() {
-            let (path, look) = match step {
-                Step::Close(path, looked) => {
-                    if looked && !self.pinned.contains(&path) {
+            let path = match step {
+                Step::Close(path) => {
+                    if !self.pinned.contains(&path) {
                         let key = self.keys[&path];
                         self.lookups
                             .push(noted(&path, key, Outcome::ComputedNotStored));
                     }
                     continue;
                 }
-                Step::Visit(path, look) => (path, look),
+                Step::Visit(path) => path,
             };
-            let relook = look && self.unlooked.contains(&path);
-            if !relook && self.visited.contains(&path) {
+            if self.visited.contains(&path) {
                 continue;
             }
             let key = self.keys[&path];
-            let found = match look && !self.pinned.contains(&path) {
-                true => match known.get(&key) {
-                    Some(found) if found.is_some() || !self.again.contains(&key) => found.clone(),
-                    _ => {
-                        self.again.remove(&key);
-                        self.stack.push(Step::Visit(path, look));
+            let found = match self.pinned.contains(&path) {
+                false => match known.get(&key) {
+                    Some(found) => found.clone(),
+                    None => {
+                        self.stack.push(Step::Visit(path));
                         return Some(key);
                     }
                 },
-                false => None,
+                true => None,
             };
-            self.unlooked.remove(&path);
-            let late = !self.visited.insert(path.clone());
-            if !look {
-                self.unlooked.insert(path.clone());
-            }
-            let root = path == self.root && !self.streaming;
+            self.visited.insert(path.clone());
+            let root = path == self.root;
             if let Some(hit) = found.filter(|hit| answers(hit, root, self.config)) {
                 self.lookups.push(noted(&path, key, Outcome::Hit));
                 self.stored.insert(path.clone(), hit);
-                if self.streaming && !late {
-                    self.opened(path, false);
-                }
                 continue;
             }
-            match late {
-                true => self.relooked(path),
-                false => self.opened(path, look),
-            }
+            self.opened(path);
         }
         None
     }
@@ -121,46 +101,24 @@ impl<'w> Frontier<'w> {
         made
     }
 
-    /// Nodes no store can hold, never looked up.
-    pub(crate) fn unstored(&mut self, paths: impl IntoIterator<Item = String>) {
-        self.pinned.extend(paths);
-    }
-
-    /// Keys asked again where `known` holds a miss of them.
-    pub(crate) fn asking(&mut self, keys: impl IntoIterator<Item = Hash>) {
-        self.again.extend(keys);
-    }
-
     /// A hit whose samples fall short of what its readers ask, walked on into as a miss.
     pub(crate) fn reopen(&mut self, path: &str) {
         self.stored.remove(path);
         self.lookups.retain(|lookup| lookup.node != path);
-        self.opened(path.to_string(), true);
+        self.opened(path.to_string());
     }
 
-    /// Walked unlooked, then missed: its reads are looked up.
-    fn relooked(&mut self, path: String) {
-        if !self.pinned.contains(&path) {
-            let key = self.keys[&path];
-            self.lookups
-                .push(noted(&path, key, Outcome::ComputedNotStored));
-        }
-        for read in self.order.deps(&path).iter().rev() {
-            self.stack.push(Step::Visit(read.clone(), true));
-        }
-    }
-
-    fn opened(&mut self, path: String, look: bool) {
+    fn opened(&mut self, path: String) {
         let order = self.order;
         let reads = order.deps(&path);
-        self.stack.push(Step::Close(path, look));
+        self.stack.push(Step::Close(path));
         for read in reads.iter().rev() {
-            self.stack.push(Step::Visit(read.clone(), look));
+            self.stack.push(Step::Visit(read.clone()));
         }
     }
 }
 
-fn noted(path: &str, key: Hash, outcome: Outcome) -> Lookup {
+pub(crate) fn noted(path: &str, key: Hash, outcome: Outcome) -> Lookup {
     Lookup {
         node: path.to_string(),
         key,
@@ -171,8 +129,8 @@ fn noted(path: &str, key: Hash, outcome: Outcome) -> Lookup {
 }
 
 /// A render's root answers where it holds the samples read; any other node, or a stream's
-/// root, where a reader may take its samples.
-fn answers(hit: &Stored, root: bool, config: &RenderConfig) -> bool {
+/// node, where a reader may take its samples.
+pub(crate) fn answers(hit: &Stored, root: bool, config: &RenderConfig) -> bool {
     let support = hit.support;
     if !root {
         return hit.readable;

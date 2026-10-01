@@ -5,6 +5,7 @@ use sva_samples::{Extent, NodeRenderer, Slot};
 use super::program::leaves;
 use super::segments::Segments;
 use super::value::{Kind, Program, Value};
+use super::values::Values;
 
 /// What readers read of a value, and what it computes to answer them.
 #[derive(Clone, Debug, Default)]
@@ -16,15 +17,15 @@ pub(crate) struct Need {
 }
 
 /// Readers first, so a value is asked everything before it asks its own reads.
-pub(crate) fn demand(values: &[Value], asked: &[(usize, Extent)]) -> Vec<Need> {
-    let mut holds = vec![Segments::default(); values.len()];
+pub(crate) fn demand(values: &Values, asked: &[(usize, Extent)]) -> Vec<Need> {
+    let mut holds = vec![Segments::default(); values.span()];
     for (v, window) in asked {
         holds[*v].add(*window);
     }
-    let mut needs = vec![Need::default(); values.len()];
-    for v in (0..values.len()).rev() {
+    let mut needs = vec![Need::default(); values.span()];
+    for v in values.ordered().rev() {
         let value = &values[v];
-        let mut hold = holds[v].intersect(value.support);
+        let mut hold = holds[v].intersect(value.support());
         if let Some(period) = value.period {
             hold = hold.folded(period);
         }
@@ -48,7 +49,7 @@ pub(crate) fn demand(values: &[Value], asked: &[(usize, Extent)]) -> Vec<Need> {
             }
             Kind::Frames { .. } | Kind::Istft if !compute.is_empty() => {
                 let source = value.reads[0];
-                holds[source].add(values[source].support);
+                holds[source].add(values[source].support());
             }
             _ => {}
         }
@@ -85,8 +86,8 @@ fn stateful(value: &Value, program: &Program, hold: &Segments) -> (Segments, boo
 }
 
 fn whole(value: &Value, hold: &Segments) -> (Segments, bool) {
-    let over = match value.support.is_bounded() {
-        true => value.support,
+    let over = match value.support().is_bounded() {
+        true => value.support(),
         false => hold.hull(),
     };
     match hold.is_empty() || !value.holding().is_empty() {

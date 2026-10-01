@@ -51,7 +51,7 @@ impl Spill {
     pub(crate) fn whole(&mut self, table: &Table) -> Vec<(Hash, Stored)> {
         let mut out = Vec::new();
         for staging in &mut self.staged {
-            let support = table.values[staging.at].support;
+            let support = table.values[staging.at].support();
             if support.is_bounded() && staging.taken.covers(&Segments::of(support)) {
                 out.extend(handed(staging, table));
             }

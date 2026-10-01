@@ -1,4 +1,4 @@
-// Concern: a stream's note sum, one node per term, those it retired folded into one slot | Non-concern: when a term's support ends (stream.rs), rebuilding nodes | IO: (Expr) -> Handle; (gone) -> ()
+// Concern: a stream's note sum, one node per term, those it retired folded into one slot | Non-concern: each term's expression (the graph's node), when a support ends | IO: () -> Handle; (gone) -> ()
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -19,13 +19,18 @@ impl Handle {
     }
 }
 
+pub(super) fn is_term(path: &str) -> bool {
+    path.strip_prefix(NOTES)
+        .and_then(|rest| rest.strip_prefix('#'))
+        .is_some_and(|k| k.parse::<u32>().is_ok())
+}
+
 /// Every stream draws from one count, so a handle names one term of one stream.
 static HANDLES: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone)]
 struct Term {
     handle: Handle,
-    expr: Expr,
     /// False once removed: it plays on, cut there, under no handle.
     addressed: bool,
     landed: i64,
@@ -53,24 +58,15 @@ impl Terms {
         self.terms.is_empty()
     }
 
-    pub(super) fn exprs(&self) -> impl Iterator<Item = &Expr> {
-        self.terms.iter().map(|t| &t.expr)
-    }
-
-    pub(super) fn nodes(&self) -> impl Iterator<Item = (String, Expr)> {
-        self.terms.iter().map(|t| (t.handle.node(), t.expr.clone()))
-    }
-
-    pub(super) fn handles(&self) -> impl Iterator<Item = Handle> {
+    pub(super) fn handles(&self) -> impl Iterator<Item = Handle> + '_ {
         self.terms.iter().map(|t| t.handle)
     }
 
-    pub(super) fn added(&self, expr: Expr) -> (Terms, Handle) {
+    pub(super) fn added(&self) -> (Terms, Handle) {
         let mut next = self.clone();
         let handle = Handle(HANDLES.fetch_add(1, Ordering::Relaxed));
         next.terms.push(Term {
             handle,
-            expr,
             addressed: true,
             landed: 0,
         });
@@ -91,33 +87,10 @@ impl Terms {
         }
     }
 
-    /// `None` where the stream no longer holds `handle`; `expr` of the sample its add landed at.
-    pub(super) fn replaced(&self, handle: Handle, expr: impl FnOnce(i64) -> Expr) -> Option<Terms> {
+    /// The terms with `handle` no longer held; `None` where it was not.
+    pub(super) fn removed(&self, handle: Handle) -> Option<Terms> {
         let mut next = self.clone();
-        let term = next.held(handle)?;
-        term.expr = expr(term.landed);
-        Some(next)
-    }
-
-    /// The term cropped at `at` seconds on the sum's own clock.
-    pub(super) fn removed(&self, handle: Handle, at: f64) -> Option<Terms> {
-        let mut next = self.clone();
-        let term = next.held(handle)?;
-        let never = Expr::Bin(
-            BinOp::Sub,
-            Box::new(Expr::Lit(Literal::Num(0.0))),
-            Box::new(Expr::Var("inf".to_string())),
-        );
-        term.expr = Expr::Call {
-            name: "crop".to_string(),
-            args: vec![
-                Arg::Pos(term.expr.clone()),
-                Arg::Pos(never),
-                Arg::Pos(Expr::Lit(Literal::Num(at))),
-            ],
-            span: SPAN,
-        };
-        term.addressed = false;
+        next.held(handle)?.addressed = false;
         Some(next)
     }
 
@@ -149,13 +122,12 @@ impl Terms {
     }
 
     /// Drops every term `gone` names, its support, as `support` gives it, kept in the hull of
-    /// those retired. True where any went.
-    pub(super) fn prune(
+    /// those retired; those that went.
+    pub(super) fn retire(
         &mut self,
         gone: &dyn Fn(Handle) -> bool,
         support: &dyn Fn(Handle) -> Option<Extent>,
-    ) -> bool {
-        let live = self.terms.len();
+    ) -> Vec<Handle> {
         let (went, kept): (Vec<Term>, _) = std::mem::take(&mut self.terms)
             .into_iter()
             .partition(|t| gone(t.handle));
@@ -163,11 +135,29 @@ impl Terms {
         for ended in went.iter().filter_map(|t| support(t.handle)) {
             self.retired = Some(self.retired.map_or(ended, |hull| hull.hull(ended)));
         }
-        self.terms.len() != live
+        went.into_iter().map(|t| t.handle).collect()
     }
 }
 
 const SPAN: ByteSpan = ByteSpan { start: 0, end: 0 };
+
+/// `term` cut at `at` seconds on the sum's own clock.
+pub(super) fn cut(term: &Expr, at: f64) -> Expr {
+    let never = Expr::Bin(
+        BinOp::Sub,
+        Box::new(Expr::Lit(Literal::Num(0.0))),
+        Box::new(Expr::Var("inf".to_string())),
+    );
+    Expr::Call {
+        name: "crop".to_string(),
+        args: vec![
+            Arg::Pos(term.clone()),
+            Arg::Pos(never),
+            Arg::Pos(Expr::Lit(Literal::Num(at))),
+        ],
+        span: SPAN,
+    }
+}
 
 /// `expr` with its sample 0 at sample `at` of the stream: every `t` in it read `at` earlier.
 pub(super) fn placed(expr: &Expr, at: i64) -> Expr {
@@ -231,18 +221,20 @@ mod tests {
         let mut terms = Terms::default();
         let mut last = None;
         for k in 0..1_000 {
-            let (next, handle) = terms.added(Expr::Lit(Literal::Num(1.0)));
+            let (next, handle) = terms.added();
             terms = next;
             let ended = |h: Handle| Some(h) == last;
-            assert_eq!(terms.prune(&ended, &|_| Some(Extent::new(k, k + 1))), k > 0);
+            let went = terms.retire(&ended, &|_| Some(Extent::new(k, k + 1)));
+            assert_eq!(!went.is_empty(), k > 0);
             last = Some(handle);
         }
         let dir = std::env::temp_dir().join(format!("sva-terms-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a directory");
         std::fs::write(dir.join("one"), "1\n").expect("a node file");
         let mut graph = sva_ast::parse_composition(&dir).expect("a composition");
-        for (name, body) in std::iter::once((NOTES.to_string(), terms.sum())).chain(terms.nodes()) {
-            assert!(graph.define(&name, body));
+        assert!(graph.define(NOTES, terms.sum()));
+        for handle in terms.handles() {
+            assert!(graph.define(&handle.node(), Expr::Lit(Literal::Num(1.0))));
         }
         let mut tys = crate::types(&graph, NOTES).expect("typed");
         terms.name(&mut tys);

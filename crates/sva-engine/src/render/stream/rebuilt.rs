@@ -1,77 +1,154 @@
 // Concern: states where a changed stream's typing and table differ from a build of all it plays that carries nothing over | Non-concern: the samples either plays | IO: (Stream) -> differences
 
-use super::{Frontier, Known, Stream, shelled};
-use crate::cache::NoStore;
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::world::{Walked, Wanted, World};
+use super::{STREAMED, Stream};
 use crate::refs;
-use crate::render::table::Kind;
+use crate::render::table::{Kind, Table, Value};
+use crate::render::terms::{NOTES, is_term};
+use crate::typing::Typing;
 
 impl Stream {
     /// Every node and value its own build holds otherwise than a build of all it plays, over
     /// no store, carrying nothing over, would; `None` where a term retired since its build.
     pub(crate) async fn unlike_rebuilt(&self) -> Option<Vec<String>> {
-        let tys = &self.played.shell.tys;
-        let typed = tys.paths().filter(|(p, _)| p.starts_with("notes#")).count();
+        let mine = &self.world.typing;
+        let typed = mine.paths().filter(|(p, _)| is_term(p)).count();
         if typed != self.terms.count() {
             return None;
         }
-        let mut render = self.config.render.clone();
-        render.range.start = Some(self.driver.start);
-        let walk = async |found: &mut Frontier<'_>| {
-            found.walked(&mut Known::new(), &NoStore).await;
+        let mut graph = self.world.graph.clone();
+        graph.set(STREAMED, None);
+        if !self.world.own_notes {
+            graph.set(NOTES, None);
+        }
+        let mut fresh = World::new(&graph, &self.config.render).expect("a world");
+        let wanted = Wanted {
+            target: &self.expr,
+            terms: &self.terms,
+            term: None,
+            from: None,
         };
-        let fresh = shelled(
-            &self.graph,
-            &self.expr,
-            &self.terms,
-            &render,
-            (walk, || None),
-        );
-        let fresh = fresh.await.expect("what a stream plays builds again");
-        let (mine, theirs) = (&self.played.shell.tys, &fresh.played.shell.tys);
+        let (missed, mut again) = (|_| Some(None), BTreeSet::new());
+        let plan = loop {
+            match fresh.plan(&wanted, (&missed, &again)) {
+                Ok(Walked::Asks(keys)) => again.extend(keys),
+                Ok(Walked::Planned(plan)) => break plan,
+                Err(e) => panic!("what a stream plays plans: {e}"),
+            }
+        };
+        let theirs = &mut fresh.typing;
+        theirs
+            .lower(&fresh.instances, &plan.groups, &BTreeMap::new())
+            .expect("what a stream plays types");
+        self.terms.name(theirs);
+        let id = theirs.id(STREAMED).expect("the root");
+        let mut table = Table::new(&self.config.render.profile);
+        let root = table.grow(theirs, id, &BTreeMap::new()).expect("a table");
         let mut out = Vec::new();
-        let paths = |tys: &crate::typing::Typing| -> Vec<String> {
-            tys.paths().map(|(p, _)| p.to_string()).collect()
-        };
-        if paths(mine) != paths(theirs) || mine.len() != theirs.len() {
-            out.push(format!("typed {} nodes, not {}", mine.len(), theirs.len()));
-        }
-        for (path, id) in theirs.paths() {
-            let Some(held) = mine.id(path) else {
-                continue;
-            };
-            let same = mine.ty(held) == theirs.ty(id)
-                && mine.grid(held) == theirs.grid(id)
-                && refs::identity(mine, held).ok() == refs::identity(theirs, id).ok();
-            if !same {
-                out.push(format!("{path} typed otherwise"));
-            }
-        }
-        let (a, b) = (&self.driver.table, &fresh.table);
-        if (a.values.len(), a.root, &a.cuts, a.moved) != (b.values.len(), b.root, &b.cuts, b.moved)
-        {
-            out.push(format!(
-                "a table of {:?}, not {:?}",
-                (a.values.len(), a.root, &a.cuts, a.moved),
-                (b.values.len(), b.root, &b.cuts, b.moved)
-            ));
-            return Some(out);
-        }
-        let named = |tys: &crate::typing::Typing, v: &crate::render::table::Value| {
-            v.node.map(|id| tys.name(id).to_string())
-        };
-        for (x, y) in a.values.iter().zip(&b.values) {
-            let same = (x.key, &x.name, &x.reads, x.width, x.period, &x.switches)
-                == (y.key, &y.name, &y.reads, y.width, y.period, &y.switches)
-                && (x.made.support, &x.made.label, x.moved)
-                    == (y.made.support, &y.made.label, y.moved)
-                && named(mine, x) == named(theirs, y)
-                && kind(&x.kind) == kind(&y.kind);
-            if !same {
-                out.push(format!("{} built otherwise", y.name));
-            }
-        }
+        typings(mine, theirs, &mut out);
+        let at = self.driver.table.root;
+        tables(
+            (&self.driver.table, at, mine),
+            (&table, root, theirs),
+            &mut out,
+        );
         Some(out)
     }
+}
+
+fn typings(mine: &Typing, theirs: &Typing, out: &mut Vec<String>) {
+    let paths = |tys: &Typing| -> Vec<String> { tys.paths().map(|(p, _)| p.to_string()).collect() };
+    if paths(mine) != paths(theirs) || mine.len() != theirs.len() {
+        out.push(format!("typed {} nodes, not {}", mine.len(), theirs.len()));
+    }
+    for (path, id) in theirs.paths() {
+        let Some(held) = mine.id(path) else {
+            continue;
+        };
+        let same = mine.ty(held) == theirs.ty(id)
+            && mine.grid(held) == theirs.grid(id)
+            && refs::identity(mine, held).ok() == refs::identity(theirs, id).ok();
+        if !same {
+            out.push(format!("{path} typed otherwise"));
+        }
+    }
+}
+
+/// Each value the two roots reach, by key: what each holds, and the keys it reads.
+fn tables(
+    (a, a_root, a_tys): (&Table, usize, &Typing),
+    (b, b_root, b_tys): (&Table, usize, &Typing),
+    out: &mut Vec<String>,
+) {
+    let (mine, theirs) = (reached(a, a_root), reached(b, b_root));
+    let cuts = |table: &Table, tys: &Typing| {
+        let mut cuts = table.pruned(tys).cuts;
+        cuts.sort();
+        cuts
+    };
+    let shape = |table: &Table, tys: &Typing, held: &BTreeMap<_, usize>, root: usize| {
+        (
+            held.len(),
+            cuts(table, tys),
+            table.moved(),
+            table.values[root].key,
+        )
+    };
+    let (x, y) = (
+        shape(a, a_tys, &mine, a_root),
+        shape(b, b_tys, &theirs, b_root),
+    );
+    if x != y {
+        out.push(format!("a table of {x:?}, not {y:?}"));
+        return;
+    }
+    for (key, y) in &theirs {
+        let Some(x) = mine.get(key) else {
+            out.push(format!("{} built otherwise", b.values[*y].name));
+            continue;
+        };
+        let (x, y) = (&a.values[*x], &b.values[*y]);
+        let keys = |table: &Table, v: &Value| -> Vec<_> {
+            v.reads.iter().map(|r| table.values[*r].key).collect()
+        };
+        let named = |tys: &Typing, v: &Value| v.node.map(|id| tys.name(id).to_string());
+        let same = (
+            &x.name,
+            x.width,
+            x.period,
+            &x.switches,
+            x.whole,
+            &x.label,
+            x.moved,
+        ) == (
+            &y.name,
+            y.width,
+            y.period,
+            &y.switches,
+            y.whole,
+            &y.label,
+            y.moved,
+        ) && keys(a, x) == keys(b, y)
+            && named(a_tys, x) == named(b_tys, y)
+            && kind(&x.kind) == kind(&y.kind);
+        if !same {
+            out.push(format!("{} built otherwise", y.name));
+        }
+    }
+}
+
+/// Each value `root` reaches, by key.
+fn reached(table: &Table, root: usize) -> BTreeMap<crate::render::table::Key, usize> {
+    let (mut held, mut open) = (BTreeMap::new(), vec![root]);
+    while let Some(at) = open.pop() {
+        let value = &table.values[at];
+        if held.insert(value.key, at).is_none() {
+            open.extend(value.reads.iter().copied());
+        }
+    }
+    held
 }
 
 fn kind(kind: &Kind) -> String {

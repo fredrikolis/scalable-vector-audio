@@ -144,10 +144,6 @@ impl Render {
         }
     }
 
-    pub(crate) fn rate(&self) -> u32 {
-        self.config.rate
-    }
-
     /// What its schedule prices: every value once over the range, whatever the store answered.
     pub fn work(&self) -> crate::flops::Work {
         crate::flops::Work {
@@ -361,25 +357,21 @@ pub(crate) enum Ends {
 
 pub(crate) fn range_of(held: &Render, ends: Ends) -> Result<Extent, EngineError> {
     let support = Supports::new(&held.tys, &held.config.profile).of(held.root);
-    range_over(held, support, ends)
+    range_over((&held.config, held.tys.name(held.root)), support, ends)
 }
 
-/// The range of a root of `support`.
+/// The range a root named `name`, of `support`, is read over.
 pub(crate) fn range_over(
-    held: &Render,
+    (config, name): (&RenderConfig, &str),
     support: Extent,
     ends: Ends,
 ) -> Result<Extent, EngineError> {
-    let start = held
-        .config
-        .range
-        .start
-        .unwrap_or_else(|| default_start(support));
-    let end = match held.config.range.end.or(default_end(support)) {
+    let start = config.range.start.unwrap_or_else(|| default_start(support));
+    let end = match config.range.end.or(default_end(support)) {
         Some(end) => end,
         None => match ends {
             Ends::Pulled => i64::MAX,
-            Ends::Refused => return Err(endless(held)),
+            Ends::Refused => return Err(endless(name)),
         },
     };
     Ok(Extent::new(start, end.max(start)))
@@ -396,8 +388,7 @@ fn default_end(support: Extent) -> Option<i64> {
     (support.end != i64::MAX).then_some(support.end)
 }
 
-fn endless(held: &Render) -> EngineError {
-    let name = held.tys.name(held.root);
+fn endless(name: &str) -> EngineError {
     EngineError::refused(Diagnostic {
         code: "render.no_end".to_string(),
         message: format!(
@@ -574,8 +565,8 @@ fn stamp(held: &mut Render) {
     let counted = crate::flops::total(held);
     let label = sva_samples::Label {
         rate: held.config.rate,
-        moved: held.table.as_ref().map(|table| table.moved),
-        pruned: held.table.as_ref().map(|table| table.pruned()),
+        moved: held.table.as_ref().map(Table::moved),
+        pruned: held.table.as_ref().map(|table| table.pruned(&held.tys)),
         ..label.costing(counted, held.config.flop_budget)
     };
     held.labels.insert(root, label);

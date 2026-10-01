@@ -36,6 +36,21 @@ pub struct Defined {
     pub defaults: Vec<(String, Expr)>,
 }
 
+/// A node's parse with its text, span and grid, as one graph hands it to another.
+#[derive(Clone, Debug)]
+pub struct Held {
+    defined: Arc<Defined>,
+    text: String,
+    span: Option<FileSpan>,
+    grid: Option<Grid>,
+}
+
+impl Held {
+    pub fn body(&self) -> &Expr {
+        &self.defined.body
+    }
+}
+
 fn has_bar_literal(e: &Expr) -> bool {
     match e {
         Expr::Lit(Literal::Bars(_)) => true,
@@ -176,19 +191,110 @@ impl Graph {
         if self.nodes.contains_key(path) {
             return false;
         }
-        let expr = match self.per_bar {
+        let held = self.defining(expr);
+        self.set(path, Some(held));
+        true
+    }
+
+    /// A node no file backs, its bar literals resolved here.
+    pub fn defining(&self, expr: Expr) -> Held {
+        let body = match self.per_bar {
             Some(per_bar) => resolve_bar_literals(&expr, per_bar),
             None => expr,
         };
-        self.texts
-            .insert(path.to_string(), crate::print::render(&expr));
-        let defined = Defined {
-            body: expr,
-            defaults: Vec::new(),
-        };
-        self.nodes.insert(path.to_string(), Arc::new(defined));
-        self.spans.insert(path.to_string(), None);
-        true
+        Held {
+            text: crate::print::render(&body),
+            defined: Arc::new(Defined {
+                body,
+                defaults: Vec::new(),
+            }),
+            span: None,
+            grid: None,
+        }
+    }
+
+    pub fn held(&self, path: &str) -> Option<Held> {
+        Some(Held {
+            defined: Arc::clone(self.nodes.get(path)?),
+            text: self
+                .texts
+                .get(path)
+                .cloned()
+                .expect("every node holds its text"),
+            span: self.spans.get(path).copied().flatten(),
+            grid: self.grids.get(path).cloned(),
+        })
+    }
+
+    /// What `path` held before.
+    pub fn set(&mut self, path: &str, held: Option<Held>) -> Option<Held> {
+        let before = self.held(path);
+        match held {
+            Some(held) => {
+                self.nodes.insert(path.to_string(), held.defined);
+                self.texts.insert(path.to_string(), held.text);
+                self.spans.insert(path.to_string(), held.span);
+                match held.grid {
+                    Some(grid) => self.grids.insert(path.to_string(), grid),
+                    None => self.grids.remove(path),
+                };
+            }
+            None => {
+                self.nodes.remove(path);
+                self.texts.remove(path);
+                self.spans.remove(path);
+                self.grids.remove(path);
+            }
+        }
+        before
+    }
+
+    /// Whether `other` holds `path` as this graph does: the same text under the same name.
+    pub fn holds_as(&self, path: &str, other: &Graph) -> bool {
+        match (self.nodes.get(path), other.nodes.get(path)) {
+            (Some(a), Some(b)) if Arc::ptr_eq(a, b) => true,
+            (Some(_), Some(_)) => self.texts.get(path) == other.texts.get(path),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    /// Each node `roots` reach here, following each one's reads.
+    pub fn reaching(&self, roots: &[String]) -> BTreeSet<String> {
+        let (mut seen, mut open) = (BTreeSet::new(), roots.to_vec());
+        while let Some(path) = open.pop() {
+            let Some(defined) = self.nodes.get(&path) else {
+                continue;
+            };
+            if seen.insert(path.clone()) {
+                open.extend(reads_of(&path, &defined.body));
+                for (_, value) in &defined.defaults {
+                    open.extend(reads_of(&path, value));
+                }
+            }
+        }
+        seen
+    }
+
+    /// Each node `roots` reach through `from` that this graph lacks, taken.
+    pub fn adopt(&mut self, from: &Graph, roots: &[String]) -> Vec<String> {
+        let mut taken = Vec::new();
+        let mut open: Vec<String> = roots.iter().rev().cloned().collect();
+        while let Some(path) = open.pop() {
+            if self.defines(&path) {
+                continue;
+            }
+            let Some(held) = from.held(&path) else {
+                continue;
+            };
+            open.extend(reads_of(&path, &held.defined.body));
+            for (_, value) in &held.defined.defaults {
+                open.extend(reads_of(&path, value));
+            }
+            self.set(&path, Some(held));
+            taken.push(path);
+        }
+        taken
     }
 
     /// Expands every `repeat`/`concat` call into `crop` + shifted-ref + sum (FORMAT.md sugar).

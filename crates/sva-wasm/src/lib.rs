@@ -843,7 +843,8 @@ impl Stream {
         ))
     }
 
-    /// `late`: edits landed past where issued; `built`: what the latest change built anew.
+    /// `late`: edits landed late; `demands`: reads working out the note sum's asks; `built`:
+    /// what the latest change did anew.
     pub fn counts(&self) -> Result<JsValue, JsValue> {
         let counts = self.edits.inner.borrow().counts();
         let whole = |pairs: &[(&str, usize)]| -> Result<js_sys::Object, JsValue> {
@@ -858,11 +859,15 @@ impl Stream {
             ("dropped", counts.dropped),
             ("late", counts.late),
             ("terms", counts.terms),
+            ("demands", counts.demands),
         ])?;
         let built = whole(&[
+            ("parsed", built.parsed),
             ("instances", built.instances),
+            ("visited", built.visited),
             ("typed", built.typed),
             ("values", built.values),
+            ("copied", built.copied),
             ("lookups", built.lookups),
         ])?;
         js_sys::Reflect::set(&out, &"built".into(), &built)?;

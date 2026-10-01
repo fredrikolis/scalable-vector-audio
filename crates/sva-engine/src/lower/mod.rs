@@ -102,6 +102,19 @@ fn lowered(
         .at(path)
         .ok_or_else(|| EngineError::UnknownNode(path.to_string()))?;
     typing.lowering(path);
+    typing.begin(path, grid);
+    let lowered = lowered_on(path, grid, (expr, cx), inst, typing);
+    typing.end();
+    lowered
+}
+
+fn lowered_on(
+    path: &str,
+    grid: Grid,
+    (expr, cx): (&Expr, Cx),
+    inst: &Instances,
+    typing: &mut Typing,
+) -> Result<NodeId, EngineError> {
     let cx = cx.on(grid);
     let var = axis_of(inst, typing, expr, cx, path)?;
     let kind = match inst.reads_self(path) {

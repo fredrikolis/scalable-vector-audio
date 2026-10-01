@@ -1,6 +1,6 @@
 // Concern: gives every node one Ty and the value it lowered to | Non-concern: the per-term judgment (sva-formula), lowering (lower/) | IO: (Instances, Order) -> Ty per node
 
-mod carry;
+mod draft;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,8 +19,7 @@ use crate::lower;
 use crate::schedule::Order;
 use crate::time::Grid;
 
-use carry::Span;
-pub(crate) use carry::{Carried, Prior};
+use draft::{Draft, Entry, Units};
 
 /// A closed form is cast-free on one axis; every crossing is its own node.
 #[derive(Clone, Debug, PartialEq)]
@@ -111,29 +110,37 @@ pub struct Node {
     pub grid: Grid,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+/// Every node keeps one id while held; a node lowered anew takes a free one.
+#[derive(Debug, Default, PartialEq)]
 pub struct Typing {
-    nodes: Vec<Node>,
+    nodes: Vec<Option<Node>>,
+    free: Vec<u32>,
     arguments: BTreeMap<String, Arguments>,
     by_path: BTreeMap<String, NodeId>,
-    copies: BTreeMap<(String, Grid), NodeId>,
+    /// Paths `by_path` holds for a file's one instance.
+    aliases: BTreeSet<String>,
+    copies: BTreeMap<String, BTreeMap<Grid, NodeId>>,
     lowering: BTreeSet<String>,
     files: BTreeMap<String, Vec<NodeId>>,
-    origins: Vec<(u32, Option<sva_ast::ByteSpan>)>,
-    sites: Vec<String>,
+    origins: Vec<Option<(u32, Option<sva_ast::ByteSpan>)>>,
+    free_origins: Vec<u32>,
+    /// Each node name origins mark, and how many.
+    sites: Vec<Option<(String, u32)>>,
+    free_sites: Vec<u32>,
     site_ids: BTreeMap<String, u32>,
     pending: BTreeSet<NodeId>,
     indices: u32,
     sum: Option<(NodeId, Vec<SumSlot>)>,
     numbers: Numbers,
-    /// Every node lowered from its source, in order.
+    /// Every node the latest draft lowered, in order.
     lowered: Vec<String>,
-    /// What each path's group wrote, lowered or taken from a prior typing.
-    spans: BTreeMap<String, Span>,
+    units: BTreeMap<String, Units>,
+    making: Vec<(String, Grid)>,
+    draft: Draft,
 }
 
 /// Each node's folded number, derived from the nodes alone; a settle evicts it all.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 struct Numbers(RefCell<BTreeMap<NodeId, Option<C64>>>);
 
 impl PartialEq for Numbers {
@@ -152,12 +159,19 @@ pub(crate) enum SumSlot {
 impl Typing {
     /// `node` named by its terms in place.
     pub(crate) fn name_sum(&mut self, node: NodeId, slots: Vec<SumSlot>) {
-        self.sum = Some((node, slots));
+        self.draft.sum = Some(Some((node, slots)));
+    }
+
+    fn summed(&self) -> Option<&(NodeId, Vec<SumSlot>)> {
+        match &self.draft.sum {
+            Some(staged) => staged.as_ref(),
+            None => self.sum.as_ref(),
+        }
     }
 
     /// The note sum, where it holds a term it retired.
     pub(crate) fn retired_sum(&self) -> Option<NodeId> {
-        let (sum, slots) = self.sum.as_ref()?;
+        let (sum, slots) = self.summed()?;
         let retired = slots.iter().any(|slot| matches!(slot, SumSlot::Retired(_)));
         retired.then_some(*sum)
     }
@@ -191,8 +205,7 @@ impl Typing {
     }
 
     pub(crate) fn sum_slots(&self, node: NodeId) -> Option<&[SumSlot]> {
-        self.sum
-            .as_ref()
+        self.summed()
             .filter(|(held, _)| *held == node)
             .map(|(_, slots)| slots.as_slice())
     }
@@ -212,13 +225,10 @@ impl Typing {
 
     /// A call lowered twice is noted once, at its latest lowering.
     pub(crate) fn note(&mut self, node: &str, call: Option<Called>, chosen: Vec<Chosen>) {
-        let held = self
-            .arguments
-            .entry(node.to_string())
-            .or_insert_with(|| Arguments {
-                node: node.to_string(),
-                ..Arguments::default()
-            });
+        let mut held = self.arguments(node).cloned().unwrap_or_else(|| Arguments {
+            node: node.to_string(),
+            ..Arguments::default()
+        });
         if let Some(call) = call {
             held.calls
                 .retain(|c| (c.at.start, &c.name) != (call.at.start, &call.name));
@@ -228,10 +238,16 @@ impl Typing {
             held.chosen.retain(|c| c.at.start != one.at.start);
             held.chosen.push(one);
         }
+        let old = self.draft.arguments.insert(node.to_string(), held);
+        self.draft.journal.push(Entry::Noted(node.to_string(), old));
     }
 
     pub fn arguments(&self, node: &str) -> Option<&Arguments> {
-        self.arguments.get(node)
+        match self.draft.arguments.get(node) {
+            Some(held) => Some(held),
+            None if self.draft.hidden.contains(node) => None,
+            None => self.arguments.get(node),
+        }
     }
 
     pub fn ty(&self, n: NodeId) -> Ty {
@@ -255,11 +271,22 @@ impl Typing {
     }
 
     pub(crate) fn copy(&self, path: &str, grid: Grid) -> Option<NodeId> {
-        self.copies.get(&(path.to_string(), grid)).copied()
+        let key = (path.to_string(), grid);
+        match self.draft.copies.get(&key) {
+            Some(id) => Some(*id),
+            None if self.draft.hidden.contains(path) => None,
+            None => self
+                .copies
+                .get(path)
+                .and_then(|held| held.get(&grid))
+                .copied(),
+        }
     }
 
     pub(crate) fn copied(&mut self, path: &str, grid: Grid, id: NodeId) {
-        self.copies.insert((path.to_string(), grid), id);
+        let key = (path.to_string(), grid);
+        let old = self.draft.copies.insert(key.clone(), id);
+        self.draft.journal.push(Entry::Copy(key, old));
     }
 
     /// `false` where a copy of `path` is already being lowered: a loop of refs.
@@ -272,19 +299,37 @@ impl Typing {
     }
 
     pub fn at(&self, n: NodeId) -> &Node {
-        &self.nodes[n.0 as usize]
+        self.nodes[n.0 as usize]
+            .as_ref()
+            .expect("a node the typing holds")
+    }
+
+    pub fn ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        let held = self.nodes.iter().enumerate();
+        held.filter(|(_, n)| n.is_some())
+            .map(|(at, _)| NodeId(at as u32))
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.nodes.len()
+        self.nodes.len() - self.free.len()
     }
 
     pub fn id(&self, path: &str) -> Option<NodeId> {
-        self.by_path.get(path).copied()
+        match self.draft.by_path.get(path) {
+            Some(id) => Some(*id),
+            None if self.draft.hidden.contains(path) => None,
+            None => self.by_path.get(path).copied(),
+        }
     }
 
+    /// Every path named, the draft's over the rest.
     pub fn paths(&self) -> impl Iterator<Item = (&str, NodeId)> {
-        self.by_path.iter().map(|(p, id)| (p.as_str(), *id))
+        let drafted = self.draft.by_path.iter();
+        let kept = self.by_path.iter().filter(|(path, _)| {
+            !self.draft.hidden.contains(*path) && !self.draft.by_path.contains_key(*path)
+        });
+        let all: BTreeMap<&String, &NodeId> = drafted.chain(kept).collect();
+        all.into_iter().map(|(p, id)| (p.as_str(), *id))
     }
 
     /// The node a reading asks for, by instance path or by the file a composer wrote.
@@ -303,30 +348,54 @@ impl Typing {
 
     /// Every `Origin` a term carries was stamped here.
     pub fn locate(&self, origin: Origin) -> Located {
-        self.origins
-            .get(origin.token() as usize)
-            .map(|&(site, span)| Located::at(self.sites[site as usize].as_str(), span))
-            .unwrap_or_default()
+        let held = self.origins.get(origin.token() as usize).copied().flatten();
+        held.and_then(|(site, span)| {
+            let (name, _) = self.sites[site as usize].as_ref()?;
+            Some(Located::at(name.as_str(), span))
+        })
+        .unwrap_or_default()
     }
 
     pub(crate) fn mark(&mut self, node: &str, span: Option<sva_ast::ByteSpan>) -> Origin {
         let site = match self.site_ids.get(node) {
             Some(&site) => site,
             None => {
-                let site = self.sites.len() as u32;
-                self.sites.push(node.to_string());
+                let held = Some((node.to_string(), 0));
+                let site = match self.free_sites.pop() {
+                    Some(site) => {
+                        self.sites[site as usize] = held;
+                        site
+                    }
+                    None => {
+                        self.sites.push(held);
+                        (self.sites.len() - 1) as u32
+                    }
+                };
                 self.site_ids.insert(node.to_string(), site);
                 site
             }
         };
-        self.origins.push((site, span));
-        Origin::new((self.origins.len() - 1) as u32)
+        self.sites[site as usize].as_mut().expect("a site").1 += 1;
+        let token = match self.free_origins.pop() {
+            Some(token) => {
+                self.origins[token as usize] = Some((site, span));
+                token
+            }
+            None => {
+                self.origins.push(Some((site, span)));
+                (self.origins.len() - 1) as u32
+            }
+        };
+        let unit = self.unit();
+        self.draft.journal.push(Entry::Origin(token, unit));
+        Origin::new(token)
     }
 
     pub(crate) fn seed(&mut self, path: &str, held: Held, grid: Grid) -> NodeId {
         if let Some(id) = self.id(path) {
             return id;
         }
+        self.begin(path, grid);
         let id = self.push(
             Node {
                 name: path.to_string(),
@@ -343,7 +412,9 @@ impl Typing {
             },
             Some(path),
         );
+        self.end();
         self.pending.insert(id);
+        self.draft.journal.push(Entry::Pending(id));
         id
     }
 
@@ -351,8 +422,9 @@ impl Typing {
         self.pending.contains(&id)
     }
 
+    /// Settles a seed this draft made.
     pub(crate) fn settle(&mut self, id: NodeId, node: Node) {
-        self.nodes[id.0 as usize] = node;
+        self.nodes[id.0 as usize] = Some(node);
         self.pending.remove(&id);
         self.numbers.0.get_mut().clear();
     }
@@ -366,16 +438,43 @@ impl Typing {
     }
 
     pub(crate) fn alias(&mut self, path: &str, id: NodeId) {
-        self.by_path.insert(path.to_string(), id);
+        let old = self.draft.by_path.insert(path.to_string(), id);
+        self.draft.journal.push(Entry::Path(path.to_string(), old));
     }
 
     pub(crate) fn push(&mut self, node: Node, path: Option<&str>) -> NodeId {
-        let id = NodeId(self.nodes.len() as u32);
-        self.nodes.push(node);
+        let id = match self.free.pop() {
+            Some(at) => {
+                self.nodes[at as usize] = Some(node);
+                NodeId(at)
+            }
+            None => {
+                self.nodes.push(Some(node));
+                NodeId((self.nodes.len() - 1) as u32)
+            }
+        };
+        let unit = self.unit();
+        self.draft.journal.push(Entry::Node(id, unit));
         if let Some(path) = path {
-            self.by_path.insert(path.to_string(), id);
+            self.alias(path, id);
         }
         id
+    }
+
+    /// What is made until `end` is `path`'s, on `grid`.
+    pub(crate) fn begin(&mut self, path: &str, grid: Grid) {
+        self.making.push((path.to_string(), grid));
+    }
+
+    pub(crate) fn end(&mut self) {
+        self.making.pop();
+    }
+
+    fn unit(&self) -> (String, Grid) {
+        self.making
+            .last()
+            .cloned()
+            .unwrap_or_else(|| (String::new(), Grid::of(1)))
     }
 
     pub(crate) fn infer_closed_form(&self, form: &ClosedForm) -> Result<Ty, EngineError> {
@@ -389,11 +488,14 @@ impl Typing {
     }
 }
 
-struct Table<'a>(&'a [Node]);
+struct Table<'a>(&'a [Option<Node>]);
 
 impl Env for Table<'_> {
     fn node(&self, id: NodeId) -> Ty {
-        self.0[id.0 as usize].ty
+        self.0[id.0 as usize]
+            .as_ref()
+            .expect("a node the typing holds")
+            .ty
     }
 
     /// Substituted per instance before a closed form reaches sva-formula, so no term holds one.
@@ -413,59 +515,40 @@ pub(crate) fn infer_over(
     order: &Order,
     stored: &BTreeMap<String, Arc<Stored>>,
 ) -> Result<Typing, EngineError> {
-    Ok(inferred(inst, order, stored, None)?.0)
-}
-
-/// Each group `prior` typed from the same sources, reading only groups taken too, taken from
-/// it as it was lowered there; the rest lowered.
-pub(crate) fn infer_beside(
-    inst: &Instances,
-    order: &Order,
-    prior: &Prior<'_>,
-) -> Result<(Typing, Carried), EngineError> {
-    let (typing, carried) = inferred(inst, order, &BTreeMap::new(), Some(prior))?;
-    Ok((typing, carried.expect("a prior to take from")))
-}
-
-fn inferred(
-    inst: &Instances,
-    order: &Order,
-    stored: &BTreeMap<String, Arc<Stored>>,
-    prior: Option<&Prior<'_>>,
-) -> Result<(Typing, Option<Carried>), EngineError> {
     let mut typing = Typing::default();
-    let mut carried = prior.map(|prior| Carried::over(prior.typing));
-    if let Some(prior) = prior {
-        typing.indices = prior.typing.indices;
-    }
-    for group in &order.groups {
-        let (nodes, origins) = (typing.nodes.len() as u32, typing.origins.len() as u32);
-        let taken = match (prior, &mut carried) {
-            (Some(prior), Some(carried)) => typing.carry(prior, order, group, carried),
-            _ => false,
-        };
-        match (taken, order.is_loop(group), group.as_slice()) {
-            (true, _, _) => {}
-            (false, false, [path]) if let Some(held) = stored.get(path) => {
-                typing.push(standing(path, held), Some(path));
-            }
-            (false, true, _) => settle_loop(&mut typing, inst, group)?,
-            (false, false, _) => {
-                for path in group {
-                    lower::node(path, inst, &mut typing)?;
+    typing.lower(inst, &order.groups, stored)?;
+    typing.commit(inst);
+    Ok(typing)
+}
+
+impl Typing {
+    /// Lowers `groups`, dependencies first, beside what is held, each path hidden first and each
+    /// `stored` names standing as its samples.
+    pub(crate) fn lower(
+        &mut self,
+        inst: &Instances,
+        groups: &[Vec<String>],
+        stored: &BTreeMap<String, Arc<Stored>>,
+    ) -> Result<(), EngineError> {
+        self.lowered.clear();
+        self.hide(groups.iter().flatten().cloned());
+        for group in groups {
+            match (crate::schedule::is_loop(inst, group), group.as_slice()) {
+                (false, [path]) if let Some(held) = stored.get(path) => {
+                    self.begin(path, inst.grid());
+                    self.push(standing(path, held), Some(path));
+                    self.end();
+                }
+                (true, _) => settle_loop(self, inst, group)?,
+                (false, _) => {
+                    for path in group {
+                        lower::node(path, inst, self)?;
+                    }
                 }
             }
         }
-        let span = Span {
-            nodes: nodes..typing.nodes.len() as u32,
-            origins: origins..typing.origins.len() as u32,
-        };
-        for path in group {
-            typing.spans.insert(path.clone(), span.clone());
-        }
+        Ok(())
     }
-    name_files(&mut typing, inst);
-    Ok((typing, carried))
 }
 
 fn standing(path: &str, held: &Arc<Stored>) -> Node {
@@ -490,19 +573,16 @@ fn settle_loop(typing: &mut Typing, inst: &Instances, group: &[String]) -> Resul
     let mut seed = SEEDS[0];
     let mut refusal = None;
     for _ in 0..=SEEDS.len() {
-        let mut attempt = typing.clone();
+        let mark = typing.checkpoint();
         for path in group {
-            attempt.seed(path, seed, inst.grid());
+            typing.seed(path, seed, inst.grid());
         }
         let walked = group
             .iter()
-            .try_for_each(|path| lower::node(path, inst, &mut attempt).map(|_| ()));
+            .try_for_each(|path| lower::node(path, inst, typing).map(|_| ()));
         match walked {
-            Ok(()) => match held_by(&attempt, group) {
-                reached if reached == seed => {
-                    *typing = attempt;
-                    return Ok(());
-                }
+            Ok(()) => match held_by(typing, group) {
+                reached if reached == seed => return Ok(()),
                 reached => seed = reached,
             },
             Err(e) => {
@@ -510,6 +590,7 @@ fn settle_loop(typing: &mut Typing, inst: &Instances, group: &[String]) -> Resul
                 seed = elsewhere(seed);
             }
         }
+        typing.rollback(mark);
     }
     Err(refusal.unwrap_or_else(|| mixed(group)))
 }
@@ -548,26 +629,4 @@ fn mixed(group: &[String]) -> EngineError {
                on the grid"
             .to_string(),
     })
-}
-
-/// A file with one instance answers to its own name too.
-fn name_files(typing: &mut Typing, inst: &Instances) {
-    let files: Vec<String> = inst
-        .paths()
-        .filter_map(|p| inst.origin(p))
-        .map(str::to_string)
-        .collect();
-    for file in files {
-        if typing.files.contains_key(&file) {
-            continue;
-        }
-        let held: Vec<NodeId> = inst
-            .instances_of(&file)
-            .filter_map(|p| typing.id(&p))
-            .collect();
-        if let ([only], None) = (held.as_slice(), typing.id(&file)) {
-            typing.alias(&file, *only);
-        }
-        typing.files.insert(file, held);
-    }
 }

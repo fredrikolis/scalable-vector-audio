@@ -931,3 +931,42 @@ fn a_stereo_stream_edited_to_the_bare_sum_takes_a_mono_term_once_its_stereo_one_
     assert!(alone.iter().any(|v| *v != 0.0), "silence tests nothing");
     assert_eq!((&heard[0], &heard[1]), (&alone, &alone));
 }
+
+/// An edit whose graph holds a node the stream plays otherwise plays that node as the edit's
+/// graph holds it, from the edit on.
+#[test]
+fn an_edit_plays_a_node_as_its_own_graph_holds_it() {
+    let graph = |level: &str| {
+        graph_of(
+            "renewed",
+            &[
+                ("bed", &format!("{level}*sin(2*pi*110*t)\n")),
+                ("tone", "0.1*sin(2*pi*440*t)\n"),
+            ],
+        )
+    };
+    let config = StreamConfig {
+        block: BLOCK,
+        channels: None,
+        render: RenderConfig::at(RATE),
+    };
+    let expr = |text: &str| sva_ast::parse_expr(text).expect("an expression");
+    let (loud, soft) = (graph("0.5"), graph("0.25"));
+    let target = expr("@bed + @tone");
+    let stream = Stream::open(&loud, &target, config, None, &NoStore).now();
+    let stream = RefCell::new(stream.expect("a stream"));
+    next(&mut stream.borrow_mut()).expect("a block");
+    edited(&stream, &soft, &expr("@bed(t) + @tone"), &NoStore)
+        .now()
+        .expect("edited");
+    let heard = next(&mut stream.borrow_mut())
+        .expect("a block")
+        .expect("a block");
+    let whole = render(&soft, "bed", RenderConfig::seconds(RATE, 0.1), None).expect("a render");
+    let bed = whole.output(whole.root).expect("the bed").plane(0).to_vec();
+    let tone = |n: usize| 0.1 * (std::f64::consts::TAU * 440.0 * n as f64 / f64::from(RATE)).sin();
+    for (k, v) in heard.plane(0).iter().enumerate() {
+        let n = BLOCK + k;
+        assert!((v - (bed[n] + tone(n))).abs() < 1e-9, "sample {n}: {v}");
+    }
+}

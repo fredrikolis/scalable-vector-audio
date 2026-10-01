@@ -7,6 +7,7 @@ use sva_samples::{Buffer, Extent, Label, Machine, Profile, Tape, Window, stft};
 use super::demand::{Need, images};
 use super::segments::Segments;
 use super::value::{Held, Kind, Program, Value, finite};
+use super::values::Values;
 use crate::error::{Diagnostic, EngineError, Located};
 
 /// `done` holds every value `value` reads; a run marks its state at each of `marks` it passes.
@@ -14,7 +15,7 @@ use crate::error::{Diagnostic, EngineError, Located};
 pub(crate) fn compute(
     value: &mut Value,
     need: &Need,
-    (done, marks): (&[Value], &Marks),
+    (done, marks): (&Values, &Marks),
     profile: &Profile,
 ) -> Result<(u128, u128), EngineError> {
     let (mut priced, mut waves) = (0, 0);
@@ -61,7 +62,7 @@ fn rows(value: &mut Value, segment: Extent) -> Result<u128, EngineError> {
 }
 
 /// Every value a slot reads, viewed over what `over` reads of it.
-fn views<'a>(value: &Value, program: &Program, over: Extent, done: &'a [Value]) -> Vec<View<'a>> {
+fn views<'a>(value: &Value, program: &Program, over: Extent, done: &'a Values) -> Vec<View<'a>> {
     images(program, over)
         .into_iter()
         .zip(&value.reads)
@@ -76,7 +77,7 @@ enum View<'a> {
 }
 
 impl<'a> View<'a> {
-    fn of(done: &'a [Value], mut at: usize, over: Extent) -> View<'a> {
+    fn of(done: &'a Values, mut at: usize, over: Extent) -> View<'a> {
         let mut by = 0;
         while let Some((read, shift)) = done[at].alias() {
             (at, by) = (read, by + shift);
@@ -90,15 +91,15 @@ impl<'a> View<'a> {
 
     fn window(&self) -> Window<'_> {
         match self {
-            View::Run(tape, value, by) => tape.within(value.support).shifted(*by),
-            View::Held(buffer, value, by) => Window::of(buffer, value.support)
+            View::Run(tape, value, by) => tape.within(value.support()).shifted(*by),
+            View::Held(buffer, value, by) => Window::of(buffer, value.support())
                 .folded(value.period)
                 .shifted(*by),
         }
     }
 }
 
-fn program(value: &mut Value, segment: Extent, done: &[Value]) -> Result<u128, EngineError> {
+fn program(value: &mut Value, segment: Extent, done: &Values) -> Result<u128, EngineError> {
     let Kind::Program(program) = &value.kind else {
         unreachable!("a program");
     };
@@ -150,7 +151,7 @@ fn stepped(
     value: &mut Value,
     segment: Extent,
     restart: bool,
-    (done, marks): (&[Value], &Marks),
+    (done, marks): (&Values, &Marks),
 ) -> Result<u128, EngineError> {
     let (name, width) = (value.name.clone(), value.width);
     let Kind::Program(program) = &mut value.kind else {
@@ -193,7 +194,7 @@ fn stepped(
     Ok(program.spanned.ops(from, segment.end))
 }
 
-fn frames(value: &mut Value, segment: Extent, done: &[Value]) -> Result<u128, EngineError> {
+fn frames(value: &mut Value, segment: Extent, done: &Values) -> Result<u128, EngineError> {
     let Kind::Frames { window, hop } = value.kind else {
         unreachable!("frames");
     };
@@ -208,7 +209,7 @@ fn frames(value: &mut Value, segment: Extent, done: &[Value]) -> Result<u128, En
 fn istft(
     value: &mut Value,
     segment: Extent,
-    done: &[Value],
+    done: &Values,
     profile: &Profile,
 ) -> Result<u128, EngineError> {
     let Held::Frames(Some(frames)) = &done[value.reads[0]].held else {
@@ -251,7 +252,7 @@ fn spectrum(value: &mut Value, segment: Extent, profile: &Profile) -> Result<u12
 /// `at`'s program with another renderer, over `over` from where its state starts: what a
 /// ledger reads of one slot, the others silenced.
 pub(crate) fn rerun(
-    values: &[Value],
+    values: &Values,
     at: usize,
     renderer: &sva_samples::NodeRenderer,
     over: Extent,
@@ -263,7 +264,7 @@ pub(crate) fn rerun(
     let from = program
         .start
         .map_or(over.start, |start| start.min(over.start));
-    let live: Vec<Extent> = value.reads.iter().map(|r| values[*r].support).collect();
+    let live: Vec<Extent> = value.reads.iter().map(|r| values[*r].support()).collect();
     let spanned = sva_samples::Spanned::new(renderer, &program.layout, (from, over.end), &live)
         .map_err(|e| sample_refused(&value.name, &e))?;
     let rerun = Program {
@@ -290,7 +291,7 @@ pub(crate) fn rerun(
 }
 
 /// A value's samples over `over`, through every alias between.
-pub(crate) fn samples_of(values: &[Value], at: usize, over: Extent) -> Buffer {
+pub(crate) fn samples_of(values: &Values, at: usize, over: Extent) -> Buffer {
     match values[at].alias() {
         Some((read, by)) => {
             let mut held = samples_of(values, read, over.shifted(by));

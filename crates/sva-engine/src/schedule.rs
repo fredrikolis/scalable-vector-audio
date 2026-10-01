@@ -1,65 +1,27 @@
 // Concern: orders nodes dependencies-first and picks which a reading materializes | Non-concern: what a held node contains (render.rs), reading one (refs.rs) | IO: (Instances, asks) -> Schedule
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 
-use sva_ast::{Arg, Expr};
 use sva_formula::{Held, NodeId, Var};
 
 use crate::cast::Cast;
 use crate::error::EngineError;
-use crate::instantiate::{Cx, Instances, Node};
+use crate::instantiate::Instances;
 use crate::query::Ask;
 use crate::typing::{Typing, Value, When};
 
-/// One-hop instance names. `self(...)` is a same-node read, never an edge.
-fn direct_refs(inst: &Instances, e: &Expr, cx: Cx, out: &mut Vec<String>) {
-    if inst
-        .follow(e, cx, |e2, cx2| direct_refs(inst, e2, cx2, out))
-        .is_some()
-    {
-        return;
-    }
-    match inst.node(e, cx) {
-        Node::Lit(_) | Node::Name(_) => {}
-        Node::Bin(_, l, r) => {
-            direct_refs(inst, l, cx, out);
-            direct_refs(inst, r, cx, out);
-        }
-        Node::Call { args, .. } => {
-            for a in args {
-                let (Arg::Pos(x) | Arg::Named(_, x)) = a;
-                direct_refs(inst, x, cx, out);
-            }
-        }
-        Node::Read { path, arg, .. } => {
-            out.push(path.to_string());
-            direct_refs(inst, arg, cx, out);
-        }
-        Node::Own { arg, .. } => direct_refs(inst, arg, cx, out),
-        Node::Signal { of, arg, .. } => {
-            direct_refs(inst, of.expr, inst.signal(of, cx), out);
-            direct_refs(inst, arg, cx, out);
-        }
-    }
-}
-
-/// One dependencies-first walk: the groups, what each node reads, and which are loops.
-pub struct Order {
+/// One dependencies-first walk: the groups, and which are loops.
+pub struct Order<'i> {
     pub groups: Vec<Vec<String>>,
-    deps: BTreeMap<String, Vec<String>>,
+    inst: &'i Instances,
 }
 
-impl Order {
-    pub fn deps(&self, path: &str) -> &[String] {
-        self.deps.get(path).map_or(&[], Vec::as_slice)
+impl<'i> Order<'i> {
+    pub fn deps(&self, path: &str) -> &'i [String] {
+        self.inst.deps(path)
     }
 
-    /// What each node reads.
-    pub(crate) fn into_deps(self) -> BTreeMap<String, Vec<String>> {
-        self.deps
-    }
-
-    pub(crate) fn within(&self, kept: &BTreeSet<String>) -> Order {
+    pub(crate) fn within(&self, kept: &BTreeSet<String>) -> Order<'i> {
         Order {
             groups: self
                 .groups
@@ -67,33 +29,21 @@ impl Order {
                 .filter(|group| group.iter().all(|path| kept.contains(path)))
                 .cloned()
                 .collect(),
-            deps: self.deps.clone(),
+            inst: self.inst,
         }
     }
 
-    /// A group of one whose node does not ref itself is an ordinary node; anything else is a loop.
+    /// A group of one not reading itself is no loop; any other is.
     pub fn is_loop(&self, group: &[String]) -> bool {
-        match group {
-            [only] => self.deps(only).iter().any(|d| d == only),
-            _ => true,
-        }
+        is_loop(self.inst, group)
     }
 }
 
-pub fn direct_deps(inst: &Instances, path: &str) -> Result<Vec<String>, EngineError> {
-    let (e, cx) = inst
-        .at(path)
-        .ok_or_else(|| EngineError::UnknownNode(path.to_string()))?;
-    let mut out = Vec::new();
-    direct_refs(inst, e, cx, &mut out);
-    out.sort();
-    out.dedup();
-    for target in &out {
-        if !inst.holds(target) {
-            return Err(EngineError::UnknownNode(target.clone()));
-        }
+pub(crate) fn is_loop(inst: &Instances, group: &[String]) -> bool {
+    match group {
+        [only] => inst.deps(only).iter().any(|d| d == only),
+        _ => true,
     }
-    Ok(out)
 }
 
 struct Frame {
@@ -103,10 +53,10 @@ struct Frame {
 }
 
 /// A node two roots reach is grouped once, whichever reached it first.
-pub fn schedule_from(inst: &Instances, roots: &[String]) -> Result<Order, EngineError> {
+pub fn schedule_from<'i>(inst: &'i Instances, roots: &[String]) -> Result<Order<'i>, EngineError> {
     let mut walk = Walk {
         inst,
-        deps: BTreeMap::new(),
+        within: &|_| true,
         index: HashMap::new(),
         low: HashMap::new(),
         open: Vec::new(),
@@ -114,17 +64,41 @@ pub fn schedule_from(inst: &Instances, roots: &[String]) -> Result<Order, Engine
         groups: Vec::new(),
     };
     for root in roots {
-        walk.from(root)?;
+        if !inst.holds(root) {
+            return Err(EngineError::UnknownNode(root.to_string()));
+        }
+        walk.from(root);
     }
     Ok(Order {
         groups: walk.groups,
-        deps: walk.deps,
+        inst,
     })
+}
+
+/// The groups of `region`, dependencies first.
+pub(crate) fn grouped(
+    inst: &Instances,
+    starts: &[String],
+    region: &dyn Fn(&str) -> bool,
+) -> Vec<Vec<String>> {
+    let mut walk = Walk {
+        inst,
+        within: region,
+        index: HashMap::new(),
+        low: HashMap::new(),
+        open: Vec::new(),
+        next: 0,
+        groups: Vec::new(),
+    };
+    for start in starts.iter().filter(|s| region(s)) {
+        walk.from(start);
+    }
+    walk.groups
 }
 
 struct Walk<'a> {
     inst: &'a Instances,
-    deps: BTreeMap<String, Vec<String>>,
+    within: &'a dyn Fn(&str) -> bool,
     index: HashMap<String, usize>,
     low: HashMap<String, usize>,
     open: Vec<String>,
@@ -133,19 +107,20 @@ struct Walk<'a> {
 }
 
 impl Walk<'_> {
-    fn from(&mut self, root: &str) -> Result<(), EngineError> {
-        if !self.inst.holds(root) {
-            return Err(EngineError::UnknownNode(root.to_string()));
-        }
+    fn reads(&self, node: &str) -> Vec<String> {
+        let reads = self.inst.deps(node).iter();
+        reads.filter(|read| (self.within)(read)).cloned().collect()
+    }
+
+    fn from(&mut self, root: &str) {
         if self.index.contains_key(root) {
-            return Ok(());
+            return;
         }
         self.index.insert(root.to_string(), self.next);
         self.low.insert(root.to_string(), self.next);
         self.next += 1;
         self.open.push(root.to_string());
-        let seed = direct_deps(self.inst, root)?;
-        self.deps.insert(root.to_string(), seed.clone());
+        let seed = self.reads(root);
         let mut stack = vec![Frame {
             node: root.to_string(),
             refs: seed,
@@ -163,8 +138,7 @@ impl Walk<'_> {
                         self.low.insert(target.clone(), self.next);
                         self.next += 1;
                         self.open.push(target.clone());
-                        let refs = direct_deps(self.inst, &target)?;
-                        self.deps.insert(target.clone(), refs.clone());
+                        let refs = self.reads(&target);
                         stack.push(Frame {
                             node: target,
                             refs,
@@ -198,7 +172,6 @@ impl Walk<'_> {
                 self.groups.push(group);
             }
         }
-        Ok(())
     }
 }
 
@@ -273,8 +246,8 @@ fn attributed(typing: &Typing, id: NodeId, depth: usize, wanted: &mut BTreeSet<N
     }
 }
 
-/// A node reading its own output is one program, whatever its width: a component lowered on
-/// its own would read the loop at that component's width instead of the node's.
+/// A node reading its own output is one program, whatever its width: a component on its own
+/// would read the loop at its own width.
 pub(crate) fn holds_self(typing: &Typing, id: NodeId, seen: &mut BTreeSet<NodeId>) -> bool {
     if !seen.insert(id) {
         return false;

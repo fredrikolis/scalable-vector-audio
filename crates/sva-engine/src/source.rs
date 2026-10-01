@@ -39,27 +39,39 @@ impl Sink {
 pub(crate) fn identities(graph: &Graph, inst: &Instances, order: &Order) -> BTreeMap<String, Hash> {
     let mut named: BTreeMap<String, Hash> = BTreeMap::new();
     for group in &order.groups {
-        let outside = |path: &String| !group.contains(path);
-        let mut whole = Sink::new(match order.is_loop(group) {
-            true => "loop",
-            false => "node",
-        });
-        for path in group {
-            own(&mut whole, graph, inst, path);
-            for read in order.deps(path).iter().filter(|d| outside(d)) {
-                whole.text(read);
-                whole.hash(named[read]);
-            }
-        }
-        let whole = whole.0.finish();
-        for path in group {
-            let mut one = Sink::new("member");
-            one.hash(whole);
-            one.text(path);
-            named.insert(path.clone(), one.0.finish());
-        }
+        let found = group_identities(graph, inst, group, &|read| named[read]);
+        named.extend(found);
     }
     named
+}
+
+/// Each member's identity, what it reads outside named by `of`.
+pub(crate) fn group_identities(
+    graph: &Graph,
+    inst: &Instances,
+    group: &[String],
+    of: &dyn Fn(&str) -> Hash,
+) -> Vec<(String, Hash)> {
+    let outside = |path: &String| !group.contains(path);
+    let mut whole = Sink::new(match crate::schedule::is_loop(inst, group) {
+        true => "loop",
+        false => "node",
+    });
+    for path in group {
+        own(&mut whole, graph, inst, path);
+        for read in inst.deps(path).iter().filter(|d| outside(d)) {
+            whole.text(read);
+            whole.hash(of(read));
+        }
+    }
+    let whole = whole.0.finish();
+    let named = group.iter().map(|path| {
+        let mut one = Sink::new("member");
+        one.hash(whole);
+        one.text(path);
+        (path.clone(), one.0.finish())
+    });
+    named.collect()
 }
 
 /// The file's whole text, unparsed, and each binding as the instance resolved it.
