@@ -86,6 +86,7 @@ fn four() -> Range {
 fn config(block: usize, range: Range) -> StreamConfig {
     StreamConfig {
         block,
+        channels: None,
         render: RenderConfig {
             range,
             ..RenderConfig::at(RATE)
@@ -355,6 +356,7 @@ fn reads() -> Graph {
 fn streamed_at(g: &Graph, target: &str, rate: u32, block: usize, samples: usize) -> Vec<f64> {
     let config = StreamConfig {
         block,
+        channels: None,
         render: RenderConfig {
             range: Range {
                 start: Some(0),

@@ -87,6 +87,7 @@ struct Options {
     live: bool,
     readings: Vec<String>,
     at: Option<Placed>,
+    channels: Option<usize>,
 }
 
 /// `keys` are the options this call reads; any other is refused by name.
@@ -114,6 +115,7 @@ fn options_of(options: &JsValue, keys: &[&str]) -> Result<Options, JsValue> {
         match key.as_str() {
             "rate" => held.rate = Some(whole(&key, &value)?),
             "bits" => held.bits = Some(whole(&key, &value)?),
+            "channels" => held.channels = Some(whole(&key, &value)?),
             "flop_budget" => held.flop_budget = Some(whole(&key, &value)?),
             "until" => held.until = Some(text(&key, &value)?),
             "cache" => held.cache = Some(cache_policy(&text(&key, &value)?)?),
@@ -386,14 +388,17 @@ impl Composition {
     }
 
     /// `target` block by block, through this store. `options`: `rate`, `bits`, `until`, `cache`,
-    /// `live`.
+    /// `live`, `channels`.
     pub async fn stream(
         &self,
         target: &str,
         block: usize,
         options: JsValue,
     ) -> Result<Stream, JsValue> {
-        let options = options_of(&options, &["rate", "bits", "until", "cache", "live"])?;
+        let options = options_of(
+            &options,
+            &["rate", "bits", "until", "cache", "live", "channels"],
+        )?;
         let job = Job {
             until: options.until.as_deref(),
             rate: options.rate,
@@ -402,7 +407,7 @@ impl Composition {
             cache_policy: options.cache,
             ..Job::over(&self.inner, target)
         };
-        let opened = sva_core::stream(&job, block, &self.persistent).await;
+        let opened = sva_core::stream(&job, (block, options.channels), &self.persistent).await;
         let mut inner = opened.map_err(|e| thrown(&e))?;
         if options.live {
             inner.go_live();

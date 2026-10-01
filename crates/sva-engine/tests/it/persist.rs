@@ -758,6 +758,7 @@ fn a_stream_reads_a_note_another_store_over_its_directory_persisted() {
     let expr = |text: &str| sva_ast::parse_expr(text).expect("an expression");
     let config = StreamConfig {
         block: 256,
+        channels: None,
         render: RenderConfig {
             range: Range {
                 start: Some(0),
@@ -828,6 +829,7 @@ const STRIKE: &str = "@string(t - 512sp, f0=261.63)";
 fn notes(graph: &Graph, end: i64, store: &impl sva_engine::Through) -> RefCell<Stream> {
     let config = StreamConfig {
         block: 256,
+        channels: None,
         render: RenderConfig {
             range: Range {
                 start: Some(0),
@@ -1216,6 +1218,7 @@ fn changed_by(graph: &Graph, (at, f0, replaced): Spec) -> Change {
 fn notes_over(graph: &Graph, store: &impl sva_engine::Through, live: bool) -> RefCell<Stream> {
     let config = StreamConfig {
         block: 256,
+        channels: None,
         render: RenderConfig {
             range: Range {
                 start: Some(0),

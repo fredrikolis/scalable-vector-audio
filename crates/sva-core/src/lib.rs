@@ -285,7 +285,12 @@ pub fn types(job: &Job) -> Result<(), CliError> {
         .map_err(|e| CliError::Engine(as_written(e, job.target)))
 }
 
-pub async fn stream(job: &Job<'_>, block: usize, store: &impl Through) -> Result<Stream, CliError> {
+/// `channels`: what it plays, the target's own where `None`.
+pub async fn stream(
+    job: &Job<'_>,
+    (block, channels): (usize, Option<usize>),
+    store: &impl Through,
+) -> Result<Stream, CliError> {
     let (graph, config) = settle(job)?;
     let target = graph
         .expr(PROBE)
@@ -293,6 +298,7 @@ pub async fn stream(job: &Job<'_>, block: usize, store: &impl Through) -> Result
         .expect("the target was defined as the probe");
     let config = StreamConfig {
         block,
+        channels,
         render: config,
     };
     Stream::open(&graph, &target, config, job.cache, store)

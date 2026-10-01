@@ -49,6 +49,7 @@ fn whole(g: &Graph, target: &str, cache: Option<&Cache>) -> (Vec<f64>, Vec<Outco
 fn streamed(g: &Graph, target: &str, cache: Option<&Cache>) -> (Vec<f64>, u128, Vec<Outcome>) {
     let config = StreamConfig {
         block: 1_024,
+        channels: None,
         render: RenderConfig {
             range: Range {
                 start: Some(0),

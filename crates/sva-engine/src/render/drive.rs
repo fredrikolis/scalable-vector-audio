@@ -56,6 +56,15 @@ impl Block {
     pub fn plane(&self, c: usize) -> &[f64] {
         &self.planes[c]
     }
+
+    /// A mono block in each of `width` channels; any other as it is.
+    pub(super) fn widened(mut self, width: usize) -> Block {
+        if self.planes.len() == 1 {
+            let copies = vec![self.planes[0].clone(); width.saturating_sub(1)];
+            self.planes.extend(copies);
+        }
+        self
+    }
 }
 
 /// The `envelope` reading's own frame at the render's rate, where one is asked.

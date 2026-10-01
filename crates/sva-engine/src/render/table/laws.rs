@@ -167,6 +167,7 @@ fn a_tree_is_the_same_bits_shared_or_apart_whole_or_streamed() {
         let block = 1 + (seed as usize * 97) % 700;
         let stream = StreamConfig {
             block,
+            channels: None,
             render: config(),
         };
         let at = sva_ast::parse_expr("@root").expect("a ref");

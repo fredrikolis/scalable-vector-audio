@@ -35,6 +35,7 @@ fn expr(text: &str) -> sva_ast::Expr {
 fn opened(g: &Graph, target: &str, live: bool) -> RefCell<Stream> {
     let config = StreamConfig {
         block: BLOCK,
+        channels: None,
         render: RenderConfig {
             range: Range {
                 start: Some(0),
@@ -56,6 +57,7 @@ fn opened(g: &Graph, target: &str, live: bool) -> RefCell<Stream> {
 fn endless(g: &Graph, target: &str) -> RefCell<Stream> {
     let config = StreamConfig {
         block: BLOCK,
+        channels: None,
         render: RenderConfig::at(RATE),
     };
     let mut stream = Stream::open(g, &expr(target), config, None, &NoStore)

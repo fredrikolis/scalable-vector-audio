@@ -30,6 +30,8 @@ pub const LATEST: usize = 256;
 #[derive(Clone, Debug, PartialEq)]
 pub struct StreamConfig {
     pub block: usize,
+    /// The target's own at open where `None`; a mono one plays in each, a wider is refused.
+    pub channels: Option<usize>,
     pub render: RenderConfig,
 }
 
@@ -43,6 +45,7 @@ pub struct Stream {
     graph: Graph,
     expr: Expr,
     terms: Terms,
+    width: usize,
     supports: BTreeMap<Handle, Extent>,
     met: Met,
     generation: u64,
@@ -109,6 +112,11 @@ impl Stream {
         let render = &blocked(&config)?.render;
         let walk = async |found: &mut Frontier<'_>| found.walked(&mut known, store).await;
         let mut found = shelled(graph, target, &terms, render, walk).await?;
+        let width = config.channels.unwrap_or(found.width());
+        if width == 0 {
+            return Err(refusal("a stream of no channels".to_string()));
+        }
+        widens(found.width(), width)?;
         let mut met = Met::default();
         for (key, hit) in known.into_iter().filter(|(_, found)| found.is_some()) {
             met.noted(key, &hit, epoch, store);
@@ -128,6 +136,7 @@ impl Stream {
             graph: graph.clone(),
             expr: target.clone(),
             terms,
+            width,
             supports: BTreeMap::new(),
             met,
             generation: 0,
@@ -305,7 +314,7 @@ impl Stream {
         }
         let block = self.driver.read(n)?;
         self.prune();
-        Ok(block)
+        Ok(block.map(|b| b.widened(self.width)))
     }
 
     /// An edited node with no state there, or one a read skips past, starts silent there,
@@ -401,7 +410,7 @@ impl Stream {
     }
 
     pub fn width(&self) -> usize {
-        self.driver.table.values[self.driver.table.root].width
+        self.width
     }
 
     pub fn config(&self) -> &StreamConfig {
@@ -445,8 +454,7 @@ struct Prospect {
 
 /// `build`'s change, holding the stream only to apply it, between two blocks, once the store
 /// answered what it brings in: an exact stream pulled only once its edit is done plays it where
-/// it was issued. `build` runs again whenever the stream changed under it. One that would change
-/// the channels the stream plays is refused.
+/// it was issued. `build` runs again whenever the stream changed under it.
 pub async fn change<E: From<EngineError>>(
     stream: &RefCell<Stream>,
     mut build: impl FnMut(&Stream) -> Result<Change, E>,
@@ -478,15 +486,7 @@ pub async fn change<E: From<EngineError>>(
         let (graph, target) = (&prospect.graph, &prospect.target);
         let config = &prospect.render;
         let mut shelled = shelled(graph, target, &prospect.terms, config, walk).await?;
-        let (width, plays) = (stream.borrow().width(), shelled.width());
-        if plays != width {
-            return Err(refused(
-                "engine.stream_width",
-                format!("this edit plays {plays} channel(s), and the stream plays {width}"),
-                "keep the stream's channels, or open a new stream for the edit",
-            )
-            .into());
-        }
+        widens(shelled.width(), stream.borrow().width())?;
         let standing = (prospect.generation, prospect.landing);
         loop {
             for (key, samples) in &fetched {
@@ -525,6 +525,17 @@ pub async fn change<E: From<EngineError>>(
 
 fn ahead(at: i64, rate: u32) -> Extent {
     Extent::new(at, at.saturating_add(i64::from(rate)))
+}
+
+fn widens(plays: usize, width: usize) -> Result<(), EngineError> {
+    match plays == width || plays == 1 {
+        true => Ok(()),
+        false => Err(refused(
+            "engine.stream_width",
+            format!("this plays {plays} channel(s), and the stream plays {width}"),
+            "play as many channels as the stream, or one, or open a new stream for it",
+        )),
+    }
 }
 
 fn blocked(config: &StreamConfig) -> Result<&StreamConfig, EngineError> {

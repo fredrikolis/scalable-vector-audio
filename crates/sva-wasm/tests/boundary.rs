@@ -795,18 +795,29 @@ fn a_live_stream_reads_past_its_position_to_skip_there() {
     );
 }
 
-/// A stream's `channels` hold from its opening: an add that would widen it rejects, coded,
-/// and the stream reads on in the frames it opened with.
+/// A stream plays the `channels` it opens with, the target's own by default: an add wider
+/// rejects, coded, and a mono term in a stereo stream plays in both channels.
 #[wasm_bindgen_test]
-fn an_add_that_would_widen_a_stream_rejects_and_its_channels_hold() {
+fn a_stream_plays_the_channels_it_opened_with() {
     let held = page();
-    let stream = now(held.stream("@notes([0, 1s])", BLOCK, options(&[])))
-        .unwrap_or_else(|e| unreachable!("it streams: {}", as_text(&e)));
-    now(stream.add("@partials/one", None)).unwrap_or_else(|e| unreachable!("{}", as_text(&e)));
-    refused_as(now(stream.add("@wide", None)).err(), "engine.stream_width");
-    assert_eq!(stream.channels(), 1);
+    let open = |options: JsValue| {
+        now(held.stream("@notes([0, 1s])", BLOCK, options))
+            .unwrap_or_else(|e| unreachable!("it streams: {}", as_text(&e)))
+    };
+    let mono = open(options(&[]));
+    now(mono.add("@partials/one", None)).unwrap_or_else(|e| unreachable!("{}", as_text(&e)));
+    refused_as(now(mono.add("@wide", None)).err(), "engine.stream_width");
+    assert_eq!(mono.channels(), 1);
     let whole = plane(&render(&held, "partials/one"));
-    assert_eq!(read(&stream)[..], whole[..BLOCK]);
+    assert_eq!(read(&mono)[..], whole[..BLOCK]);
+
+    let stereo = open(options(&[("channels", JsValue::from(2))]));
+    assert_eq!(stereo.channels(), 2);
+    now(stereo.add("@partials/one", None)).unwrap_or_else(|e| unreachable!("{}", as_text(&e)));
+    let both: Vec<f32> = whole[..BLOCK].iter().flat_map(|v| [*v, *v]).collect();
+    assert_eq!(read(&stereo), both);
+    now(stereo.add("@wide", None)).unwrap_or_else(|e| unreachable!("{}", as_text(&e)));
+    assert_eq!(stereo.channels(), 2);
 }
 
 /// A live stream past everything it plays never ends: a read far ahead fills `out` with

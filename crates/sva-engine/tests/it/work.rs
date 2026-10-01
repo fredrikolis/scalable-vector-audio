@@ -29,6 +29,7 @@ fn composition() -> Graph {
 fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Work {
     let config = StreamConfig {
         block,
+        channels: None,
         render: RenderConfig {
             range: Range {
                 start: Some(0),

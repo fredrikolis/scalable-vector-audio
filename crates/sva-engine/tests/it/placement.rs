@@ -107,6 +107,7 @@ fn streamed(
 ) -> Stream {
     let config = StreamConfig {
         block: 1 << 15,
+        channels: None,
         render: RenderConfig {
             range: Range {
                 start: Some(0),

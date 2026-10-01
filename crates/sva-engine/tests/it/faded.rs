@@ -143,6 +143,7 @@ fn a_faded_key_up_leaves_the_stream_s_sum_with_no_remove() {
     let g = graph_of("faded-stream", &[("pad", "sin(2*pi*f0*t)\n")]);
     let config = StreamConfig {
         block: BLOCK,
+        channels: None,
         render: RenderConfig {
             range: Range {
                 start: Some(0),

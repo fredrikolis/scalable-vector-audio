@@ -72,6 +72,7 @@ fn composition(released: f64) -> Graph {
 fn config_at(rate: u32, end: Option<i64>) -> StreamConfig {
     StreamConfig {
         block: BLOCK,
+        channels: None,
         render: RenderConfig {
             range: Range {
                 start: Some(0),
@@ -346,6 +347,7 @@ fn a_long_session_holds_no_more_than_its_first_seconds() {
     let g = composition(1.0);
     let config = StreamConfig {
         block: 256,
+        channels: None,
         render: RenderConfig {
             range: Range {
                 start: Some(0),
@@ -557,6 +559,7 @@ fn a_removed_term_leaves_the_sum_once_the_stream_passes_its_cut() {
     let g = graph_of("pads", &[("pad", PAD)]);
     let config = StreamConfig {
         block: BLOCK,
+        channels: None,
         render: RenderConfig {
             range: Range {
                 start: Some(0),
@@ -797,12 +800,8 @@ fn a_live_term_reading_a_value_twice_starts_it_where_the_earliest_read_stands() 
     assert_eq!(heard[now..], whole[now..]);
 }
 
-/// A stream plays as many channels as it opened with: an add or an edit that would change
-/// them is refused, coded, and the stream plays on as it was; a mono term sums into a stereo
-/// stream as into any stereo sum.
-#[test]
-fn an_edit_that_would_change_the_stream_s_width_is_refused() {
-    let g = graph_of(
+fn widths() -> Graph {
+    graph_of(
         "widths",
         &[
             ("mono", "crop(sin(2*pi*200*t), 0s, 0.1s)\n"),
@@ -810,11 +809,50 @@ fn an_edit_that_would_change_the_stream_s_width_is_refused() {
                 "pair",
                 "crop(join(sin(2*pi*300*t), sin(2*pi*301*t)), 0s, 0.1s)\n",
             ),
+            (
+                "three",
+                "crop(join(sin(2*pi*300*t), sin(2*pi*301*t), sin(2*pi*302*t)), 0s, 0.1s)\n",
+            ),
         ],
-    );
+    )
+}
+
+/// A live stream over `text` playing `channels`, the target's own where `None`.
+fn opened_with(
+    g: &Graph,
+    text: &str,
+    channels: Option<usize>,
+) -> Result<RefCell<Stream>, sva_engine::EngineError> {
+    let config = StreamConfig {
+        channels,
+        ..config_at(RATE, Some(4 * i64::from(RATE)))
+    };
+    let mut stream = Stream::open(g, &expr(text), config, None, &NoStore).now()?;
+    stream.go_live();
+    Ok(RefCell::new(stream))
+}
+
+/// Every channel of `count` blocks.
+fn planes(stream: &RefCell<Stream>, count: usize) -> Vec<Vec<f64>> {
+    let mut out = vec![Vec::new(); stream.borrow().width()];
+    for _ in 0..count {
+        let block = next(&mut stream.borrow_mut()).unwrap_or_else(|e| panic!("{e}"));
+        let block = block.expect("a stream with no end");
+        assert_eq!(block.width(), out.len(), "a block of the stream's channels");
+        for (c, plane) in out.iter_mut().enumerate() {
+            plane.extend_from_slice(block.plane(c));
+        }
+    }
+    out
+}
+
+/// An add or an edit wider than the stream plays is refused, coded, and the stream plays on
+/// as it was; so is a stream opened narrower than its target.
+#[test]
+fn what_is_wider_than_the_stream_is_refused() {
+    let g = widths();
     let add = |stream: &RefCell<Stream>, term: &str| added(stream, &g, &expr(term), &NoStore).now();
-    let mono = opened(&g, "@notes", None);
-    mono.borrow_mut().go_live();
+    let mono = opened_with(&g, "@notes", None).unwrap_or_else(|e| panic!("{e}"));
     add(&mono, "@mono(t - 512sp)").unwrap_or_else(|e| panic!("{e}"));
     let widened = add(&mono, "@pair(t - 1024sp)").expect_err("a stereo term widens it");
     assert_eq!(widened.code(), "engine.stream_width", "{widened}");
@@ -830,9 +868,66 @@ fn an_edit_that_would_change_the_stream_s_width_is_refused() {
     assert!(whole_g.define("final", expr("@mono(t - 512sp)")));
     assert_eq!(heard, whole(&whole_g, "final", heard.len()), "plays on");
 
-    let stereo = opened(&g, "@notes + join(0, 0)", None);
+    let stereo = opened_with(&g, "@notes", Some(2)).unwrap_or_else(|e| panic!("{e}"));
+    let widened = add(&stereo, "@three(t - 512sp)").expect_err("three channels widen it");
+    assert_eq!(widened.code(), "engine.stream_width", "{widened}");
+    let narrow = opened_with(&g, "@pair", Some(1))
+        .err()
+        .expect("a stereo target in mono");
+    assert_eq!(narrow.code(), "engine.stream_width", "{narrow}");
+}
+
+/// A stream opened stereo over the bare note sum plays a mono term in both channels, a
+/// stereo one in its own, and the sum of both as a whole render broadcasts it.
+#[test]
+fn a_stereo_stream_plays_a_mono_term_in_both_channels() {
+    let g = widths();
+    let stream = opened_with(&g, "@notes", Some(2)).unwrap_or_else(|e| panic!("{e}"));
     for term in ["@mono(t - 512sp)", "@pair(t - 1024sp)"] {
-        add(&stereo, term).unwrap_or_else(|e| panic!("`{term}`: {e}"));
-        assert_eq!(stereo.borrow().width(), 2, "{term}");
+        added(&stream, &g, &expr(term), &NoStore)
+            .now()
+            .unwrap_or_else(|e| panic!("`{term}`: {e}"));
     }
+    let heard = planes(&stream, 8);
+    let mut whole_g = g.clone();
+    assert!(whole_g.define("final", expr("@mono(t - 512sp) + @pair(t - 1024sp)")));
+    let samples = heard[0].len() as f64 / f64::from(RATE);
+    let whole = render(
+        &whole_g,
+        "final",
+        RenderConfig::seconds(RATE, samples),
+        None,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let whole = whole
+        .output(whole.id("final").expect("the root"))
+        .expect("a buffer");
+    for (c, plane) in heard.iter().enumerate() {
+        assert_eq!(plane[..], whole.plane(c)[..], "channel {c}");
+    }
+}
+
+/// A stream opened stereo, its target edited to the bare note sum while a stereo term sounds,
+/// takes a mono term once that term has gone: it plays in both channels.
+#[test]
+fn a_stereo_stream_edited_to_the_bare_sum_takes_a_mono_term_once_its_stereo_one_went() {
+    let g = widths();
+    let stream = opened_with(&g, "@notes + join(0, 0)", None).unwrap_or_else(|e| panic!("{e}"));
+    added(&stream, &g, &expr("@pair(t - 256sp)"), &NoStore)
+        .now()
+        .unwrap_or_else(|e| panic!("{e}"));
+    edit(&stream, &g, "@notes");
+    planes(&stream, 8);
+    assert_eq!(stream.borrow().counts().terms, 0, "the stereo term went");
+    let at = stream.borrow().position();
+    let mono = format!("@mono(t - {at}sp)");
+    added(&stream, &g, &expr(&mono), &NoStore)
+        .now()
+        .unwrap_or_else(|e| panic!("`{mono}`: {e}"));
+    let heard = planes(&stream, 4);
+    let mut whole_g = g.clone();
+    assert!(whole_g.define("final", expr("@mono(t)")));
+    let alone = whole(&whole_g, "final", heard[0].len());
+    assert!(alone.iter().any(|v| *v != 0.0), "silence tests nothing");
+    assert_eq!((&heard[0], &heard[1]), (&alone, &alone));
 }

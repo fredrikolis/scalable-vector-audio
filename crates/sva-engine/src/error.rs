@@ -484,7 +484,7 @@ pub static REGISTRY: [(&str, &str); 82] = [
     ("engine.empty_read", "a stream read of no samples"),
     (
         "engine.stream_width",
-        "a stream edit that would change the channels the stream plays",
+        "a stream, or an edit of one, wider than the channels it plays",
     ),
     (
         "engine.unbounded_extent",

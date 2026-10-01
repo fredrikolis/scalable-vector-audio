@@ -20,6 +20,7 @@ fn whole(g: &Graph, target: &str, config: &RenderConfig) -> Vec<f64> {
 fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Vec<f64> {
     let config = StreamConfig {
         block,
+        channels: None,
         render: RenderConfig {
             range: Range {
                 start: Some(0),
@@ -251,6 +252,7 @@ fn an_index_prunes_its_source_only_where_its_reach_is_bounded() {
     let held = |target: &str| {
         let config = StreamConfig {
             block: 64,
+            channels: None,
             render: RenderConfig {
                 range: Range {
                     start: Some(0),
