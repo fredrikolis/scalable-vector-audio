@@ -27,10 +27,19 @@ pub(crate) struct Supports<'a> {
     asked: RefCell<BTreeSet<NodeId>>,
     tails: Tails,
     reaches: RefCell<HashMap<Reach, Option<f64>>>,
+    steady: PerNode<bool>,
 }
 
-/// A node read at a depth of refs, over an interval's bits.
-type Reach = (NodeId, usize, u64, u64);
+/// A node over an interval, or every one inside `STEADY`.
+type Reach = (NodeId, Option<(u64, u64)>);
+
+/// Past any grid's instants.
+const STEADY: f64 = 1e20;
+
+const SHIFTED: f64 = 1e80;
+
+/// Past `STEADY` plus `1e19` refs' shifts of `SHIFTED`.
+const REACHED: f64 = 1e100;
 
 /// Each support found, with its cut and the supports it was found from.
 #[derive(Default)]
@@ -72,6 +81,7 @@ impl<'a> Supports<'a> {
             asked: RefCell::default(),
             tails: Tails::default(),
             reaches: RefCell::default(),
+            steady: PerNode::new(),
         }
     }
 
@@ -381,13 +391,13 @@ impl Supports<'_> {
             for _ in 0..2 {
                 let (lo, hi) = (edge.min(to), edge.max(to));
                 let bound = others.iter().try_fold(1.0f64, |held, f| {
-                    Some(held * self.bound(f, lo, hi, 0)?.max(1.0))
+                    Some(held * self.bound(f, lo, hi)?.max(1.0))
                 })?;
                 edge = crossing(from, to, |t| zero(t, bound))?;
             }
             let (lo, hi) = (edge.min(to), edge.max(to));
             let every = exps.iter().chain(&others);
-            let mut reach = every.map(|f| self.bound(f, lo, hi, 0).map(|b| b.max(1.0)));
+            let mut reach = every.map(|f| self.bound(f, lo, hi).map(|b| b.max(1.0)));
             let product = reach.try_fold(1.0f64, |held, b| Some(held * b?))?;
             (product < 1e300).then_some(edge)
         };
@@ -412,8 +422,8 @@ impl Supports<'_> {
     }
 
     /// The largest magnitude `body` reaches over `[lo, hi]` seconds, where one is known.
-    fn bound(&self, body: &Body, lo: f64, hi: f64, depth: usize) -> Option<f64> {
-        let of = |b: &Body| self.bound(b, lo, hi, depth);
+    fn bound(&self, body: &Body, lo: f64, hi: f64) -> Option<f64> {
+        let of = |b: &Body| self.bound(b, lo, hi);
         let held = match body {
             Body::Const(c) => c.re.abs() + c.im.abs(),
             Body::Line => lo.abs().max(hi.abs()),
@@ -452,13 +462,18 @@ impl Supports<'_> {
                 (top + 1.0).exp()
             }
             Body::Crop { of: inner, .. } | Body::Channel(inner, _) => of(&inner.body)?,
-            Body::Shift { by, of: inner } => self.bound(&inner.body, lo - by, hi - by, depth)?,
-            Body::Node(id) if depth < 16 => {
-                let key = (*id, depth, lo.to_bits(), hi.to_bits());
+            Body::Shift { by, of: inner } => self.bound(&inner.body, lo - by, hi - by)?,
+            Body::Node(id) => {
+                let steady = lo.abs().max(hi.abs()) <= STEADY && self.steady(*id);
+                let key = (*id, (!steady).then(|| (lo.to_bits(), hi.to_bits())));
                 let known = self.reaches.borrow().get(&key).copied();
                 let found = known.unwrap_or_else(|| {
                     let found = match self.tys.value(*id) {
-                        Value::ClosedForm(form) => self.bound(&form.body, lo, hi, depth + 1),
+                        Value::ClosedForm(form)
+                            if crate::refs::reads_through(self.tys, body, form.var) =>
+                        {
+                            self.bound(&form.body, lo, hi)
+                        }
                         _ => None,
                     };
                     self.reaches.borrow_mut().insert(key, found);
@@ -469,6 +484,40 @@ impl Supports<'_> {
             _ => return None,
         };
         (held < 1e300).then_some(held * 1.0001)
+    }
+
+    /// Whether a node bounds alike over every interval in `STEADY`.
+    fn steady(&self, id: NodeId) -> bool {
+        self.steady.of(id, || match self.tys.value(id) {
+            Value::ClosedForm(form)
+                if crate::refs::reads_through(self.tys, &Body::Node(id), form.var) =>
+            {
+                self.unmoved(&form.body)
+            }
+            _ => true,
+        })
+    }
+
+    /// As `bound` reads it: an argument no polynomial reads bounds nothing.
+    fn unmoved(&self, body: &Body) -> bool {
+        match body {
+            Body::Line => false,
+            Body::Node(id) => self.steady(*id),
+            Body::Apply(Unary::Sin | Unary::Cos, arg) => match real_polynomial(&arg.body) {
+                None => true,
+                Some([c0, c1, c2]) => {
+                    (c0.abs() + c1.abs() * REACHED + c2.abs() * REACHED * REACHED).is_finite()
+                }
+            },
+            Body::Apply(Unary::Exp, arg) => match real_polynomial(&arg.body) {
+                None => true,
+                Some([_, c1, c2]) => c1 == 0.0 && c2 == 0.0,
+            },
+            Body::Shift { by, of } => by.abs() <= SHIFTED && self.unmoved(&of.body),
+            other => sva_formula::closed_form::children(other)
+                .iter()
+                .all(|p| self.unmoved(&p.body)),
+        }
     }
 }
 

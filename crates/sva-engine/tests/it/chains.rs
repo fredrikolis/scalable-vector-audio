@@ -93,3 +93,46 @@ fn a_loop_over_a_sum_with_a_modulated_term_twelve_levels_deep() {
     let digest = over(TONE, (12, "1s"), body, "@n12(t) + 0.5*self(t - 17ms)");
     assert_eq!(digest, 0x1491_1a68_85d7_8c9e);
 }
+
+/// Samples `top` renders, unpruned, over a chain whose `ck` reads `c{k-1}` as `read` writes it.
+fn underflowing(depth: usize, read: impl Fn(&str) -> String, top: &str) -> usize {
+    let mut files = vec![("c0".to_string(), "sin(2*pi*220*t)\n".to_string())];
+    for k in 1..=depth {
+        files.push((
+            format!("c{k}"),
+            format!("{}\n", read(&format!("c{}", k - 1))),
+        ));
+    }
+    files.push(("top".to_string(), format!("{top}\n")));
+    let held: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(n, b)| (n.as_str(), b.as_str()))
+        .collect();
+    let g = graph_of("underflowing", &held);
+    let mut config = RenderConfig::at(RATE);
+    config.profile.prune_db = -1e4;
+    let render =
+        render(&g, "top", config, &Tier::default()).unwrap_or_else(|e| panic!("{top}: {e}"));
+    let id = render.id("top").expect("the root");
+    render.output(id).expect("a buffer").plane(0).len()
+}
+
+/// The product's underflow ends the range alike, to the sample, twenty refs down as three.
+#[test]
+fn an_exponential_over_a_tone_twenty_refs_down_ends_where_it_underflows() {
+    let read = |p: &str| format!("@{p}(t)");
+    let shallow = underflowing(20, read, "crop(exp(-20*t)*@c3(t)*exp(-20*t), 0s, inf)");
+    let deep = underflowing(20, read, "crop(exp(-20*t)*@c20(t)*exp(-20*t), 0s, inf)");
+    assert!(shallow > RATE as usize, "{shallow} samples");
+    assert!(shallow.abs_diff(deep) <= 1, "{shallow} against {deep}");
+}
+
+/// Forty levels each reading the one below twice are `2^40` paths, bounded once per node.
+#[test]
+fn an_exponential_over_a_tone_read_twice_a_level_forty_levels_down_ends() {
+    let read = |p: &str| format!("@{p}(t) + @{p}(t - 0.1s)");
+    let shallow = underflowing(1, read, "crop(exp(-20*t)*@c1(t)*exp(-20*t), 0s, inf)");
+    let deep = underflowing(40, read, "crop(exp(-20*t)*@c40(t)*exp(-20*t), 0s, inf)");
+    let one = underflowing(1, read, "crop(exp(-20*t)*@c1(t), 0s, inf)");
+    assert!(shallow < deep && deep < one, "{shallow}, {deep}, {one}");
+}
