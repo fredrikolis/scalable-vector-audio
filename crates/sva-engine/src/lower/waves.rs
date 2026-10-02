@@ -8,7 +8,7 @@ use sva_formula::{Body, Bound, C64, IndexId, Part, Series, Unary, Var};
 
 use crate::error::EngineError;
 use crate::instantiate::{Cx, Node};
-use crate::lower::{Lowering, Piece};
+use crate::lower::{Index, Lowering, Piece};
 use sva_ast::SERIES;
 
 impl Lowering<'_> {
@@ -161,21 +161,78 @@ impl Lowering<'_> {
             },
         };
         let index = self.index();
-        self.indices.push((name.clone(), index));
+        self.indices.push((name.clone(), Index::Series(index)));
         let walked = self.walk(body, cx, var);
         self.indices.pop();
-        let Piece::ClosedForm(term) = walked? else {
-            return Err(EngineError::BadArity(SERIES.to_string()));
+        let lo = lo as i64;
+        // A finite sum the series form does not hold is written out a term at a time.
+        let term = match (walked, hi) {
+            (Ok(Piece::ClosedForm(term)), _) => term,
+            (walked, Bound::Finite(hi)) => {
+                let failed = walked.err();
+                return self.terms(name, (lo, hi), body, (cx, var), (span, failed));
+            }
+            (Err(e), Bound::Infinite) => return Err(e),
+            (Ok(Piece::Value(_)), Bound::Infinite) => {
+                return Err(self.refused_at(
+                    "type.samples_in_series",
+                    format!("`{SERIES}` to inf sums closed forms, and its term here is samples."),
+                    "give the sum a finite upper bound, or keep the term a closed form",
+                    Some(span),
+                ));
+            }
         };
         let term = self.part(term, Some(span));
         Ok(Piece::ClosedForm(Body::Series(Box::new(Series {
             index,
-            lo: lo as i64,
+            lo,
             hi,
             term,
         }))))
     }
+
+    /// `sum(k, lo, hi, term)` as `term(lo) + ... + term(hi)`, each term lowered with `k` its
+    /// own number; past the cap, the series form's own refusal where it had one.
+    fn terms(
+        &mut self,
+        name: &str,
+        (lo, hi): (i64, i64),
+        body: &Expr,
+        (cx, var): (Cx, Var),
+        (span, failed): (ByteSpan, Option<EngineError>),
+    ) -> Result<Piece, EngineError> {
+        if hi.saturating_sub(lo) >= MAX_WRITTEN_TERMS {
+            return Err(failed.unwrap_or_else(|| {
+                self.refused_at(
+                "engine.series_too_long",
+                format!(
+                    "`{SERIES}` from {lo} to {hi} writes out more than {MAX_WRITTEN_TERMS} terms."
+                ),
+                "write fewer terms, or keep the term a closed form so it sums as a series",
+                Some(span),
+            )
+            }));
+        }
+        let mut whole = None;
+        for k in lo..=hi {
+            self.indices.push((name.to_string(), Index::Term(k)));
+            let term = self.walk(body, cx, var);
+            self.indices.pop();
+            whole = Some(match (whole, term?) {
+                (None, term) => term,
+                (Some(Piece::ClosedForm(a)), Piece::ClosedForm(b)) => {
+                    let parts = vec![self.part(a, None), self.part(b, None)];
+                    Piece::ClosedForm(Body::Add(parts))
+                }
+                (Some(a), b) => self.operation("+", vec![a, b], Some(span), var)?,
+            });
+        }
+        Ok(whole.unwrap_or(Piece::ClosedForm(Body::Const(C64::ZERO))))
+    }
 }
+
+/// The most terms a finite sum lowers one at a time, each its own walk of the term.
+const MAX_WRITTEN_TERMS: i64 = 1 << 13;
 
 fn amplitude(name: &str) -> f64 {
     match name {

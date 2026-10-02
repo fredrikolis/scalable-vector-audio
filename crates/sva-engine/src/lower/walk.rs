@@ -7,7 +7,7 @@ use crate::cast::Cast;
 use crate::error::{EngineError, Located};
 use crate::instantiate::{Cx, Node, Thunk};
 use crate::loops::{self, Tap};
-use crate::lower::{Lowering, Piece, SelfMode, constant, on};
+use crate::lower::{Index, Lowering, Piece, SelfMode, constant, on};
 use crate::overload;
 use crate::time::{Affine, Lattice, Q};
 use crate::typing::{Step, Value, When};
@@ -198,7 +198,10 @@ impl Lowering<'_> {
 
     fn name(&mut self, name: &str, var: Var) -> Result<Piece, EngineError> {
         if let Some((_, index)) = self.indices.iter().find(|(k, _)| k == name) {
-            return Ok(Piece::ClosedForm(Body::Index(*index)));
+            return Ok(Piece::ClosedForm(match *index {
+                Index::Series(index) => Body::Index(index),
+                Index::Term(k) => Body::Const(C64::real(k as f64)),
+            }));
         }
         let constant = match name {
             "t" if var == Var::T => return Ok(Piece::ClosedForm(Body::Line)),

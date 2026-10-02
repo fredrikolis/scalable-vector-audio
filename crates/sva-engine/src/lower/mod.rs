@@ -42,11 +42,19 @@ enum SelfMode {
     Discrete(String),
 }
 
+/// What a `sum`'s index stands for in its term: the series' own index, or one number of a
+/// finite sum written out term by term.
+#[derive(Clone, Copy)]
+enum Index {
+    Series(IndexId),
+    Term(i64),
+}
+
 pub struct Lowering<'a> {
     inst: &'a Instances,
     typing: &'a mut Typing,
     node: &'a str,
-    indices: Vec<(String, IndexId)>,
+    indices: Vec<(String, Index)>,
     mode: SelfMode,
     own: Vec<(crate::time::Q, NodeId)>,
     grid: Grid,

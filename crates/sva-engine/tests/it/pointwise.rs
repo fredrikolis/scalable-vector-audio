@@ -342,3 +342,87 @@ fn a_shut_crop_zeroes_a_factor_too_large_for_a_double() {
     assert!(before.iter().all(|v| *v == 0.0));
     assert!(after.iter().all(|v| v.is_finite()) && after.iter().any(|v| *v != 0.0));
 }
+
+/// One node's samples over 50 ms at 8 kHz, beside `ramp`, a form no spectral sum reaches and
+/// no reader inlines, as it reads a node of its own.
+fn summed(name: &str, body: &str) -> Result<Vec<f64>, sva_engine::EngineError> {
+    let root = format!("{body}\n");
+    let g = graph_of(
+        name,
+        &[
+            ("edge", "tanh((t - 0.02)/0.01)\n"),
+            ("ramp", "650 + 360*@edge(t)\n"),
+            ("root", &root),
+        ],
+    );
+    let held = render(
+        &g,
+        "root",
+        RenderConfig::seconds(8_000, 0.05),
+        &Tier::default(),
+    )?;
+    let root = held.id("root").expect("the root");
+    Ok(held.output(root).expect("samples").plane(0).to_vec())
+}
+
+/// A finite `sum` is its terms, so one whose term reads a node, as a form or as samples, is
+/// those terms written out by hand, to the last few bits a literal folds differently in.
+#[test]
+fn a_finite_sum_over_a_ref_is_its_terms_written_out() {
+    let by_hand = |read: &str| {
+        (1..=4)
+            .map(|k| format!("{read}*sin(2*pi*{k}*165*t)/{k}"))
+            .collect::<Vec<_>>()
+            .join(" + ")
+    };
+    for read in ["@ramp(t)", "sample(@ramp(t))"] {
+        let written = summed("sum-hand", &by_hand(read)).expect("terms written out");
+        let sum = format!("sum(k, 1, 4, {read}*sin(2*pi*k*165*t)/k)");
+        let got = summed("sum-ref", &sum).unwrap_or_else(|e| panic!("{sum}: {e}"));
+        assert_eq!(got.len(), written.len());
+        for (at, (g, w)) in got.iter().zip(&written).enumerate() {
+            assert!(
+                (g - w).abs() <= 1e-12 * w.abs().max(1.0),
+                "{sum} at {at}: {g} vs {w}"
+            );
+        }
+    }
+}
+
+/// A sum to inf has no terms to write out: over samples, or over a node no form inlines, it
+/// refuses naming the finite bound that would hold it, and never offers `sample(...)`.
+#[test]
+fn an_infinite_sum_over_a_ref_refuses_naming_a_finite_bound() {
+    for (term, code) in [
+        ("sample(@ramp(t))", "type.samples_in_series"),
+        ("@ramp(t)", "read.no_spectral_sum"),
+    ] {
+        let sum = format!("sum(k, 1, inf, {term}*sin(2*pi*k*165*t)/(k*k))");
+        let refused = summed("sum-inf", &sum).expect_err("no term count to stop at");
+        let sva_engine::EngineError::Refused(d) = &refused else {
+            panic!("{sum}: a located refusal, not {refused:?}");
+        };
+        assert_eq!(d.code, code, "{sum}");
+        assert!(d.help.contains("finite upper bound"), "{sum}: {}", d.help);
+        assert!(!d.help.contains("sample("), "{sum}: {}", d.help);
+    }
+}
+
+/// A finite sum the series form does not hold is written out only up to the cap; past it, a
+/// term that lowers refuses as too long, and one that fails says its own failure.
+#[test]
+fn a_finite_sum_written_out_past_the_cap_refuses() {
+    let code = |sum: &str| match summed("sum-long", sum) {
+        Err(sva_engine::EngineError::Refused(d)) => d.code,
+        other => panic!("{sum}: a located refusal, not {other:?}"),
+    };
+    assert_eq!(
+        code("sum(k, 1, 100000, sample(@ramp(t))*k)"),
+        "engine.series_too_long"
+    );
+    assert_eq!(
+        code("sum(k, 1, 100000, k*t*f)"),
+        "type.domain_mismatch",
+        "the term's own failure, not the cap"
+    );
+}

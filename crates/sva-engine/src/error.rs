@@ -205,7 +205,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 82] = [
+pub static REGISTRY: [(&str, &str); 84] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -214,6 +214,14 @@ pub static REGISTRY: [(&str, &str); 82] = [
     (
         "type.samples_in_closed_form",
         "a closed form meets samples or frames",
+    ),
+    (
+        "type.samples_in_series",
+        "a sum to inf whose term is samples, which only a finite sum writes out",
+    ),
+    (
+        "engine.series_too_long",
+        "a finite sum written out a term at a time past the terms one lowering holds",
     ),
     (
         "type.rate_conflict",

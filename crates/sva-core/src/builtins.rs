@@ -68,8 +68,9 @@ pub const NOTE_GRAMMAR: &str = "a bare identifier: a letter A-G, an optional acc
 pub const SPECIAL_FORMS: [(&str, &str); 7] = [
     (
         "sum",
-        "sum(index, lo, hi, expr) -- index is a name the series binds, not a value; hi may be \
-         inf, which makes it a series",
+        "sum(index, lo, hi, expr) -- index is a name the series binds, not a value; a finite \
+         sum is its terms, whatever each reads; hi may be inf, which makes it a series of \
+         closed forms",
     ),
     (
         "crop",

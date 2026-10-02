@@ -12,6 +12,7 @@ use crate::error::{Diagnostic, EngineError, Located};
 use crate::refs::nodes_in;
 use crate::time::{Affine, Lattice, Q};
 use crate::typing::{Step, Typing, Value, When};
+use sva_formula::series::written_out;
 
 /// What a slot reads: a node's own value, or a closed form of `t` a node wrote inside its own
 /// body, which is a value of its own.
@@ -229,6 +230,12 @@ impl Build<'_> {
                     fall: *fall,
                 }
             }
+            // A finite sum is its terms; an infinite one over an opaque node never ends.
+            Body::Series(_) => match (inlined(self.tys, body), written_out(body)) {
+                (Some(free), _) => self.formula(free),
+                (None, Some(written)) => self.body(&written)?,
+                (None, None) => return Err(unsummed(self.tys, self.owner)),
+            },
             other => match inlined(self.tys, other) {
                 Some(free) => self.formula(free),
                 None => return Err(unevaluated(self.tys, self.owner, "a construct")),
@@ -401,7 +408,7 @@ impl Build<'_> {
                 x: one(self, x)?,
                 k: usize::from(*k),
             },
-            Body::Series(_) => match sva_formula::series::written_out(body) {
+            Body::Series(_) => match written_out(body) {
                 Some(written) => self.time_body(&written)?,
                 None => self.body(body)?,
             },
@@ -771,6 +778,21 @@ fn unplaced(tys: &Typing, owner: NodeId) -> EngineError {
         "a read's time lands past what exact integers place",
         "engine.unreadable_position",
     )
+}
+
+/// An infinite series over a node whose form no reader inlines: no sample of it ends.
+fn unsummed(tys: &Typing, owner: NodeId) -> EngineError {
+    EngineError::refused(Diagnostic {
+        code: "read.no_spectral_sum".to_string(),
+        message: format!(
+            "`{}` reads a node under an infinite series, and that node has no closed form to \
+             sum it by",
+            tys.name(owner)
+        ),
+        location: Located::at(tys.name(owner), None),
+        help: "give the sum a finite upper bound, or write the series inside the node it reads"
+            .to_string(),
+    })
 }
 
 /// A node read under a construct no sample of the reader evaluates.
