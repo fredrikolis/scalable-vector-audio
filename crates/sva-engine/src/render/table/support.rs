@@ -7,7 +7,7 @@ use sva_formula::{Body, C64, Fold, NodeId, Unary, exp_zero_at};
 use sva_samples::{Extent, Grid, Profile, Round};
 
 use crate::cast::Cast;
-use crate::render::bound::Tail;
+use crate::render::bound::{Tail, Tails};
 use crate::schedule;
 use crate::time::{Affine, Lattice, Q};
 use crate::typing::{Step, SumSlot, Typing, Value, When};
@@ -24,6 +24,7 @@ pub(crate) struct Supports<'a> {
     asking: RefCell<Vec<Vec<NodeId>>>,
     /// Each node asked, or that one asked was found from.
     asked: RefCell<BTreeSet<NodeId>>,
+    tails: Tails,
 }
 
 /// Each support found, with its cut and the supports it was found from.
@@ -64,6 +65,7 @@ impl<'a> Supports<'a> {
             open: RefCell::default(),
             asking: RefCell::default(),
             asked: RefCell::default(),
+            tails: Tails::default(),
         }
     }
 
@@ -139,8 +141,12 @@ impl<'a> Supports<'a> {
             return (exact, None);
         }
         let grid = self.grid(id);
-        let ends = |n: NodeId| self.of(n);
-        let Some(tail) = Tail::of(self.tys, (self.profile, grid.rate), id, &ends) else {
+        let ends = |n: NodeId| {
+            let found = self.found(n).is_some() || !self.open.borrow().contains(&n);
+            (self.of(n), found)
+        };
+        let Some(tail) = Tail::of(self.tys, (self.profile, grid.rate), id, &ends, &self.tails)
+        else {
             return (exact, None);
         };
         let level = self.profile.prune_level();
