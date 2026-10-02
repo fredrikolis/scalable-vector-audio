@@ -98,23 +98,21 @@ impl Table {
         wanted: &[NodeId],
         profile: &Profile,
     ) -> Result<Table, EngineError> {
-        Table::bounded(tys, (root, wanted), profile, &BTreeSet::new())
+        let none = (&BTreeSet::new(), Memo::default());
+        Table::bounded(tys, (root, wanted), profile, none)
     }
 
-    /// The same, each of `bounds` a value of its own wherever it is read, never inlined.
+    /// The same, each of `bounds` a value of its own wherever it is read, never inlined, over
+    /// the supports `found` for its range.
     pub(crate) fn bounded(
         tys: &Typing,
         (root, wanted): (NodeId, &[NodeId]),
         profile: &Profile,
-        bounds: &BTreeSet<NodeId>,
+        (bounds, found): (&BTreeSet<NodeId>, Memo),
     ) -> Result<Table, EngineError> {
-        Table::built(
-            tys,
-            (root, wanted),
-            profile,
-            (1, bounds, &BTreeMap::new()),
-            false,
-        )
+        let mut table = Table::new(profile);
+        table.supports = found;
+        table.built(tys, (root, wanted), (1, bounds, &BTreeMap::new()), false)
     }
 
     /// Every read its own value, as if each were written out where it is read.
@@ -126,7 +124,7 @@ impl Table {
         profile: &Profile,
     ) -> Result<Table, EngineError> {
         let none = (1, &BTreeSet::new(), &BTreeMap::new());
-        Table::built(tys, (root, wanted), profile, none, true)
+        Table::new(profile).built(tys, (root, wanted), none, true)
     }
 
     /// Every value `fine` times finer than its own step: a closed form's reference.
@@ -138,24 +136,23 @@ impl Table {
         fine: i128,
     ) -> Result<Table, EngineError> {
         let finer = (fine, &BTreeSet::new(), &BTreeMap::new());
-        Table::built(tys, (root, wanted), profile, finer, false)
+        Table::new(profile).built(tys, (root, wanted), finer, false)
     }
 
     fn built(
+        mut self,
         tys: &Typing,
         (root, wanted): (NodeId, &[NodeId]),
-        profile: &Profile,
         bounds: Bounds<'_>,
         apart: bool,
     ) -> Result<Table, EngineError> {
-        let mut table = Table::new(profile);
         let mut held = Vec::with_capacity(wanted.len() + 1);
         for id in std::iter::once(&root).chain(wanted) {
-            held.push(table.grown(tys, *id, (bounds, apart))?);
+            held.push(self.grown(tys, *id, (bounds, apart))?);
         }
-        table.draft = Draft::default();
-        table.held_as(held[0], held[1..].to_vec());
-        Ok(table)
+        self.draft = Draft::default();
+        self.held_as(held[0], held[1..].to_vec());
+        Ok(self)
     }
 
     /// The value for `id` and each it reads the table lacks, built; a node `prefixes` names

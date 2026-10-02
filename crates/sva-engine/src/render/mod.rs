@@ -334,18 +334,29 @@ fn ranged(held: &mut Render, bounds: &BTreeSet<NodeId>) -> Result<(), EngineErro
             crate::query::Representation::Envelope { .. }
         )
     });
-    if !materializes(held) && !counts {
-        if envelope && let Err(refused) = range_of(held, Ends::Refused) {
-            held.unranged = Some(refused);
-        } else if envelope {
-            held.range = Some(range_of(held, Ends::Refused)?);
+    let tabled = materializes(held) || counts;
+    if !tabled && !envelope {
+        return Ok(());
+    }
+    let supports = Supports::new(&held.tys, &held.config.profile);
+    let support = supports.of(held.root);
+    let range = range_over(
+        (&held.config, held.tys.name(held.root)),
+        support,
+        Ends::Refused,
+    );
+    if !tabled {
+        match range {
+            Ok(range) => held.range = Some(range),
+            Err(refused) => held.unranged = Some(refused),
         }
         return Ok(());
     }
-    held.range = Some(range_of(held, Ends::Refused)?);
+    held.range = Some(range?);
+    let found = supports.into_memo();
     let wanted: Vec<NodeId> = held.schedule.wanted.clone();
     let root = (held.root, wanted.as_slice());
-    let mut table = Table::bounded(&held.tys, root, &held.config.profile, bounds)?;
+    let mut table = Table::bounded(&held.tys, root, &held.config.profile, (bounds, found))?;
     table.plan(held.range.expect("a range was decided"));
     held.table = Some(table);
     Ok(())
@@ -360,12 +371,7 @@ pub(crate) enum Ends {
     Pulled,
 }
 
-pub(crate) fn range_of(held: &Render, ends: Ends) -> Result<Extent, EngineError> {
-    let support = Supports::new(&held.tys, &held.config.profile).of(held.root);
-    range_over((&held.config, held.tys.name(held.root)), support, ends)
-}
-
-/// The range a root named `name`, of `support`, is read over.
+/// The range a root of `support` is read over.
 pub(crate) fn range_over(
     (config, name): (&RenderConfig, &str),
     support: Extent,
