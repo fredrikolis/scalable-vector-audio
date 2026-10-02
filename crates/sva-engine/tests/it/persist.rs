@@ -10,8 +10,8 @@ use crate::fixtures::{added, graph_of, next, replaced, samples};
 use sva_ast::Graph;
 use sva_engine::{
     Ask, Backend, CacheStats, Change, Changed, EngineError, Handle, Hash, INDEX_NAME, Out, Outcome,
-    Placed, Range, Render, RenderConfig, Representation, STORE_FORMAT, Store, Stream, StreamConfig,
-    Tier, change, render, render_over,
+    Persisted, Placed, Range, Render, RenderConfig, Representation, STORE_FORMAT, Store, Stream,
+    StreamConfig, Tier, change, render, render_over,
 };
 
 const SECONDS: f64 = 0.05;
@@ -267,6 +267,7 @@ fn all_held(memory: &Memory, keys: &[Hash]) -> bool {
     keys.iter().all(|k| disk(&store).holds(*k))
 }
 
+/// A store's reads reach the index with its next commit, ahead of what that commit writes.
 #[test]
 fn past_its_budget_the_store_evicts_the_least_recently_used_first() {
     let (_, one) = persisted_tone(&Memory::default(), u64::MAX, 100);
@@ -274,8 +275,11 @@ fn past_its_budget_the_store_evicts_the_least_recently_used_first() {
     let memory = Memory::default();
     let (a, _) = persisted_tone(&memory, budget, 100);
     let (b, _) = persisted_tone(&memory, budget, 200);
-    persisted_tone(&memory, budget, 100);
-    let (c, _) = persisted_tone(&memory, budget, 300);
+    let store = opened(&memory, budget);
+    rendered(&tone("tone-100", 100), &store);
+    let render = rendered(&tone("tone-300", 300), &store);
+    now(store.persist()).expect("persisted");
+    let c: Vec<Hash> = nodes(stats(&render)).iter().map(|l| l.key).collect();
     assert!(all_held(&memory, &a), "read since, so kept");
     assert!(!all_held(&memory, &b), "least recently used, so gone");
     assert!(all_held(&memory, &c), "just written, so kept");
@@ -352,6 +356,94 @@ fn stores_sharing_a_directory_keep_one_budget_over_what_both_persisted() {
         "{held} bytes held past a budget of {}",
         one * 3 / 2
     );
+}
+
+/// A store that only read from the disk, or that already committed everything, persists
+/// without a single call of the disk: no lock, no index.
+#[test]
+fn a_persist_with_nothing_to_commit_calls_nothing_of_the_disk() {
+    let memory = Memory::default();
+    let graph = two_voices("idle", 330);
+    let store = opened(&memory, u64::MAX);
+    rendered(&graph, &store);
+    now(store.persist()).expect("persisted");
+    let reader = opened(&memory, u64::MAX);
+    let warm = rendered(&graph, &reader);
+    assert_eq!(stats(&warm).computed(), 0, "{:?}", stats(&warm));
+    for store in [&reader, &store] {
+        memory.calls.store(0, Ordering::Relaxed);
+        let done = now(store.persist()).expect("persisted");
+        assert_eq!(done, Persisted::default());
+        assert_eq!(memory.calls.load(Ordering::Relaxed), 0);
+    }
+}
+
+/// A store of `n` entries at this format, each `BYTES` long, as another build left it.
+fn holding(n: usize) -> Memory {
+    const BYTES: usize = 64;
+    let memory = Memory::default();
+    let mut index = String::from_utf8(format_only()).expect("text");
+    for i in 0..n {
+        let name = format!("{:032x}", 0xfeed_0000 + i);
+        memory.set(&name, vec![0; BYTES]);
+        index += &format!("{name} {BYTES}\n");
+    }
+    memory.set(INDEX_NAME, index.into_bytes());
+    memory
+}
+
+/// Each entry the index file names, in its order.
+fn indexed(memory: &Memory) -> Vec<String> {
+    let text = String::from_utf8(memory.bytes(INDEX_NAME).expect("an index")).expect("text");
+    let lines = text.lines().skip(1);
+    lines
+        .map(|line| {
+            line.split_once(' ')
+                .expect("a name and a size")
+                .0
+                .to_string()
+        })
+        .collect()
+}
+
+/// The calls and listings of the disk one persist of a fresh render over `n` entries makes.
+fn persisted_over(n: usize) -> (usize, usize) {
+    let memory = holding(n);
+    let store = opened(&memory, u64::MAX);
+    rendered(&two_voices("over-many", 330), &store);
+    memory.calls.store(0, Ordering::Relaxed);
+    memory.lists.store(0, Ordering::Relaxed);
+    let done = now(store.persist()).expect("persisted");
+    assert_eq!(done.written, 3, "x, y and master");
+    assert_eq!(indexed(&memory).len(), n + 3, "the index names every entry");
+    let calls = memory.calls.load(Ordering::Relaxed);
+    (calls, memory.lists.load(Ordering::Relaxed))
+}
+
+#[test]
+fn a_persists_calls_scale_with_what_it_commits_not_with_what_the_store_holds() {
+    let (few, many) = (persisted_over(10), persisted_over(300));
+    assert_eq!(few, many, "10 entries held against 300");
+    assert_eq!(few.1, 0, "a persist lists nothing");
+}
+
+/// Two stores over one directory, persisting by turns what overlaps and what does not, each
+/// over an index the other wrote since it last read it.
+#[test]
+fn stores_persisting_by_turns_over_one_directory_index_every_entry_once() {
+    let memory = Memory::default();
+    let (first, second) = (opened(&memory, u64::MAX), opened(&memory, u64::MAX));
+    for (turn, hz) in [330, 440, 550, 660].into_iter().enumerate() {
+        let store = [&first, &second][turn % 2];
+        rendered(&two_voices(&format!("turn-{turn}"), hz), store);
+        assert!(now(store.persist()).expect("persisted").written > 0);
+    }
+    let mut named = indexed(&memory);
+    named.sort();
+    let mut once = named.clone();
+    once.dedup();
+    assert_eq!(named, once, "no entry is named twice");
+    assert_eq!(named, memory.entries(), "the index names each entry held");
 }
 
 fn rendered_over(graph: &Graph, store: &Tier<Memory>, seconds: f64) -> Render {

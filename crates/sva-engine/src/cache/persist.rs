@@ -67,9 +67,8 @@ pub struct Store<B> {
     written: Mutex<u64>,
 }
 
-enum Committed {
-    Moved { bytes: u64 },
-    Busy,
+enum Prepared {
+    Ready { bytes: u64 },
     Dropped,
     Refused,
 }
@@ -244,61 +243,109 @@ impl<B: Backend> Store<B> {
         Ok(())
     }
 
-    /// A value staged without its meta is dropped. A key leaves the staging record only once
-    /// its files have, so a failed write leaves every later one staged, as does a commit over
-    /// an open entry. An open entry past budget stays for the next persist.
+    /// Free, without the lock, while nothing is staged and the budget holds. Under it, the
+    /// index file is every store's account, listed afresh only when unreadable, and names each
+    /// value before it moves: one cut short leaves a gone entry named, never one unnamed. A
+    /// value staged without its meta is dropped; one failed or over an open entry stays staged.
     pub(crate) async fn persist(&self) -> Result<Persisted, String> {
+        let within = locked(&self.index).bytes <= self.max_bytes;
+        if within && locked(&self.staged).is_empty() {
+            return Ok(Persisted::default());
+        }
         let _held = self.backend.lock().await?;
+        let (mut index, seen) = self.current().await?;
         let mut done = Persisted::default();
+        let mut moving = Vec::new();
         let keys: Vec<Hash> = locked(&self.staged).keys().copied().collect();
         for key in keys {
             let Some(held) = locked(&self.staged).get(&key).cloned() else {
                 continue;
             };
-            match self.committed(key, &held).await? {
-                Committed::Busy => continue,
-                Committed::Moved { bytes } => {
-                    locked(&self.index).touch(key, bytes);
-                    done.written += 1;
+            match self.prepared(key, &held).await? {
+                Prepared::Ready { bytes } => {
+                    moving.push((key, held, bytes));
+                    continue;
                 }
-                Committed::Dropped => {}
-                Committed::Refused => done.refused += 1,
+                Prepared::Dropped => {}
+                Prepared::Refused => done.refused += 1,
             }
-            for (chunk, _) in &held.chunks {
-                self.staging.delete(chunk).await?;
-            }
-            self.staging.delete(&staged_name(key, META)).await?;
-            locked(&self.staged).remove(&key);
+            self.unstaged(key, &held).await?;
         }
-        let listed = self.backend.list().await?;
-        let listed = listed
-            .into_iter()
-            .filter_map(|(name, bytes)| Some((key_of(&name)?, bytes)));
-        locked(&self.index).sync(listed.collect());
-        let oldest = locked(&self.index).oldest_first();
-        for key in oldest {
-            if self.bytes() <= self.max_bytes {
+        if !moving.is_empty() {
+            let mut naming = index.clone();
+            for (key, _, bytes) in &moving {
+                naming.touch(*key, *bytes);
+            }
+            let text = naming.text(&version());
+            self.backend.put(INDEX_NAME, text.as_bytes()).await?;
+        }
+        for (key, held, bytes) in moving {
+            if !self.staging.rename(&name_of(key), &self.backend).await? {
+                continue;
+            }
+            index.touch(key, bytes);
+            done.written += 1;
+            self.unstaged(key, &held).await?;
+        }
+        for key in index.oldest_first() {
+            if index.bytes <= self.max_bytes {
                 break;
             }
             if self.backend.delete(&name_of(key)).await? {
-                locked(&self.index).forget(key);
+                index.forget(key);
                 done.evicted += 1;
             }
         }
-        let text = locked(&self.index).text(&version());
-        self.backend.put(INDEX_NAME, text.as_bytes()).await?;
+        self.backend
+            .put(INDEX_NAME, index.text(&version()).as_bytes())
+            .await?;
+        index.synced();
+        let mut local = locked(&self.index);
+        for key in local.used_since(seen) {
+            index.used(key);
+        }
+        *local = index;
         Ok(done)
     }
 
-    /// `key`'s staged value joined with its entry's, moved whole into the store.
-    async fn committed(&self, key: Hash, held: &Staged) -> Result<Committed, String> {
+    /// The index file, or else the directory listed, with this store's uses since; its clock.
+    async fn current(&self) -> Result<(Index, u64), String> {
+        let found = self.backend.get(INDEX_NAME).await?;
+        let mut index = match found.and_then(|text| Index::read(&text, &version())) {
+            Some(index) => index,
+            None => {
+                let listed = self.backend.list().await?;
+                let listed = listed
+                    .into_iter()
+                    .filter_map(|(name, bytes)| Some((key_of(&name)?, bytes)));
+                Index::listed(listed.collect(), &locked(&self.index))
+            }
+        };
+        let local = locked(&self.index);
+        for key in local.unsynced() {
+            index.used(key);
+        }
+        Ok((index, local.clock()))
+    }
+
+    async fn unstaged(&self, key: Hash, held: &Staged) -> Result<(), String> {
+        for (chunk, _) in &held.chunks {
+            self.staging.delete(chunk).await?;
+        }
+        self.staging.delete(&staged_name(key, META)).await?;
+        locked(&self.staged).remove(&key);
+        Ok(())
+    }
+
+    /// `key`'s staged value joined with its entry's, whole in staging under the entry's name.
+    async fn prepared(&self, key: Hash, held: &Staged) -> Result<Prepared, String> {
         let whole = match held.meta {
             true => self.staged_value_of(key, held).await?,
             false => None,
         };
         let whole = whole.filter(|(head, runs)| !runs.is_empty() || head.refers());
         let Some((head, mut runs)) = whole else {
-            return Ok(Committed::Dropped);
+            return Ok(Prepared::Dropped);
         };
         let name = name_of(key);
         if !head.refers() {
@@ -309,14 +356,11 @@ impl<B: Backend> Store<B> {
         }
         let bytes = codec::entry(&head, &runs);
         if bytes.len() as u64 > self.max_bytes {
-            return Ok(Committed::Refused);
+            return Ok(Prepared::Refused);
         }
         self.staging.put(&name, &bytes).await?;
-        Ok(match self.staging.rename(&name, &self.backend).await? {
-            true => Committed::Moved {
-                bytes: bytes.len() as u64,
-            },
-            false => Committed::Busy,
+        Ok(Prepared::Ready {
+            bytes: bytes.len() as u64,
         })
     }
 

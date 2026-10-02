@@ -1,4 +1,4 @@
-// Concern: a disk in memory that logs reads, refuses writes on cue and holds names open as another holder would | Non-concern: what a tier keeps | IO: (name[, bytes]) -> bytes, a log
+// Concern: a disk in memory that counts its calls, logs reads, refuses writes on cue and holds names open as another holder would | Non-concern: what a tier keeps | IO: (name[, bytes]) -> bytes, a log
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -11,7 +11,7 @@ use sva_engine::{Backend, INDEX_NAME, Store, Tier};
 /// One map of names; each staging area's names sit under its own prefix, where `list` never looks.
 /// While `refusing` is up, every write and rename fails. `reads` logs each read: the name and the bytes it
 /// answered. A name in `open` is another holder's, so, as in OPFS, it is neither removed nor
-/// moved onto.
+/// moved onto. `calls` counts every call of it or its staging areas.
 #[derive(Clone, Default)]
 pub(crate) struct Memory {
     pub(crate) held: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
@@ -19,6 +19,7 @@ pub(crate) struct Memory {
     pub(crate) refusing: Arc<AtomicBool>,
     pub(crate) reads: Arc<Mutex<Vec<(String, usize)>>>,
     pub(crate) lists: Arc<AtomicUsize>,
+    pub(crate) calls: Arc<AtomicUsize>,
     pub(crate) locked: Arc<AtomicBool>,
     pub(crate) open: Arc<Mutex<BTreeSet<String>>>,
 }
@@ -65,6 +66,10 @@ impl Memory {
         self.held.lock().unwrap().insert(self.at(name), bytes);
     }
 
+    fn called(&self) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn opened(&self, name: &str) -> bool {
         self.open.lock().unwrap().contains(&self.at(name))
     }
@@ -74,6 +79,7 @@ impl Backend for Memory {
     type Lock = Held;
 
     async fn lock(&self) -> Result<Held, String> {
+        self.called();
         std::future::poll_fn(|_| {
             let free =
                 self.locked
@@ -87,6 +93,7 @@ impl Backend for Memory {
     }
 
     async fn get(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
+        self.called();
         let found = self.bytes(name);
         let read = (self.at(name), found.as_ref().map_or(0, Vec::len));
         self.reads.lock().unwrap().push(read);
@@ -94,6 +101,7 @@ impl Backend for Memory {
     }
 
     async fn get_range(&self, name: &str, from: u64, len: u64) -> Result<Option<Vec<u8>>, String> {
+        self.called();
         let found = self.bytes(name).map(|bytes| {
             let from = (from as usize).min(bytes.len());
             let to = from.saturating_add(len as usize).min(bytes.len());
@@ -105,6 +113,7 @@ impl Backend for Memory {
     }
 
     async fn put(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        self.called();
         if self.refusing.load(Ordering::Relaxed) {
             return Err("the medium refused".to_string());
         }
@@ -113,6 +122,7 @@ impl Backend for Memory {
     }
 
     async fn delete(&self, name: &str) -> Result<bool, String> {
+        self.called();
         if self.opened(name) {
             return Ok(false);
         }
@@ -121,6 +131,7 @@ impl Backend for Memory {
     }
 
     async fn list(&self) -> Result<Vec<(String, u64)>, String> {
+        self.called();
         self.lists.fetch_add(1, Ordering::Relaxed);
         let held = self.held.lock().unwrap();
         Ok(held
@@ -133,6 +144,7 @@ impl Backend for Memory {
 
     /// Each store its own area, as the backend promises: none writes another's.
     async fn staging(&self) -> Result<Memory, String> {
+        self.called();
         static AREAS: AtomicUsize = AtomicUsize::new(0);
         let area = AREAS.fetch_add(1, Ordering::Relaxed);
         Ok(Memory {
@@ -142,6 +154,7 @@ impl Backend for Memory {
     }
 
     async fn rename(&self, name: &str, to: &Memory) -> Result<bool, String> {
+        self.called();
         if self.refusing.load(Ordering::Relaxed) {
             return Err("the medium refused".to_string());
         }

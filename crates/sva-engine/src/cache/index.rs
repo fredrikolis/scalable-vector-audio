@@ -4,10 +4,12 @@ use std::collections::HashMap;
 
 use sva_formula::Hash;
 
-#[derive(Default)]
+/// Each entry's size and last use; `synced`, the clock where it last matched the file.
+#[derive(Clone, Default)]
 pub(super) struct Index {
     pub(super) held: HashMap<Hash, (u64, u64)>,
     clock: u64,
+    synced: u64,
     pub(super) bytes: u64,
 }
 
@@ -34,6 +36,7 @@ impl Index {
             let (name, bytes) = line.split_once(' ')?;
             index.touch(key_of(name)?, bytes.parse().ok()?);
         }
+        index.synced = index.clock;
         Some(index)
     }
 
@@ -63,14 +66,40 @@ impl Index {
         }
     }
 
-    /// The directory's entries at their sizes; one another store committed is least recent.
-    pub(super) fn sync(&mut self, listed: Vec<(Hash, u64)>) {
-        let held = std::mem::take(&mut self.held);
-        self.held = listed
+    /// The directory's entries in `known`'s recency, one it lacks least recent.
+    pub(super) fn listed(listed: Vec<(Hash, u64)>, known: &Index) -> Index {
+        let at = |key| known.held.get(&key).map_or(0, |(_, at)| *at);
+        let mut listed: Vec<(u64, Hash, u64)> = listed
             .into_iter()
-            .map(|(key, bytes)| (key, (bytes, held.get(&key).map_or(0, |(_, at)| *at))))
+            .map(|(k, bytes)| (at(k), k, bytes))
             .collect();
-        self.bytes = self.held.values().map(|(bytes, _)| bytes).sum();
+        listed.sort_unstable();
+        let mut index = Index::default();
+        for (_, key, bytes) in listed {
+            index.touch(key, bytes);
+        }
+        index.synced = index.clock;
+        index
+    }
+
+    pub(super) fn clock(&self) -> u64 {
+        self.clock
+    }
+
+    /// The entries used after `clock`, least recent first.
+    pub(super) fn used_since(&self, clock: u64) -> Vec<Hash> {
+        let mut keys: Vec<(u64, Hash)> = self.held.iter().map(|(k, (_, at))| (*at, *k)).collect();
+        keys.retain(|(at, _)| *at > clock);
+        keys.sort_unstable();
+        keys.into_iter().map(|(_, k)| k).collect()
+    }
+
+    pub(super) fn unsynced(&self) -> Vec<Hash> {
+        self.used_since(self.synced)
+    }
+
+    pub(super) fn synced(&mut self) {
+        self.synced = self.clock;
     }
 
     pub(super) fn forget(&mut self, key: Hash) {
