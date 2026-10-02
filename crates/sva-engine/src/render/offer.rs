@@ -156,6 +156,7 @@ fn offerable(
         priced,
         moved,
         readable,
+        sampled: ty.held == Representation::Sampled,
         held: Vec::new(),
     })
 }

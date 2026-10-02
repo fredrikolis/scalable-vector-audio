@@ -11,7 +11,7 @@ use super::Stored;
 use super::stored::{Header, Laid, Samples};
 
 /// Bumped by, and only by, a change to a stored value's bytes.
-pub const STORE_FORMAT: u32 = 13;
+pub const STORE_FORMAT: u32 = 14;
 
 /// Every entry opens with its format, so one another format wrote is never read as a value,
 /// even where a wipe left it.
@@ -81,6 +81,7 @@ fn header(head: &Header, laid: &[Laid]) -> Vec<u8> {
     out.extend_from_slice(&stored.priced.to_le_bytes());
     word(&mut out, stored.moved.to_bits());
     out.push(u8::from(stored.readable));
+    out.push(u8::from(stored.sampled));
     match head.samples() {
         &Samples::Of { key, by } => {
             out.push(1);
@@ -135,11 +136,8 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Header, u64)> {
     let support = (start <= end).then(|| Extent::new(start, end))?;
     let priced = r.wide()?;
     let moved = f64::from_bits(r.word()?);
-    let readable = match r.byte()? {
-        0 => false,
-        1 => true,
-        _ => return None,
-    };
+    let readable = r.flag()?;
+    let sampled = r.flag()?;
     let of = match r.byte()? {
         0 => None,
         1 => Some(Samples::Of {
@@ -192,6 +190,7 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Header, u64)> {
         priced,
         moved,
         readable,
+        sampled,
         held: Vec::new(),
     };
     let whole = runs_whole(count, &samples) && r.0.is_empty();
@@ -433,6 +432,14 @@ impl Reader<'_> {
 
     fn byte(&mut self) -> Option<u8> {
         self.take(1).map(|b| b[0])
+    }
+
+    fn flag(&mut self) -> Option<bool> {
+        match self.byte()? {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
     }
 
     fn word(&mut self) -> Option<u64> {

@@ -18,6 +18,7 @@ pub(crate) struct Frontier<'w> {
     root: &'w str,
     config: &'w RenderConfig,
     pinned: BTreeSet<String>,
+    asked: BTreeMap<String, Vec<Representation>>,
     stack: Vec<Step>,
     pub(crate) stored: BTreeMap<String, Arc<Stored>>,
     pub(crate) visited: BTreeSet<String>,
@@ -42,6 +43,7 @@ impl<'w> Frontier<'w> {
             root,
             config,
             pinned: pinned(inst, order, config),
+            asked: asked(inst, config),
             stack: vec![Step::Visit(root.to_string())],
             stored: BTreeMap::new(),
             visited: BTreeSet::new(),
@@ -81,7 +83,11 @@ impl<'w> Frontier<'w> {
             };
             self.visited.insert(path.clone());
             let root = path == self.root;
-            if let Some(hit) = found.filter(|hit| answers(hit, root, self.config)) {
+            let read = self.asked.get(&path).map_or(&[][..], Vec::as_slice);
+            let answering = |hit: &Arc<Stored>| {
+                answers(hit, root, self.config) && read.iter().all(|r| r.off_samples(hit.sampled))
+            };
+            if let Some(hit) = found.filter(answering) {
                 self.lookups.push(noted(&path, key, Outcome::Hit));
                 self.stored.insert(path.clone(), hit);
                 continue;
@@ -144,7 +150,7 @@ pub(crate) fn answers(hit: &Stored, root: bool, config: &RenderConfig) -> bool {
 }
 
 /// A node looked up nowhere: a loop's member, whose samples hold its own past, a node a reading
-/// asks more of than its samples, and every node above one a reading asks of, which a hit would
+/// asks more of than samples, and every node above one a reading asks of, which a hit would
 /// hide; a ledger reads every node under its own.
 fn pinned(inst: &Instances, order: &Order, config: &RenderConfig) -> BTreeSet<String> {
     let mut out: BTreeSet<String> = order
@@ -166,7 +172,7 @@ fn pinned(inst: &Instances, order: &Order, config: &RenderConfig) -> BTreeSet<St
         let Ok(path) = inst.instance_of(&ask.node) else {
             continue;
         };
-        if ask.representation != Representation::Samples {
+        if !ask.representation.off_samples(true) {
             out.insert(path.clone());
         }
         asked.insert(path);
@@ -175,6 +181,17 @@ fn pinned(inst: &Instances, order: &Order, config: &RenderConfig) -> BTreeSet<St
         if order.deps(path).iter().any(|read| asked.contains(read)) {
             asked.insert(path.clone());
             out.insert(path.clone());
+        }
+    }
+    out
+}
+
+/// The readings asked of each node: a hit answers them only where its samples alone do.
+fn asked(inst: &Instances, config: &RenderConfig) -> BTreeMap<String, Vec<Representation>> {
+    let mut out: BTreeMap<String, Vec<Representation>> = BTreeMap::new();
+    for ask in &config.asks {
+        if let Ok(path) = inst.instance_of(&ask.node) {
+            out.entry(path).or_default().push(ask.representation);
         }
     }
     out

@@ -162,7 +162,7 @@ fn opening_a_store_reads_its_index_alone() {
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
-const PINNED: (u32, u64) = (13, 3785837670338276788);
+const PINNED: (u32, u64) = (14, 504267369635508131);
 
 /// A change to how a value is encoded, or to what the engine computes for any construct here,
 /// fails this until `STORE_FORMAT` is bumped and the digest pinned again: rows, a filter, a
@@ -1542,4 +1542,69 @@ fn a_node_stored_at_one_prune_level_never_answers_another() {
     assert!(stats(&warm).computed() > 0, "{:?}", stats(&warm));
     let fresh = render(&graph, "master", at(-60.0), &Tier::default()).expect("a render");
     assert_eq!(bits(&warm), bits(&fresh));
+}
+
+/// A ramp-in and a bell of partials under envelopes, as a page's pad keys write one.
+fn bell(name: &str) -> Graph {
+    let ramp = "tc = 0.006\nmin(t, tc)/tc - sin(2*pi*min(t, tc)/tc)/(2*pi)\n";
+    let bell = "f0 = 587.33\nvel = 0.7\nrelease = 1\ncrop(0.54*vel*(sin(2*pi*f0*t + \
+        1.2*vel*exp(-t/0.3)*sin(2*pi*3.5*f0*t))*(0.33 + 0.67*exp(-t/1.5)) + \
+        0.25*sin(4*pi*f0*t)*exp(-t/0.6))*@ramp(t, tc=0.0015)*(crop(1, 0s, release) + \
+        crop(exp(-(t - release)/0.3), release, release + 2s)), 0s, release + 2s)\n";
+    let master = "sample(@bell(t, f0=440, vel=0.5, release=inf))\n";
+    graph_of(name, &[("ramp", ramp), ("bell", bell), ("master", master)])
+}
+
+fn measuring(readings: &[Representation]) -> RenderConfig {
+    let asks = readings.iter().map(|representation| Ask {
+        node: "master".to_string(),
+        representation: *representation,
+    });
+    RenderConfig::seconds(RATE, 0.5).asking(asks.collect())
+}
+
+fn read_off(render: &Render, readings: &[Representation]) -> Vec<sva_engine::Answer> {
+    let read = |r: &Representation| sva_engine::answer(render, render.root, *r).expect("a reading");
+    readings.iter().map(read).collect()
+}
+
+/// A page measures each key it warms off `sample(...)` of it: those readings take the samples
+/// alone, so a second warm over the persisted store reads them off the disk and computes
+/// nothing, and measures what the first did.
+#[test]
+fn a_sampled_target_measured_and_persisted_is_measured_again_off_the_disk() {
+    let readings = [
+        Representation::Envelope { frame_secs: None },
+        Representation::from_name("pitch").expect("a reading"),
+    ];
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    let cold = dropped(&bell("measured"), measuring(&readings), &store);
+    assert!(cold.work().priced_flops > 0);
+    now(store.persist()).expect("persisted");
+    memory.reads.lock().unwrap().clear();
+
+    let store = opened(&memory, u64::MAX);
+    let warm = dropped(&bell("measured"), measuring(&readings), &store);
+    assert_eq!(warm.work().priced_flops, 0, "{:?}", stats(&warm));
+    assert!(store.counters().disk_reads >= 1);
+    assert_eq!(read_off(&warm, &readings), read_off(&cold, &readings));
+}
+
+/// A chord's envelope is its law, never one measured off samples a store holds of it; its two
+/// partials share no period, so the store holds it.
+#[test]
+fn a_stored_closed_form_asked_for_its_law_is_never_answered_by_its_samples() {
+    let chord = "sin(2*pi*256*t) + sin(2*pi*362.03867196751236*t)\n";
+    let graph = graph_of("law-kept", &[("master", chord)]);
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    now(render_over(&graph, "master", measuring(&[]), &store)).expect("a render");
+    now(store.persist()).expect("persisted");
+
+    let envelope = [Representation::Envelope { frame_secs: None }];
+    let config = measuring(&envelope);
+    let warm = dropped(&graph, config.clone(), &opened(&memory, u64::MAX));
+    let fresh = render(&graph, "master", config, &Tier::default()).expect("a render");
+    assert_eq!(read_off(&warm, &envelope), read_off(&fresh, &envelope));
 }

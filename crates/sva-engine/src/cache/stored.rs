@@ -17,6 +17,7 @@ pub struct Stored {
     /// The most seconds a read under it moved to land on a sample.
     pub moved: f64,
     pub readable: bool,
+    pub sampled: bool,
     pub(crate) held: Vec<Extent>,
 }
 

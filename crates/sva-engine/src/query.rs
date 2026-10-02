@@ -153,6 +153,15 @@ impl Representation {
         }
     }
 
+    /// Whether a node's samples alone answer this reading, `sampled` where it holds samples.
+    pub fn off_samples(self, sampled: bool) -> bool {
+        let graph = matches!(
+            self,
+            Representation::Alias { .. } | Representation::Ledger { .. }
+        );
+        !graph && self.consumes(!sampled) == Consumes::Buffer
+    }
+
     pub fn from_name(name: &str) -> Option<Representation> {
         Some(match name {
             "lines" => Representation::Lines,

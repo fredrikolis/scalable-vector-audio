@@ -1466,6 +1466,65 @@ fn a_sampled_ref_read_measures_what_the_plain_read_refuses_and_shares_its_memory
     );
 }
 
+/// A pad's bell: partials under envelopes behind a ramp-in, no `sample(...)` inside.
+async fn bells(dir: &JsValue) -> Composition {
+    let mut held = Composition::open(None, Some(dir.clone().into())).await;
+    held.insert(
+        "ramp",
+        "tc = 0.006\nmin(t, tc)/tc - sin(2*pi*min(t, tc)/tc)/(2*pi)\n",
+    );
+    held.insert(
+        "bell",
+        "f0 = 587.33\nvel = 0.7\nrelease = 1\ncrop(0.54*vel*(sin(2*pi*f0*t)*exp(-t/1.5) + \
+         0.25*sin(4*pi*f0*t)*exp(-t/0.6))*@ramp(t, tc=0.0015)*(crop(1, 0s, release) + \
+         crop(exp(-(t - release)/0.3), release, release + 2s)), 0s, release + 2s)\n",
+    );
+    held
+}
+
+/// A key warmed as a page warms it, measured off `sample(...)` with `out: null`.
+async fn warmed_key(held: &Composition) -> Rendering {
+    let readings = Some(vec!["pitch".to_string(), "envelope".to_string()]);
+    let target = "sample(@bell([0, 0.5s], f0=440.0000, vel=0.5000, release=inf))";
+    held.render(target, readings, options(&[("out", JsValue::NULL)]))
+        .await
+        .unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)))
+}
+
+/// A page reloaded over its store warms each closed-form key off the disk: nothing is priced,
+/// and its readings are the first warm's.
+#[wasm_bindgen_test]
+async fn a_closed_form_key_warmed_and_persisted_warms_off_the_disk() {
+    let dir = fake_directory();
+    let first = bells(&dir).await;
+    let cold = warmed_key(&first).await;
+    let priced = |r: &Rendering| {
+        field(
+            &r.work().unwrap_or_else(|_| unreachable!("work")),
+            "priced_flops",
+        )
+    };
+    assert!(priced(&cold).as_f64() > Some(0.0));
+    first
+        .persist()
+        .await
+        .unwrap_or_else(|e| unreachable!("persisted: {}", as_text(&e)));
+
+    let reloaded = bells(&dir).await;
+    let warm = warmed_key(&reloaded).await;
+    assert_eq!(priced(&warm).as_f64(), Some(0.0));
+    let tier = reloaded
+        .counters()
+        .unwrap_or_else(|_| unreachable!("counters"));
+    assert!(
+        field(&tier, "disk_reads").as_f64() >= Some(1.0),
+        "{}",
+        as_text(&tier)
+    );
+    let measured = |r: &Rendering| as_text(&field(&readings(r), "representations"));
+    assert_eq!(measured(&warm), measured(&cold));
+}
+
 /// `index` set to what an older format wrote, over the values a newer one left under it.
 fn aged(dir: &JsValue) {
     let files: js_sys::Map = field(dir, "files").into();
