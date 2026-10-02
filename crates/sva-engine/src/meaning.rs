@@ -38,6 +38,12 @@ pub fn meaning(builtin: &str, key: &str) -> Option<Meaning> {
         return modal(builtin, key);
     }
     Some(match (builtin, key) {
+        ("saw" | "square" | "triangle", "hz") => plain("the fundamental's frequency", "Hz"),
+        ("saw" | "square" | "triangle", "phase") => plain(
+            "the fundamental's phase offset; the nth harmonic turns n times as far, so the \
+             whole wave is read phase/(2*pi*hz) later",
+            "rad",
+        ),
         ("saw" | "square" | "triangle", "tol") => plain(
             "admitted and unused: the series is truncated where the profile's floor ends",
             "none",

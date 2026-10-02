@@ -44,5 +44,6 @@ mod triad;
 mod typing;
 mod vocabulary;
 mod volatile;
+mod waves;
 mod width;
 mod work;

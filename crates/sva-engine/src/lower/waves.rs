@@ -72,8 +72,10 @@ impl Lowering<'_> {
         Body::Add(vec![doubled, minus])
     }
 
-    /// One partial: `sin(2*pi*n*hz*t + phase)/n^p`, with a half-turn of phase per index
-    /// where the series alternates.
+    /// One partial: `sin(n*(2*pi*hz*t + phase))/n^p`, with a half-turn of phase per index
+    /// where the series alternates. `phase` is the fundamental's: the `n`th partial turns `n`
+    /// times as far, so a constant phase delays the whole wave by `phase/(2*pi*hz)` and a
+    /// moving one modulates every partial's frequency by the same ratio.
     fn partial(
         &mut self,
         name: &str,
@@ -87,7 +89,9 @@ impl Lowering<'_> {
         let hz = self.part(hz.clone(), None);
         let line = self.part(Body::Line, None);
         let angle = self.part(Body::Mul(vec![turn, n, hz, line]), None);
-        let mut sum = vec![angle, self.part(phase.clone(), None)];
+        let n = self.part(ordinal.clone(), None);
+        let phase = self.part(phase.clone(), None);
+        let mut sum = vec![angle, self.part(Body::Mul(vec![n, phase]), None)];
         if name == "triangle" {
             let half = self.part(Body::Const(C64::real(PI)), None);
             let k = self.part(Body::Index(index), None);

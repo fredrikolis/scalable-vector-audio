@@ -4,8 +4,7 @@
 
 [![Release](https://github.com/fredrikolis/scalable-vector-audio/actions/workflows/release.yml/badge.svg)](https://github.com/fredrikolis/scalable-vector-audio/actions/workflows/release.yml) [![crates.io](https://img.shields.io/crates/v/sva-cli)](https://crates.io/crates/sva-cli) [![npm sva-cli](https://img.shields.io/npm/v/@scalable-vector-audio/sva-cli?label=npm%20sva-cli)](https://www.npmjs.com/package/@scalable-vector-audio/sva-cli) [![npm sva-wasm](https://img.shields.io/npm/v/@scalable-vector-audio/sva-wasm?label=npm%20sva-wasm)](https://www.npmjs.com/package/@scalable-vector-audio/sva-wasm)
 
-Sounds written as equations. $`\sin(2\pi \cdot 440\,t)`$ is a 440 Hz tone. Rendering samples an
-equation at any rate, so the sound is a scalable vector.
+Sounds written as equations. $`\sin(2\pi \cdot 440\,t)`$ is a 440 Hz tone. Rendering samples an equation at any rate, so the sound is a scalable vector.
 
 ## The equation for a chord
 
@@ -25,9 +24,8 @@ the cosine sum, `fourier` crosses a term from `t` to `f`, and an expression hold
 
 ## Each equation is stored in a file
 
-A file holds one equation spelled in ASCII: one `;` comment stating what it models and
-neglects, then `name = value` defaults, then the expression. The 440 Hz tone from the opening,
-as a file:
+A file holds one equation spelled in ASCII: one `;` comment stating what it models and neglects,
+then `name = value` defaults, then the expression. The 440 Hz tone from the opening, as a file:
 
 ```
 ; Models: one steady 440 Hz tone | Neglects: an envelope, a rate, and every other voice | IO: (t) -> amplitude | Tags: tone
@@ -72,13 +70,15 @@ crop(0.5*(sample(@chord(t)) + 0.3*self[idx(t) - 1]), 0s, 2s)
 `sample(...)` is the one crossing from algebra to a buffer: above it every term is exact and
 rate-free, below it there is a rate, and a feedback term reading what it wrote sits under it.
 
-## Literals
+## Literals and waveforms
 
 `C4` is a note name, `440hz` a frequency, `0.25s` a duration. `4st` and `50ct` are a semitone
 and a cent as ratios, so `C4*4st` is `E4` and a chord written that way transposes with its
 root. `1b` is a bar against the composition's own bpm and meter, and `1sp` is one step of the
 rate a render samples at: 1/44100 s by default, 1/48000 s at `--rate 48000`. The rest are
 `ms`, `m`, `h`, `khz` and `db`.
+
+`saw(hz)`, `square(hz)` and `triangle(hz)` are band-limited series on the fundamental `hz`. An optional second argument is the fundamental's phase in radians, and the nth harmonic turns n times as far: `saw(hz, phase)` is `saw(hz)` read `phase/(2*pi*hz)` seconds later, and a moving phase, as in `saw(220, 0.3*sin(2*pi*5*t))`, bends every harmonic by the same ratio, which is vibrato.
 
 ## Reading a sample by index
 
