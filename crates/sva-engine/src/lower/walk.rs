@@ -1,6 +1,7 @@
 // Concern: the recursion over one node's written expression | Non-concern: what a call lowers to (calls.rs), classifying a loop (loops.rs) | IO: (&Expr, Cx, Var) -> a Piece
 
 use sva_ast::{Address, Arg, BinOp, ByteSpan, Expr, Literal};
+use sva_formula::through::written_out;
 use sva_formula::{Body, C64, Held, IndexId, NodeId, Ty, Var};
 
 use crate::cast::Cast;
@@ -75,11 +76,11 @@ impl Lowering<'_> {
         }
     }
 
+    /// A series term holds its body written, so each ref in it is written in whole.
     fn inline(&self, f: &Body, var: Var) -> Option<Body> {
-        loops::expandable(f, var, &|id| match self.typing.value(id) {
-            Value::ClosedForm(form) => Some((form.body.clone(), form.var)),
-            _ => None,
-        })
+        let typing: &crate::typing::Typing = self.typing;
+        crate::refs::reads_through(typing, f, var)
+            .then(|| crate::refs::read_through(typing, |through| written_out(f, through)))
     }
 
     /// Fresh across the graph: two nodes' series compose into one closed form, and an index one of

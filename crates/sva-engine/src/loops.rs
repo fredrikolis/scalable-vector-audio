@@ -1,8 +1,8 @@
 // Concern: classifies a self-reference, and folds a read's time or a number to its exact value | Non-concern: running a loop (sva-samples), lowering (lower/) | IO: (body, Cx) -> SelfKind, Affine
 
 use sva_ast::{Address, Arg, BinOp, ByteSpan, Expr, Literal};
-use sva_formula::closed_form::{map_children, read_at};
-use sva_formula::{Body, C64, IndexId, Part, Series, Var};
+use sva_formula::closed_form::read_at;
+use sva_formula::{Body, C64, IndexId, Part, Series};
 
 use crate::arguments::Chosen;
 use crate::error::{Diagnostic, EngineError, Located};
@@ -344,34 +344,6 @@ fn moved(f: &Body, index: IndexId, delay: f64) -> Body {
         ])),
     ]);
     read_at(f, &at)
-}
-
-/// A series term holds the body inline, so a node left inside it would normalize to nothing.
-pub(crate) fn expandable(
-    f: &Body,
-    var: Var,
-    of: &dyn Fn(sva_formula::NodeId) -> Option<(Body, Var)>,
-) -> Option<Body> {
-    match f {
-        Body::Node(id) => {
-            let (body, held) = of(*id)?;
-            match held == var {
-                true => expandable(&body, var, of),
-                false => None,
-            }
-        }
-        other => {
-            let mut ok = true;
-            let out = map_children(other, |p| match expandable(&p.body, var, of) {
-                Some(body) => Part::new(p.origin, body),
-                None => {
-                    ok = false;
-                    p.clone()
-                }
-            });
-            ok.then_some(out)
-        }
-    }
 }
 
 /// `t` scaled by a constant and moved by constants, each exact; `None` where the time is no
