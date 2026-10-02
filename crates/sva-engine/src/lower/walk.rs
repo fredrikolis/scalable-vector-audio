@@ -197,7 +197,7 @@ impl Lowering<'_> {
     }
 
     fn name(&mut self, name: &str, var: Var) -> Result<Piece, EngineError> {
-        if let Some((_, index)) = self.indices.iter().find(|(k, _)| k == name) {
+        if let Some((_, index)) = self.indices.iter().rev().find(|(k, _)| k == name) {
             return Ok(Piece::ClosedForm(match *index {
                 Index::Series(index) => Body::Index(index),
                 Index::Term(k) => Body::Const(C64::real(k as f64)),

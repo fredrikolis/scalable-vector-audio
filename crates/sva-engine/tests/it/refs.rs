@@ -594,3 +594,26 @@ fn an_offset_in_seconds_and_steps_reads_their_sum() {
     let step = 1.0 / 100.0;
     assert!(near(&got, &[-0.02 - step, -0.01 - step, -step]), "{got:?}");
 }
+
+/// A `sum` binds its index over its own term, so an inner sum naming the same index reads its
+/// own: `sum(k, 1, 2, sum(k, 1, 3, k))` is 2*(1 + 2 + 3), never 3*(1 + 2).
+#[test]
+fn an_inner_sum_reads_its_own_index_where_an_outer_one_shares_its_name() {
+    let peak = |body: &str| {
+        let g = graph_of("shadowed", &[("root", body)]);
+        let held = render(
+            &g,
+            "root",
+            RenderConfig::seconds(8_000, 0.01),
+            &Tier::default(),
+        )
+        .unwrap_or_else(|e| panic!("{body}: {e}"));
+        let root = held.id("root").expect("the root");
+        let samples = held.output(root).expect("samples").plane(0).to_vec();
+        samples.iter().fold(0f64, |m, s| m.max(s.abs()))
+    };
+    let shadowed = peak("sum(k, 1, 2, sum(k, 1, 3, k))*sin(2*pi*100*t)\n");
+    let distinct = peak("sum(j, 1, 2, sum(k, 1, 3, k))*sin(2*pi*100*t)\n");
+    assert!((distinct - 12.0).abs() < 1e-3, "{distinct}");
+    assert_eq!(shadowed, distinct, "the inner index is the inner sum's own");
+}
