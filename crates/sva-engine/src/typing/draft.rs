@@ -83,7 +83,7 @@ impl Typing {
             }
         }
         self.lowered.truncate(mark.lowered);
-        self.numbers.0.get_mut().clear();
+        self.folds.clear();
     }
 
     /// Lets the draft go: every node it made is freed, and those ids answered.
@@ -160,7 +160,7 @@ impl Typing {
         for file in touched {
             self.name_file(inst, &file);
         }
-        self.numbers.0.get_mut().clear();
+        self.folds.clear();
         freed
     }
 

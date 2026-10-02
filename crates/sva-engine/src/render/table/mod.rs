@@ -51,7 +51,6 @@ pub(crate) struct Table {
     cuts: BTreeMap<NodeId, i64>,
     pub(crate) built: usize,
     pub(crate) supports: Memo,
-    named: BTreeMap<NodeId, Hash>,
     rooted: bool,
     /// Each value started silent since the table last settled.
     silenced: Vec<usize>,
@@ -85,7 +84,6 @@ impl Table {
             cuts: BTreeMap::new(),
             built: 0,
             supports: Memo::default(),
-            named: BTreeMap::new(),
             rooted: false,
             silenced: Vec::new(),
             draft: Draft::default(),
@@ -679,7 +677,6 @@ impl Table {
 
     fn forget(&mut self, freed: &[NodeId]) {
         for id in freed {
-            self.named.remove(id);
             self.cuts.remove(id);
         }
         self.supports.forget(freed);
@@ -719,7 +716,7 @@ impl Building<'_> {
         }
         let grid = self.grid(id);
         let key = Key {
-            identity: refs::identity_in(self.tys, id, &mut self.table.named)?,
+            identity: refs::identity(self.tys, id)?,
             step: step(grid),
         };
         let mut at = self.value(key, Source::Node(id), grid, self.tys.name(id))?;
@@ -798,7 +795,7 @@ impl Building<'_> {
                 if self.reading.contains(id) {
                     return Err(refs::cyclic(self.tys, *id));
                 }
-                refs::identity_in(self.tys, *id, &mut self.table.named)?
+                refs::identity(self.tys, *id)?
             }
             (Source::Formula(form), _) => refs::formula_identity(form),
         };
@@ -1035,7 +1032,7 @@ impl Building<'_> {
                 .unwrap_or(value.support().start)
         });
         value.switches = match stateful && self.fine == 1 {
-            true => refs::switches(self.tys, id, &mut self.table.named)?,
+            true => refs::switches(self.tys, id)?,
             false => Vec::new(),
         };
         self.running(value, renderer, reads, built.sites, start)

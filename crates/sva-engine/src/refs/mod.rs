@@ -19,7 +19,7 @@ use crate::typing::{Typing, Value};
 mod identity;
 mod prefix;
 
-pub(crate) use identity::{formula_identity, identity_in};
+pub(crate) use identity::formula_identity;
 pub use identity::{identity, symbolic_hash};
 pub(crate) use prefix::switches;
 
@@ -186,7 +186,7 @@ fn folded(typing: &Typing, f: &Body, fold: &mut Folding) -> Body {
 
 /// The one number a node holds, or `None` where it holds a form, samples or a ref loop.
 fn number(typing: &Typing, node: NodeId, fold: &mut Folding) -> Option<C64> {
-    if let Some(held) = typing.folded_number(node) {
+    if let Some(held) = typing.folds().number(node) {
         return held;
     }
     if fold.open.contains(&node) {
@@ -210,7 +210,7 @@ fn number(typing: &Typing, node: NodeId, fold: &mut Folding) -> Option<C64> {
         .ok()
         .and_then(|sum| sole_constant(&sum));
     if !fold.cut {
-        typing.fold_number(node, number);
+        typing.folds().keep_number(node, number);
     }
     fold.cut |= outer;
     number

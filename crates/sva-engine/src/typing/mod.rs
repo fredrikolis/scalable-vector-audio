@@ -1,13 +1,13 @@
 // Concern: gives every node one Ty and the value it lowered to | Non-concern: the per-term judgment (sva-formula), lowering (lower/) | IO: (Instances, Order) -> Ty per node
 
 mod draft;
+mod folds;
 
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use sva_formula::filter::Shape;
-use sva_formula::{C64, ClosedForm, Codomain, Env, Held, NodeId, Origin, ParamId, Ty, Var, infer};
+use sva_formula::{ClosedForm, Codomain, Env, Held, NodeId, Origin, ParamId, Ty, Var, infer};
 use sva_samples::Params;
 
 use crate::arguments::{Arguments, Called, Chosen};
@@ -131,22 +131,12 @@ pub struct Typing {
     pending: BTreeSet<NodeId>,
     indices: u32,
     sum: Option<(NodeId, Vec<SumSlot>)>,
-    numbers: Numbers,
+    folds: folds::Folds,
     /// Every node the latest draft lowered, in order.
     lowered: Vec<String>,
     units: BTreeMap<String, Units>,
     making: Vec<(String, Grid)>,
     draft: Draft,
-}
-
-/// Each node's folded number, derived from the nodes alone; a settle evicts it all.
-#[derive(Debug, Default)]
-struct Numbers(RefCell<BTreeMap<NodeId, Option<C64>>>);
-
-impl PartialEq for Numbers {
-    fn eq(&self, _: &Numbers) -> bool {
-        true
-    }
 }
 
 /// One term of a stream's note sum: its node, or the hull of the supports of those it retired.
@@ -160,6 +150,7 @@ impl Typing {
     /// `node` named by its terms in place.
     pub(crate) fn name_sum(&mut self, node: NodeId, slots: Vec<SumSlot>) {
         self.draft.sum = Some(Some((node, slots)));
+        self.folds.clear();
     }
 
     fn summed(&self) -> Option<&(NodeId, Vec<SumSlot>)> {
@@ -426,15 +417,11 @@ impl Typing {
     pub(crate) fn settle(&mut self, id: NodeId, node: Node) {
         self.nodes[id.0 as usize] = Some(node);
         self.pending.remove(&id);
-        self.numbers.0.get_mut().clear();
+        self.folds.clear();
     }
 
-    pub(crate) fn folded_number(&self, id: NodeId) -> Option<Option<C64>> {
-        self.numbers.0.borrow().get(&id).copied()
-    }
-
-    pub(crate) fn fold_number(&self, id: NodeId, number: Option<C64>) {
-        self.numbers.0.borrow_mut().insert(id, number);
+    pub(crate) fn folds(&self) -> &folds::Folds {
+        &self.folds
     }
 
     pub(crate) fn alias(&mut self, path: &str, id: NodeId) {

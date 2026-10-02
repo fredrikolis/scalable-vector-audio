@@ -1,12 +1,12 @@
 // Concern: where a solver's automation switches on its clock, and its identity with each switch not yet reached undone | Non-concern: storing runs under it | IO: (NodeId) -> (sample, Hash) per switch
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use sva_formula::closed_form::map_children;
 use sva_formula::{Body, C64, ClosedForm, Edge, Hash, NodeId, Part};
 use sva_samples::Grid;
 
-use super::identity::{Sink, formula_identity, identity_in};
+use super::identity::{Sink, formula_identity, identity};
 use super::substituted_closed_form;
 use crate::error::EngineError;
 use crate::lower::field;
@@ -15,11 +15,7 @@ use crate::typing::{Typing, Value};
 
 /// Each switch a solver's arguments make, and the solver's identity before it: a note released
 /// at `r` is the held note up to `r`. Empty for anything but a solver.
-pub(crate) fn switches(
-    typing: &Typing,
-    id: NodeId,
-    named: &mut BTreeMap<NodeId, Hash>,
-) -> Result<Vec<(i64, Hash)>, EngineError> {
+pub(crate) fn switches(typing: &Typing, id: NodeId) -> Result<Vec<(i64, Hash)>, EngineError> {
     let Value::Solver { params, varying } = typing.value(id) else {
         return Ok(Vec::new());
     };
@@ -35,7 +31,7 @@ pub(crate) fn switches(
         let mut held = (**params).clone();
         let mut read = Vec::new();
         for (key, arg) in varying {
-            match argument_before(typing, *arg, at, grid, named)? {
+            match argument_before(typing, *arg, at, grid)? {
                 Argued::Number(v) => *field(&mut held, key).expect("a varying field") = v,
                 Argued::Node(h) => read.push((*key, h)),
             }
@@ -64,10 +60,9 @@ fn argument_before(
     arg: NodeId,
     at: i64,
     grid: Grid,
-    named: &mut BTreeMap<NodeId, Hash>,
 ) -> Result<Argued, EngineError> {
     let Some(form) = substituted_closed_form(typing, arg) else {
-        return identity_in(typing, arg, named).map(Argued::Node);
+        return identity(typing, arg).map(Argued::Node);
     };
     let body = before(&form.body, at, grid);
     Ok(match crate::lower::constant_value(&body, form.var) {

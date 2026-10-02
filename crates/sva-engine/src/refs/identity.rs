@@ -1,7 +1,5 @@
 // Concern: content-addresses one node, whatever representation it holds | Non-concern: composing a closed form across a ref (mod.rs) | IO: (NodeId) -> Hash
 
-use std::collections::BTreeMap;
-
 use sva_formula::{
     ClosedForm, Hash, NodeId, Var, hash_closed_form, hash_closed_form_with, hash_spectral_sum,
     normalize_closed_form,
@@ -21,26 +19,13 @@ pub fn symbolic_hash(typing: &Typing, node: NodeId, want: Var) -> Result<Hash, E
 /// What one node is, whatever it holds: its definition and the identities of what it reads,
 /// never where a reader places it.
 pub fn identity(typing: &Typing, node: NodeId) -> Result<Hash, EngineError> {
-    identity_in(typing, node, &mut BTreeMap::new())
+    identity_of(typing, node, &mut Vec::new())
 }
 
-/// The same, each node under it named once however many paths reach it.
-pub(crate) fn identity_in(
-    typing: &Typing,
-    node: NodeId,
-    named: &mut BTreeMap<NodeId, Hash>,
-) -> Result<Hash, EngineError> {
-    identity_of(typing, node, &mut Vec::new(), named)
-}
-
-fn identity_of(
-    typing: &Typing,
-    node: NodeId,
-    open: &mut Vec<NodeId>,
-    named: &mut BTreeMap<NodeId, Hash>,
-) -> Result<Hash, EngineError> {
-    if let Some(held) = named.get(&node) {
-        return Ok(*held);
+/// A cycle's refusal depends on where the walk entered it, so only an identity is kept.
+fn identity_of(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, EngineError> {
+    if let Some(held) = typing.folds().identity(node) {
+        return Ok(held);
     }
     let found = match typing.sum_slots(node) {
         Some(slots) => {
@@ -48,16 +33,16 @@ fn identity_of(
             sink.text("terms");
             for slot in slots {
                 sink.hash(match slot {
-                    SumSlot::Node(id) if *id == node => built(typing, node, open, named)?,
-                    SumSlot::Node(id) => identity_of(typing, *id, open, named)?,
+                    SumSlot::Node(id) if *id == node => built(typing, node, open)?,
+                    SumSlot::Node(id) => identity_of(typing, *id, open)?,
                     SumSlot::Retired(_) => continue,
                 });
             }
             sink.finish()
         }
-        None => built(typing, node, open, named)?,
+        None => built(typing, node, open)?,
     };
-    named.insert(node, found);
+    typing.folds().keep_identity(node, found);
     Ok(found)
 }
 
@@ -70,12 +55,7 @@ pub(crate) fn formula_identity(form: &ClosedForm) -> Hash {
     }
 }
 
-fn built(
-    typing: &Typing,
-    node: NodeId,
-    open: &mut Vec<NodeId>,
-    named: &mut BTreeMap<NodeId, Hash>,
-) -> Result<Hash, EngineError> {
+fn built(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, EngineError> {
     if open.contains(&node) {
         return Err(cyclic(typing, node));
     }
@@ -88,7 +68,7 @@ fn built(
         }
         Value::ClosedForm(form) => {
             let mut refused = None;
-            let mut read = |id: NodeId| match identity_of(typing, id, open, named) {
+            let mut read = |id: NodeId| match identity_of(typing, id, open) {
                 Ok(held) => held,
                 Err(e) => {
                     refused.get_or_insert(e);
@@ -103,11 +83,11 @@ fn built(
         }
         Value::Cast(cast, source) => {
             sink.text(cast.name());
-            sink.hash(identity_of(typing, *source, open, named)?);
+            sink.hash(identity_of(typing, *source, open)?);
         }
         Value::Read { source, at, .. } => {
             sink.text("read");
-            sink.hash(identity_of(typing, *source, open, named)?);
+            sink.hash(identity_of(typing, *source, open)?);
             when(&mut sink, typing, at);
         }
         Value::SelfAt { at, .. } => {
@@ -130,7 +110,7 @@ fn built(
             sink.text(&format!("{held:?}"));
             for (key, arg) in varying {
                 sink.text(key);
-                sink.hash(identity_of(typing, *arg, open, named)?);
+                sink.hash(identity_of(typing, *arg, open)?);
             }
         }
         Value::Filter {
@@ -142,13 +122,13 @@ fn built(
         } => {
             sink.text(crate::vocabulary::shape_name(*shape));
             for operand in [x, cutoff, q, gain] {
-                sink.hash(identity_of(typing, *operand, open, named)?);
+                sink.hash(identity_of(typing, *operand, open)?);
             }
         }
         Value::Op { name, args } => {
             sink.text(name);
             for arg in args {
-                sink.hash(identity_of(typing, *arg, open, named)?);
+                sink.hash(identity_of(typing, *arg, open)?);
             }
         }
     }
