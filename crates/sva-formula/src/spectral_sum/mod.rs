@@ -9,7 +9,8 @@ pub mod product;
 pub mod spread;
 pub mod sup;
 
-use crate::closed_form::{ModalBank, Series, Var};
+use crate::closed_form::{Body, ModalBank, Part, Series, Var, map_children};
+use crate::origin::Origin;
 use atom::SpectralAtom;
 
 /// The infinite two sit beside the atoms because they carry their own truncation.
@@ -71,4 +72,21 @@ impl SpectralSum {
     pub fn atoms(&self) -> impl Iterator<Item = &SpectralAtom> {
         self.lanes.iter().flat_map(|l| l.atoms.iter())
     }
+
+    /// The same value, every atom and term naming `origin` as where it was written.
+    pub fn located(mut self, origin: Origin) -> SpectralSum {
+        for lane in &mut self.lanes {
+            for atom in &mut lane.atoms {
+                atom.origin = origin;
+            }
+            for series in &mut lane.series {
+                series.term = Part::new(origin, at(&series.term.body, origin));
+            }
+        }
+        self
+    }
+}
+
+fn at(f: &Body, origin: Origin) -> Body {
+    map_children(f, |p| Part::new(origin, at(&p.body, origin)))
 }

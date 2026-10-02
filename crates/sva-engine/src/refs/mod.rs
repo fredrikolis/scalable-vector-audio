@@ -35,23 +35,34 @@ pub fn spectral_sum_of(
     composed(typing, node, want, &mut Vec::new())
 }
 
-/// Kept under the node's identity: two nodes that are one value compose once. A refusal
-/// depends on the chain of refs that met it, so only a sum is kept.
+/// Kept under the node's identity, unlocated, and answered as written where `node` is: two
+/// nodes that are one value compose once. Only a sum is kept, as a refusal depends on the
+/// chain of refs that met it.
 fn composed(
     typing: &Typing,
     node: NodeId,
     want: Var,
     open: &mut Vec<NodeId>,
 ) -> Result<SpectralSum, EngineError> {
+    let here = written_at(typing, node);
     let key = identity(typing, node).ok().map(|held| (held, want));
     if let Some(held) = key.and_then(|key| typing.folds().composed(key)) {
-        return Ok(held);
+        return Ok(held.located(here));
     }
-    let found = composing(typing, node, want, open);
-    if let (Some(key), Ok(sum)) = (key, &found) {
-        typing.folds().keep_composed(key, sum.clone());
+    let found = composing(typing, node, want, open)?;
+    if let Some(key) = key {
+        let unlocated = found.clone().located(sva_formula::Origin::UNKNOWN);
+        typing.folds().keep_composed(key, unlocated);
     }
-    found
+    Ok(found.located(here))
+}
+
+fn written_at(typing: &Typing, node: NodeId) -> sva_formula::Origin {
+    match typing.value(node) {
+        Value::ClosedForm(form) => form.origin,
+        Value::Cast(_, source) => written_at(typing, *source),
+        _ => sva_formula::Origin::UNKNOWN,
+    }
 }
 
 /// `open` is the chain of refs still being composed: a form reaching itself through

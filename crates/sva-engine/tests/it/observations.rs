@@ -524,3 +524,32 @@ fn one_table_says_what_every_named_reading_consumes() {
         assert_eq!(held.consumes(false), sampled, "{name} off a sampled node");
     }
 }
+
+/// Two nodes holding one form are one value, kept once; a refusal off it names the node asked,
+/// never the twin that composed it first.
+#[test]
+fn a_refusal_off_a_twins_sum_names_the_twin_asked() {
+    let g = graph_of(
+        "twins-located",
+        &[
+            ("a", "exp(-3*t)*sin(2*pi*440*t)\n"),
+            ("b", "exp(-3 * t) * sin(2 * pi * 440 * t)\n"),
+            ("node", "@a(t) + @b(t)\n"),
+        ],
+    );
+    let held = render(
+        &g,
+        "node",
+        RenderConfig::seconds(8_192, 1.0),
+        &Tier::default(),
+    )
+    .expect("a render");
+    for twin in ["a", "b"] {
+        let id = held.id(twin).expect("a twin");
+        let refused = answer(&held, id, Representation::Lines).expect_err("a decayed line");
+        let sva_engine::EngineError::Refused(d) = &refused else {
+            panic!("{twin}: a located refusal, not {refused:?}");
+        };
+        assert_eq!(d.location.node, twin, "{twin}: {refused}");
+    }
+}
