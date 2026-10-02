@@ -54,7 +54,9 @@ impl Offers {
                 let Some((id, at)) = tys.id(path).and_then(|id| Some((id, table.of(id)?))) else {
                     continue;
                 };
-                if let Some(stored) = offerable(table, tys, (id, at), (path, *key)) {
+                if let Some(mut stored) = offerable(table, tys, (id, at), (path, *key)) {
+                    let beneath = found.beneath(path);
+                    stored.cuts = table.cuts_of(tys, |name| beneath.contains(name));
                     pending.push(Offer {
                         at,
                         stored,
@@ -157,6 +159,7 @@ fn offerable(
         moved,
         readable,
         sampled: ty.held == Representation::Sampled,
+        cuts: Vec::new(),
         held: Vec::new(),
     })
 }

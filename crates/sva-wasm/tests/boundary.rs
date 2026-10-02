@@ -1492,7 +1492,7 @@ async fn warmed_key(held: &Composition) -> Rendering {
 }
 
 /// A page reloaded over its store warms each closed-form key off the disk: nothing is priced,
-/// and its readings are the first warm's.
+/// and its readings and label are the first warm's.
 #[wasm_bindgen_test]
 async fn a_closed_form_key_warmed_and_persisted_warms_off_the_disk() {
     let dir = fake_directory();
@@ -1521,8 +1521,7 @@ async fn a_closed_form_key_warmed_and_persisted_warms_off_the_disk() {
         "{}",
         as_text(&tier)
     );
-    let measured = |r: &Rendering| as_text(&field(&readings(r), "representations"));
-    assert_eq!(measured(&warm), measured(&cold));
+    assert_eq!(as_text(&readings(&warm)), as_text(&readings(&cold)));
 }
 
 /// `index` set to what an older format wrote, over the values a newer one left under it.

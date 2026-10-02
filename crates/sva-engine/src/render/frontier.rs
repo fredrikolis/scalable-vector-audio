@@ -115,6 +115,20 @@ impl<'w> Frontier<'w> {
         self.opened(path.to_string());
     }
 
+    /// `path` and every node it reads, down to the leaves.
+    pub(crate) fn beneath(&self, path: &str) -> BTreeSet<String> {
+        let (mut out, mut open) = (BTreeSet::from([path.to_string()]), vec![path]);
+        while let Some(at) = open.pop() {
+            let fresh = self
+                .order
+                .deps(at)
+                .iter()
+                .filter(|read| out.insert((*read).clone()));
+            open.extend(fresh.map(String::as_str).collect::<Vec<_>>());
+        }
+        out
+    }
+
     fn opened(&mut self, path: String) {
         let order = self.order;
         let reads = order.deps(&path);

@@ -252,13 +252,33 @@ impl Table {
     }
 
     pub(crate) fn pruned(&self, tys: &Typing) -> sva_samples::Pruned {
-        let cuts = self.cuts.iter();
         sva_samples::Pruned {
             db: self.profile.prune_db,
-            cuts: cuts
-                .map(|(id, at)| (tys.name(*id).to_string(), *at))
-                .collect(),
+            cuts: self.cuts_of(tys, |_| true),
         }
+    }
+
+    /// Each cut of a node `within` names, those a stored node carries among them, by name.
+    pub(crate) fn cuts_of(
+        &self,
+        tys: &Typing,
+        within: impl Fn(&str) -> bool,
+    ) -> Vec<(String, i64)> {
+        let own = self
+            .cuts
+            .iter()
+            .map(|(id, at)| (tys.name(*id).to_string(), *at));
+        let carried = self
+            .values
+            .iter()
+            .filter_map(|(_, value)| match &value.kind {
+                Kind::Resident(stored) if within(&value.name) => Some(stored.cuts.iter().cloned()),
+                _ => None,
+            });
+        let cuts = own
+            .filter(|(name, _)| within(name))
+            .chain(carried.flatten());
+        cuts.collect::<BTreeSet<_>>().into_iter().collect()
     }
 
     pub(crate) fn of(&self, node: NodeId) -> Option<usize> {
