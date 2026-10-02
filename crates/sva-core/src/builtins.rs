@@ -69,8 +69,9 @@ pub const SPECIAL_FORMS: [(&str, &str); 7] = [
     (
         "sum",
         "sum(index, lo, hi, expr) -- index is a name the series binds, not a value; a finite \
-         sum is its terms, whatever each reads; hi may be inf, which makes it a series of \
-         closed forms",
+         sum is its terms, whatever each reads, and one whose index a node's binding reads is \
+         written out one node per index between whole-number bounds; hi may be inf, which \
+         makes it a series of closed forms",
     ),
     (
         "crop",

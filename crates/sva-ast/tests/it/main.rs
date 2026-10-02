@@ -4,5 +4,6 @@ mod fixtures;
 mod fuzz;
 mod outline;
 mod parameters;
+mod series;
 mod text;
 mod vocabulary;

@@ -480,3 +480,33 @@ fn a_series_index_shadows_a_bound_default() {
         "the index is never replaced by the caller's key"
     );
 }
+
+/// A `sum` whose index reaches a binding is one instance per index, each the node its own
+/// number binds, so it renders as the refs written out by hand do.
+#[test]
+fn a_sum_index_in_a_binding_is_one_instance_per_index() {
+    let files = |root: &'static str| [("band", "sin(2*pi*fc*t)\n"), ("root", root)];
+    let g = graph_of(
+        "index-binds",
+        &files("sum(k, 1, 3, @band(t, fc=100*k)/k)\n"),
+    );
+    let held = instantiate(&g, "root", DEFAULT_SAMPLE_RATE).expect("one instance per index");
+    let bands: Vec<String> = named(&held)
+        .into_iter()
+        .filter(|p| p.starts_with("band("))
+        .collect();
+    assert_eq!(bands.len(), 3, "{bands:?}");
+
+    let config = || sva_engine::RenderConfig::seconds(8_000, 0.01);
+    let rendered = |g| {
+        let held = sva_engine::render(&g, "root", config(), &sva_engine::Tier::default())
+            .expect("a render");
+        let root = held.id("root").expect("the root");
+        held.output(root).expect("samples").plane(0).to_vec()
+    };
+    let by_hand = graph_of(
+        "index-by-hand",
+        &files("@band(t, fc=100*1)/1 + @band(t, fc=100*2)/2 + @band(t, fc=100*3)/3\n"),
+    );
+    assert_eq!(rendered(g), rendered(by_hand), "the sum is its terms");
+}

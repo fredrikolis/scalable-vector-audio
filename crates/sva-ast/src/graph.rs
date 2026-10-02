@@ -339,7 +339,7 @@ impl Graph {
     }
 
     pub fn define_arranged(&mut self, path: &str, expr: Expr) -> Result<bool, Refusal> {
-        let arranged = self.rewrite_arrangement(path, &expr, None)?;
+        let arranged = self.rewrite_arrangement(path, &written(path, &expr)?, None)?;
         Ok(self.define(path, arranged))
     }
 
@@ -350,7 +350,7 @@ impl Graph {
         path: &str,
         expr: Expr,
     ) -> Result<bool, Refusal> {
-        let arranged = self.rewrite_arrangement(path, &expr, Some(beside))?;
+        let arranged = self.rewrite_arrangement(path, &written(path, &expr)?, Some(beside))?;
         Ok(self.define(path, arranged))
     }
 
@@ -741,6 +741,11 @@ pub fn resolve_ref_path(referencing: &str, ref_path: &str) -> Option<String> {
         }
     }
     Some(segments.join("/"))
+}
+
+/// A probe is parsed whole rather than as a file, so its sums are written out here.
+fn written(path: &str, expr: &Expr) -> Result<Expr, Refusal> {
+    crate::series::written_out(expr).map_err(|d| Refusal::new(path, d.span, d.code, d.message))
 }
 
 fn above_root(referencing: &str, span: ByteSpan, ref_path: &str, root: &str) -> Refusal {

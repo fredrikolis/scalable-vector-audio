@@ -28,6 +28,7 @@ pub fn parse_file(base_name: &str, content: &str) -> Result<Parsed, Diag> {
     let defaults = read_defaults(heads)?;
 
     let mut parsed = parse_body(base_name, &content[body_at..]).map_err(|d| shift(d, body_at))?;
+    parsed.expr = crate::series::written_out(&parsed.expr).map_err(|d| shift(d, body_at))?;
     // Liveness runs back from the body: only a live default's own reads count.
     let mut live = vec![false; defaults.len()];
     for at in (0..defaults.len()).rev() {

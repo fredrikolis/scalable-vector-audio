@@ -43,6 +43,7 @@ pub enum DiagCode {
     BareTime,
     NotNodeContent,
     NonIntegerIndex,
+    UnwrittenSeries,
 }
 
 impl DiagCode {
@@ -67,6 +68,7 @@ impl DiagCode {
         DiagCode::BareTime,
         DiagCode::NotNodeContent,
         DiagCode::NonIntegerIndex,
+        DiagCode::UnwrittenSeries,
     ];
 
     pub fn code_str(self) -> &'static str {
@@ -90,6 +92,7 @@ impl DiagCode {
             DiagCode::BareTime => "bare-time",
             DiagCode::NotNodeContent => "not-node-content",
             DiagCode::NonIntegerIndex => "non-integer-index",
+            DiagCode::UnwrittenSeries => "unwritten-series",
         }
     }
 }
