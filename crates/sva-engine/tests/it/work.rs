@@ -173,3 +173,39 @@ fn a_late_window_streams_its_history_and_holds_no_more_the_later_it_starts() {
         "{later} bytes beyond a window at 4 s, {late} beyond one at 2 s: history is held"
     );
 }
+
+/// A hard crop of a line series sums the series' own runs inside its window: the same bits
+/// as the series uncropped there, and the same lines turned a sample, whatever it is cut to.
+#[test]
+fn a_cropped_line_series_turns_its_own_runs_inside_its_window() {
+    let g = graph_of(
+        "cropped-series",
+        &[
+            ("breath", "noise(7, period=0.04321s)\n"),
+            ("cut", "crop(noise(7, period=0.04321s), 0s, 0.05s)\n"),
+        ],
+    );
+    let samples = RATE as usize / 20;
+    let held = |target: &str| {
+        let r = render(
+            &g,
+            target,
+            RenderConfig::seconds(RATE, 0.05),
+            &Tier::default(),
+        )
+        .expect("a render");
+        r.output(r.root).expect("the root").plane(0).to_vec()
+    };
+    let (whole, cut) = (held("breath"), held("cut"));
+    assert_eq!(cut.len(), samples);
+    for (n, (a, b)) in cut.iter().zip(&whole).enumerate() {
+        assert_eq!(a.to_bits(), b.to_bits(), "sample {n}");
+    }
+    let (plain, cropped) = (
+        streamed(&g, "breath", 441, samples),
+        streamed(&g, "cut", 441, samples),
+    );
+    let lines = plain.waves.expect("waves") / samples as u128;
+    assert!(lines > 1_000, "a noise of {lines} lines");
+    assert_eq!(cropped.waves, Some(lines * samples as u128));
+}

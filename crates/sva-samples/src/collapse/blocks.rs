@@ -1,6 +1,7 @@
 // Concern: reads a closed form onto any span of the grid by rows no extent chooses, priced | Non-concern: rows a whole render fits to its extent | IO: (form, rate) -> Rows; (Tape, to) -> samples, work
 
-use sva_formula::{ClosedForm, SpectralSum, Var, normalize_closed_form};
+use sva_formula::spectral_sum::atom::SpectralAtom;
+use sva_formula::{ClosedForm, Lane, SpectralSum, Var, normalize_closed_form};
 
 use super::active::{self, Window};
 use super::lines::{self, Direct};
@@ -24,6 +25,8 @@ pub struct Rows {
 enum Row {
     /// Every kept line summed at each instant.
     Lines(Vec<Option<Direct>>),
+    /// Each lane's lines summed as runs under each common factor, read once an instant.
+    Grouped(Vec<Vec<Group>>),
     Sweep {
         sum: Box<SpectralSum>,
         spans: Vec<Option<Vec<(i64, i64)>>>,
@@ -134,6 +137,15 @@ fn worked(row: &Row, c: usize, from: i64, to: i64, grid: Grid) -> (u128, u128) {
         Row::Lines(lanes) => lanes[c]
             .as_ref()
             .map_or((0, 0), |d| times(d.lines_priced_and_turned(), n)),
+        Row::Grouped(lanes) => lanes[c].iter().fold((0, 0), |held, g| {
+            let (from, to) = active::meet((from, to), g.live);
+            let (priced, waves) = g
+                .direct
+                .as_ref()
+                .map_or((0, 0), Direct::lines_priced_and_turned);
+            let (priced, waves) = times((priced + 1, waves), (to - from).max(0) as u128);
+            (held.0 + priced, held.1 + waves)
+        }),
         Row::Sweep { spans, windows, .. } => {
             let evaluated =
                 active::evaluated(&windows[c], &inside(spans[c].as_deref(), (from, to)));
@@ -153,6 +165,31 @@ fn worked(row: &Row, c: usize, from: i64, to: i64, grid: Grid) -> (u128, u128) {
 }
 
 type Labelled = (Row, (Source, Detail));
+
+/// One factor, the window outside which it zeroes a finite sum, and its lines.
+struct Group {
+    factor: SpectralAtom,
+    live: Window,
+    direct: Option<Direct>,
+}
+
+/// `plan::LanePlan::Grouped` with every line summed: `None` where a lane is no line sum
+/// under common factors.
+fn grouped(sum: &SpectralSum, band: Audible, grid: Grid) -> Option<Vec<Vec<Group>>> {
+    let lane = |lane: &Lane| {
+        let groups = lines::line_groups(lane, band)?.into_iter();
+        Some(
+            groups
+                .map(|(factor, held)| Group {
+                    live: plan::group_window(&factor, &held, 1, grid),
+                    direct: Direct::of(&held),
+                    factor,
+                })
+                .collect(),
+        )
+    };
+    sum.lanes.iter().map(lane).collect()
+}
 
 /// `plan::of` with each row an extent picks by cost replaced by the one summed per instant.
 fn of_sum(sum: &SpectralSum, rate: u32, profile: &Profile) -> Result<Labelled, CollapseError> {
@@ -198,12 +235,15 @@ fn of_sum(sum: &SpectralSum, rate: u32, profile: &Profile) -> Result<Labelled, C
             },
         ),
     };
+    let grid = Grid::of(rate);
+    if let Some(lanes) = grouped(sum, Audible::of(profile, rate), grid) {
+        return Ok((Row::Grouped(lanes), label));
+    }
     let spans = truncated
         .lanes
         .iter()
         .map(|lane| span::windows(lane, rate))
         .collect();
-    let grid = Grid::of(rate);
     let windows = truncated
         .lanes
         .iter()
@@ -288,6 +328,7 @@ fn point(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelled, Co
 fn width(row: &Row) -> usize {
     match row {
         Row::Lines(lanes) => lanes.len(),
+        Row::Grouped(lanes) => lanes.len(),
         Row::Sweep { sum, .. } => sum.lanes.len(),
         Row::Point { width, .. } => *width,
         Row::Added(parts) => parts.iter().map(|(_, w, _)| *w).max().unwrap_or(1),
@@ -305,6 +346,7 @@ fn reach(row: &Row, rate: u32) -> Window {
     };
     match row {
         Row::Lines(_) => active::OPEN,
+        Row::Grouped(lanes) => hull(&mut lanes.iter().flatten().map(|g| g.live)),
         Row::Sweep { spans, .. } if spans.iter().all(Option::is_some) => {
             hull(&mut spans.iter().flatten().flatten().copied())
         }
@@ -333,6 +375,22 @@ fn values(row: &Row, c: usize, (from, to): Window, rate: u32) -> Result<Vec<f64>
                 held
             })
             .collect(),
+        // `reading::under_a_window`'s order: each group's sum from +0, times its factor.
+        Row::Grouped(lanes) => {
+            let mut out = vec![0.0; n];
+            for g in &lanes[c] {
+                let (a, b) = active::meet((from, to), g.live);
+                for m in a..b {
+                    let summed = g
+                        .direct
+                        .as_ref()
+                        .map_or(0.0, |d| 0.0 + d.at(m as f64 / f64::from(rate)));
+                    out[(m - from) as usize] +=
+                        summed * point::eval_atom(&g.factor, grid.instant(m))?.re;
+                }
+            }
+            out
+        }
         Row::Sweep {
             sum,
             spans,

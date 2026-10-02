@@ -98,14 +98,21 @@ pub fn written(f: &Body, band: Audible) -> Result<Body, CollapseError> {
     }
 }
 
-fn atoms(s: &Series, band: Audible) -> Result<Vec<SpectralAtom>, CollapseError> {
+pub(super) fn windowed_lines(
+    s: &Series,
+    band: Audible,
+) -> Option<(Vec<sva_formula::Line>, Option<sva_formula::Indicator>)> {
     let (body, window) = sva_formula::crop_peeled(&s.term.body);
     let bare = Series {
         term: Part::new(s.term.origin, body),
         ..s.clone()
     };
     let taken = enumerated(&bare, band);
-    if !taken.is_empty() {
+    (!taken.is_empty()).then_some((taken, window))
+}
+
+fn atoms(s: &Series, band: Audible) -> Result<Vec<SpectralAtom>, CollapseError> {
+    if let Some((taken, window)) = windowed_lines(s, band) {
         return Ok(taken
             .into_iter()
             .map(|l| {

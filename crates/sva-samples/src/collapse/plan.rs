@@ -383,9 +383,14 @@ pub fn summed_bounds(
         let direct = found.kept.iter().filter_map(|kept| lines::Direct::of(kept));
         return Ok(direct.map(|d| (None, d.bound())).collect());
     }
-    let truncated = truncate::spectral_sum(sum, Audible::of(profile, rate))?;
-    let groups = truncated.lanes.iter().filter_map(lines::grouped).flatten();
+    let band = Audible::of(profile, rate);
+    let groups = sum.lanes.iter().map(|lane| lines::line_groups(lane, band));
+    let Some(groups) = groups.collect::<Option<Vec<_>>>() else {
+        return Ok(Vec::new());
+    };
     Ok(groups
+        .into_iter()
+        .flatten()
         .filter_map(|(factor, held)| Some((Some(factor), lines::Direct::of(&held)?.bound())))
         .collect())
 }
@@ -501,10 +506,7 @@ fn lane_plan(lane: &Lane, rate: u32, extent: Extent, len: usize) -> LanePlan {
                 true => (Vec::new(), held),
                 false => lines::split(&held, bins, rate),
             };
-            let live = match bounded(&placed, &summed, bins) {
-                true => active::window(&factor, grid),
-                false => active::OPEN,
-            };
+            let live = group_window(&factor, &[placed.as_slice(), &summed].concat(), bins, grid);
             Group {
                 samples: active::evaluated(&[live], &[(extent.start, extent.end)]) as usize,
                 factor,
@@ -521,13 +523,18 @@ fn lane_plan(lane: &Lane, rate: u32, extent: Extent, len: usize) -> LanePlan {
     }
 }
 
-fn bounded(placed: &[Line], summed: &[Line], bins: usize) -> bool {
-    let reach: f64 = placed
-        .iter()
-        .chain(summed)
-        .map(|l| l.amp.re.abs() + l.amp.im.abs())
-        .sum();
-    reach * (bins.max(1) as f64) < 1e300
+/// Outside it the factor zeroes its lines' sum, where that sum, `bins` times over, is finite.
+pub(super) fn group_window(
+    factor: &SpectralAtom,
+    held: &[Line],
+    bins: usize,
+    grid: Grid,
+) -> Window {
+    let reach: f64 = held.iter().map(|l| l.amp.re.abs() + l.amp.im.abs()).sum();
+    match reach * (bins.max(1) as f64) < 1e300 {
+        true => active::window(factor, grid),
+        false => active::OPEN,
+    }
 }
 
 /// `n*log2(n)` butterflies; a length that is no power of two is Bluestein's three

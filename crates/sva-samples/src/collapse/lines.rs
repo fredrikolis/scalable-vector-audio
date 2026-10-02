@@ -4,7 +4,7 @@ use std::f64::consts::TAU;
 
 use std::collections::BTreeMap;
 
-use sva_formula::spectral_sum::atom::{Exp, Singular, SpectralAtom, SpectralAtomKey};
+use sva_formula::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom, SpectralAtomKey};
 use sva_formula::{
     C64, Lane, Line, Origin, Run, commensurate, lines as series_lines, modal, spacing,
 };
@@ -158,6 +158,42 @@ pub fn grouped(lane: &Lane) -> Option<Vec<(SpectralAtom, Vec<Line>)>> {
         out[held].1.push(Line::bare(exp.omega / TAU, a.c));
     }
     Some(out)
+}
+
+/// A lane's lines under each common factor, each series' on its own ladders under its window.
+pub(super) fn line_groups(
+    lane: &Lane,
+    band: super::truncate::Audible,
+) -> Option<Vec<(SpectralAtom, Vec<Line>)>> {
+    if !lane.modal.is_empty() {
+        return None;
+    }
+    let atoms = Lane {
+        series: Vec::new(),
+        ..lane.clone()
+    };
+    let mut out = match atoms.atoms.is_empty() {
+        true => Vec::new(),
+        false => grouped(&atoms)?,
+    };
+    out.extend(ladders(lane, band)?);
+    Some(out)
+}
+
+fn ladders(lane: &Lane, band: super::truncate::Audible) -> Option<Vec<(SpectralAtom, Vec<Line>)>> {
+    lane.series
+        .iter()
+        .map(|series| {
+            let (held, ind) = super::truncate::windowed_lines(series, band)?;
+            let factors = Factors {
+                ind,
+                ..Factors::NONE
+            };
+            let factor =
+                SpectralAtom::new(C64::ONE, factors, Singular::Regular, series.term.origin);
+            Some((factor, held))
+        })
+        .collect()
 }
 
 /// Kept lines summed at one instant: the constant lines folded to one level, the rest as runs.
