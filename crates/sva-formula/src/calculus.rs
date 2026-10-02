@@ -1,4 +1,4 @@
-// Concern: differentiates, Hilbert-transforms and envelopes a SpectralSum | Non-concern: the transform itself (table/) | IO: (&SpectralSum) -> SpectralSum or Left
+// Concern: differentiates, Hilbert-transforms and envelopes a SpectralSum, and bounds a slope | Non-concern: the transform itself (table/) | IO: (&SpectralSum) -> SpectralSum or Left; (&Body) -> f64
 
 use crate::closed_form::{Body, Edge, Part};
 use crate::complex::C64;
@@ -39,6 +39,22 @@ pub fn d_dt(n: &SpectralSum) -> SpectralSum {
         lanes.push(out);
     }
     SpectralSum::of(n.var, lanes)
+}
+
+/// At least `sup |f'(t)|` over every instant: each atom's own sup, summed. `None` where an
+/// atom's slope grows without bound either way in time, or `f` has no atom sum.
+pub fn steepest(f: &Body) -> Option<f64> {
+    let slope = d_dt(&crate::spectral_sum::build::normalize(f, crate::closed_form::Var::T).ok()?);
+    let mut held = 0.0;
+    for lane in &slope.lanes {
+        if !lane.series.is_empty() || !lane.modal.is_empty() {
+            return None;
+        }
+        for atom in &lane.atoms {
+            held += crate::spectral_sum::sup::sup_from(atom, f64::NEG_INFINITY)?;
+        }
+    }
+    held.is_finite().then_some(held)
 }
 
 fn derive_series(s: &crate::closed_form::Series) -> crate::closed_form::Series {

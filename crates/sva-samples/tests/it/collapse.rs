@@ -1266,3 +1266,50 @@ fn energy_further_out_than_the_counted_images_is_not_in_the_wrap() {
         "three images out counts ({counted} dB), four does not ({past} dB)"
     );
 }
+
+/// `t + sin(2*pi*5*t)/(10*pi)` runs at most twice as fast as `t`, so a line series read there
+/// keeps the lines at most half the ceiling: none sounds past it at any instant.
+#[test]
+fn a_warped_line_series_keeps_the_lines_its_steepest_rate_leaves_under_the_ceiling() {
+    let k = IndexId(1);
+    let line = Body::Apply(
+        Unary::Sin,
+        part(Body::Mul(vec![
+            part(constant(TAU * 50.0)),
+            part(Body::Index(k)),
+            part(Body::Line),
+        ])),
+    );
+    let series = Body::Series(Box::new(Series {
+        index: k,
+        lo: 1,
+        hi: Bound::Infinite,
+        term: part(Body::Div(part(line), part(Body::Index(k)))),
+    }));
+    let wobble = Body::Apply(
+        Unary::Sin,
+        part(Body::Mul(vec![part(constant(TAU * 5.0)), part(Body::Line)])),
+    );
+    let at = Body::Add(vec![
+        part(Body::Line),
+        part(Body::Div(part(wobble), part(constant(10.0 * PI)))),
+    ]);
+    let warped = Body::Warp {
+        at: part(at),
+        of: part(series),
+    };
+    let band = sva_samples::Audible::of(&PSYCHOACOUSTIC_V1, RATE);
+    let Body::Warp { of, .. } = sva_samples::truncate_written(&warped, band).expect("a count")
+    else {
+        panic!("a truncated warp is a warp");
+    };
+    let Body::Run(run) = &*of.body else {
+        panic!("one ladder of lines is one run, not {:?}", of.body);
+    };
+    let top = run.offset + run.step * (run.first + run.amps.len() as i64 - 1) as f64;
+    let half = PSYCHOACOUSTIC_V1.ceiling(RATE) / 2.0;
+    assert!(
+        top <= half && top + 50.0 > half,
+        "the top line {top} Hz sits under {half} Hz"
+    );
+}

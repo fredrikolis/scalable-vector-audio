@@ -1,5 +1,7 @@
 // Concern: proves a named waveform is a function of its fundamental's phase, delayed or modulated whole | Non-concern: a written sum's own series (refs.rs) | IO: (a composition) -> samples
 
+use std::f64::consts::TAU;
+
 use crate::fixtures::graph_of;
 use sva_engine::{RenderConfig, Tier, render};
 
@@ -50,5 +52,59 @@ fn a_quarter_turn_keeps_the_saw_s_peak() {
     assert!(
         (a - b).abs() < 0.02 * a,
         "a delayed saw peaks as a saw: {b} against {a}"
+    );
+}
+
+const VIBRATO: &str = "0.3*sin(2*pi*5*t)";
+
+/// A moving phase is the plain wave read at a moving time, every harmonic under the band kept.
+#[test]
+fn a_moving_phase_is_the_plain_wave_read_at_a_moving_time() {
+    let files = [
+        ("plain", "saw(220)\n".to_string()),
+        ("warped", format!("@plain(t + {VIBRATO}/(2*pi*220))\n")),
+        ("vibrato", format!("saw(220, {VIBRATO})\n")),
+    ];
+    let files: Vec<(&str, &str)> = files.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let warped = plane(&files, "warped", 0.05);
+    let vibrato = plane(&files, "vibrato", 0.05);
+    for (i, (s, want)) in vibrato.iter().zip(&warped).enumerate() {
+        assert!(
+            (s - want).abs() <= HALF_LSB,
+            "sample {i}: {s} against the warped read's {want}"
+        );
+    }
+}
+
+/// The share of a signal's energy in DFT bins above `hz`.
+fn share_above(samples: &[f64], hz: f64, rate: f64) -> f64 {
+    let n = samples.len();
+    let bin = |k: usize| {
+        let (mut re, mut im) = (0.0, 0.0);
+        for (i, s) in samples.iter().enumerate() {
+            let w = TAU * (k * i % n) as f64 / n as f64;
+            re += s * w.cos();
+            im -= s * w.sin();
+        }
+        re * re + im * im
+    };
+    let total: f64 = samples.iter().map(|s| s * s).sum::<f64>() * n as f64 / 2.0;
+    let from = (hz / rate * n as f64).ceil() as usize;
+    (from..n / 2).map(bin).sum::<f64>() / total
+}
+
+/// The plain saw's harmonics from 15 kHz to the ceiling hold about 0.2% of its energy.
+#[test]
+fn a_vibrato_saw_keeps_its_harmonics_up_to_the_ceiling() {
+    let files = [
+        ("plain", "saw(220)\n".to_string()),
+        ("vibrato", format!("saw(220, {VIBRATO})\n")),
+    ];
+    let files: Vec<(&str, &str)> = files.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let [plain, vibrato] = ["plain", "vibrato"]
+        .map(|root| share_above(&plane(&files, root, 0.1)[..4096], 15_000.0, 44_100.0));
+    assert!(
+        (vibrato / plain - 1.0).abs() < 0.2 && plain > 1e-3,
+        "energy above 15 kHz: {vibrato} against the plain saw's {plain}"
     );
 }

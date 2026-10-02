@@ -36,6 +36,17 @@ impl Audible {
             floor_db: profile.floor(ceiling),
         }
     }
+
+    /// A line read at `at(t)` sounds at `hz*at'(t)`; an unbounded `at'` keeps the band, unclaimed.
+    fn read_at(self, at: &Body) -> Audible {
+        match sva_formula::calculus::steepest(at) {
+            Some(rate) if rate > 1.0 => Audible {
+                ceiling: self.ceiling / rate,
+                ..self
+            },
+            _ => self,
+        }
+    }
 }
 
 /// A line series is placed analytically under `sva_formula`'s own bound; an expanded one
@@ -66,6 +77,12 @@ pub fn spectral_sum(n: &SpectralSum, band: Audible) -> Result<SpectralSum, Colla
 pub fn written(f: &Body, band: Audible) -> Result<Body, CollapseError> {
     if let Body::Series(s) = f {
         return expanded(s, band);
+    }
+    if let Body::Warp { at, of } = f {
+        return Ok(Body::Warp {
+            at: Part::new(at.origin, written(&at.body, band)?),
+            of: Part::new(of.origin, written(&of.body, band.read_at(&at.body))?),
+        });
     }
     let mut found = None;
     let out = map_children(f, |p| match written(&p.body, band) {
