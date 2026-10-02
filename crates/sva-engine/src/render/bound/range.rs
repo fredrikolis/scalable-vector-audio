@@ -2,7 +2,7 @@
 
 use sva_formula::spectral_sum::atom::SpectralAtom;
 use sva_formula::spectral_sum::sup::sup_from;
-use sva_formula::{Body, Fold, NodeId, Unary, Var};
+use sva_formula::{Body, Edge, Fold, Indicator, NodeId, Unary, Var};
 use sva_samples::collapse::run::{bound, reach};
 
 /// A written form compiled once, so every instant reads it without normalizing again.
@@ -22,6 +22,7 @@ pub(super) enum Range {
     Min(Vec<Range>),
     Crop(Box<Range>, f64, f64),
     Shift(Box<Range>, f64),
+    Warp(Box<Range>, Box<Range>),
     Wide(Vec<Range>),
 }
 
@@ -110,10 +111,23 @@ impl Range {
             Body::Fold(Fold::Min, parts) => Range::Min(each(parts)?),
             Body::Crop { of, l, r, .. } => Range::Crop(one(of)?, l.value(), r.value()),
             Body::Shift { by, of } => Range::Shift(one(of)?, *by),
+            Body::Warp { at, of } => Range::Warp(Box::new(Range::time(&at.body)?), one(of)?),
             Body::Join(parts) => Range::Wide(each(parts)?),
             Body::Channel(of, _) => Range::Wide(vec![Range::of(&of.body)?]),
             _ => return Err("a written constructor with no bound"),
         })
+    }
+
+    /// A sum keeps `t` apart from what moves it: one magnitude over both would lose `t`.
+    fn time(f: &Body) -> Result<Range, &'static str> {
+        match f {
+            Body::Add(parts) => parts
+                .iter()
+                .map(|p| Range::of(&p.body))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Range::Add),
+            other => Range::of(other),
+        }
     }
 
     pub(super) fn nodes(&self, out: &mut Vec<NodeId>) {
@@ -124,7 +138,7 @@ impl Range {
             | Range::Max(parts)
             | Range::Min(parts)
             | Range::Wide(parts) => parts.iter().for_each(|p| p.nodes(out)),
-            Range::Div(a, b) => {
+            Range::Div(a, b) | Range::Warp(a, b) => {
                 a.nodes(out);
                 b.nodes(out);
             }
@@ -139,30 +153,34 @@ impl Range {
     /// so their combination holds too. `node` answers a node's magnitude from an instant on,
     /// its own rounding included. A time read slightly off is still an instant from `t` on.
     pub(super) fn from(&self, t: f64, node: &dyn Fn(NodeId, f64) -> f64) -> Option<Span> {
-        self.span(t, node).map(Span::absolute)
+        self.over(t, f64::INFINITY, node)
     }
 
-    fn span(&self, t: f64, node: &dyn Fn(NodeId, f64) -> f64) -> Option<Span> {
+    fn over(&self, t: f64, to: f64, node: &dyn Fn(NodeId, f64) -> f64) -> Option<Span> {
+        self.span(t, to, node).map(Span::absolute)
+    }
+
+    fn span(&self, t: f64, to: f64, node: &dyn Fn(NodeId, f64) -> f64) -> Option<Span> {
         let magnitude = |m: f64| Some(Span::new(-m, m, 0.0));
         match self {
             Range::Atoms(atoms) => {
                 let mut sum = 0.0;
                 for atom in atoms {
-                    sum += sup_from(atom, t)?;
+                    sum += sup_from(&until(atom, to), t)?;
                 }
                 let terms = atoms.len() as f64 + TRANSFORM_OPS;
                 Some(Span::new(-sum, sum, OP * terms * sum))
             }
             Range::Run(reach, err) => Some(Span::new(-reach, *reach, *err)),
             Range::Real(c) => Some(Span::new(*c, *c, 0.0)),
-            Range::Line => Some(Span::new(t, f64::INFINITY, 0.0)),
+            Range::Line => Some(Span::new(t, to.max(t), 0.0)),
             Range::Node(id) => magnitude(node(*id, t)),
             Range::Add(parts) => {
-                let spans: Option<Vec<Span>> = parts.iter().map(|p| p.span(t, node)).collect();
+                let spans: Option<Vec<Span>> = parts.iter().map(|p| p.span(t, to, node)).collect();
                 Some(summed(&spans?))
             }
             Range::Mul(parts) => parts.iter().try_fold(Span::new(1.0, 1.0, 0.0), |held, p| {
-                let s = p.span(t, node)?;
+                let s = p.span(t, to, node)?;
                 Some(match (held.constant(), s.constant()) {
                     (Some((c, rho)), _) => scaled(s, c, rho),
                     (_, Some((c, rho))) => scaled(held, c, rho),
@@ -170,21 +188,21 @@ impl Range {
                 })
             }),
             Range::Div(num, den) => {
-                let d = den.from(t, node)?;
+                let d = den.over(t, to, node)?;
                 if let Some((c, rho)) = d.constant() {
-                    return Some(scaled(num.span(t, node)?, 1.0 / c, rho / (1.0 - rho)));
+                    return Some(scaled(num.span(t, to, node)?, 1.0 / c, rho / (1.0 - rho)));
                 }
                 let least = d.lo.abs().min(d.hi.abs()) - d.err;
                 if (d.lo <= 0.0 && d.hi >= 0.0) || least <= 0.0 {
                     return None;
                 }
-                let n = num.from(t, node)?;
+                let n = num.over(t, to, node)?;
                 let (lo, hi) = product((n.lo, n.hi), (1.0 / d.hi, 1.0 / d.lo));
                 let err = (n.err + n.reach() * d.err / least) / least;
                 Some(Span::new(lo, hi, err + OP * (n.reach() + n.err) / least))
             }
             Range::Pow(base, n) => {
-                let span = base.from(t, node)?;
+                let span = base.over(t, to, node)?;
                 let mut held = Span::new(1.0, 1.0, 0.0);
                 for _ in 0..n.unsigned_abs() {
                     held = times(held, span);
@@ -194,14 +212,14 @@ impl Range {
                     false => inverse(held),
                 }
             }
-            Range::Map(Unary::Exp, arg) => Some(exp(arg.span(t, node)?)),
-            Range::Map(op, arg) => mapped(*op, arg.from(t, node)?),
-            Range::Max(parts) => fold(parts, t, node, f64::max),
-            Range::Min(parts) => fold(parts, t, node, f64::min),
-            Range::Crop(of, l, r) => match t >= *r {
+            Range::Map(Unary::Exp, arg) => Some(exp(arg.span(t, to, node)?)),
+            Range::Map(op, arg) => mapped(*op, arg.over(t, to, node)?),
+            Range::Max(parts) => fold(parts, (t, to), node, f64::max),
+            Range::Min(parts) => fold(parts, (t, to), node, f64::min),
+            Range::Crop(of, l, r) => match t >= *r || to < *l {
                 true => Some(Span::new(0.0, 0.0, 0.0)),
                 false => {
-                    let s = of.from(t.max(*l), node)?;
+                    let s = of.over(t.max(*l), to.min(*r), node)?;
                     Some(Span::new(
                         s.lo.min(0.0),
                         s.hi.max(0.0),
@@ -209,11 +227,17 @@ impl Range {
                     ))
                 }
             },
-            Range::Shift(of, by) => of.span(t - by, node),
+            Range::Shift(of, by) => of.span(t - by, to - by, node),
+            // A rounded time reads anywhere `of` reaches near the exact one.
+            Range::Warp(at, of) => {
+                let when = at.over(t, to, node)?;
+                let s = of.over(when.lo - when.err, when.hi + when.err, node)?;
+                Some(Span::new(s.lo, s.hi, s.hi - s.lo + s.err))
+            }
             Range::Wide(parts) => {
                 let (mut m, mut err) = (0.0f64, 0.0f64);
                 for p in parts {
-                    let s = p.from(t, node)?;
+                    let s = p.over(t, to, node)?;
                     m = m.max(s.reach());
                     err = err.max(s.err);
                 }
@@ -333,13 +357,27 @@ impl sva_formula::Env for Unread {
 
 fn fold(
     parts: &[Range],
-    t: f64,
+    (t, to): (f64, f64),
     node: &dyn Fn(NodeId, f64) -> f64,
     pick: fn(f64, f64) -> f64,
 ) -> Option<Span> {
     let mut it = parts.iter();
-    let first = it.next()?.span(t, node)?;
-    it.try_fold(first, |held, p| Some(picked(held, p.span(t, node)?, pick)))
+    let first = it.next()?.span(t, to, node)?;
+    it.try_fold(first, |held, p| {
+        Some(picked(held, p.span(t, to, node)?, pick))
+    })
+}
+
+fn until(atom: &SpectralAtom, to: f64) -> SpectralAtom {
+    if to == f64::INFINITY {
+        return *atom;
+    }
+    let l = atom.ind.map_or(Edge::at(f64::NEG_INFINITY), |i| i.l);
+    let r = atom.ind.map_or(to, |i| i.r.value().min(to));
+    SpectralAtom {
+        ind: Some(Indicator { l, r: Edge::at(r) }),
+        ..*atom
+    }
 }
 
 /// Rounding picks the other operand only where `|v_other| <= |v|` plus both errors.

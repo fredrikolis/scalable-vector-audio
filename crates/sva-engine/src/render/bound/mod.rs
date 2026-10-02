@@ -1,4 +1,4 @@
-// Concern: bounds one node's magnitude from an instant on, off its atoms, formula or fixed filter | Non-concern: solvers, loops, gain to the output | IO: (NodeId) -> a bound from each instant, or none
+// Concern: bounds a node's magnitude from an instant on: form, operation, read, fixed filter | Non-concern: solvers, loops, gain to the output | IO: (NodeId) -> a bound from each instant, or none
 
 mod filter;
 mod range;
@@ -7,13 +7,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sva_formula::spectral_sum::atom::SpectralAtom;
 use sva_formula::spectral_sum::sup::sup_from;
-use sva_formula::{NodeId, Var};
+use sva_formula::{Body, C64, Edge, Fold, NodeId, Part, Unary, Var};
 use sva_samples::collapse::plan::summed_bounds;
 use sva_samples::{Audible, Extent, Grid, Profile, truncate_spectral_sum, truncate_written};
 
 use crate::cast::Cast;
 use crate::lower::number_of;
-use crate::typing::{Typing, Value};
+use crate::typing::{Typing, Value, When};
 use filter::Ringing;
 use range::{OP, Range, TRANSFORM_OPS};
 
@@ -26,6 +26,10 @@ enum Form {
     Written(Range, BTreeMap<NodeId, Tail>),
     /// A fixed filter on its grid's samples.
     Filter(Ringing, Grid),
+    /// Every value a draw takes.
+    Within(f64),
+    /// A read at `k*t + c`, `k >= 0`, at most `step` early; any other time reads anywhere.
+    Read(Box<Tail>, Option<(f64, f64, f64)>),
 }
 
 /// Where a node is nonzero, its prune included: past it a reader reads zero.
@@ -48,6 +52,10 @@ impl Tail {
         open: &mut BTreeSet<NodeId>,
         ends: Ends,
     ) -> Option<Tail> {
+        // A retired term sounded before now, in what reads the note sum and in no bound here.
+        if tys.retired_sum().is_some_and(|sum| tys.reads(id, sum)) {
+            return None;
+        }
         let band = Audible::of(profile, rate);
         // A series no line reaches falls to the written form, as the collapse does.
         if tys.ty(id).is_closed_form()
@@ -67,8 +75,28 @@ impl Tail {
                 .collect();
             return Some(Tail(Form::Atoms(atoms, summed)));
         }
-        let form = match tys.value(id) {
-            Value::ClosedForm(form) => form,
+        let body = match tys.value(id) {
+            Value::ClosedForm(form) if form.var == Var::T => {
+                truncate_written(&form.body, band).ok()?
+            }
+            Value::Cast(Cast::Sample, source) => {
+                return Tail::within(tys, (profile, rate), *source, open, ends);
+            }
+            Value::Noise(_) => return Some(Tail(Form::Within(1.0))),
+            Value::Op { name, args } => sampled(tys, name, args)?,
+            Value::Read { source, at, .. } => {
+                let read = match at {
+                    When::At(map) => {
+                        let step = 1.0 / tys.grid(*source).sr();
+                        Some((map.scale.to_f64(), map.shift.to_f64(), step))
+                    }
+                    _ => None,
+                };
+                open.insert(id).then_some(())?;
+                let inner = Tail::within(tys, (profile, rate), *source, open, ends);
+                open.remove(&id);
+                return Some(Tail(Form::Read(Box::new(inner?), read)));
+            }
             Value::Filter {
                 shape,
                 x,
@@ -83,15 +111,7 @@ impl Tail {
                 }
                 let (coeffs, _) =
                     sva_samples::filters::coefficients(*shape, cutoff?, q?, gain?, grid.sr());
-                // A retired term's past is in a note-reading filter's state, in no bound here.
-                if tys.retired_sum().is_some_and(|sum| tys.reads(*x, sum)) {
-                    return None;
-                }
-                let input = match tys.value(*x) {
-                    Value::Cast(Cast::Sample, source) => *source,
-                    _ => *x,
-                };
-                let input = Tail::within(tys, (profile, rate), input, open, ends)?;
+                let input = Tail::within(tys, (profile, rate), *x, open, ends)?;
                 let span = ends(*x);
                 let first = match span.start {
                     i64::MIN => f64::NEG_INFINITY,
@@ -102,10 +122,7 @@ impl Tail {
             }
             _ => return None,
         };
-        if form.var != Var::T {
-            return None;
-        }
-        let range = Range::of(&truncate_written(&form.body, band).ok()?).ok()?;
+        let range = Range::of(&body).ok()?;
         let mut nodes = Vec::new();
         range.nodes(&mut nodes);
         open.insert(id).then_some(())?;
@@ -141,6 +158,56 @@ impl Tail {
             Form::Filter(ringing, grid) => {
                 ringing.from(grid.count(t).floor().clamp(-9e18, 9e18) as i64)
             }
+            Form::Within(m) => *m,
+            Form::Read(source, Some((k, c, step))) if *k >= 0.0 => source.from(k * t + c - step),
+            Form::Read(source, _) => source.from(f64::NEG_INFINITY),
         }
     }
+}
+
+/// A sampled operation as the written form its value is, each operand a node and each constant
+/// its number; `None` for `%` and a power no constant names.
+fn sampled(tys: &Typing, name: &str, args: &[NodeId]) -> Option<Body> {
+    let number = |at: usize| args.get(at).and_then(|a| number_of(tys, *a));
+    let part = |a: &NodeId| {
+        Part::bare(match number_of(tys, *a) {
+            Some(c) => Body::Const(C64::real(c)),
+            None => Body::Node(*a),
+        })
+    };
+    let parts = || args.iter().map(part).collect::<Vec<_>>();
+    let pair = || Some((part(args.first()?), part(args.get(1)?)));
+    Some(match name {
+        "+" => Body::Add(parts()),
+        "*" => Body::Mul(parts()),
+        "-" => {
+            let (a, b) = pair()?;
+            let minus = Part::bare(Body::Mul(vec![Part::bare(Body::Const(C64::real(-1.0))), b]));
+            Body::Add(vec![a, minus])
+        }
+        "/" => {
+            let (a, b) = pair()?;
+            Body::Div(a, b)
+        }
+        "pow" => {
+            let n = number(1).filter(|n| n.fract() == 0.0 && n.abs() < 64.0)?;
+            Body::Pow(part(args.first()?), n as i32)
+        }
+        "max" => Body::Fold(Fold::Max, parts()),
+        "min" => Body::Fold(Fold::Min, parts()),
+        // Where the window shuts is the node's support; its gain is at most one.
+        "crop" => Body::Crop {
+            of: part(args.first()?),
+            l: Edge::at(f64::NEG_INFINITY),
+            r: Edge::at(f64::INFINITY),
+            rise: 0.0,
+            fall: 0.0,
+        },
+        "join" => Body::Join(parts()),
+        "ch" => {
+            let k = number(1).filter(|k| k.fract() == 0.0 && (0.0..256.0).contains(k))?;
+            Body::Channel(part(args.first()?), k as u8)
+        }
+        other => Body::Apply(Unary::from_name(other)?, part(args.first()?)),
+    })
 }

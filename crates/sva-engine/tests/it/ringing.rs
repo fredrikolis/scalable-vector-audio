@@ -25,6 +25,22 @@ fn rings() -> Graph {
             ),
             ("shaped", "crop(tanh(3*sin(2*pi*200*t)), 0s, 0.25s)\n"),
             ("saturated", "lowpass(sample(@shaped), 300hz)\n"),
+            (
+                "drawn",
+                "lowpass(sample(crop(rand(t, seed=7), 0s, 0.25s)), 300hz)\n",
+            ),
+            ("tone", "sin(2*pi*440*t)\n"),
+            (
+                "warped",
+                "lowpass(sample(crop(@tone(t + 0.001*sin(2*pi*5*t)), 0s, 0.25s)), 300hz)\n",
+            ),
+            ("buzz", "crop(saw(220, 0.3*sin(2*pi*5*t)), 0s, 0.25s)\n"),
+            ("vibrato", "lowpass(sample(@buzz), 300hz)\n"),
+            (
+                "modulated",
+                "lowpass(sample(crop(sum(k, 1, 30, sin(k*(2*pi*220*t + 0.3*sin(2*pi*5*t)))/k), \
+                 0s, 0.25s)), 300hz)\n",
+            ),
             ("swept", "lowpass(sample(@src), 800hz + 400*sin(2*pi*t))\n"),
             ("open", "lowpass(sample(sin(2*pi*440*t)), 300hz)\n"),
             ("echo", "sample(@src) + 0.5*self[idx(t) - 400]\n"),
@@ -33,7 +49,11 @@ fn rings() -> Graph {
     )
 }
 
-const SHAPES: [&str; 10] = [
+const SHAPES: [&str; 14] = [
+    "drawn",
+    "warped",
+    "vibrato",
+    "modulated",
     "lp",
     "lowpass",
     "highpass",
