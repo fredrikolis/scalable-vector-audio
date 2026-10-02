@@ -107,7 +107,11 @@ fn a_frequency_law_that_starts_below_zero_is_walked_to_where_it_leaves_the_band(
         .iter()
         .map(|l| l.hz)
         .fold(f64::NEG_INFINITY, f64::max);
-    assert!((highest - 100.0).abs() < 1e-9, "{highest}");
+    assert!((highest - 99.0).abs() < 1e-9, "{highest}");
+    assert!(
+        answer.dropped.iter().any(|l| l.hz == 100.0),
+        "a line on the ceiling is past it"
+    );
 }
 
 #[test]

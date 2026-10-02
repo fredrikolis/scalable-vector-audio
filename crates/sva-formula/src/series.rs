@@ -238,7 +238,7 @@ pub fn lines(s: &Series, ceiling: f64, floor_db: f64, precision: f64) -> Lines {
             break;
         }
         for line in here {
-            if line.hz.abs() <= ceiling {
+            if line.hz.abs() < ceiling {
                 taken.push(line);
             } else {
                 dropped.push(line);
@@ -361,7 +361,7 @@ fn places(shape: &Shape) -> Vec<(Body, Body)> {
     }
 }
 
-/// The last index whose frequency still fits the band, solving `|slope*k + offset| <= ceiling`
+/// The last index the walk reaches, solving `|slope*k + offset| <= ceiling`
 /// at both signs: an offset opposing the slope carries the line back in before it leaves.
 fn leaves_band(place: &Body, k: IndexId, ceiling: f64) -> Option<i64> {
     let (slope, offset) = affine_in(place, Reading::Index(k))?;
