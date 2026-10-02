@@ -1,9 +1,11 @@
 // Concern: lowers one node into the per-sample program that writes its value, each other value it reads a slot | Non-concern: holding or evaluating values (mod.rs) | IO: (NodeId) -> Program
 
-use sva_formula::{Body, ClosedForm, Fold, NodeId, Part, Var};
+use std::collections::HashMap;
+
+use sva_formula::{Body, ClosedForm, Fold, NodeId, Part, Reads, Var};
 use sva_samples::{
-    Audible, Binary, BufId, Formula, Grid, Index, Map, NodeRenderer, Site, SiteId, Slot, Unary,
-    Wrap, truncate_spectral_sum, truncate_written,
+    Audible, Binary, BufId, CollapseError, Formula, Grid, Index, Map, NodeRenderer, Site, SiteId,
+    Slot, Unary, Wrap, Written, truncate_spectral_sum, truncate_written_with,
 };
 
 use super::support::{Supports, landed, placed, reach, shifted, window};
@@ -617,12 +619,55 @@ fn warped(
         Some(Err(e)) => Some(truncated(&e)),
         None => None,
     };
-    match crate::refs::substituted_closed_form(tys, form) {
-        Some(written) if written.var == Var::T => {
-            let body = truncate_written(&written.body, band).map_err(|e| truncated(&e))?;
-            Ok(Some(Formula::Written(Box::new(body))))
+    match tys.value(form) {
+        Value::ClosedForm(written)
+            if written.var == Var::T && crate::refs::reads_through(tys, &written.body, Var::T) =>
+        {
+            let shared = crate::refs::read_through(tys, |through| {
+                let mut sharing = Sharing {
+                    tys,
+                    through,
+                    named: HashMap::new(),
+                    refs: Vec::new(),
+                };
+                let body = truncate_written_with(&written.body, band, through, &mut |id, band| {
+                    sharing.name(id, band)
+                })?;
+                Ok(Written {
+                    body,
+                    refs: sharing.refs,
+                })
+            });
+            Ok(Some(Formula::Written(Box::new(
+                shared.map_err(|e| truncated(&e))?,
+            ))))
         }
         _ => refused.map_or(Ok(None), Err),
+    }
+}
+
+/// Each node a written form reads, truncated once per band it is read in, after what it reads.
+struct Sharing<'a> {
+    tys: &'a Typing,
+    through: &'a dyn Reads,
+    named: HashMap<(NodeId, [u64; 3]), NodeId>,
+    refs: Vec<Body>,
+}
+
+impl Sharing<'_> {
+    fn name(&mut self, id: NodeId, band: Audible) -> Result<NodeId, CollapseError> {
+        if let Some(held) = self.named.get(&(id, band.key())) {
+            return Ok(*held);
+        }
+        let Value::ClosedForm(form) = self.tys.value(id) else {
+            unreachable!("a ref read through names a closed form");
+        };
+        let through = self.through;
+        let body = truncate_written_with(&form.body, band, through, &mut |n, b| self.name(n, b))?;
+        let named = NodeId(self.refs.len() as u32);
+        self.refs.push(body);
+        self.named.insert((id, band.key()), named);
+        Ok(named)
     }
 }
 

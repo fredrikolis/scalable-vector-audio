@@ -20,6 +20,7 @@ pub mod run;
 pub mod series;
 pub mod spectral_sum;
 pub mod table;
+pub mod through;
 pub mod ty;
 pub mod underflow;
 
@@ -47,9 +48,10 @@ pub use series::{
     summable,
 };
 pub use spectral_sum::atom::{Exp, Factors, Gauss, Indicator, Pole, Singular, SpectralAtom};
-pub use spectral_sum::build::{normalize, normalize_closed_form};
+pub use spectral_sum::build::{normalize, normalize_closed_form, normalize_read};
 pub use spectral_sum::image::crop_peeled;
 pub use spectral_sum::{Lane, SpectralSum};
 pub use table::{FAMILIES, TABLE_VERSION, dual, inverse, reflect};
+pub use through::{Kept, Opaque, Reads, Through};
 pub use ty::{Codomain, Held, MAX_WIDTH, Mismatch, Ty};
 pub use underflow::exp_zero_at;

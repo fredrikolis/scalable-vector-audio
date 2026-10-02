@@ -1,6 +1,6 @@
 // Concern: the atoms each written constructor lowers to, and the window one lifts off | Non-concern: the lane algebra (build.rs) | IO: (a constructor's arguments) -> SpectralSum or a window
 
-use crate::affine::{apply_scalar, completed_square, exact_affine};
+use crate::affine::{apply_scalar, completed_square_read, exact_affine_read};
 use crate::closed_form::{Body, Edge, Fold, Part, Series, Unary, Var};
 use crate::complex::C64;
 use crate::origin::Origin;
@@ -10,6 +10,7 @@ use crate::spectral_sum::atom::{
 };
 use crate::spectral_sum::merge::simplify;
 use crate::spectral_sum::{Lane, SpectralSum};
+use crate::through::Reads;
 
 pub fn left(origin: Origin, first: Factor, reason: LeftReason) -> Left {
     Left::new(origin, AtomSketch::of(first), reason)
@@ -30,8 +31,14 @@ pub fn one(var: Var, atom: SpectralAtom) -> SpectralSum {
     SpectralSum::of(var, vec![lane])
 }
 
-pub fn apply(op: Unary, arg: &Part, origin: Origin, var: Var) -> Result<SpectralSum, Left> {
-    let affine = exact_affine(&arg.body);
+pub fn apply(
+    op: Unary,
+    arg: &Part,
+    origin: Origin,
+    var: Var,
+    reads: &dyn Reads,
+) -> Result<SpectralSum, Left> {
+    let affine = exact_affine_read(&arg.body, reads);
     if let Some((a, b)) = affine
         && a.is_zero()
     {
@@ -39,7 +46,7 @@ pub fn apply(op: Unary, arg: &Part, origin: Origin, var: Var) -> Result<Spectral
     }
     if op == Unary::Exp
         && affine.is_none()
-        && let Some(q) = completed_square(&arg.body)
+        && let Some(q) = completed_square_read(&arg.body, reads)
     {
         return Ok(one(
             var,
@@ -142,8 +149,8 @@ pub fn fold(
 }
 
 /// `delta^(k)(a*x + b)` places one delta at the argument's zero, scaled by `a^k * |a|`.
-pub fn delta(at: &Part, order: u16, var: Var) -> Result<SpectralSum, Left> {
-    let (a, b) = real_affine(at)?;
+pub fn delta(at: &Part, order: u16, var: Var, reads: &dyn Reads) -> Result<SpectralSum, Left> {
+    let (a, b) = real_affine(at, reads)?;
     let scale = a.powi(i32::from(order)) * a.abs();
     Ok(one(
         var,
@@ -156,8 +163,8 @@ pub fn delta(at: &Part, order: u16, var: Var) -> Result<SpectralSum, Left> {
     ))
 }
 
-pub fn principal_value(at: &Part, var: Var) -> Result<SpectralSum, Left> {
-    let (a, b) = real_affine(at)?;
+pub fn principal_value(at: &Part, var: Var, reads: &dyn Reads) -> Result<SpectralSum, Left> {
+    let (a, b) = real_affine(at, reads)?;
     Ok(one(
         var,
         SpectralAtom::new(
@@ -176,8 +183,8 @@ pub fn principal_value(at: &Part, var: Var) -> Result<SpectralSum, Left> {
     ))
 }
 
-fn real_affine(at: &Part) -> Result<(f64, f64), Left> {
-    match exact_affine(&at.body) {
+fn real_affine(at: &Part, reads: &dyn Reads) -> Result<(f64, f64), Left> {
+    match exact_affine_read(&at.body, reads) {
         Some((a, b)) if a.is_real() && b.is_real() && a.re != 0.0 => Ok((a.re, b.re)),
         _ => Err(left(
             at.origin,

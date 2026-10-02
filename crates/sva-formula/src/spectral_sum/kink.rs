@@ -1,14 +1,16 @@
 // Concern: splits a form at the crossing of a min or max of two lines | Non-concern: lowering either half (build.rs) | IO: (&Body) -> the same value as two crops, or nothing
 
-use crate::affine::exact_affine;
+use crate::affine::exact_affine_read;
 use crate::closed_form::{Body, Edge, Fold, Part, map_children};
 use crate::complex::C64;
+use crate::through::Reads;
 
-pub fn split(f: &Body) -> Option<Body> {
-    let (kink, (at, below, above)) = first(f)?;
+pub fn split(f: &Body, reads: &dyn Reads) -> Option<Body> {
+    let (kink, (at, below, above)) = first(f, reads)?;
     let half = |with: &Body, l: Edge, r: Edge| {
+        let scope = reads.scope();
         Part::bare(Body::Crop {
-            of: Part::bare(replaced(f, kink, with)),
+            of: Part::bare(replaced(f, (scope, &kink, with), reads)),
             l,
             r,
             rise: 0.0,
@@ -23,8 +25,8 @@ pub fn split(f: &Body) -> Option<Body> {
 
 /// A constant, or a slope and the instant it is zero at: `k*(t - r)` keeps `r` itself. Each
 /// fold of a written constant rounds once, at most 2^-53 of its result, as `exact_affine`.
-#[derive(Clone, Copy)]
-enum Line {
+#[derive(Clone, Copy, Debug)]
+pub enum Line {
     Flat(f64),
     Sloped { slope: f64, root: f64 },
 }
@@ -76,7 +78,11 @@ impl Line {
     }
 }
 
-fn line(f: &Body) -> Option<Line> {
+pub(crate) fn line(f: &Body, reads: &dyn Reads) -> Option<Line> {
+    if let Body::Node(id) = f {
+        return reads.line(*id);
+    }
+    let line = |g: &Body| line(g, reads);
     let real = |c: C64| c.is_real().then_some(c.re);
     let read = match f {
         Body::Const(c) => Some(Line::Flat(real(*c)?)),
@@ -113,7 +119,7 @@ fn line(f: &Body) -> Option<Line> {
         _ => None,
     };
     let read = read.or_else(|| {
-        let (a, b) = exact_affine(f)?;
+        let (a, b) = exact_affine_read(f, reads)?;
         match (real(a)?, real(b)?) {
             (0.0, b) => Some(Line::Flat(b)),
             (a, b) => Some(Line::Sloped {
@@ -135,14 +141,14 @@ fn line(f: &Body) -> Option<Line> {
 /// Each half is its own line, read from its root. Against a constant, the crossing is the
 /// first double where the line as evaluated passes it, so a `max` never falls under nor a
 /// `min` climbs over it, and a line meeting zero crosses at its root.
-fn crossing(f: &Body) -> Option<Crossing> {
+fn crossing(f: &Body, reads: &dyn Reads) -> Option<Crossing> {
     let Body::Fold(op @ (Fold::Min | Fold::Max), args) = f else {
         return None;
     };
     let [p, q] = args.as_slice() else {
         return None;
     };
-    let (l1, l2) = (line(&p.body)?, line(&q.body)?);
+    let (l1, l2) = (line(&p.body, reads)?, line(&q.body, reads)?);
     if l1.slope() == l2.slope() {
         return None;
     }
@@ -240,7 +246,7 @@ fn first_double(holds: impl Fn(f64) -> bool, near: f64) -> Option<f64> {
 }
 
 /// A shift, warp or series moves the kink; a derivative would add a delta at the seam.
-fn in_time(f: &Body) -> bool {
+pub(crate) fn in_time(f: &Body) -> bool {
     matches!(
         f,
         Body::Add(_)
@@ -255,26 +261,43 @@ fn in_time(f: &Body) -> bool {
     )
 }
 
-type Crossing = (f64, Body, Body);
+pub type Crossing = (f64, Body, Body);
 
-fn first(f: &Body) -> Option<(&Body, Crossing)> {
-    if let Some(found) = crossing(f) {
-        return Some((f, found));
+/// The first min or max of two lines, searched through each ref as through its own form.
+pub(crate) fn first(f: &Body, reads: &dyn Reads) -> Option<(Body, Crossing)> {
+    if let Body::Node(id) = f {
+        return reads.kink(*id);
+    }
+    if let Some(found) = crossing(f, reads) {
+        return Some((f.clone(), found));
     }
     if !in_time(f) {
         return None;
     }
     crate::closed_form::children(f)
         .into_iter()
-        .find_map(|p| first(&p.body))
+        .find_map(|p| first(&p.body, reads))
 }
 
-fn replaced(f: &Body, kink: &Body, with: &Body) -> Body {
+/// Which split it is for, the kink, and the line read in its place.
+type Replacing<'a> = (usize, &'a Body, &'a Body);
+
+fn replaced(f: &Body, at: Replacing, reads: &dyn Reads) -> Body {
+    let (scope, kink, with) = at;
     if f == kink {
         return with.clone();
+    }
+    if let Body::Node(id) = f {
+        return reads
+            .replaced(*id, scope, kink, with)
+            .map_or_else(|| f.clone(), Body::Node);
     }
     if !in_time(f) {
         return f.clone();
     }
-    map_children(f, |p| Part::new(p.origin, replaced(&p.body, kink, with)))
+    map_children(f, |p| replaced_part(p, at, reads))
+}
+
+pub(crate) fn replaced_part(p: &Part, at: Replacing, reads: &dyn Reads) -> Part {
+    Part::new(p.origin, replaced(&p.body, at, reads))
 }

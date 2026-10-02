@@ -2,6 +2,7 @@
 
 use crate::closed_form::{Body, IndexId, Unary};
 use crate::complex::C64;
+use crate::through::{Opaque, Reads};
 
 /// An affine argument makes the line and delta rows, a quadratic one the Gaussian row.
 pub const MAX_DEGREE: usize = 2;
@@ -101,7 +102,7 @@ impl Coeff {
 }
 
 /// Which symbol a polynomial is read in: the closed form's own variable, or one series index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Reading {
     Free,
     Index(IndexId),
@@ -111,11 +112,16 @@ pub fn polynomial(f: &Body) -> Option<Vec<Coeff>> {
     polynomial_in(f, Reading::Free)
 }
 
+pub fn polynomial_in(f: &Body, reading: Reading) -> Option<Vec<Coeff>> {
+    polynomial_read(f, reading, &Opaque)
+}
+
 /// Ascending coefficients, or nothing above degree two. Read in the free variable, an index
 /// is an unknown real; read in an index, the free variable is not a coefficient at all.
-pub fn polynomial_in(f: &Body, reading: Reading) -> Option<Vec<Coeff>> {
-    let polynomial = |g: &Body| polynomial_in(g, reading);
+pub fn polynomial_read(f: &Body, reading: Reading, reads: &dyn Reads) -> Option<Vec<Coeff>> {
+    let polynomial = |g: &Body| polynomial_read(g, reading, reads);
     match f {
+        Body::Node(id) => reads.polynomial(*id, reading),
         Body::Const(c) => Some(vec![Coeff::Exact(*c)]),
         Body::Index(k) => Some(match reading {
             Reading::Index(wanted) if *k == wanted => vec![Coeff::ZERO, Coeff::ONE],
@@ -126,14 +132,14 @@ pub fn polynomial_in(f: &Body, reading: Reading) -> Option<Vec<Coeff>> {
             Reading::Index(_) => None,
         },
         Body::Keyed { seed, of } => {
-            match constant_in(&of.body, reading)
+            match constant_read(&of.body, reading, reads)
                 .and_then(|at| crate::hash::draw_nearest(*seed, at.re))
             {
                 Some(drawn) => Some(vec![Coeff::Exact(C64::real(drawn))]),
                 None => Some(vec![Coeff::Unknown(Axis::Real)]),
             }
         }
-        Body::Apply(op, arg) => match polynomial_in(&arg.body, reading)?[..] {
+        Body::Apply(op, arg) => match polynomial(&arg.body)?[..] {
             [c] => Some(vec![match c.exact() {
                 Some(x) => Coeff::Exact(apply_scalar(*op, x)),
                 None => Coeff::Unknown(unary_axis(*op, c.axis())),
@@ -187,7 +193,11 @@ pub fn apply_scalar(op: Unary, x: C64) -> C64 {
 }
 
 fn constant_in(f: &Body, reading: Reading) -> Option<C64> {
-    match polynomial_in(f, reading)?[..] {
+    constant_read(f, reading, &Opaque)
+}
+
+fn constant_read(f: &Body, reading: Reading, reads: &dyn Reads) -> Option<C64> {
+    match polynomial_read(f, reading, reads)?[..] {
         [b] => b.exact(),
         _ => None,
     }
@@ -198,7 +208,11 @@ pub fn affine(f: &Body) -> Option<(Coeff, Coeff)> {
 }
 
 pub fn affine_in(f: &Body, reading: Reading) -> Option<(Coeff, Coeff)> {
-    match polynomial_in(f, reading)?[..] {
+    affine_read(f, reading, &Opaque)
+}
+
+fn affine_read(f: &Body, reading: Reading, reads: &dyn Reads) -> Option<(Coeff, Coeff)> {
+    match polynomial_read(f, reading, reads)?[..] {
         [b] => Some((Coeff::ZERO, b)),
         [b, a] => Some((a, b)),
         _ => None,
@@ -207,14 +221,22 @@ pub fn affine_in(f: &Body, reading: Reading) -> Option<(Coeff, Coeff)> {
 
 /// The offset of a time spelled as the variable plus a constant, an index counting as one.
 pub fn slide(at: &Body) -> Option<Coeff> {
-    match affine(at)? {
+    slide_read(at, &Opaque)
+}
+
+pub(crate) fn slide_read(at: &Body, reads: &dyn Reads) -> Option<Coeff> {
+    match affine_read(at, Reading::Free, reads)? {
         (Coeff::Exact(slope), offset) if slope.re == 1.0 && slope.im == 0.0 => Some(offset),
         _ => None,
     }
 }
 
 pub fn exact_affine(f: &Body) -> Option<(C64, C64)> {
-    let (a, b) = affine(f)?;
+    exact_affine_read(f, &Opaque)
+}
+
+pub(crate) fn exact_affine_read(f: &Body, reads: &dyn Reads) -> Option<(C64, C64)> {
+    let (a, b) = affine_read(f, Reading::Free, reads)?;
     Some((a.exact()?, b.exact()?))
 }
 
@@ -225,10 +247,17 @@ pub fn exact_constant(f: &Body) -> Option<C64> {
 /// Whether a hash keyed on this formula names more than one value. The free variable moves
 /// it; so does a node or a parameter, whose own closed form this judgment cannot see.
 pub fn key_moves(f: &Body) -> bool {
-    matches!(f, Body::Line | Body::Node(_) | Body::Param(_))
-        || crate::closed_form::children(f)
+    key_moves_read(f, &Opaque)
+}
+
+pub(crate) fn key_moves_read(f: &Body, reads: &dyn Reads) -> bool {
+    match f {
+        Body::Line | Body::Param(_) => true,
+        Body::Node(id) => reads.key_moves(*id),
+        other => crate::closed_form::children(other)
             .iter()
-            .any(|p| key_moves(&p.body))
+            .any(|p| key_moves_read(&p.body, reads)),
+    }
 }
 
 /// `exp(q)` with the square completed: a real width and centre, the rest an exponential.
@@ -240,7 +269,11 @@ pub struct Squared {
 }
 
 pub fn completed_square(f: &Body) -> Option<Squared> {
-    let [a0, a1, a2] = polynomial(f)?[..] else {
+    completed_square_read(f, &Opaque)
+}
+
+pub(crate) fn completed_square_read(f: &Body, reads: &dyn Reads) -> Option<Squared> {
+    let [a0, a1, a2] = polynomial_read(f, Reading::Free, reads)?[..] else {
         return None;
     };
     let (a0, a1, a2) = (a0.exact()?, a1.exact()?, a2.exact()?);

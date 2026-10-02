@@ -1,6 +1,8 @@
 // Concern: what reading another node yields, per the representation it holds | Non-concern: ordering the reads (schedule.rs), collapsing a closed form (sva-samples) | IO: (NodeId, Var) -> SpectralSum
 
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 use sva_formula::closed_form::children;
 use sva_formula::spectral_sum::atom::Indicator;
@@ -8,8 +10,8 @@ use sva_formula::spectral_sum::build::{multiply_lanes, sole_constant};
 use sva_formula::spectral_sum::image;
 use sva_formula::spectral_sum::merge::simplify;
 use sva_formula::{
-    Body, C64, ClosedForm, Lane, Left, NodeId, Part, SpectralSum, Var, dual, inverse,
-    normalize_closed_form,
+    Body, C64, ClosedForm, Lane, Left, NodeId, Opaque, Part, Reads, SpectralSum, Through, Var,
+    dual, inverse, normalize_closed_form, normalize_read,
 };
 
 use crate::cast::Cast;
@@ -312,11 +314,11 @@ fn compose(
                 None => Err(unsubstituted(typing, here, body)),
             }
         }
-        // Inlined, every other construct is what it was written as, and normalizes.
-        other => match inlined(typing, other, var, &mut open.clone()) {
-            Some(written) => normalize_here(typing, &written, var),
-            None => Err(unsubstituted(typing, here, other)),
-        },
+        // Every other construct is what it was written as, each ref read as its own form.
+        other if reads_through(typing, other, var) => read_through(typing, |through| {
+            normalize_with(typing, other, var, through)
+        }),
+        other => Err(unsubstituted(typing, here, other)),
     }
 }
 
@@ -351,12 +353,16 @@ fn left_of(typing: &Typing, left: Left) -> EngineError {
 }
 
 fn normalize_here(typing: &Typing, body: &Body, var: Var) -> Result<SpectralSum, EngineError> {
-    normalize_closed_form(&ClosedForm {
-        var,
-        body: body.clone(),
-        origin: sva_formula::Origin::UNKNOWN,
-    })
-    .map_err(|left| {
+    normalize_with(typing, body, var, &Opaque)
+}
+
+fn normalize_with(
+    typing: &Typing,
+    body: &Body,
+    var: Var,
+    reads: &dyn Reads,
+) -> Result<SpectralSum, EngineError> {
+    normalize_read(body, var, reads).map_err(|left| {
         EngineError::of_closed_form(
             &left.refusal(),
             typing.locate(left.origin),
@@ -465,52 +471,85 @@ fn lane_at(n: &SpectralSum, at: usize) -> &Lane {
     n.lanes.get(at).unwrap_or(&n.lanes[0])
 }
 
-/// Every ref inlined, where each is a form on the same axis; a crossing answers `None`.
-pub fn substituted_closed_form(typing: &Typing, node: NodeId) -> Option<ClosedForm> {
-    let Value::ClosedForm(form) = typing.value(node) else {
-        return None;
-    };
-    Some(ClosedForm {
-        var: form.var,
-        body: substituted_body(typing, node, &form.body)?,
-        origin: form.origin,
-    })
+/// Whether each ref `body` holds names a form on `var`, as do the refs each of those holds,
+/// with no loop among them: only then is a ref read as the form it names.
+pub(crate) fn reads_through(typing: &Typing, body: &Body, var: Var) -> bool {
+    let open = &mut Vec::new();
+    nodes_in(body)
+        .into_iter()
+        .all(|id| inlinable(typing, id, var, open))
 }
 
-/// The same substitution over one body of `node`'s own form.
-pub(crate) fn substituted_body(typing: &Typing, node: NodeId, body: &Body) -> Option<Body> {
-    let Value::ClosedForm(form) = typing.value(node) else {
-        return None;
-    };
-    inlined(typing, body, form.var, &mut vec![node])
-}
-
-fn inlined(typing: &Typing, f: &Body, var: Var, open: &mut Vec<NodeId>) -> Option<Body> {
-    match f {
-        Body::Node(id) if open.contains(id) => None,
-        Body::Node(id) => match typing.value(*id) {
-            Value::ClosedForm(form) if form.var == var => {
-                open.push(*id);
-                let out = inlined(typing, &form.body, var, open);
-                open.pop();
-                out
-            }
-            _ => None,
-        },
-        other => {
-            let mut ok = true;
-            let out = sva_formula::closed_form::map_children(other, |p| {
-                match inlined(typing, &p.body, var, open) {
-                    Some(body) => sva_formula::Part::new(p.origin, body),
-                    None => {
-                        ok = false;
-                        p.clone()
-                    }
-                }
-            });
-            ok.then_some(out)
-        }
+/// A loop met is a loop the node is on or reaches, wherever the walk entered it.
+fn inlinable(typing: &Typing, id: NodeId, var: Var, open: &mut Vec<NodeId>) -> bool {
+    if let Some(held) = typing.folds().inlinable((id, var)) {
+        return held;
     }
+    if open.contains(&id) {
+        return false;
+    }
+    let found = match typing.value(id) {
+        Value::ClosedForm(form) if form.var == var => {
+            open.push(id);
+            let held = nodes_in(&form.body)
+                .into_iter()
+                .all(|n| inlinable(typing, n, var, open));
+            open.pop();
+            held
+        }
+        _ => false,
+    };
+    typing.folds().keep_inlinable((id, var), found);
+    found
+}
+
+/// One reading of written forms, found once per node for as long as it lasts.
+pub(crate) struct PerNode<T>(RefCell<BTreeMap<NodeId, T>>);
+
+impl<T: Clone> PerNode<T> {
+    pub(crate) fn new() -> PerNode<T> {
+        PerNode(RefCell::default())
+    }
+
+    pub(crate) fn of(&self, id: NodeId, read: impl FnOnce() -> T) -> T {
+        if let Some(held) = self.0.borrow().get(&id) {
+            return held.clone();
+        }
+        let found = read();
+        self.0.borrow_mut().insert(id, found.clone());
+        found
+    }
+
+    /// The same, keeping only a reading that did not refuse.
+    pub(crate) fn try_of<E>(
+        &self,
+        id: NodeId,
+        read: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        if let Some(held) = self.0.borrow().get(&id) {
+            return Ok(held.clone());
+        }
+        let found = read()?;
+        self.0.borrow_mut().insert(id, found.clone());
+        Ok(found)
+    }
+}
+
+/// The written form a ref `reads_through` passed names.
+pub(crate) fn written_form(typing: &Typing, id: NodeId) -> &Body {
+    match typing.value(id) {
+        Value::ClosedForm(form) => &form.body,
+        _ => unreachable!("a ref read through names a closed form"),
+    }
+}
+
+/// `with` handed every ref as the form it names, each node's readings kept on the typing.
+pub(crate) fn read_through<R>(typing: &Typing, with: impl FnOnce(&Through) -> R) -> R {
+    let written = |id: NodeId| match typing.value(id) {
+        Value::ClosedForm(form) => Some((&form.body, form.origin)),
+        _ => None,
+    };
+    with(&Through::new(&written, typing.folds().written()))
 }
 
 #[cfg(test)]

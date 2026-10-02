@@ -19,7 +19,7 @@ use std::sync::Arc;
 use sva_formula::{ClosedForm, Hash, Held as Representation, NodeId, Var};
 use sva_samples::{
     Buffer, Extent, Formula, Grid, Label, NodeRenderer, Profile, Rows, Slot, Spanned, Tape,
-    truncate_spectral_sum, truncate_written,
+    Written, truncate_spectral_sum, truncate_written,
 };
 
 pub(crate) use demand::Need;
@@ -974,9 +974,10 @@ impl Building<'_> {
                 let summed = sum.as_ref().map(|sum| truncate_spectral_sum(sum, band));
                 let formula = match (summed, written) {
                     (Some(Ok(sum)), _) => Formula::Sum(Box::new(sum)),
-                    (_, Some(form)) => Formula::Written(Box::new(
-                        truncate_written(&form.body, band).map_err(|e| refused(&e))?,
-                    )),
+                    (_, Some(form)) => Formula::Written(Box::new(Written {
+                        body: truncate_written(&form.body, band).map_err(|e| refused(&e))?,
+                        refs: Vec::new(),
+                    })),
                     (Some(Err(e)), None) => return Err(refused(&e)),
                     (None, None) => unreachable!("a formula is a sum or a written form"),
                 };

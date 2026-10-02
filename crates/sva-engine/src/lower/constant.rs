@@ -2,12 +2,18 @@
 
 use sva_formula::affine::apply_scalar;
 use sva_formula::closed_form::children;
-use sva_formula::{Body, C64, ClosedForm, Fold, Origin, Part, Var, normalize_closed_form};
+use sva_formula::{Body, C64, ClosedForm, Fold, NodeId, Origin, Part, Var, normalize_closed_form};
 
 pub fn is_constant(f: &Body) -> bool {
+    constant_with(f, &|_| false)
+}
+
+/// The same, each ref answered by `node`.
+pub(crate) fn constant_with(f: &Body, node: &dyn Fn(NodeId) -> bool) -> bool {
     match f {
-        Body::Line | Body::Node(_) | Body::Param(_) | Body::Index(_) => false,
-        other => children(other).iter().all(|p| is_constant(&p.body)),
+        Body::Node(id) => node(*id),
+        Body::Line | Body::Param(_) | Body::Index(_) => false,
+        other => children(other).iter().all(|p| constant_with(&p.body, node)),
     }
 }
 
@@ -21,7 +27,10 @@ pub fn constant_value(body: &Body, var: Var) -> Option<f64> {
         body: sva_formula::series::written_out(body)?,
         origin: Origin::UNKNOWN,
     };
-    let sum = normalize_closed_form(&form).ok()?;
+    constant_of(&normalize_closed_form(&form).ok()?)
+}
+
+pub fn constant_of(sum: &sva_formula::SpectralSum) -> Option<f64> {
     let [lane] = sum.lanes.as_slice() else {
         return None;
     };

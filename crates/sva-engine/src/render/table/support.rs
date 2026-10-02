@@ -7,6 +7,7 @@ use sva_formula::{Body, C64, Fold, NodeId, Unary, exp_zero_at};
 use sva_samples::{Extent, Grid, Profile, Round};
 
 use crate::cast::Cast;
+use crate::refs::{PerNode, written_form};
 use crate::render::bound::{Tail, Tails};
 use crate::schedule;
 use crate::time::{Affine, Lattice, Q};
@@ -25,7 +26,11 @@ pub(crate) struct Supports<'a> {
     /// Each node asked, or that one asked was found from.
     asked: RefCell<BTreeSet<NodeId>>,
     tails: Tails,
+    reaches: RefCell<HashMap<Reach, Option<f64>>>,
 }
+
+/// A node read at a depth of refs, over an interval's bits.
+type Reach = (NodeId, usize, u64, u64);
 
 /// Each support found, with its cut and the supports it was found from.
 #[derive(Default)]
@@ -66,6 +71,7 @@ impl<'a> Supports<'a> {
             asking: RefCell::default(),
             asked: RefCell::default(),
             tails: Tails::default(),
+            reaches: RefCell::default(),
         }
     }
 
@@ -447,10 +453,19 @@ impl Supports<'_> {
             }
             Body::Crop { of: inner, .. } | Body::Channel(inner, _) => of(&inner.body)?,
             Body::Shift { by, of: inner } => self.bound(&inner.body, lo - by, hi - by, depth)?,
-            Body::Node(id) if depth < 16 => match self.tys.value(*id) {
-                Value::ClosedForm(form) => self.bound(&form.body, lo, hi, depth + 1)?,
-                _ => return None,
-            },
+            Body::Node(id) if depth < 16 => {
+                let key = (*id, depth, lo.to_bits(), hi.to_bits());
+                let known = self.reaches.borrow().get(&key).copied();
+                let found = known.unwrap_or_else(|| {
+                    let found = match self.tys.value(*id) {
+                        Value::ClosedForm(form) => self.bound(&form.body, lo, hi, depth + 1),
+                        _ => None,
+                    };
+                    self.reaches.borrow_mut().insert(key, found);
+                    found
+                });
+                found?
+            }
             _ => return None,
         };
         (held < 1e300).then_some(held * 1.0001)
@@ -696,55 +711,96 @@ fn lines(tys: &Typing, step: &Step, grid: Grid) -> Option<(i64, i64, i64)> {
     }
 }
 
-/// `[lo, hi]` holding `time - t` at every instant, where the machine computes it as written.
+/// `[lo, hi]` holding `time - t` at every instant, where the machine computes it as written:
+/// each node it reads first, then the sum over them.
 fn offset(tys: &Typing, time: NodeId) -> Option<(f64, f64)> {
-    let form = crate::refs::substituted_closed_form(tys, time)?;
-    let mut parts = Vec::new();
-    addends(&form.body, &mut parts);
-    let line = parts.iter().position(|b| matches!(b, Body::Line))?;
-    let (lo, hi) = parts.iter().enumerate().filter(|(k, _)| *k != line).fold(
-        (0.0, 0.0),
-        |(lo, hi), (_, b)| {
-            let (l, h) = span(b);
-            (lo + l, hi + h)
-        },
-    );
+    let Value::ClosedForm(form) = tys.value(time) else {
+        return None;
+    };
+    if !crate::refs::reads_through(tys, &form.body, form.var) {
+        return None;
+    }
+    let offsets = Offsets {
+        tys,
+        addends: PerNode::new(),
+        spans: PerNode::new(),
+    };
+    let mut held = Addends::default();
+    offsets.addends(&form.body, &mut held);
+    let Addends { lines: 1, lo, hi } = held else {
+        return None;
+    };
     (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
 }
 
-fn addends<'a>(body: &'a Body, out: &mut Vec<&'a Body>) {
-    match body {
-        Body::Add(parts) => parts.iter().for_each(|p| addends(&p.body, out)),
-        other => out.push(other),
-    }
+/// How many bare `t` a sum holds and the span of the rest, added from `+0` in written order.
+#[derive(Clone, Copy, Default)]
+struct Addends {
+    lines: usize,
+    lo: f64,
+    hi: f64,
 }
 
-fn span(body: &Body) -> (f64, f64) {
-    let each =
-        |parts: &[sva_formula::Part]| parts.iter().map(|p| span(&p.body)).collect::<Vec<_>>();
-    match body {
-        Body::Const(c) if c.im == 0.0 => (c.re, c.re),
-        Body::Add(parts) => each(parts)
-            .into_iter()
-            .fold((0.0, 0.0), |(lo, hi), (l, h)| (lo + l, hi + h)),
-        Body::Mul(parts) => each(parts)
-            .into_iter()
-            .fold((1.0, 1.0), |(lo, hi), (l, h)| match (lo == hi, l == h) {
-                (true, _) => scale((l, h), lo),
-                (_, true) => scale((lo, hi), l),
-                _ => (f64::NEG_INFINITY, f64::INFINITY),
-            }),
-        Body::Fold(Fold::Min, parts) => each(parts)
-            .into_iter()
-            .fold((f64::INFINITY, f64::INFINITY), |(lo, hi), (l, h)| {
-                (lo.min(l), hi.min(h))
-            }),
-        Body::Fold(Fold::Max, parts) => each(parts).into_iter().fold(
-            (f64::NEG_INFINITY, f64::NEG_INFINITY),
-            |(lo, hi), (l, h)| (lo.max(l), hi.max(h)),
-        ),
-        Body::Apply(Unary::Sin | Unary::Cos | Unary::Tanh | Unary::Sat, _) => (-1.0, 1.0),
-        _ => (f64::NEG_INFINITY, f64::INFINITY),
+struct Offsets<'a> {
+    tys: &'a Typing,
+    addends: PerNode<Addends>,
+    spans: PerNode<(f64, f64)>,
+}
+
+impl Offsets<'_> {
+    fn addends(&self, body: &Body, held: &mut Addends) {
+        match body {
+            Body::Add(parts) => parts.iter().for_each(|p| self.addends(&p.body, held)),
+            Body::Line => held.lines += 1,
+            Body::Node(id) => {
+                let node = self.addends.of(*id, || {
+                    let mut found = Addends::default();
+                    self.addends(written_form(self.tys, *id), &mut found);
+                    found
+                });
+                held.lines += node.lines;
+                (held.lo, held.hi) = (held.lo + node.lo, held.hi + node.hi);
+            }
+            other => {
+                let (l, h) = self.span(other);
+                (held.lo, held.hi) = (held.lo + l, held.hi + h);
+            }
+        }
+    }
+
+    fn span(&self, body: &Body) -> (f64, f64) {
+        let each = |parts: &[sva_formula::Part]| {
+            parts.iter().map(|p| self.span(&p.body)).collect::<Vec<_>>()
+        };
+        match body {
+            Body::Node(id) => self
+                .spans
+                .of(*id, || self.span(written_form(self.tys, *id))),
+            Body::Const(c) if c.im == 0.0 => (c.re, c.re),
+            Body::Add(parts) => each(parts)
+                .into_iter()
+                .fold((0.0, 0.0), |(lo, hi), (l, h)| (lo + l, hi + h)),
+            Body::Mul(parts) => {
+                each(parts)
+                    .into_iter()
+                    .fold((1.0, 1.0), |(lo, hi), (l, h)| match (lo == hi, l == h) {
+                        (true, _) => scale((l, h), lo),
+                        (_, true) => scale((lo, hi), l),
+                        _ => (f64::NEG_INFINITY, f64::INFINITY),
+                    })
+            }
+            Body::Fold(Fold::Min, parts) => each(parts)
+                .into_iter()
+                .fold((f64::INFINITY, f64::INFINITY), |(lo, hi), (l, h)| {
+                    (lo.min(l), hi.min(h))
+                }),
+            Body::Fold(Fold::Max, parts) => each(parts).into_iter().fold(
+                (f64::NEG_INFINITY, f64::NEG_INFINITY),
+                |(lo, hi), (l, h)| (lo.max(l), hi.max(h)),
+            ),
+            Body::Apply(Unary::Sin | Unary::Cos | Unary::Tanh | Unary::Sat, _) => (-1.0, 1.0),
+            _ => (f64::NEG_INFINITY, f64::INFINITY),
+        }
     }
 }
 

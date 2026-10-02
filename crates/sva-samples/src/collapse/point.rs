@@ -1,5 +1,7 @@
 // Concern: evaluates one closed form at one instant and routes the components it holds | Non-concern: what the samples are labelled (collapse.rs) | IO: (&SpectralSum or &Body, t, component) -> C64
 
+use std::cell::RefCell;
+
 use sva_formula::closed_form::{Fold, Unary, children};
 use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
 use sva_formula::{Body, C64, Lane, NodeId, SpectralSum};
@@ -11,6 +13,45 @@ use crate::error::CollapseError;
 pub trait Refs {
     fn value(&self, id: NodeId, component: usize, t: f64) -> Result<C64, CollapseError>;
     fn width(&self, id: NodeId) -> usize;
+}
+
+/// The forms a shared written form reads, each evaluated once per instant and component.
+pub(crate) struct Shared<'a> {
+    bodies: &'a [Body],
+    held: RefCell<Vec<Option<(usize, u64, C64)>>>,
+}
+
+impl<'a> Shared<'a> {
+    pub(crate) fn new(bodies: &'a [Body]) -> Shared<'a> {
+        Shared {
+            bodies,
+            held: RefCell::new(vec![None; bodies.len()]),
+        }
+    }
+}
+
+impl Refs for Shared<'_> {
+    fn value(&self, id: NodeId, component: usize, t: f64) -> Result<C64, CollapseError> {
+        let at = id.0 as usize;
+        let Some(body) = self.bodies.get(at) else {
+            return NoRefs.value(id, component, t);
+        };
+        if let Some((c, bits, value)) = self.held.borrow()[at]
+            && (c, bits) == (component, t.to_bits())
+        {
+            return Ok(value);
+        }
+        let value = eval_body(body, component, t, self)?;
+        self.held.borrow_mut()[at] = Some((component, t.to_bits(), value));
+        Ok(value)
+    }
+
+    fn width(&self, id: NodeId) -> usize {
+        match self.bodies.get(id.0 as usize) {
+            Some(body) => width_of(body, self),
+            None => NoRefs.width(id),
+        }
+    }
 }
 
 /// What a caller with no graph behind it answers a node with.

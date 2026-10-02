@@ -19,7 +19,8 @@ pub use buffer::Buffer;
 pub use collapse::{
     ALIAS_OVERSAMPLE, AliasScore, Audible, Extent, Planned, Refs, Rows, crop_gain,
     eval_spectral_sum_at, eval_written_at, lane_of, of_spectral_sum, of_spectral_sum_or_point,
-    planned, render, render_written, truncate_spectral_sum, truncate_written, unary,
+    planned, render, render_written, truncate_spectral_sum, truncate_written,
+    truncate_written_with, unary,
 };
 pub use error::{CollapseError, SampleError};
 pub use filters::{Automation, AutomationFrame, FilterSite, FilterTrace};
@@ -27,7 +28,7 @@ pub use frames::Frames;
 pub use label::{Cost, Detail, Dropped, Label, Pruned, Rule, Source};
 pub use machine::renderer::{
     Between, Binary, BufId, Formula, Grid, Index, Map, NodeRenderer, Round, Site, SiteId, Slot,
-    Unary, Wrap,
+    Unary, Wrap, Written,
 };
 pub use machine::tape::{Tape, Window};
 pub use machine::{Machine, MachineState, Span, Spanned};

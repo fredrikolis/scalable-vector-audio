@@ -23,7 +23,8 @@ use crate::typing::{Node as Typed, Typing, Value, When};
 
 pub(crate) use calls::{noise_at, rand_arguments};
 pub(crate) use constant::{
-    constant_call, constant_modulo, constant_value, holds_infinite, number_of,
+    constant_call, constant_modulo, constant_of, constant_value, constant_with, holds_infinite,
+    number_of,
 };
 pub(crate) use solvers::{field, value_of};
 

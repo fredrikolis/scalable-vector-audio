@@ -497,8 +497,15 @@ pub enum Binary {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Formula {
     Sum(Box<SpectralSum>),
-    Written(Box<Body>),
+    Written(Box<Written>),
     Drawn { seed: u64, rate: u32 },
+}
+
+/// A written form and each form it reads, `Body::Node(k)` in either naming `refs[k]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Written {
+    pub body: Body,
+    pub refs: Vec<Body>,
 }
 
 impl Formula {
@@ -512,24 +519,35 @@ impl Formula {
                     return Ok(sva_formula::draw(*seed, step));
                 }
                 Formula::Sum(sum) => crate::collapse::eval_spectral_sum_at(sum, component, t)?,
-                Formula::Written(body) => {
-                    crate::collapse::eval_written_at(body, component, t, &crate::collapse::NoRefs)?
-                }
+                Formula::Written(written) => crate::collapse::eval_written_at(
+                    &written.body,
+                    component,
+                    t,
+                    &crate::collapse::Shared::new(&written.refs),
+                )?,
             };
         Ok(value.re)
     }
 
-    /// One operation per atom or written subterm.
+    /// One operation per atom or written subterm, each read of a ref counting its form's.
     pub fn ops(&self) -> usize {
-        fn terms(body: &Body) -> usize {
-            1 + sva_formula::closed_form::children(body)
-                .iter()
-                .map(|p| terms(&p.body))
-                .sum::<usize>()
+        fn terms(body: &Body, refs: &[usize]) -> usize {
+            match body {
+                Body::Node(id) => refs[id.0 as usize],
+                _ => sva_formula::closed_form::children(body)
+                    .iter()
+                    .fold(1usize, |held, p| held.saturating_add(terms(&p.body, refs))),
+            }
         }
         match self {
             Formula::Sum(sum) => sum.atoms().count().max(1),
-            Formula::Written(body) => terms(body),
+            Formula::Written(written) => {
+                let mut counted = Vec::with_capacity(written.refs.len());
+                for body in &written.refs {
+                    counted.push(terms(body, &counted));
+                }
+                terms(&written.body, &counted)
+            }
             Formula::Drawn { .. } => 1,
         }
     }

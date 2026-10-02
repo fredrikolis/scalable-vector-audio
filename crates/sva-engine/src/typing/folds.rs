@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
-use sva_formula::{C64, Hash, NodeId, SpectralSum, Var};
+use sva_formula::{C64, Hash, Kept, NodeId, SpectralSum, Var};
 
 /// Derived from the nodes alone, so any change to a node evicts them all.
 #[derive(Debug, Default)]
@@ -11,6 +11,8 @@ pub(crate) struct Folds {
     numbers: RefCell<BTreeMap<NodeId, Option<C64>>>,
     identities: RefCell<BTreeMap<NodeId, Hash>>,
     composed: RefCell<HashMap<(Hash, Var), SpectralSum>>,
+    inlinable: RefCell<HashMap<(NodeId, Var), bool>>,
+    written: Kept,
     #[cfg(test)]
     pub(crate) composings: std::cell::Cell<usize>,
 }
@@ -26,6 +28,8 @@ impl Folds {
         self.numbers.get_mut().clear();
         self.identities.get_mut().clear();
         self.composed.get_mut().clear();
+        self.inlinable.get_mut().clear();
+        self.written.clear();
     }
 
     pub(crate) fn number(&self, id: NodeId) -> Option<Option<C64>> {
@@ -50,5 +54,18 @@ impl Folds {
 
     pub(crate) fn keep_composed(&self, key: (Hash, Var), sum: SpectralSum) {
         self.composed.borrow_mut().insert(key, sum);
+    }
+
+    pub(crate) fn inlinable(&self, key: (NodeId, Var)) -> Option<bool> {
+        self.inlinable.borrow().get(&key).copied()
+    }
+
+    pub(crate) fn keep_inlinable(&self, key: (NodeId, Var), inlines: bool) {
+        self.inlinable.borrow_mut().insert(key, inlines);
+    }
+
+    /// Each node's written form, read through the refs it holds.
+    pub(crate) fn written(&self) -> &Kept {
+        &self.written
     }
 }

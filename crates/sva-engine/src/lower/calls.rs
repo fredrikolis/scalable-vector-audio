@@ -11,6 +11,7 @@ use crate::cast::Cast;
 use crate::error::EngineError;
 use crate::instantiate::Cx;
 use crate::lower::{Lowering, Piece};
+use crate::refs::{PerNode, written_form};
 use crate::time::Lattice;
 use crate::typing::{Value, When};
 use sva_ast::SERIES;
@@ -488,20 +489,17 @@ impl Lowering<'_> {
     /// A stored-energy coefficient holds between jumps: numbers under windows that open and
     /// close without shoulders, and arithmetic over them.
     fn piecewise(&self, id: NodeId) -> bool {
-        fn steps(f: &Body) -> bool {
-            match f {
-                Body::Const(_) => true,
-                Body::Crop { of, rise, fall, .. } => {
-                    *rise == 0.0 && *fall == 0.0 && steps(&of.body)
-                }
-                Body::Add(parts) | Body::Mul(parts) | Body::Fold(Fold::Max | Fold::Min, parts) => {
-                    parts.iter().all(|p| steps(&p.body))
-                }
-                Body::Div(a, b) => steps(&a.body) && super::constant::is_constant(&b.body),
-                _ => false,
+        let Value::ClosedForm(form) = self.typing.value(id) else {
+            return false;
+        };
+        let typing: &crate::typing::Typing = self.typing;
+        crate::refs::reads_through(typing, &form.body, form.var)
+            && Steps {
+                typing,
+                steps: PerNode::new(),
+                constant: PerNode::new(),
             }
-        }
-        crate::refs::substituted_closed_form(self.typing, id).is_some_and(|f| steps(&f.body))
+            .steps(&form.body)
     }
 
     fn moving_energy(&self, name: &str, key: &str, span: ByteSpan) -> EngineError {
@@ -792,4 +790,39 @@ fn positional_named(name: &str, numbers: &[f64], named: &[(String, f64)]) -> Vec
         written: true,
     });
     positional.chain(written_named(named)).collect()
+}
+
+/// Whether a written form holds numbers under hard windows and arithmetic over them, each ref
+/// read as the form it names.
+struct Steps<'a> {
+    typing: &'a crate::typing::Typing,
+    steps: PerNode<bool>,
+    constant: PerNode<bool>,
+}
+
+impl Steps<'_> {
+    fn steps(&self, f: &Body) -> bool {
+        match f {
+            Body::Node(id) => self
+                .steps
+                .of(*id, || self.steps(written_form(self.typing, *id))),
+            Body::Const(_) => true,
+            Body::Crop { of, rise, fall, .. } => {
+                *rise == 0.0 && *fall == 0.0 && self.steps(&of.body)
+            }
+            Body::Add(parts) | Body::Mul(parts) | Body::Fold(Fold::Max | Fold::Min, parts) => {
+                parts.iter().all(|p| self.steps(&p.body))
+            }
+            Body::Div(a, b) => self.steps(&a.body) && self.constant(&b.body),
+            _ => false,
+        }
+    }
+
+    fn constant(&self, f: &Body) -> bool {
+        let node = |id: NodeId| {
+            self.constant
+                .of(id, || self.constant(written_form(self.typing, id)))
+        };
+        super::constant::constant_with(f, &node)
+    }
 }

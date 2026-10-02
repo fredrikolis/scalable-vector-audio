@@ -7,8 +7,10 @@ use sva_formula::closed_form::{Bound, Series, children, map_children};
 use sva_formula::series::{mentions_line, ratio, substitute};
 use sva_formula::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom};
 use sva_formula::table::series::{Shape, read};
+use sva_formula::through::written_out;
 use sva_formula::{
-    Body, C64, Codomain, Env, Lane, NodeId, ParamId, Part, Run, SpectralSum, Ty, Unary, Var, lines,
+    Body, C64, Codomain, Env, Lane, NodeId, Opaque, ParamId, Part, Reads, Run, SpectralSum, Ty,
+    Unary, Var, lines,
 };
 
 use crate::error::CollapseError;
@@ -37,9 +39,13 @@ impl Audible {
         }
     }
 
+    pub fn key(self) -> [u64; 3] {
+        [self.ceiling, self.precision, self.floor_db].map(f64::to_bits)
+    }
+
     /// A line read at `at(t)` sounds at `hz*at'(t)`; an unbounded `at'` keeps the band, unclaimed.
-    fn read_at(self, at: &Body) -> Audible {
-        match sva_formula::calculus::steepest(at) {
+    fn read_at(self, at: &Body, reads: &dyn Reads) -> Audible {
+        match sva_formula::calculus::steepest_read(at, reads) {
             Some(rate) if rate > 1.0 => Audible {
                 ceiling: self.ceiling / rate,
                 ..self
@@ -75,17 +81,40 @@ pub fn spectral_sum(n: &SpectralSum, band: Audible) -> Result<SpectralSum, Colla
 
 /// The same truncation over a written closed form, whose series a spectral sum never reached.
 pub fn written(f: &Body, band: Audible) -> Result<Body, CollapseError> {
-    if let Body::Series(s) = f {
-        return expanded(s, band);
-    }
-    if let Body::Warp { at, of } = f {
-        return Ok(Body::Warp {
-            at: Part::new(at.origin, written(&at.body, band)?),
-            of: Part::new(of.origin, written(&of.body, band.read_at(&at.body))?),
-        });
+    written_with(f, band, &Opaque, &mut |id, _| Ok(id))
+}
+
+/// Each ref truncated as the form `reads` names, under the band it is read in, and renamed to
+/// what `named` calls that truncation. A series holds its term written, refs and all.
+pub fn written_with(
+    f: &Body,
+    band: Audible,
+    reads: &dyn Reads,
+    named: &mut dyn FnMut(NodeId, Audible) -> Result<NodeId, CollapseError>,
+) -> Result<Body, CollapseError> {
+    match f {
+        Body::Node(id) => return Ok(Body::Node(named(*id, band)?)),
+        Body::Series(s) => {
+            let term = Part::new(s.term.origin, written_out(&s.term.body, reads));
+            return expanded(
+                &Series {
+                    term,
+                    ..(**s).clone()
+                },
+                band,
+            );
+        }
+        Body::Warp { at, of } => {
+            let moved = band.read_at(&at.body, reads);
+            return Ok(Body::Warp {
+                at: Part::new(at.origin, written_with(&at.body, band, reads, named)?),
+                of: Part::new(of.origin, written_with(&of.body, moved, reads, named)?),
+            });
+        }
+        _ => {}
     }
     let mut found = None;
-    let out = map_children(f, |p| match written(&p.body, band) {
+    let out = map_children(f, |p| match written_with(&p.body, band, reads, named) {
         Ok(body) => Part::new(p.origin, body),
         Err(e) => {
             found = Some(e);

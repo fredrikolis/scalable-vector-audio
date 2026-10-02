@@ -44,7 +44,14 @@ pub fn d_dt(n: &SpectralSum) -> SpectralSum {
 /// At least `sup |f'(t)|` over every instant: each atom's own sup, summed. `None` where an
 /// atom's slope grows without bound either way in time, or `f` has no atom sum.
 pub fn steepest(f: &Body) -> Option<f64> {
-    let slope = d_dt(&crate::spectral_sum::build::normalize(f, crate::closed_form::Var::T).ok()?);
+    steepest_read(f, &crate::through::Opaque)
+}
+
+/// The same, each ref read as `reads` answers it.
+pub fn steepest_read(f: &Body, reads: &dyn crate::through::Reads) -> Option<f64> {
+    let normalized =
+        crate::spectral_sum::build::normalize_read(f, crate::closed_form::Var::T, reads);
+    let slope = d_dt(&normalized.ok()?);
     let mut held = 0.0;
     for lane in &slope.lanes {
         if !lane.series.is_empty() || !lane.modal.is_empty() {
