@@ -33,14 +33,38 @@ pub fn spectral_sum_of(
     composed(typing, node, want, &mut Vec::new())
 }
 
-/// `open` is the chain of refs still being composed: a form reaching itself through
-/// another is a loop no substitution closes.
+/// Kept under the node's identity: two nodes that are one value compose once. A refusal
+/// depends on the chain of refs that met it, so only a sum is kept.
 fn composed(
     typing: &Typing,
     node: NodeId,
     want: Var,
     open: &mut Vec<NodeId>,
 ) -> Result<SpectralSum, EngineError> {
+    let key = identity(typing, node).ok().map(|held| (held, want));
+    if let Some(held) = key.and_then(|key| typing.folds().composed(key)) {
+        return Ok(held);
+    }
+    let found = composing(typing, node, want, open);
+    if let (Some(key), Ok(sum)) = (key, &found) {
+        typing.folds().keep_composed(key, sum.clone());
+    }
+    found
+}
+
+/// `open` is the chain of refs still being composed: a form reaching itself through
+/// another is a loop no substitution closes.
+fn composing(
+    typing: &Typing,
+    node: NodeId,
+    want: Var,
+    open: &mut Vec<NodeId>,
+) -> Result<SpectralSum, EngineError> {
+    #[cfg(test)]
+    typing
+        .folds()
+        .composings
+        .set(typing.folds().composings.get() + 1);
     if open.contains(&node) {
         return Err(cyclic(typing, node));
     }
@@ -486,5 +510,60 @@ fn inlined(typing: &Typing, f: &Body, var: Var, open: &mut Vec<NodeId>) -> Optio
             });
             ok.then_some(out)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn typed(name: &str, files: &[(&str, String)], root: &str) -> Typing {
+        let dir = std::env::temp_dir().join(format!("sva-refs-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory");
+        for (file, body) in files {
+            std::fs::write(dir.join(file), body).expect("a node file");
+        }
+        let graph = sva_ast::parse_composition(&dir).expect("a composition");
+        crate::types(&graph, root).expect("typed")
+    }
+
+    fn composings(tys: &Typing) -> usize {
+        tys.folds().composings.get()
+    }
+
+    /// Each level reads the one below three times: one composition per node, however many
+    /// paths reach it, and none on asking again.
+    #[test]
+    fn a_chain_composes_each_node_once() {
+        let names: Vec<String> = (0..=8).map(|k| format!("n{k}")).collect();
+        let mut files = vec![(names[0].as_str(), "sin(2*pi*220*t)\n".to_string())];
+        for pair in names.windows(2) {
+            let p = format!("@{}(t)", pair[0]);
+            files.push((&pair[1], format!("{p}*0.5 + {p}*0.3 + {p}*0.2\n")));
+        }
+        let tys = typed("chain", &files, "n8");
+        let root = tys.id("n8").expect("the root");
+        spectral_sum_of(&tys, root, Var::T).expect("a sum");
+        assert_eq!(composings(&tys), 9);
+        spectral_sum_of(&tys, root, Var::T).expect("a sum");
+        assert_eq!(composings(&tys), 9);
+    }
+
+    /// Two differently named nodes holding one body are one identity, so one composition.
+    #[test]
+    fn two_names_for_one_body_compose_once() {
+        let files = [
+            ("tone", "sin(2*pi*3*t)\n".to_string()),
+            ("a", "@tone(t)*0.5\n".to_string()),
+            ("b", "@tone(t)*0.5\n".to_string()),
+            ("mix", "@a(t) + @b(t)\n".to_string()),
+        ];
+        let tys = typed("twins", &files, "mix");
+        let [a, b] = ["a", "b"].map(|n| tys.id(n).expect("a node"));
+        assert_ne!(a, b);
+        assert_eq!(identity(&tys, a).ok(), identity(&tys, b).ok());
+        spectral_sum_of(&tys, tys.id("mix").expect("mix"), Var::T).expect("a sum");
+        assert_eq!(composings(&tys), 3);
     }
 }
