@@ -15,7 +15,7 @@ use crate::spectral_sum::merge::simplify;
 use crate::spectral_sum::product::times;
 use crate::spectral_sum::{Lane, SpectralSum};
 use crate::spectral_sum::{kink, spread};
-use crate::through::{Opaque, Reads, written_out};
+use crate::through::{Opaque, Reads};
 
 pub fn normalize_closed_form(t: &ClosedForm) -> Result<SpectralSum, Left> {
     finite(lower(&t.body, t.origin, t.var, &Opaque)?)
@@ -95,7 +95,7 @@ pub(crate) fn lower(
                 let n = lower_part(p, var)?;
                 acc = Some(match acc {
                     None => n,
-                    Some(a) => zip(a, n, multiply_lanes)?,
+                    Some(a) => zip(a, n, |x, y| multiply_lanes_read(x, y, reads))?,
                 });
             }
             Ok(acc.unwrap_or_else(|| one(var, SpectralAtom::constant(C64::ONE, origin))))
@@ -108,9 +108,9 @@ pub(crate) fn lower(
             if k.is_zero() {
                 return Err(left(den.origin, Factor::Value, LeftReason::NoValue));
             }
-            scale(lower_part(num, var)?, k.inv())
+            scale(lower_part(num, var)?, k.inv(), reads)
         }
-        Body::Pow(base, n) => power(lower_part(base, var)?, base.origin, *n, var),
+        Body::Pow(base, n) => power(lower_part(base, var)?, (base.origin, *n, var), reads),
         Body::Apply(op, arg) => match apply(*op, arg, origin, var, reads) {
             Err(left) => match held_constant(arg, var, reads) {
                 Some(c) => constant(var, apply_scalar(*op, c), origin),
@@ -148,7 +148,9 @@ pub(crate) fn lower(
             fall,
         } if *rise > 0.0 || *fall > 0.0 => {
             let window = crop_window(*l, *r, *rise, *fall, of.origin, var);
-            zip(lower_part(of, var)?, window, multiply_lanes)
+            zip(lower_part(of, var)?, window, |x, y| {
+                multiply_lanes_read(x, y, reads)
+            })
         }
         Body::Crop { of, l, r, .. } => crop(lower_part(of, var)?, Indicator { l: *l, r: *r }),
         Body::Join(parts) => {
@@ -169,7 +171,7 @@ pub(crate) fn lower(
         Body::Series(s) => Ok(SpectralSum::of(
             var,
             vec![Lane {
-                series: vec![written_series(s, reads)],
+                series: vec![(**s).clone()],
                 ..Lane::default()
             }],
         )),
@@ -191,14 +193,6 @@ pub(crate) fn lower(
             });
             Ok(SpectralSum::mono(var, atoms.collect()))
         }
-    }
-}
-
-/// A series holds its term as written, so a ref in it is written in whole.
-fn written_series(s: &Series, reads: &dyn Reads) -> Series {
-    Series {
-        term: Part::new(s.term.origin, written_out(&s.term.body, reads)),
-        ..s.clone()
     }
 }
 
@@ -265,6 +259,11 @@ fn zip(
 }
 
 pub fn multiply_lanes(x: Lane, y: Lane) -> Result<Lane, Left> {
+    multiply_lanes_read(x, y, &Opaque)
+}
+
+/// The same, each ref a series term holds read as `reads` reads its form.
+pub fn multiply_lanes_read(x: Lane, y: Lane, reads: &dyn Reads) -> Result<Lane, Left> {
     let (x, y) = (x.expanded(), y.expanded());
     match (x.is_finite_sum(), y.is_finite_sum()) {
         (true, true) => {
@@ -278,8 +277,8 @@ pub fn multiply_lanes(x: Lane, y: Lane) -> Result<Lane, Left> {
             simplify(&mut lane);
             Ok(lane)
         }
-        (true, false) => scale_lane(y, &x),
-        (false, true) => scale_lane(x, &y),
+        (true, false) => scale_lane(y, &x, reads),
+        (false, true) => scale_lane(x, &y, reads),
         (false, false) => Err(left(
             Origin::UNKNOWN,
             Factor::Value,
@@ -290,16 +289,16 @@ pub fn multiply_lanes(x: Lane, y: Lane) -> Result<Lane, Left> {
 
 /// A series holds its own term, so a bare gain multiplies that term here and a factor with
 /// a value at each line folds into the line's own weight.
-fn scale_lane(mut infinite: Lane, by: &Lane) -> Result<Lane, Left> {
+fn scale_lane(mut infinite: Lane, by: &Lane, reads: &dyn Reads) -> Result<Lane, Left> {
     let origin = by.atoms.first().map_or(Origin::UNKNOWN, |a| a.origin);
     let [gain] = by.atoms.as_slice() else {
-        return per_line(infinite, by);
+        return per_line(infinite, by, reads);
     };
     if !gain.is_bare() || gain.is_delta() {
-        return per_line(infinite, by);
+        return per_line(infinite, by, reads);
     }
     for s in &mut infinite.series {
-        *s = scaled(s, gain, origin);
+        *s = scaled(s, (gain, origin), reads);
     }
     infinite.atoms = infinite
         .atoms
@@ -311,13 +310,14 @@ fn scale_lane(mut infinite: Lane, by: &Lane) -> Result<Lane, Left> {
 
 /// A gain belongs in each line's own weight, where the term still reads as a line closed form. A
 /// term no line closed form reads takes the gain as a written factor instead.
-fn scaled(s: &Series, gain: &SpectralAtom, origin: Origin) -> Series {
-    if let Ok(mut made) = spread::times_atoms(s, std::slice::from_ref(gain))
+fn scaled(s: &Series, (gain, origin): (&SpectralAtom, Origin), reads: &dyn Reads) -> Series {
+    if let Ok(mut made) = spread::times_atoms(s, std::slice::from_ref(gain), reads)
         && made.len() == 1
     {
         return made.remove(0);
     }
-    let (body, window) = crate::spectral_sum::image::crop_peeled(&s.term.body);
+    let (body, window) =
+        crate::spectral_sum::image::crop_peeled(&crate::through::looked(&s.term.body, reads));
     let held = Body::Mul(vec![
         Part::new(origin, Body::Const(gain.c)),
         Part::new(s.term.origin, body),
@@ -340,10 +340,10 @@ fn scaled(s: &Series, gain: &SpectralAtom, origin: Origin) -> Series {
     }
 }
 
-fn per_line(mut infinite: Lane, by: &Lane) -> Result<Lane, Left> {
+fn per_line(mut infinite: Lane, by: &Lane, reads: &dyn Reads) -> Result<Lane, Left> {
     let mut folded = Vec::with_capacity(infinite.series.len());
     for s in &infinite.series {
-        folded.extend(spread::times_atoms(s, &by.atoms)?);
+        folded.extend(spread::times_atoms(s, &by.atoms, reads)?);
     }
     infinite.series = folded;
     let mut atoms = Vec::new();
@@ -366,9 +366,11 @@ fn reciprocal_power(k: C64, order: u16, var: Var, origin: Origin) -> Result<Spec
     Ok(one(var, SpectralAtom::constant(magnitude.inv(), origin)))
 }
 
-fn scale(n: SpectralSum, k: C64) -> Result<SpectralSum, Left> {
+fn scale(n: SpectralSum, k: C64, reads: &dyn Reads) -> Result<SpectralSum, Left> {
     let gain = Lane::of(vec![SpectralAtom::constant(k, Origin::UNKNOWN)]);
-    zip(n, SpectralSum::of(Var::T, vec![gain]), multiply_lanes)
+    zip(n, SpectralSum::of(Var::T, vec![gain]), |x, y| {
+        multiply_lanes_read(x, y, reads)
+    })
 }
 
 /// The one number a spectral sum holds, where it holds one and no atom of it is singular.
@@ -383,13 +385,17 @@ pub fn sole_constant(n: &SpectralSum) -> Option<C64> {
     }
 }
 
-fn power(inner: SpectralSum, origin: Origin, n: i32, var: Var) -> Result<SpectralSum, Left> {
+fn power(
+    inner: SpectralSum,
+    (origin, n, var): (Origin, i32, Var),
+    reads: &dyn Reads,
+) -> Result<SpectralSum, Left> {
     let order = u16::try_from(n.unsigned_abs())
         .map_err(|_| left(origin, Factor::Pole, LeftReason::PoleOrder(u16::MAX)))?;
     if n >= 0 {
         let mut acc = SpectralSum::mono(inner.var, vec![SpectralAtom::constant(C64::ONE, origin)]);
         for _ in 0..order {
-            acc = zip(acc, inner.clone(), multiply_lanes)?;
+            acc = zip(acc, inner.clone(), |x, y| multiply_lanes_read(x, y, reads))?;
         }
         return Ok(acc);
     }

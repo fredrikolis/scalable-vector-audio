@@ -211,7 +211,7 @@ pub fn affine_in(f: &Body, reading: Reading) -> Option<(Coeff, Coeff)> {
     affine_read(f, reading, &Opaque)
 }
 
-fn affine_read(f: &Body, reading: Reading, reads: &dyn Reads) -> Option<(Coeff, Coeff)> {
+pub fn affine_read(f: &Body, reading: Reading, reads: &dyn Reads) -> Option<(Coeff, Coeff)> {
     match polynomial_read(f, reading, reads)?[..] {
         [b] => Some((Coeff::ZERO, b)),
         [b, a] => Some((a, b)),
@@ -242,6 +242,10 @@ pub(crate) fn exact_affine_read(f: &Body, reads: &dyn Reads) -> Option<(C64, C64
 
 pub fn exact_constant(f: &Body) -> Option<C64> {
     constant_in(f, Reading::Free)
+}
+
+pub fn exact_constant_read(f: &Body, reads: &dyn Reads) -> Option<C64> {
+    constant_read(f, Reading::Free, reads)
 }
 
 /// Whether a hash keyed on this formula names more than one value. The free variable moves
@@ -307,11 +311,19 @@ fn unary_axis(op: Unary, of: Axis) -> Axis {
 /// Where a whole subterm sits in the complex plane, reading an index or a bare variable as
 /// real. `Any` is "could be either", never "is both".
 pub fn axis(f: &Body, env: &dyn crate::env::Env) -> Axis {
-    let of = |p: &crate::closed_form::Part| axis(&p.body, env);
+    axis_read(f, env, &Opaque)
+}
+
+/// The same, a ref `reads` knows the form of sitting where that form sits.
+pub fn axis_read(f: &Body, env: &dyn crate::env::Env, reads: &dyn Reads) -> Axis {
+    let of = |p: &crate::closed_form::Part| axis_read(&p.body, env, reads);
+    let axis = |f: &Body| axis_read(f, env, reads);
     match f {
         Body::Const(c) => Axis::of(*c),
         Body::Index(_) | Body::Line | Body::Keyed { .. } => Axis::Real,
-        Body::Node(id) => Axis::of_codomain(env.node(*id).codomain),
+        Body::Node(id) => reads
+            .axis(*id)
+            .unwrap_or_else(|| Axis::of_codomain(env.node(*id).codomain)),
         Body::Param(id) => Axis::of_codomain(env.param(*id).codomain),
         Body::Add(parts) => parts
             .iter()
@@ -324,10 +336,10 @@ pub fn axis(f: &Body, env: &dyn crate::env::Env) -> Axis {
             .reduce(Axis::times)
             .unwrap_or(Axis::Real),
         Body::Div(a, b) => of(a).times(of(b)),
-        Body::Shift { of: inner, .. } | Body::Crop { of: inner, .. } => axis(&inner.body, env),
+        Body::Shift { of: inner, .. } | Body::Crop { of: inner, .. } => axis(&inner.body),
         Body::Fold(..) => Axis::Real,
-        Body::Apply(op, inner) => unary_axis(*op, axis(&inner.body, env)),
-        Body::Pow(base, n) => match (axis(&base.body, env), n % 2 == 0) {
+        Body::Apply(op, inner) => unary_axis(*op, axis(&inner.body)),
+        Body::Pow(base, n) => match (axis(&base.body), n % 2 == 0) {
             (Axis::Real, _) => Axis::Real,
             (Axis::Imaginary, true) => Axis::Real,
             (Axis::Imaginary, false) => Axis::Imaginary,

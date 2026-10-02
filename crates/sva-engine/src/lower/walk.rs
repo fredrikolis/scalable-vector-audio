@@ -1,7 +1,6 @@
 // Concern: the recursion over one node's written expression | Non-concern: what a call lowers to (calls.rs), classifying a loop (loops.rs) | IO: (&Expr, Cx, Var) -> a Piece
 
 use sva_ast::{Address, Arg, BinOp, ByteSpan, Expr, Literal};
-use sva_formula::through::written_out;
 use sva_formula::{Body, C64, Held, IndexId, NodeId, Ty, Var};
 
 use crate::cast::Cast;
@@ -41,8 +40,8 @@ impl Lowering<'_> {
         }
     }
 
-    /// The series expands around a body whose own refs are already inline. A zero
-    /// coefficient is no loop at all, and a series around it would take the log of zero.
+    /// The series expands around a body whose own refs each read as the form they name. A
+    /// zero coefficient is no loop at all, and a series around it would take the log of zero.
     pub(super) fn expand(
         &mut self,
         piece: Piece,
@@ -53,7 +52,8 @@ impl Lowering<'_> {
         if gain.is_zero() {
             return Ok(piece);
         }
-        let Some(inline) = self.inlined(&piece, var).map(|body| pruned(body, var)) else {
+        let inline = self.inlined(&piece, var);
+        let Some(inline) = inline.map(|body| self.addends(pruned(body, var))) else {
             return Err(self.refused(
                 "engine.series_body_not_inlinable",
                 "a closed loop expands its body once per term, and this body holds a value \
@@ -76,11 +76,25 @@ impl Lowering<'_> {
         }
     }
 
-    /// A series term holds its body written, so each ref in it is written in whole.
+    /// A series term holds its body as written, each ref in it read at the term's own time
+    /// as the form it names: only a ref every reader reads through can be one.
     fn inline(&self, f: &Body, var: Var) -> Option<Body> {
-        let typing: &crate::typing::Typing = self.typing;
-        crate::refs::reads_through(typing, f, var)
-            .then(|| crate::refs::read_through(typing, |through| written_out(f, through)))
+        crate::refs::reads_through(self.typing, f, var).then(|| f.clone())
+    }
+
+    /// A body that is a ref naming a sum is that sum's addends, so the series distributes over
+    /// them as it would over the sum written in.
+    fn addends(&self, f: Body) -> Body {
+        let mut named = &f;
+        while let Body::Node(id) = named
+            && let Value::ClosedForm(form) = self.typing.value(*id)
+        {
+            named = &form.body;
+        }
+        match named {
+            Body::Add(_) => named.clone(),
+            _ => f,
+        }
     }
 
     /// Fresh across the graph: two nodes' series compose into one closed form, and an index one of

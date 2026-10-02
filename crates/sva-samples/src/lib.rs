@@ -19,8 +19,8 @@ pub use buffer::Buffer;
 pub use collapse::{
     ALIAS_OVERSAMPLE, AliasScore, Audible, Extent, Planned, Refs, Rows, crop_gain,
     eval_spectral_sum_at, eval_written_at, lane_of, of_spectral_sum, of_spectral_sum_or_point,
-    planned, render, render_written, truncate_spectral_sum, truncate_written,
-    truncate_written_with, unary,
+    of_spectral_sum_read, planned, planned_read, render, render_written, truncate_spectral_sum,
+    truncate_spectral_sum_read, truncate_written, truncate_written_with, unary,
 };
 pub use error::{CollapseError, SampleError};
 pub use filters::{Automation, AutomationFrame, FilterSite, FilterTrace};

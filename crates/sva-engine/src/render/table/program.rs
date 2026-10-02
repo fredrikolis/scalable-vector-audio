@@ -2,10 +2,10 @@
 
 use std::collections::HashMap;
 
-use sva_formula::{Body, ClosedForm, Fold, NodeId, Part, Reads, Var};
+use sva_formula::{Body, ClosedForm, Fold, NodeId, Part, Through, Var};
 use sva_samples::{
     Audible, Binary, BufId, CollapseError, Formula, Grid, Index, Map, NodeRenderer, Site, SiteId,
-    Slot, Unary, Wrap, Written, truncate_spectral_sum, truncate_written_with,
+    Slot, Unary, Wrap, Written, truncate_spectral_sum_read, truncate_written_with,
 };
 
 use super::support::{Supports, landed, placed, reach, shifted, window};
@@ -613,7 +613,7 @@ fn warped(
     let truncated = |e: &sva_samples::CollapseError| collapse_refused(tys, form, e);
     let summed = crate::refs::spectral_sum_of(tys, form, Var::T)
         .ok()
-        .map(|sum| truncate_spectral_sum(&sum, band));
+        .map(|sum| crate::refs::read_through(tys, |t| truncate_spectral_sum_read(&sum, band, t)));
     let refused = match summed {
         Some(Ok(sum)) => return Ok(Some(Formula::Sum(Box::new(sum)))),
         Some(Err(e)) => Some(truncated(&e)),
@@ -625,7 +625,6 @@ fn warped(
         {
             let shared = crate::refs::read_through(tys, |through| {
                 let mut sharing = Sharing {
-                    tys,
                     through,
                     named: HashMap::new(),
                     refs: Vec::new(),
@@ -646,24 +645,24 @@ fn warped(
     }
 }
 
-/// Each node a written form reads, truncated once per band it is read in, after what it reads.
-struct Sharing<'a> {
-    tys: &'a Typing,
-    through: &'a dyn Reads,
+/// Each node a written form reads, truncated once per band it is read in, after what it reads;
+/// a node a series term stands in for its form read at the term's time is one of them.
+struct Sharing<'a, 'w> {
+    through: &'a Through<'w>,
     named: HashMap<(NodeId, [u64; 3]), NodeId>,
     refs: Vec<Body>,
 }
 
-impl Sharing<'_> {
+impl Sharing<'_, '_> {
     fn name(&mut self, id: NodeId, band: Audible) -> Result<NodeId, CollapseError> {
         if let Some(held) = self.named.get(&(id, band.key())) {
             return Ok(*held);
         }
-        let Value::ClosedForm(form) = self.tys.value(id) else {
-            unreachable!("a ref read through names a closed form");
-        };
         let through = self.through;
-        let body = truncate_written_with(&form.body, band, through, &mut |n, b| self.name(n, b))?;
+        let form = through
+            .read(id, Body::clone)
+            .expect("a ref read through names a closed form");
+        let body = truncate_written_with(&form, band, through, &mut |n, b| self.name(n, b))?;
         let named = NodeId(self.refs.len() as u32);
         self.refs.push(body);
         self.named.insert((id, band.key()), named);

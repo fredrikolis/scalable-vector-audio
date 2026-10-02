@@ -1,16 +1,19 @@
 // Concern: truncates every series to the terms the profile leaves, once per collapse | Non-concern: evaluating what is left (point.rs) | IO: (&SpectralSum or &Body) -> the same, series-free
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::f64::consts::TAU;
 
-use sva_formula::affine::{Axis, axis, exact_constant};
+use sva_formula::affine::{Axis, axis_read, exact_constant_read};
 use sva_formula::closed_form::{Bound, Series, children, map_children};
-use sva_formula::series::{mentions_line, ratio, substitute};
+use sva_formula::series::{mentions, mentions_line_read, ratio, substitute};
 use sva_formula::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom};
-use sva_formula::table::series::{Shape, read};
-use sva_formula::through::written_out;
+use sva_formula::spectral_sum::merge::simplify;
+use sva_formula::table::series::{Shape, read_with};
+use sva_formula::through::{Read, looked};
 use sva_formula::{
-    Body, C64, Codomain, Env, Lane, NodeId, Opaque, ParamId, Part, Reads, Run, SpectralSum, Ty,
-    Unary, Var, lines,
+    Body, C64, Codomain, Env, IndexId, Lane, NodeId, Opaque, ParamId, Part, Reads, Run,
+    SpectralSum, Ty, Unary, Var, lines_read, normalize_read,
 };
 
 use crate::error::CollapseError;
@@ -62,21 +65,15 @@ const MAX_EXPANDED_TERMS: usize = 1 << 13;
 /// FORMAT 6.2 truncates a series once, at collapse: every term the ceiling and the precision
 /// leave becomes an ordinary atom before the first sample is read.
 pub fn spectral_sum(n: &SpectralSum, band: Audible) -> Result<SpectralSum, CollapseError> {
-    if n.lanes.iter().all(|l| l.series.is_empty()) {
-        return Ok(n.clone());
-    }
-    let mut lanes = Vec::with_capacity(n.lanes.len());
-    for lane in &n.lanes {
-        let mut held = Lane {
-            series: Vec::new(),
-            ..lane.clone()
-        };
-        for s in &lane.series {
-            held.atoms.extend(atoms(s, band)?);
-        }
-        lanes.push(held);
-    }
-    Ok(SpectralSum::of(n.var, lanes))
+    spectral_sum_read(n, band, &Opaque)
+}
+
+pub fn spectral_sum_read(
+    n: &SpectralSum,
+    band: Audible,
+    reads: &dyn Reads,
+) -> Result<SpectralSum, CollapseError> {
+    Terms::new(reads).spectral_sum(n, band)
 }
 
 /// The same truncation over a written closed form, whose series a spectral sum never reached.
@@ -85,105 +82,451 @@ pub fn written(f: &Body, band: Audible) -> Result<Body, CollapseError> {
 }
 
 /// Each ref truncated as the form `reads` names, under the band it is read in, and renamed to
-/// what `named` calls that truncation. A series holds its term written, refs and all.
+/// what `named` calls that truncation.
 pub fn written_with(
     f: &Body,
     band: Audible,
     reads: &dyn Reads,
     named: &mut dyn FnMut(NodeId, Audible) -> Result<NodeId, CollapseError>,
 ) -> Result<Body, CollapseError> {
-    match f {
-        Body::Node(id) => return Ok(Body::Node(named(*id, band)?)),
-        Body::Series(s) => {
-            let term = Part::new(s.term.origin, written_out(&s.term.body, reads));
-            return expanded(
-                &Series {
-                    term,
-                    ..(**s).clone()
-                },
-                band,
-            );
-        }
-        Body::Warp { at, of } => {
-            let moved = band.read_at(&at.body, reads);
-            return Ok(Body::Warp {
-                at: Part::new(at.origin, written_with(&at.body, band, reads, named)?),
-                of: Part::new(of.origin, written_with(&of.body, moved, reads, named)?),
-            });
-        }
-        _ => {}
-    }
-    let mut found = None;
-    let out = map_children(f, |p| match written_with(&p.body, band, reads, named) {
-        Ok(body) => Part::new(p.origin, body),
-        Err(e) => {
-            found = Some(e);
-            p.clone()
-        }
-    });
-    match found {
-        Some(e) => Err(e),
-        None => Ok(out),
-    }
+    Terms::new(reads).written(f, band, named)
 }
 
 pub(super) fn windowed_lines(
     s: &Series,
     band: Audible,
+    reads: &dyn Reads,
 ) -> Option<(Vec<sva_formula::Line>, Option<sva_formula::Indicator>)> {
-    let (body, window) = sva_formula::crop_peeled(&s.term.body);
-    let bare = Series {
-        term: Part::new(s.term.origin, body),
-        ..s.clone()
-    };
-    let taken = enumerated(&bare, band);
-    (!taken.is_empty()).then_some((taken, window))
+    Terms::new(reads).windowed_lines(s, band)
 }
 
-fn atoms(s: &Series, band: Audible) -> Result<Vec<SpectralAtom>, CollapseError> {
-    if let Some((taken, window)) = windowed_lines(s, band) {
-        return Ok(taken
-            .into_iter()
-            .map(|l| {
-                SpectralAtom::new(
-                    l.amp,
-                    Factors {
-                        exp: Some(Exp::at(0.0, TAU * l.hz)),
-                        ind: window,
-                        ..Factors::NONE
+/// One truncation's reading of the refs its terms hold, once per node and band.
+struct Terms<'a> {
+    reads: &'a dyn Reads,
+    bounds: PerBand<Option<Bounded>>,
+    prices: PerBand<Option<Price>>,
+    series: RefCell<HashMap<NodeId, bool>>,
+    summed: PerBand<NodeId>,
+}
+
+type PerBand<T> = RefCell<HashMap<(NodeId, [u64; 3]), T>>;
+
+/// Series deep, and terms the whole nesting takes.
+type Price = (usize, Option<usize>);
+
+/// Series deep, terms the whole nesting takes, terms this level takes.
+struct Cost {
+    depth: usize,
+    terms: Option<usize>,
+    own: usize,
+}
+
+/// A term's coefficient in the index. `exact` where it bounds the term's magnitude; elsewhere
+/// it only stands in, a turning factor or a name read as one.
+#[derive(Clone)]
+struct Bounded {
+    body: Body,
+    exact: bool,
+}
+
+impl<'a> Terms<'a> {
+    fn new(reads: &'a dyn Reads) -> Terms<'a> {
+        Terms {
+            reads,
+            bounds: RefCell::default(),
+            prices: RefCell::default(),
+            series: RefCell::default(),
+            summed: RefCell::default(),
+        }
+    }
+
+    fn holds_series(&self, id: NodeId) -> bool {
+        if let Some(held) = self.series.borrow().get(&id) {
+            return *held;
+        }
+        let form = self.reads.view(id, &Read::As);
+        let found = form.is_some_and(|form| self.reaches_series(&form));
+        self.series.borrow_mut().insert(id, found);
+        found
+    }
+
+    fn reaches_series(&self, f: &Body) -> bool {
+        match f {
+            Body::Series(_) => true,
+            Body::Node(id) => self.holds_series(*id),
+            other => children(other).iter().any(|p| self.reaches_series(&p.body)),
+        }
+    }
+
+    /// `id`, or a node standing for its form with each series it holds summed term by term.
+    fn summed(&self, id: NodeId, band: Audible) -> Result<NodeId, CollapseError> {
+        if !self.holds_series(id) {
+            return Ok(id);
+        }
+        let key = (id, band.key());
+        if let Some(held) = self.summed.borrow().get(&key) {
+            return Ok(*held);
+        }
+        let form = self
+            .reads
+            .view(id, &Read::As)
+            .expect("a ref holding a series names a form");
+        let body = self.written(&form, band, &mut |n, b| self.summed(n, b))?;
+        let stand = self
+            .reads
+            .stand_for(body)
+            .expect("a reader handing out forms stands one in");
+        self.summed.borrow_mut().insert(key, stand);
+        Ok(stand)
+    }
+
+    fn spectral_sum(&self, n: &SpectralSum, band: Audible) -> Result<SpectralSum, CollapseError> {
+        if n.lanes.iter().all(|l| l.series.is_empty()) {
+            return Ok(n.clone());
+        }
+        let mut lanes = Vec::with_capacity(n.lanes.len());
+        for lane in &n.lanes {
+            let mut held = Lane {
+                series: Vec::new(),
+                ..lane.clone()
+            };
+            for s in &lane.series {
+                held.atoms.extend(self.atoms(s, band)?);
+            }
+            lanes.push(held);
+        }
+        Ok(SpectralSum::of(n.var, lanes))
+    }
+
+    fn written(
+        &self,
+        f: &Body,
+        band: Audible,
+        named: &mut dyn FnMut(NodeId, Audible) -> Result<NodeId, CollapseError>,
+    ) -> Result<Body, CollapseError> {
+        match f {
+            Body::Node(id) => return Ok(Body::Node(named(*id, band)?)),
+            Body::Series(s) => return self.expanded(s, band, named),
+            Body::Warp { at, of } => {
+                let moved = band.read_at(&at.body, self.reads);
+                return Ok(Body::Warp {
+                    at: Part::new(at.origin, self.written(&at.body, band, named)?),
+                    of: Part::new(of.origin, self.written(&of.body, moved, named)?),
+                });
+            }
+            _ => {}
+        }
+        let mut found = None;
+        let out = map_children(f, |p| match self.written(&p.body, band, named) {
+            Ok(body) => Part::new(p.origin, body),
+            Err(e) => {
+                found = Some(e);
+                p.clone()
+            }
+        });
+        match found {
+            Some(e) => Err(e),
+            None => Ok(out),
+        }
+    }
+
+    fn windowed_lines(
+        &self,
+        s: &Series,
+        band: Audible,
+    ) -> Option<(Vec<sva_formula::Line>, Option<sva_formula::Indicator>)> {
+        let (body, window) = sva_formula::crop_peeled(&looked(&s.term.body, self.reads));
+        let bare = Series {
+            term: Part::new(s.term.origin, body),
+            ..s.clone()
+        };
+        let taken = self.enumerated(&bare, band);
+        (!taken.is_empty()).then_some((taken, window))
+    }
+
+    fn atoms(&self, s: &Series, band: Audible) -> Result<Vec<SpectralAtom>, CollapseError> {
+        if let Some((taken, window)) = self.windowed_lines(s, band) {
+            return Ok(taken
+                .into_iter()
+                .map(|l| {
+                    SpectralAtom::new(
+                        l.amp,
+                        Factors {
+                            exp: Some(Exp::at(0.0, TAU * l.hz)),
+                            ind: window,
+                            ..Factors::NONE
+                        },
+                        Singular::Regular,
+                        s.term.origin,
+                    )
+                })
+                .collect());
+        }
+        let body = self.expanded(s, band, &mut |id, b| self.summed(id, b))?;
+        let held = normalize_read(&body, Var::T, self.reads)
+            .map_err(|_| CollapseError::NotEvaluable("a series term"))?;
+        let mut atoms = Vec::new();
+        for lane in held.lanes {
+            let mut summed = Lane::of(lane.atoms);
+            for inner in &lane.series {
+                summed.atoms.extend(self.atoms(inner, band)?);
+            }
+            if !lane.series.is_empty() {
+                simplify(&mut summed);
+            }
+            atoms.extend(summed.atoms);
+        }
+        Ok(atoms)
+    }
+
+    /// A line series keeps its terms as runs; anything else is summed term by term.
+    fn expanded(
+        &self,
+        s: &Series,
+        band: Audible,
+        named: &mut dyn FnMut(NodeId, Audible) -> Result<NodeId, CollapseError>,
+    ) -> Result<Body, CollapseError> {
+        let taken = self.enumerated(s, band);
+        if !taken.is_empty() {
+            let runs = Run::of(&taken).into_iter();
+            return Ok(sum(runs.map(|r| Body::Run(Box::new(r))).collect()));
+        }
+        let count = self.terms(s, band)?;
+        let mut parts = Vec::with_capacity(count);
+        for i in 0..count {
+            let form = self.term(&s.term.body, s.index, (s.lo + i as i64) as f64);
+            parts.push(self.written(&form, band, named)?);
+        }
+        Ok(sum(parts))
+    }
+
+    /// One term at index `k`, a ref read at a time the index moves standing for its form read
+    /// there.
+    fn term(&self, f: &Body, k: IndexId, value: f64) -> Body {
+        match f {
+            Body::Index(i) if *i == k => Body::Const(C64::real(value)),
+            Body::Warp { at, of } if mentions(&at.body, k) => {
+                let time = self.term(&at.body, k, value);
+                let moved = match &*of.body {
+                    Body::Node(id) => self.reads.moved(*id, &time),
+                    _ => None,
+                };
+                match moved {
+                    Some(stand) => Body::Node(stand),
+                    None => Body::Warp {
+                        at: Part::new(at.origin, time),
+                        of: Part::new(of.origin, self.term(&of.body, k, value)),
                     },
-                    Singular::Regular,
-                    s.term.origin,
-                )
-            })
-            .collect());
+                }
+            }
+            other => map_children(other, |p| Part::new(p.origin, self.term(&p.body, k, value))),
+        }
     }
-    let body = expanded(s, band)?;
-    let held = sva_formula::normalize(&body, Var::T)
-        .map_err(|_| CollapseError::NotEvaluable("a series term"))?;
-    Ok(held.lanes.into_iter().flat_map(|l| l.atoms).collect())
-}
 
-/// A line series keeps its terms as runs; anything else is summed term by term.
-fn expanded(s: &Series, band: Audible) -> Result<Body, CollapseError> {
-    let taken = enumerated(s, band);
-    if !taken.is_empty() {
-        let runs = Run::of(&taken).into_iter();
-        return Ok(sum(runs.map(|r| Body::Run(Box::new(r))).collect()));
+    fn enumerated(&self, s: &Series, band: Audible) -> Vec<sva_formula::Line> {
+        match read_with(&s.term.body, self.reads) {
+            Some(Shape::Lines(_)) => {
+                let held = (band.ceiling, band.floor_db, band.precision);
+                lines_read(s, held, self.reads).taken
+            }
+            _ => Vec::new(),
+        }
     }
-    let count = terms(s, band)?;
-    let mut parts = Vec::with_capacity(count);
-    for i in 0..count {
-        let form = substitute(&s.term.body, s.index, (s.lo + i as i64) as f64);
-        parts.push(written(&form, band)?);
-    }
-    Ok(sum(parts))
-}
 
-fn enumerated(s: &Series, band: Audible) -> Vec<sva_formula::Line> {
-    match read(&s.term.body) {
-        Some(Shape::Lines(_)) => lines(s, band.ceiling, band.floor_db, band.precision).taken,
-        _ => Vec::new(),
+    /// A nesting is priced whole before it expands: a written bound counts like the floor's.
+    fn terms(&self, s: &Series, band: Audible) -> Result<usize, CollapseError> {
+        let cost = self.cost(s, band).ok_or(CollapseError::NotEvaluable(
+            "a series whose term count no coefficient bounds",
+        ))?;
+        if cost.depth == 1 && cost.own > MAX_EXPANDED_TERMS {
+            return Err(CollapseError::NotEvaluable(
+                "a series of more terms than one instant expands",
+            ));
+        }
+        match cost.terms {
+            Some(terms) if terms <= MAX_EXPANDED_TERMS => Ok(cost.own),
+            terms => Err(CollapseError::NestedSeries {
+                depth: cost.depth,
+                terms,
+                bound: MAX_EXPANDED_TERMS,
+            }),
+        }
+    }
+
+    fn cost(&self, s: &Series, band: Audible) -> Option<Cost> {
+        let own = self.counted(s, band)?;
+        let inside = substitute(&s.term.body, s.index, s.lo as f64);
+        let (depth, inner) = self.price(&inside, band)?;
+        Some(Cost {
+            depth: depth + 1,
+            terms: inner.and_then(|inner| own.checked_mul(inner)),
+            own,
+        })
+    }
+
+    /// Series counts add under a sum, multiply elsewhere; a part with no series prices nothing.
+    fn price(&self, f: &Body, band: Audible) -> Option<Price> {
+        match f {
+            Body::Series(s) => {
+                let cost = self.cost(s, band)?;
+                return Some((cost.depth, cost.terms));
+            }
+            Body::Node(id) => return self.node_price(*id, band),
+            _ => {}
+        }
+        let summed = matches!(f, Body::Add(_));
+        let mut depth = 0;
+        let mut terms: Option<usize> = Some(if summed { 0 } else { 1 });
+        for p in children(f) {
+            let (d, n) = self.price(&p.body, band)?;
+            if d == 0 {
+                continue;
+            }
+            depth = depth.max(d);
+            terms = terms.zip(n).and_then(|(terms, n)| match summed {
+                true => terms.checked_add(n),
+                false => terms.checked_mul(n),
+            });
+        }
+        Some((depth, terms.map(|n| n.max(1))))
+    }
+
+    fn node_price(&self, id: NodeId, band: Audible) -> Option<Price> {
+        let key = (id, band.key());
+        if let Some(held) = self.prices.borrow().get(&key) {
+            return *held;
+        }
+        let found = match self.reads.view(id, &Read::As) {
+            Some(form) => self.price(&form, band),
+            None => Some((0, Some(1))),
+        };
+        self.prices.borrow_mut().insert(key, found);
+        found
+    }
+
+    /// A geometric magnitude bound stops where its whole tail rounds away; any other stand-in at
+    /// the profile's floor.
+    fn counted(&self, s: &Series, band: Audible) -> Option<usize> {
+        let hi = match s.hi {
+            Bound::Finite(n) => return usize::try_from((n - s.lo + 1).max(0)).ok(),
+            Bound::Infinite => MAX_EXPANDED_TERMS,
+        };
+        let bound = self.bound(&s.term.body, band)?;
+        let ratio = match bound.exact {
+            true => ratio(&bound.body, s.index).filter(|r| *r < 1.0),
+            false => None,
+        };
+        let floor = 10f64.powf(band.floor_db / 20.0);
+        let mut peak = 0.0f64;
+        for i in 0..hi {
+            let at = substitute(&bound.body, s.index, (s.lo + i as i64) as f64);
+            let held = exact_constant_read(&at, self.reads)?.abs();
+            peak = peak.max(held);
+            let gone = match ratio {
+                Some(r) => held / (1.0 - r) <= band.precision,
+                None => peak > 0.0 && held < peak * floor,
+            };
+            if gone {
+                return Some(i.max(1));
+            }
+        }
+        None
+    }
+
+    fn bound(&self, f: &Body, band: Audible) -> Option<Bounded> {
+        let held = |body: Body, exact: bool| Some(Bounded { body, exact });
+        let under = |p: &Part| {
+            self.bound(&p.body, band)
+                .map(|b| (Part::new(p.origin, b.body), b.exact))
+        };
+        let all = |parts: &[Part], wrap: &dyn Fn(Part) -> Part| {
+            let mut exact = true;
+            let mut kept = Vec::with_capacity(parts.len());
+            for p in parts {
+                let (part, known) = under(p)?;
+                exact &= known;
+                kept.push(wrap(part));
+            }
+            Some((kept, exact))
+        };
+        let mentions_line = |f: &Body| mentions_line_read(f, self.reads);
+        match f {
+            Body::Series(s) => match self.total(s, band) {
+                Some(sum) => held(Body::Const(C64::real(sum)), true),
+                None => held(Body::Const(C64::ONE), false),
+            },
+            Body::Node(id) => self.node_bound(*id, band),
+            Body::Line => held(Body::Const(C64::ONE), false),
+            Body::Mul(parts) => {
+                let (kept, exact) = all(parts, &|p| p)?;
+                held(Body::Mul(kept), exact)
+            }
+            Body::Add(parts) => {
+                let (kept, exact) = all(parts, &|p| Part::bare(Body::Apply(Unary::Abs, p)))?;
+                held(Body::Add(kept), exact)
+            }
+            Body::Div(a, b) if !mentions_line(&b.body) => {
+                let (num, exact) = under(a)?;
+                held(Body::Div(num, b.clone()), exact)
+            }
+            Body::Div(a, b) => {
+                let ((num, _), (den, _)) = (under(a)?, under(b)?);
+                held(Body::Div(num, den), false)
+            }
+            Body::Apply(Unary::Sin | Unary::Cos | Unary::Tanh | Unary::Sat | Unary::Step, arg) => {
+                held(Body::Const(C64::ONE), self.real(&arg.body))
+            }
+            Body::Crop { of, .. } | Body::Shift { of, .. } | Body::Warp { of, .. } => {
+                self.bound(&of.body, band)
+            }
+            Body::Pow(base, n) => {
+                let (part, exact) = under(base)?;
+                held(Body::Pow(part, *n), exact && *n >= 0)
+            }
+            other if !mentions_line(other) => held(other.clone(), true),
+            _ => None,
+        }
+    }
+
+    /// A ref holds no index, so its bound is one number; one no number holds bounds nothing.
+    fn node_bound(&self, id: NodeId, band: Audible) -> Option<Bounded> {
+        let key = (id, band.key());
+        if let Some(held) = self.bounds.borrow().get(&key) {
+            return held.clone();
+        }
+        let found = match self.reads.view(id, &Read::As) {
+            Some(form) => self.bound(&form, band).and_then(|b| {
+                let value = exact_constant_read(&b.body, self.reads)?;
+                Some(Bounded {
+                    body: Body::Const(value),
+                    exact: b.exact,
+                })
+            }),
+            None => Some(Bounded {
+                body: Body::Const(C64::ONE),
+                exact: false,
+            }),
+        };
+        self.bounds.borrow_mut().insert(key, found.clone());
+        found
+    }
+
+    /// A geometric series sums to its first bound over `1 - ratio`; any other to what it keeps.
+    fn total(&self, s: &Series, band: Audible) -> Option<f64> {
+        let bound = self.bound(&s.term.body, band).filter(|b| b.exact)?.body;
+        let at = |i: i64| {
+            Some(exact_constant_read(&substitute(&bound, s.index, i as f64), self.reads)?.abs())
+        };
+        if let (Bound::Infinite, Some(r)) = (s.hi, ratio(&bound, s.index).filter(|r| *r < 1.0)) {
+            return Some(at(s.lo)? / (1.0 - r));
+        }
+        let kept =
+            i64::try_from(self.counted(s, band).filter(|n| *n <= MAX_EXPANDED_TERMS)?).ok()?;
+        (s.lo..s.lo + kept).try_fold(0.0, |held, i| Some(held + at(i)?))
+    }
+
+    fn real(&self, f: &Body) -> bool {
+        axis_read(f, &Unread, self.reads) == Axis::Real
     }
 }
 
@@ -193,168 +536,6 @@ fn sum(parts: Vec<Body>) -> Body {
         1 => parts.into_iter().next().expect("one part"),
         _ => Body::Add(parts.into_iter().map(Part::bare).collect()),
     }
-}
-
-/// A nesting is priced whole before it expands: a written bound counts like the floor's.
-fn terms(s: &Series, band: Audible) -> Result<usize, CollapseError> {
-    let cost = cost(s, band).ok_or(CollapseError::NotEvaluable(
-        "a series whose term count no coefficient bounds",
-    ))?;
-    if cost.depth == 1 && cost.own > MAX_EXPANDED_TERMS {
-        return Err(CollapseError::NotEvaluable(
-            "a series of more terms than one instant expands",
-        ));
-    }
-    match cost.terms {
-        Some(terms) if terms <= MAX_EXPANDED_TERMS => Ok(cost.own),
-        terms => Err(CollapseError::NestedSeries {
-            depth: cost.depth,
-            terms,
-            bound: MAX_EXPANDED_TERMS,
-        }),
-    }
-}
-
-/// Series deep, terms the whole nesting takes, terms this level takes.
-struct Cost {
-    depth: usize,
-    terms: Option<usize>,
-    own: usize,
-}
-
-fn cost(s: &Series, band: Audible) -> Option<Cost> {
-    let own = counted(s, band)?;
-    let inside = substitute(&s.term.body, s.index, s.lo as f64);
-    let (depth, inner) = price(&inside, band)?;
-    Some(Cost {
-        depth: depth + 1,
-        terms: inner.and_then(|inner| own.checked_mul(inner)),
-        own,
-    })
-}
-
-/// Series counts add under a sum, multiply elsewhere; a part with no series prices nothing.
-fn price(f: &Body, band: Audible) -> Option<(usize, Option<usize>)> {
-    if let Body::Series(s) = f {
-        let cost = cost(s, band)?;
-        return Some((cost.depth, cost.terms));
-    }
-    let summed = matches!(f, Body::Add(_));
-    let mut depth = 0;
-    let mut terms: Option<usize> = Some(if summed { 0 } else { 1 });
-    for p in children(f) {
-        let (d, n) = price(&p.body, band)?;
-        if d == 0 {
-            continue;
-        }
-        depth = depth.max(d);
-        terms = terms.zip(n).and_then(|(terms, n)| match summed {
-            true => terms.checked_add(n),
-            false => terms.checked_mul(n),
-        });
-    }
-    Some((depth, terms.map(|n| n.max(1))))
-}
-
-/// A geometric magnitude bound stops where its whole tail rounds away; any other stand-in at
-/// the profile's floor.
-fn counted(s: &Series, band: Audible) -> Option<usize> {
-    let hi = match s.hi {
-        Bound::Finite(n) => return usize::try_from((n - s.lo + 1).max(0)).ok(),
-        Bound::Infinite => MAX_EXPANDED_TERMS,
-    };
-    let bound = bound(&s.term.body, band)?;
-    let ratio = match bound.exact {
-        true => ratio(&bound.body, s.index).filter(|r| *r < 1.0),
-        false => None,
-    };
-    let floor = 10f64.powf(band.floor_db / 20.0);
-    let mut peak = 0.0f64;
-    for i in 0..hi {
-        let at = substitute(&bound.body, s.index, (s.lo + i as i64) as f64);
-        let held = exact_constant(&at)?.abs();
-        peak = peak.max(held);
-        let gone = match ratio {
-            Some(r) => held / (1.0 - r) <= band.precision,
-            None => peak > 0.0 && held < peak * floor,
-        };
-        if gone {
-            return Some(i.max(1));
-        }
-    }
-    None
-}
-
-/// A term's coefficient in the index. `exact` where it bounds the term's magnitude; elsewhere
-/// it only stands in, a turning factor or a name read as one.
-struct Bounded {
-    body: Body,
-    exact: bool,
-}
-
-fn bound(f: &Body, band: Audible) -> Option<Bounded> {
-    let held = |body: Body, exact: bool| Some(Bounded { body, exact });
-    let under = |p: &Part| bound(&p.body, band).map(|b| (Part::new(p.origin, b.body), b.exact));
-    let all = |parts: &[Part], wrap: &dyn Fn(Part) -> Part| {
-        let mut exact = true;
-        let mut kept = Vec::with_capacity(parts.len());
-        for p in parts {
-            let (part, known) = under(p)?;
-            exact &= known;
-            kept.push(wrap(part));
-        }
-        Some((kept, exact))
-    };
-    match f {
-        Body::Series(s) => match total(s, band) {
-            Some(sum) => held(Body::Const(C64::real(sum)), true),
-            None => held(Body::Const(C64::ONE), false),
-        },
-        Body::Line | Body::Node(_) => held(Body::Const(C64::ONE), false),
-        Body::Mul(parts) => {
-            let (kept, exact) = all(parts, &|p| p)?;
-            held(Body::Mul(kept), exact)
-        }
-        Body::Add(parts) => {
-            let (kept, exact) = all(parts, &|p| Part::bare(Body::Apply(Unary::Abs, p)))?;
-            held(Body::Add(kept), exact)
-        }
-        Body::Div(a, b) if !mentions_line(&b.body) => {
-            let (num, exact) = under(a)?;
-            held(Body::Div(num, b.clone()), exact)
-        }
-        Body::Div(a, b) => {
-            let ((num, _), (den, _)) = (under(a)?, under(b)?);
-            held(Body::Div(num, den), false)
-        }
-        Body::Apply(Unary::Sin | Unary::Cos | Unary::Tanh | Unary::Sat | Unary::Step, arg) => {
-            held(Body::Const(C64::ONE), real(&arg.body))
-        }
-        Body::Crop { of, .. } | Body::Shift { of, .. } | Body::Warp { of, .. } => {
-            bound(&of.body, band)
-        }
-        Body::Pow(base, n) => {
-            let (part, exact) = under(base)?;
-            held(Body::Pow(part, *n), exact && *n >= 0)
-        }
-        other if !mentions_line(other) => held(other.clone(), true),
-        _ => None,
-    }
-}
-
-/// A geometric series sums to its first bound over `1 - ratio`; any other to what it keeps.
-fn total(s: &Series, band: Audible) -> Option<f64> {
-    let bound = bound(&s.term.body, band).filter(|b| b.exact)?.body;
-    let at = |i: i64| Some(exact_constant(&substitute(&bound, s.index, i as f64))?.abs());
-    if let (Bound::Infinite, Some(r)) = (s.hi, ratio(&bound, s.index).filter(|r| *r < 1.0)) {
-        return Some(at(s.lo)? / (1.0 - r));
-    }
-    let kept = i64::try_from(counted(s, band).filter(|n| *n <= MAX_EXPANDED_TERMS)?).ok()?;
-    (s.lo..s.lo + kept).try_fold(0.0, |held, i| Some(held + at(i)?))
-}
-
-fn real(f: &Body) -> bool {
-    axis(f, &Unread) == Axis::Real
 }
 
 struct Unread;

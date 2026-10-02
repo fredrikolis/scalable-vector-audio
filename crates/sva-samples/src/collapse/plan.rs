@@ -2,7 +2,9 @@
 
 use sva_formula::closed_form::{Part, map_children};
 use sva_formula::spectral_sum::atom::SpectralAtom;
-use sva_formula::{Body, ClosedForm, Lane, Line, SpectralSum, Var, normalize_closed_form};
+use sva_formula::{
+    Body, ClosedForm, Lane, Line, Opaque, Reads, SpectralSum, Var, normalize_closed_form,
+};
 
 use super::active::{self, Window};
 use super::truncate::Audible;
@@ -78,14 +80,23 @@ pub fn of(
     profile: &Profile,
     len: usize,
 ) -> Result<Plan, CollapseError> {
+    of_read(sum, (rate, extent, len), profile, &Opaque)
+}
+
+pub fn of_read(
+    sum: &SpectralSum,
+    (rate, extent, len): (u32, Extent, usize),
+    profile: &Profile,
+    reads: &dyn Reads,
+) -> Result<Plan, CollapseError> {
     let ceiling = profile.ceiling(rate);
     if sum.var == Var::F {
         return Ok(Plan::Spectrum(Box::new(sum.clone())));
     }
-    if let Some(found) = line_plan(sum, rate, extent, profile, len, ceiling)? {
+    if let Some(found) = line_plan(sum, (rate, extent, len), (profile, ceiling), reads)? {
         return Ok(Plan::Lines(Box::new(found)));
     }
-    let truncated = truncate::spectral_sum(sum, Audible::of(profile, rate))?;
+    let truncated = truncate::spectral_sum_read(sum, Audible::of(profile, rate), reads)?;
     let rule = match () {
         () if atoms::band_limited(&truncated, ceiling, profile) => Rule::BandLimited,
         () if atoms::windowed(&truncated) => Rule::CroppedPair,
@@ -373,18 +384,21 @@ fn walked(f: &Body, component: usize, clock: &Clock, span: Window) -> (u128, u12
 /// factor it is read under: none on a line row, the group's own on a windowed one.
 pub fn summed_bounds(
     sum: &SpectralSum,
-    profile: &Profile,
-    rate: u32,
+    (profile, rate): (&Profile, u32),
+    reads: &dyn Reads,
 ) -> Result<Vec<(Option<SpectralAtom>, f64)>, CollapseError> {
     if sum.var == Var::F {
         return Ok(Vec::new());
     }
-    if let Some(found) = kept_lines(sum, profile, profile.ceiling(rate))? {
+    if let Some(found) = kept_lines(sum, profile, profile.ceiling(rate), reads)? {
         let direct = found.kept.iter().filter_map(|kept| lines::Direct::of(kept));
         return Ok(direct.map(|d| (None, d.bound())).collect());
     }
     let band = Audible::of(profile, rate);
-    let groups = sum.lanes.iter().map(|lane| lines::line_groups(lane, band));
+    let groups = sum
+        .lanes
+        .iter()
+        .map(|lane| lines::line_groups(lane, band, reads));
     let Some(groups) = groups.collect::<Option<Vec<_>>>() else {
         return Ok(Vec::new());
     };
@@ -398,13 +412,11 @@ pub fn summed_bounds(
 /// Rows one and two: every atom a line, none of them windowed.
 fn line_plan(
     sum: &SpectralSum,
-    rate: u32,
-    extent: Extent,
-    profile: &Profile,
-    len: usize,
-    ceiling: f64,
+    (rate, extent, len): (u32, Extent, usize),
+    (profile, ceiling): (&Profile, f64),
+    reads: &dyn Reads,
 ) -> Result<Option<LinePlan>, CollapseError> {
-    let Some(found) = kept_lines(sum, profile, ceiling)? else {
+    let Some(found) = kept_lines(sum, profile, ceiling, reads)? else {
         return Ok(None);
     };
     let bins = lines::grid(&found.kept, &found.grids, rate, extent.span_secs(rate), len);
@@ -447,12 +459,14 @@ pub(super) fn kept_lines(
     sum: &SpectralSum,
     profile: &Profile,
     ceiling: f64,
+    reads: &dyn Reads,
 ) -> Result<Option<Kept>, CollapseError> {
     let mut per_lane = Vec::with_capacity(sum.lanes.len());
     let mut grids: Vec<f64> = Vec::new();
     let mut tail: Option<f64> = None;
     for lane in &sum.lanes {
-        match lines::of_lane(lane, ceiling, profile.floor(ceiling), profile.half_lsb()) {
+        let band = (ceiling, profile.floor(ceiling), profile.half_lsb());
+        match lines::of_lane(lane, band, reads) {
             Some(found) => {
                 if let Some(left) = found.tail_db {
                     tail = Some(tail.map_or(left, |held: f64| held.max(left)));

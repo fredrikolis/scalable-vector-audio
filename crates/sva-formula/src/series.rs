@@ -2,14 +2,15 @@
 
 use std::f64::consts::TAU;
 
-use crate::affine::{Axis, Reading, affine_in, axis, exact_constant};
+use crate::affine::{Axis, Reading, affine_in, affine_read, axis_read, exact_constant_read};
 use crate::closed_form::{
     Body, Bound, IndexId, Part, Series, Unary, children, map_children, read_at,
 };
 use crate::complex::C64;
 use crate::env::Env;
 use crate::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom};
-use crate::table::series::{Shape, read};
+use crate::table::series::{Shape, read_with};
+use crate::through::{Opaque, Reads};
 
 /// A tempered limit needs the coefficient polynomially bounded: `1/k` is, `2^k` is not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,7 +26,8 @@ pub fn summable(s: &Series, env: &dyn Env) -> bool {
     }
 }
 
-/// Decided from where the index sits, never by evaluating a term.
+/// Decided from where the index sits, never by evaluating a term; a ref read at a time the
+/// index moves is its form read there.
 pub fn growth(f: &Body, k: IndexId, env: &dyn Env) -> IndexGrowth {
     if !mentions(f, k) {
         return IndexGrowth::Polynomial;
@@ -45,12 +47,22 @@ pub fn growth(f: &Body, k: IndexId, env: &dyn Env) -> IndexGrowth {
         Body::Shift { of, .. } | Body::Deriv { of, .. } => growth(&of.body, k, env),
         Body::Warp { at, of } => match &*of.body {
             Body::Crop { of: inner, .. } => growth(&read_at(&inner.body, &at.body), k, env),
+            Body::Node(id) => env
+                .reads()
+                .growth(*id, &at.body, k)
+                .unwrap_or(IndexGrowth::Polynomial),
             other => growth(&read_at(other, &at.body), k, env),
         },
         Body::Pv(at) | Body::Delta { at, .. } => growth(&at.body, k, env),
         Body::Series(inner) => growth(&inner.term.body, k, env),
         _ => IndexGrowth::Unbounded,
     }
+}
+
+fn join(parts: &[Part], k: IndexId, env: &dyn Env) -> IndexGrowth {
+    parts.iter().fold(IndexGrowth::Polynomial, |acc, p| {
+        acc.and(growth(&p.body, k, env))
+    })
 }
 
 /// A turning exponent is bounded and a falling one is a geometric decay; only a rising real
@@ -66,7 +78,7 @@ fn exponential_in(arg: &Part, k: IndexId, env: &dyn Env) -> IndexGrowth {
 }
 
 fn bounded_along(arg: &Part, k: IndexId, wanted: Axis, env: &dyn Env) -> IndexGrowth {
-    if !mentions(&arg.body, k) || axis(&arg.body, env) == wanted {
+    if !mentions(&arg.body, k) || axis_read(&arg.body, env, env.reads()) == wanted {
         IndexGrowth::Polynomial
     } else {
         IndexGrowth::Unbounded
@@ -84,12 +96,6 @@ fn logarithmic(f: &Body, k: IndexId) -> bool {
     }
 }
 
-fn join(parts: &[Part], k: IndexId, env: &dyn Env) -> IndexGrowth {
-    parts.iter().fold(IndexGrowth::Polynomial, |acc, p| {
-        acc.and(growth(&p.body, k, env))
-    })
-}
-
 impl IndexGrowth {
     fn and(self, other: IndexGrowth) -> IndexGrowth {
         match (self, other) {
@@ -101,7 +107,17 @@ impl IndexGrowth {
 
 /// What separates a series term's coefficient from its wave.
 pub fn mentions_line(f: &Body) -> bool {
-    reaches(f, &|x| matches!(x, Body::Line))
+    mentions_line_read(f, &Opaque)
+}
+
+pub fn mentions_line_read(f: &Body, reads: &dyn Reads) -> bool {
+    match f {
+        Body::Line => true,
+        Body::Node(id) => reads.mentions_line(*id),
+        other => children(other)
+            .iter()
+            .any(|p| mentions_line_read(&p.body, reads)),
+    }
 }
 
 /// A bound on `|c(k+1)| / |c(k)|` holding at every index.
@@ -176,8 +192,16 @@ pub const AUDIBLE_CEILING_HZ: f64 = 20_000.0;
 /// term piles onto one line: a geometric weight stops it where the whole tail it bounds is at
 /// most `precision`, and any other where the loudest line falls under the floor.
 pub fn lines(s: &Series, ceiling: f64, floor_db: f64, precision: f64) -> Lines {
+    lines_read(s, (ceiling, floor_db, precision), &Opaque)
+}
+
+pub fn lines_read(
+    s: &Series,
+    (ceiling, floor_db, precision): (f64, f64, f64),
+    reads: &dyn Reads,
+) -> Lines {
     let ceiling = ceiling.min(AUDIBLE_CEILING_HZ);
-    let Some(shape) = read(&s.term.body) else {
+    let Some(shape) = read_with(&s.term.body, reads) else {
         return Lines {
             taken: Vec::new(),
             dropped: Vec::new(),
@@ -187,7 +211,7 @@ pub fn lines(s: &Series, ceiling: f64, floor_db: f64, precision: f64) -> Lines {
     let voices = places(&shape);
     let band = voices
         .iter()
-        .filter_map(|(place, _)| leaves_band(place, s.index, ceiling))
+        .filter_map(|(place, _)| leaves_band(place, s.index, ceiling, reads))
         .fold(None, |held: Option<i64>, next| {
             Some(held.map_or(next, |held| held.max(next)))
         });
@@ -206,7 +230,7 @@ pub fn lines(s: &Series, ceiling: f64, floor_db: f64, precision: f64) -> Lines {
     let floor = 10f64.powf(floor_db / 20.0);
     let ladders: Vec<Option<(f64, f64)>> = voices
         .iter()
-        .map(|(place, _)| ladder(place, s.index))
+        .map(|(place, _)| ladder(place, s.index, reads))
         .collect();
 
     let mut taken = Vec::new();
@@ -216,8 +240,8 @@ pub fn lines(s: &Series, ceiling: f64, floor_db: f64, precision: f64) -> Lines {
         let mut here = Vec::new();
         for ((place, weight), ladder) in voices.iter().zip(&ladders) {
             let (Some(hz), Some(amp)) = (
-                at_index(place, s.index, k).map(|c| c.re),
-                at_index(weight, s.index, k),
+                at_index(place, s.index, k, reads).map(|c| c.re),
+                at_index(weight, s.index, k, reads),
             ) else {
                 continue;
             };
@@ -258,8 +282,8 @@ pub fn lines(s: &Series, ceiling: f64, floor_db: f64, precision: f64) -> Lines {
     }
 }
 
-fn ladder(place: &Body, k: IndexId) -> Option<(f64, f64)> {
-    let (slope, offset) = affine_in(place, Reading::Index(k))?;
+fn ladder(place: &Body, k: IndexId, reads: &dyn Reads) -> Option<(f64, f64)> {
+    let (slope, offset) = affine_read(place, Reading::Index(k), reads)?;
     let (slope, offset) = (slope.exact()?, offset.exact()?);
     let real = slope.im == 0.0 && offset.im == 0.0;
     (real && slope.re.is_finite() && offset.re.is_finite()).then_some((offset.re, slope.re))
@@ -268,12 +292,16 @@ fn ladder(place: &Body, k: IndexId) -> Option<(f64, f64)> {
 /// The step a series' own frequency walks: every term lands on a multiple of it. A
 /// delta train's places are instants, not frequencies, and name no such step.
 pub fn spacing(s: &Series) -> Option<f64> {
-    let Some(shape @ Shape::Lines(_)) = read(&s.term.body) else {
+    spacing_read(s, &Opaque)
+}
+
+pub fn spacing_read(s: &Series, reads: &dyn Reads) -> Option<f64> {
+    let Some(shape @ Shape::Lines(_)) = read_with(&s.term.body, reads) else {
         return None;
     };
     let mut held: Option<f64> = None;
     for (place, _) in places(&shape) {
-        let (slope, offset) = affine_in(&place, Reading::Index(s.index))?;
+        let (slope, offset) = affine_read(&place, Reading::Index(s.index), reads)?;
         let (slope, offset) = (slope.exact()?.re, offset.exact()?.re);
         if slope == 0.0 || !slope.is_finite() || !offset.is_finite() {
             return None;
@@ -299,16 +327,21 @@ pub struct Enumerated {
 /// A crop of a series is the series of cropped terms: the window lifts off, goes back on
 /// each. `None` where no line closed form reads under it. A delta's `hz` is an instant, not a pitch.
 pub fn line_atoms(s: &Series, ceiling: f64, floor_db: f64, precision: f64) -> Option<Enumerated> {
-    let (body, window) = crate::spectral_sum::image::crop_peeled(&s.term.body);
+    line_atoms_read(s, (ceiling, floor_db, precision), &Opaque)
+}
+
+pub fn line_atoms_read(s: &Series, band: (f64, f64, f64), reads: &dyn Reads) -> Option<Enumerated> {
+    let (body, window) =
+        crate::spectral_sum::image::crop_peeled(&crate::through::looked(&s.term.body, reads));
     let bare = Series {
         term: Part::new(s.term.origin, body),
         ..s.clone()
     };
-    let singular = match read(&bare.term.body)? {
+    let singular = match read_with(&bare.term.body, reads)? {
         Shape::Deltas(_) => true,
         Shape::Lines(_) => false,
     };
-    let found = lines(&bare, ceiling, floor_db, precision);
+    let found = lines_read(&bare, band, reads);
     let atoms = found
         .taken
         .into_iter()
@@ -363,8 +396,8 @@ fn places(shape: &Shape) -> Vec<(Body, Body)> {
 
 /// The last index the walk reaches, solving `|slope*k + offset| <= ceiling`
 /// at both signs: an offset opposing the slope carries the line back in before it leaves.
-fn leaves_band(place: &Body, k: IndexId, ceiling: f64) -> Option<i64> {
-    let (slope, offset) = affine_in(place, Reading::Index(k))?;
+fn leaves_band(place: &Body, k: IndexId, ceiling: f64, reads: &dyn Reads) -> Option<i64> {
+    let (slope, offset) = affine_read(place, Reading::Index(k), reads)?;
     let (slope, offset) = (slope.exact()?.re, offset.exact()?.re);
     if slope == 0.0 {
         return None;
@@ -376,8 +409,8 @@ fn leaves_band(place: &Body, k: IndexId, ceiling: f64) -> Option<i64> {
 
 const MAX_TERMS: i64 = 1 << 20;
 
-fn at_index(f: &Body, k: IndexId, value: i64) -> Option<C64> {
-    exact_constant(&substitute(f, k, value as f64))
+fn at_index(f: &Body, k: IndexId, value: i64, reads: &dyn Reads) -> Option<C64> {
+    exact_constant_read(&substitute(f, k, value as f64), reads)
 }
 
 pub fn substitute(f: &Body, k: IndexId, value: f64) -> Body {

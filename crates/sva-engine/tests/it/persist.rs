@@ -162,7 +162,7 @@ fn opening_a_store_reads_its_index_alone() {
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
-const PINNED: (u32, u64) = (21, 4287385132459808466);
+const PINNED: (u32, u64) = (22, 8686475392129363414);
 
 /// A change to how a value is encoded, or to what the engine computes for any construct here,
 /// fails this until `STORE_FORMAT` is bumped and the digest pinned again: rows, a filter, a

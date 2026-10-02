@@ -465,7 +465,9 @@ impl Typing {
     }
 
     pub(crate) fn infer_closed_form(&self, form: &ClosedForm) -> Result<Ty, EngineError> {
-        infer(form, &Table(&self.nodes)).map_err(|r| {
+        let inferred =
+            crate::refs::read_through(self, |through| infer(form, &Table(&self.nodes, through)));
+        inferred.map_err(|r| {
             EngineError::of_closed_form(
                 &r,
                 self.locate(r.origin),
@@ -475,7 +477,7 @@ impl Typing {
     }
 }
 
-struct Table<'a>(&'a [Option<Node>]);
+struct Table<'a>(&'a [Option<Node>], &'a dyn sva_formula::Reads);
 
 impl Env for Table<'_> {
     fn node(&self, id: NodeId) -> Ty {
@@ -488,6 +490,10 @@ impl Env for Table<'_> {
     /// Substituted per instance before a closed form reaches sva-formula, so no term holds one.
     fn param(&self, _: ParamId) -> Ty {
         Ty::form(Var::T, true, Codomain::Real)
+    }
+
+    fn reads(&self) -> &dyn sva_formula::Reads {
+        self.1
     }
 }
 

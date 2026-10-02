@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use sva_formula::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom, SpectralAtomKey};
 use sva_formula::{
-    C64, Lane, Line, Origin, Run, commensurate, lines as series_lines, modal, spacing,
+    C64, Lane, Line, Origin, Reads, Run, commensurate, lines_read, modal, spacing_read,
 };
 
 use crate::fft::idft;
@@ -18,7 +18,11 @@ pub struct Found {
     pub tail_db: Option<f64>,
 }
 
-pub fn of_lane(lane: &Lane, ceiling: f64, floor_db: f64, precision: f64) -> Option<Found> {
+pub fn of_lane(
+    lane: &Lane,
+    (ceiling, floor_db, precision): (f64, f64, f64),
+    reads: &dyn Reads,
+) -> Option<Found> {
     let mut out = Vec::new();
     let mut grids = Vec::new();
     let mut tail: Option<f64> = None;
@@ -31,14 +35,14 @@ pub fn of_lane(lane: &Lane, ceiling: f64, floor_db: f64, precision: f64) -> Opti
         }
     }
     for series in &lane.series {
-        let enumerated = series_lines(series, ceiling, floor_db, precision);
+        let enumerated = lines_read(series, (ceiling, floor_db, precision), reads);
         if enumerated.taken.is_empty() && enumerated.dropped.is_empty() {
             return None;
         }
         if enumerated.tail_db.is_finite() {
             tail = Some(tail.map_or(enumerated.tail_db, |held: f64| held.max(enumerated.tail_db)));
         }
-        grids.extend(spacing(series));
+        grids.extend(spacing_read(series, reads));
         out.extend(enumerated.taken);
         out.extend(enumerated.dropped);
     }
@@ -164,6 +168,7 @@ pub fn grouped(lane: &Lane) -> Option<Vec<(SpectralAtom, Vec<Line>)>> {
 pub(super) fn line_groups(
     lane: &Lane,
     band: super::truncate::Audible,
+    reads: &dyn Reads,
 ) -> Option<Vec<(SpectralAtom, Vec<Line>)>> {
     if !lane.modal.is_empty() {
         return None;
@@ -176,15 +181,19 @@ pub(super) fn line_groups(
         true => Vec::new(),
         false => grouped(&atoms)?,
     };
-    out.extend(ladders(lane, band)?);
+    out.extend(ladders(lane, band, reads)?);
     Some(out)
 }
 
-fn ladders(lane: &Lane, band: super::truncate::Audible) -> Option<Vec<(SpectralAtom, Vec<Line>)>> {
+fn ladders(
+    lane: &Lane,
+    band: super::truncate::Audible,
+    reads: &dyn Reads,
+) -> Option<Vec<(SpectralAtom, Vec<Line>)>> {
     lane.series
         .iter()
         .map(|series| {
-            let (held, ind) = super::truncate::windowed_lines(series, band)?;
+            let (held, ind) = super::truncate::windowed_lines(series, band, reads)?;
             let factors = Factors {
                 ind,
                 ..Factors::NONE

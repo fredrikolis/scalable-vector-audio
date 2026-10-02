@@ -1,5 +1,6 @@
-// Concern: declares the Env a term reads node and parameter types through | Non-concern: holding a graph (sva-engine) | IO: (NodeId) -> Ty
+// Concern: declares the Env a term reads node and parameter types and forms through | Non-concern: holding a graph (sva-engine) | IO: (NodeId) -> Ty, a reader
 
+use crate::through::{Opaque, Reads};
 use crate::ty::Ty;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -13,4 +14,9 @@ pub struct ParamId(pub u32);
 pub trait Env {
     fn node(&self, id: NodeId) -> Ty;
     fn param(&self, id: ParamId) -> Ty;
+
+    /// What a ref reads as through the forms the caller holds, where it holds them.
+    fn reads(&self) -> &dyn Reads {
+        &Opaque
+    }
 }

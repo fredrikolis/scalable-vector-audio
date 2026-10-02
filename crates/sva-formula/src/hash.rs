@@ -33,6 +33,20 @@ pub fn hash_closed_form(t: &ClosedForm) -> Hash {
     hash_closed_form_under(t, TABLE_VERSION)
 }
 
+/// A spectral sum whose series terms read other nodes, each ref hashed as what `node` names it:
+/// the node's own content, never the number a graph gave it. A sum reading no node hashes as
+/// `hash_spectral_sum` does.
+pub fn hash_spectral_sum_with(n: &SpectralSum, node: &mut dyn FnMut(NodeId) -> Hash) -> Hash {
+    let mut s = Sink::new(0x01, TABLE_VERSION);
+    s.node = Some(node);
+    s.var(n.var);
+    s.u64(n.lanes.len() as u64);
+    for lane in &n.lanes {
+        s.lane(lane);
+    }
+    s.finish()
+}
+
 /// The version is the first field after the tag, so a table bump retires every entry keyed
 /// by one of these.
 pub fn hash_spectral_sum_under(n: &SpectralSum, table_version: u64) -> Hash {
@@ -62,6 +76,15 @@ pub fn hash_closed_form_with(t: &ClosedForm, node: &mut dyn FnMut(NodeId) -> Has
     s.finish()
 }
 
+/// A time a ref is read at, as a reading of that ref is kept under: an index it holds is one
+/// series' own, named by its number.
+pub fn hash_time(at: &Body) -> Hash {
+    let mut s = Sink::new(0x05, TABLE_VERSION);
+    s.free = true;
+    s.formula(at);
+    s.finish()
+}
+
 /// The unit-interval value one seed draws at one whole step, wherever the pair is written.
 pub fn draw(seed: u64, step: i64) -> f64 {
     mix(mix(seed ^ DRAWN) ^ step as u64) as f64 / u64::MAX as f64
@@ -82,6 +105,8 @@ struct Sink<'a> {
     /// The series indices bound around the term being hashed, innermost last: an index is
     /// hashed by which binder it names, never by the number a typing drew for it.
     bound: Vec<IndexId>,
+    /// Whether an index no binder here names is named by its own number.
+    free: bool,
 }
 
 impl<'a> Sink<'a> {
@@ -90,6 +115,7 @@ impl<'a> Sink<'a> {
             lanes: Lanes::default(),
             node: None,
             bound: Vec::new(),
+            free: false,
         };
         s.byte(tag);
         s.u64(table_version);
@@ -276,11 +302,17 @@ impl<'a> Sink<'a> {
                 self.c64(*c);
             }
             Body::Line => self.byte(0x11),
-            Body::Index(i) => {
-                let depth = self.bound.iter().rev().position(|b| b == i);
-                self.byte(0x12);
-                self.u64(depth.expect("an index inside the series binding it") as u64);
-            }
+            Body::Index(i) => match self.bound.iter().rev().position(|b| b == i) {
+                Some(depth) => {
+                    self.byte(0x12);
+                    self.u64(depth as u64);
+                }
+                None => {
+                    assert!(self.free, "an index inside the series binding it");
+                    self.byte(0x29);
+                    self.u64(u64::from(i.0));
+                }
+            },
             Body::Param(p) => {
                 self.byte(0x13);
                 self.u64(u64::from(p.0));

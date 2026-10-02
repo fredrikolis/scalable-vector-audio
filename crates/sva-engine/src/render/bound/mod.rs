@@ -9,12 +9,16 @@ use std::rc::Rc;
 
 use sva_formula::spectral_sum::atom::SpectralAtom;
 use sva_formula::spectral_sum::sup::sup_from;
-use sva_formula::{Body, C64, Edge, Fold, Hash, NodeId, Part, Unary, Var};
+use sva_formula::{Body, C64, Edge, Fold, Hash, NodeId, Part, Through, Unary, Var};
 use sva_samples::collapse::plan::summed_bounds;
-use sva_samples::{Audible, Extent, Grid, Profile, truncate_spectral_sum, truncate_written};
+use sva_samples::{
+    Audible, CollapseError, Extent, Grid, Profile, truncate_spectral_sum_read,
+    truncate_written_with,
+};
 
 use crate::cast::Cast;
 use crate::lower::number_of;
+use crate::refs::read_through;
 use crate::typing::{Typing, Value, When};
 use filter::Ringing;
 use range::{OP, Range, TRANSFORM_OPS};
@@ -122,9 +126,9 @@ impl Bounding<'_> {
         // A series no line reaches falls to the written form, as the collapse does.
         if tys.ty(id).is_closed_form()
             && let Ok(whole) = crate::refs::spectral_sum_of(tys, id, Var::T)
-            && let Ok(sum) = truncate_spectral_sum(&whole, band)
+            && let Ok(sum) = read_through(tys, |t| truncate_spectral_sum_read(&whole, band, t))
         {
-            let summed = summed_bounds(&whole, profile, rate).ok()?;
+            let summed = read_through(tys, |t| summed_bounds(&whole, (profile, rate), t)).ok()?;
             let atoms = sum
                 .lanes
                 .iter()
@@ -137,52 +141,61 @@ impl Bounding<'_> {
                 .collect();
             return Tail::new(Form::Atoms(atoms, summed));
         }
-        let body = match tys.value(id) {
-            Value::ClosedForm(form) if form.var == Var::T => {
-                truncate_written(&form.body, band).ok()?
-            }
-            Value::Cast(Cast::Sample, source) => return self.tail(*source),
-            Value::Noise(_) => return Tail::new(Form::Within(1.0)),
-            Value::Op { name, args } => sampled(tys, name, args)?,
-            Value::Read { source, at, .. } => {
-                let read = match at {
-                    When::At(map) => {
-                        let step = 1.0 / tys.grid(*source).sr();
-                        Some((map.scale.to_f64(), map.shift.to_f64(), step))
-                    }
-                    _ => None,
-                };
-                self.opened(id).then_some(())?;
-                let inner = self.tail(*source);
-                self.open.remove(&id);
-                return Tail::new(Form::Read(inner?, read));
-            }
-            Value::Filter {
-                shape,
-                x,
-                cutoff,
-                q,
-                gain,
-            } => {
-                let [cutoff, q, gain] = [cutoff, q, gain].map(|p| number_of(tys, *p));
-                let grid = tys.grid(id);
-                if tys.grid(*x) != grid {
-                    return None;
+        let body =
+            match tys.value(id) {
+                Value::ClosedForm(form) if form.var == Var::T => read_through(tys, |t| {
+                    truncate_written_with(&form.body, band, t, &mut |id, _| match Through::stands(
+                        id,
+                    ) {
+                        true => Err(CollapseError::NotEvaluable(
+                            "a ref read at a term's own time",
+                        )),
+                        false => Ok(id),
+                    })
+                })
+                .ok()?,
+                Value::Cast(Cast::Sample, source) => return self.tail(*source),
+                Value::Noise(_) => return Tail::new(Form::Within(1.0)),
+                Value::Op { name, args } => sampled(tys, name, args)?,
+                Value::Read { source, at, .. } => {
+                    let read = match at {
+                        When::At(map) => {
+                            let step = 1.0 / tys.grid(*source).sr();
+                            Some((map.scale.to_f64(), map.shift.to_f64(), step))
+                        }
+                        _ => None,
+                    };
+                    self.opened(id).then_some(())?;
+                    let inner = self.tail(*source);
+                    self.open.remove(&id);
+                    return Tail::new(Form::Read(inner?, read));
                 }
-                let (coeffs, _) =
-                    sva_samples::filters::coefficients(*shape, cutoff?, q?, gain?, grid.sr());
-                let input = self.tail(*x)?;
-                let (span, found) = (self.ends)(*x);
-                self.cut |= !found;
-                let first = match span.start {
-                    i64::MIN => f64::NEG_INFINITY,
-                    start => grid.instant(start),
-                };
-                let ringing = Ringing::of(&coeffs, input.from(first), span.end)?;
-                return Tail::new(Form::Filter(ringing, grid));
-            }
-            _ => return None,
-        };
+                Value::Filter {
+                    shape,
+                    x,
+                    cutoff,
+                    q,
+                    gain,
+                } => {
+                    let [cutoff, q, gain] = [cutoff, q, gain].map(|p| number_of(tys, *p));
+                    let grid = tys.grid(id);
+                    if tys.grid(*x) != grid {
+                        return None;
+                    }
+                    let (coeffs, _) =
+                        sva_samples::filters::coefficients(*shape, cutoff?, q?, gain?, grid.sr());
+                    let input = self.tail(*x)?;
+                    let (span, found) = (self.ends)(*x);
+                    self.cut |= !found;
+                    let first = match span.start {
+                        i64::MIN => f64::NEG_INFINITY,
+                        start => grid.instant(start),
+                    };
+                    let ringing = Ringing::of(&coeffs, input.from(first), span.end)?;
+                    return Tail::new(Form::Filter(ringing, grid));
+                }
+                _ => return None,
+            };
         let range = Range::of(&body).ok()?;
         let mut nodes = Vec::new();
         range.nodes(&mut nodes);

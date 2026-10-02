@@ -79,9 +79,10 @@ fn a_stored_energy_coefficient_held_in_refs_only_jumps() {
     assert_eq!(digest(&files, "top", 0.3), 0x2bce_0950_14ae_d401);
 }
 
-/// A closed loop's series holds its body written, each ref in it written in.
+/// A closed loop's series reads each ref its body reads as the form it names, at each term's
+/// own time.
 #[test]
-fn a_closed_loop_writes_each_ref_its_body_reads_into_its_series() {
+fn a_closed_loop_reads_each_ref_its_body_reads_at_each_terms_time() {
     let files = [
         ("tone", "crop(sin(2*pi*220*t), 0s, 0.1s)\n"),
         ("pair", "@tone(t)*0.5 + @tone(t)*0.5\n"),

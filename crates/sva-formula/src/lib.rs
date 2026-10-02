@@ -24,7 +24,7 @@ pub mod through;
 pub mod ty;
 pub mod underflow;
 
-pub use calculus::{Envelope, analytic, d_dt, envelope, hilbert};
+pub use calculus::{Envelope, analytic, d_dt, envelope, envelope_read, hilbert};
 pub use closed_form::{
     Body, Bound, ClosedForm, Edge, Excitation, Fold, IndexId, ModalBank, Mode, Part, Rational,
     Series, Unary, Var,
@@ -34,6 +34,7 @@ pub use env::{Env, NodeId, ParamId};
 pub use filter::{ALL_SHAPES, Shape, design};
 pub use hash::{
     Hash, draw, draw_nearest, hash_closed_form, hash_closed_form_with, hash_spectral_sum,
+    hash_spectral_sum_with,
 };
 pub use infer::infer;
 pub use lanes::Lanes;
@@ -44,14 +45,14 @@ pub use origin::Origin;
 pub use refusal::{AtomSketch, Code, Factor, Left, LeftReason, Refusal};
 pub use run::{Mirror, Run};
 pub use series::{
-    AUDIBLE_CEILING_HZ, Enumerated, Line, Lines, Rung, commensurate, line_atoms, lines, spacing,
-    summable,
+    AUDIBLE_CEILING_HZ, Enumerated, Line, Lines, Rung, commensurate, line_atoms, line_atoms_read,
+    lines, lines_read, spacing, spacing_read, summable,
 };
 pub use spectral_sum::atom::{Exp, Factors, Gauss, Indicator, Pole, Singular, SpectralAtom};
 pub use spectral_sum::build::{normalize, normalize_closed_form, normalize_read};
 pub use spectral_sum::image::crop_peeled;
 pub use spectral_sum::{Lane, SpectralSum};
-pub use table::{FAMILIES, TABLE_VERSION, dual, inverse, reflect};
+pub use table::{FAMILIES, TABLE_VERSION, dual, dual_read, inverse, inverse_read, reflect};
 pub use through::{Kept, Opaque, Reads, Through};
 pub use ty::{Codomain, Held, MAX_WIDTH, Mismatch, Ty};
 pub use underflow::exp_zero_at;

@@ -15,6 +15,7 @@ use crate::spectral_sum::atom::{
 };
 use crate::spectral_sum::merge::simplify;
 use crate::spectral_sum::{Lane, SpectralSum};
+use crate::through::{Opaque, Reads};
 use class::{blocked_pair, over_pole_order};
 
 /// Every hash feeds this first, so a bump retires each entry written before it. 4: a
@@ -48,6 +49,10 @@ pub const FAMILIES: [(&str, &str); 5] = [
 /// One kernel, `integral x(u) e^{-2*pi*i*theta*u} du`, in whichever variable the form
 /// holds. `dual(dual(x)) = x(-u)`, so `ifourier` is this then `reflect`.
 pub fn dual(n: &SpectralSum) -> Result<SpectralSum, Left> {
+    dual_read(n, &Opaque)
+}
+
+pub fn dual_read(n: &SpectralSum, reads: &dyn Reads) -> Result<SpectralSum, Left> {
     let mut lanes = Vec::with_capacity(n.lanes.len());
     for lane in &n.lanes {
         let mut atoms = Vec::new();
@@ -59,7 +64,7 @@ pub fn dual(n: &SpectralSum) -> Result<SpectralSum, Left> {
             series: lane
                 .series
                 .iter()
-                .map(series::dual)
+                .map(|s| series::dual(s, reads))
                 .collect::<Result<_, _>>()?,
             modal: Vec::new(),
         };
@@ -71,6 +76,10 @@ pub fn dual(n: &SpectralSum) -> Result<SpectralSum, Left> {
 
 /// `x(-u)`: the reflection that turns a forward transform into an inverse one.
 pub fn reflect(n: &SpectralSum) -> Result<SpectralSum, Left> {
+    reflect_read(n, &Opaque)
+}
+
+pub fn reflect_read(n: &SpectralSum, reads: &dyn Reads) -> Result<SpectralSum, Left> {
     let mut lanes = Vec::with_capacity(n.lanes.len());
     for lane in &n.lanes {
         let mut out = Lane {
@@ -78,7 +87,7 @@ pub fn reflect(n: &SpectralSum) -> Result<SpectralSum, Left> {
             series: lane
                 .series
                 .iter()
-                .map(series::reflect)
+                .map(|s| series::reflect(s, reads))
                 .collect::<Result<_, _>>()?,
             modal: Vec::new(),
         };
@@ -229,5 +238,9 @@ fn reflect_atom(a: &SpectralAtom) -> SpectralAtom {
 
 /// The dual of a whole closed form in `t` read back in `t`: what `ifourier` answers.
 pub fn inverse(n: &SpectralSum) -> Result<SpectralSum, Left> {
-    reflect(&dual(n)?)
+    inverse_read(n, &Opaque)
+}
+
+pub fn inverse_read(n: &SpectralSum, reads: &dyn Reads) -> Result<SpectralSum, Left> {
+    reflect_read(&dual_read(n, reads)?, reads)
 }

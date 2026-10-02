@@ -19,7 +19,7 @@ use std::sync::Arc;
 use sva_formula::{ClosedForm, Hash, Held as Representation, NodeId, Var};
 use sva_samples::{
     Buffer, Extent, Formula, Grid, Label, NodeRenderer, Profile, Rows, Slot, Spanned, Tape,
-    Written, truncate_spectral_sum, truncate_written,
+    Written, truncate_spectral_sum_read, truncate_written,
 };
 
 pub(crate) use demand::Need;
@@ -925,6 +925,10 @@ impl Building<'_> {
                 let sum = sva_formula::normalize_closed_form(form).ok();
                 none(self.formula(value, sum, Some(form))?)
             }
+            (_, Typed::ClosedForm(form)) if refs::sums_through(tys, form) => {
+                let sum = refs::spectral_sum_of(tys, id, Var::T)?;
+                none(self.formula(value, Some(sum), None)?)
+            }
             (_, Typed::Cast(Cast::Fourier | Cast::IFourier, _)) => {
                 let sum = refs::spectral_sum_of(tys, id, Var::T)?;
                 none(self.formula(value, Some(sum), None)?)
@@ -951,10 +955,11 @@ impl Building<'_> {
         written: Option<&ClosedForm>,
     ) -> Result<Value, EngineError> {
         let grid = value.grid;
+        let tys = self.tys;
         let rows = whole_rate(grid).map(|rate| match (&sum, written) {
-            (Some(sum), written) => {
-                Rows::of_spectral_sum_or_point(sum, written, rate, self.profile)
-            }
+            (Some(sum), written) => refs::read_through(tys, |t| {
+                Rows::of_spectral_sum_or_point(sum, written, (rate, self.profile), t)
+            }),
             (None, Some(form)) => Rows::of(form, rate, self.profile),
             (None, None) => unreachable!("a formula is a sum or a written form"),
         });
@@ -971,7 +976,9 @@ impl Building<'_> {
                 let band = sva_samples::Audible::on(self.profile, grid);
                 let refused =
                     |e: &sva_samples::CollapseError| eval::collapse_refused(&value.name, e);
-                let summed = sum.as_ref().map(|sum| truncate_spectral_sum(sum, band));
+                let summed = sum.as_ref().map(|sum| {
+                    refs::read_through(tys, |t| truncate_spectral_sum_read(sum, band, t))
+                });
                 let formula = match (summed, written) {
                     (Some(Ok(sum)), _) => Formula::Sum(Box::new(sum)),
                     (_, Some(form)) => Formula::Written(Box::new(Written {

@@ -14,7 +14,7 @@ mod sum;
 mod tail;
 mod truncate;
 
-use sva_formula::{Body, C64, ClosedForm, SpectralSum, Var, normalize_closed_form};
+use sva_formula::{Body, C64, ClosedForm, Opaque, Reads, SpectralSum, Var, normalize_closed_form};
 
 use crate::Grid;
 use crate::buffer::Buffer;
@@ -29,7 +29,8 @@ use plan::Plan;
 pub(crate) use point::Shared;
 pub use point::{Refs, crop_gain, lane_of, shoulders, unary};
 pub use truncate::{
-    Audible, spectral_sum as truncate_spectral_sum, written as truncate_written,
+    Audible, spectral_sum as truncate_spectral_sum,
+    spectral_sum_read as truncate_spectral_sum_read, written as truncate_written,
     written_with as truncate_written_with,
 };
 
@@ -228,7 +229,7 @@ pub fn of_spectral_sum_or_point(
     profile: &Profile,
     score: AliasScore,
 ) -> Result<(Buffer, Label), CollapseError> {
-    match of_spectral_sum(sum, rate, extent, profile, score) {
+    match of_spectral_sum_read(sum, (rate, extent), profile, score, &Opaque) {
         Err(e) if reaches_no_atom(&e) => match written.filter(|t| t.var == Var::T) {
             Some(form) => render_written(form, rate, extent, profile, score),
             None => Err(e),
@@ -248,6 +249,15 @@ pub fn planned(
     extent: Extent,
     profile: &Profile,
 ) -> Result<Planned, CollapseError> {
+    planned_read((sum, written), (rate, extent), profile, &Opaque)
+}
+
+pub fn planned_read(
+    (sum, written): (Option<&SpectralSum>, Option<&ClosedForm>),
+    (rate, extent): (u32, Extent),
+    profile: &Profile,
+    reads: &dyn Reads,
+) -> Result<Planned, CollapseError> {
     let len = extent.len();
     let normalized;
     let sum = match (sum, written) {
@@ -264,7 +274,7 @@ pub fn planned(
         },
         (None, None) => return Err(CollapseError::NotEvaluable("a form with neither view")),
     };
-    match plan::of(sum, rate, extent, profile, len) {
+    match plan::of_read(sum, (rate, extent, len), profile, reads) {
         Err(e) if reaches_no_atom(&e) => match written.filter(|t| t.var == Var::T) {
             Some(form) => plan::of_written(form, rate, extent, profile, len).map(Planned),
             None => Err(e),
@@ -307,21 +317,19 @@ pub fn of_spectral_sum(
     profile: &Profile,
     score: AliasScore,
 ) -> Result<(Buffer, Label), CollapseError> {
-    let len = extent.len();
-    of_sum(sum, rate, extent, profile, len, score)
+    of_spectral_sum_read(sum, (rate, extent), profile, score, &Opaque)
 }
 
-/// The row `plan` named, run: one decision, and this is the half that makes samples.
-fn of_sum(
+pub fn of_spectral_sum_read(
     sum: &SpectralSum,
-    rate: u32,
-    extent: Extent,
+    (rate, extent): (u32, Extent),
     profile: &Profile,
-    len: usize,
     score: AliasScore,
+    reads: &dyn Reads,
 ) -> Result<(Buffer, Label), CollapseError> {
+    let len = extent.len();
     run(
-        plan::of(sum, rate, extent, profile, len)?,
+        plan::of_read(sum, (rate, extent, len), profile, reads)?,
         rate,
         extent,
         profile,

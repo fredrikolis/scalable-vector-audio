@@ -84,6 +84,7 @@ fn argument_before(
             through,
             constant: PerNode::new(),
             series: PerNode::new(),
+            summed: PerNode::new(),
             named: PerNode::new(),
         };
         Ok(match written.constant_value(&body, form.var) {
@@ -201,22 +202,52 @@ struct Written<'a, 'w> {
     through: &'a Through<'w>,
     constant: PerNode<bool>,
     series: PerNode<bool>,
+    summed: PerNode<Option<NodeId>>,
     named: PerNode<Hash>,
 }
 
 impl Written<'_, '_> {
-    /// One bare atom is a number, an empty lane the zero it folded to; a finite series in it is
-    /// summed term by term first.
+    /// One bare atom is a number, an empty lane the zero it folded to; a finite series in it,
+    /// or in a ref it reads, is summed term by term first, each ref still read as its form.
     fn constant_value(&self, body: &Body, var: Var) -> Option<f64> {
         if !self.is_constant(body) {
             return None;
         }
-        if self.holds_series(body) {
-            let whole = sva_formula::through::written_out(body, self.through);
-            return crate::lower::constant_value(&whole, var);
-        }
-        let sum = normalize_read(body, var, self.through).ok()?;
+        let summed = match self.holds_series(body) {
+            true => Some(self.terms(body)?),
+            false => None,
+        };
+        let sum = normalize_read(summed.as_ref().unwrap_or(body), var, self.through).ok()?;
         crate::lower::constant_of(&sum)
+    }
+
+    /// `f` with each finite series written out term by term, and each ref holding one standing
+    /// in for its own form so written, once per node.
+    fn terms(&self, f: &Body) -> Option<Body> {
+        let summed = |id: NodeId| {
+            self.summed.of(id, || {
+                let read = self.through.read(id, |form| self.terms(form));
+                read.flatten().map(|body| self.through.stand(body))
+            })
+        };
+        match f {
+            Body::Node(id) if self.holds_series(f) => summed(*id).map(Body::Node),
+            Body::Node(_) => Some(f.clone()),
+            Body::Series(_) => {
+                sva_formula::series::written_out(f).and_then(|written| self.terms(&written))
+            }
+            other => {
+                let mut whole = true;
+                let out = map_children(other, |p| match self.terms(&p.body) {
+                    Some(body) => Part::new(p.origin, body),
+                    None => {
+                        whole = false;
+                        p.clone()
+                    }
+                });
+                whole.then_some(out)
+            }
+        }
     }
 
     fn is_constant(&self, f: &Body) -> bool {

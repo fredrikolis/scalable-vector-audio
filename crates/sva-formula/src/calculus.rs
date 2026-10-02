@@ -7,7 +7,8 @@ use crate::spectral_sum::atom::{Exp, Factors, Gauss, Indicator, Pole, Singular, 
 use crate::spectral_sum::merge::simplify;
 use crate::spectral_sum::product::times;
 use crate::spectral_sum::{Lane, SpectralSum};
-use crate::table::{dual, reflect};
+use crate::table::{dual_read, reflect_read};
+use crate::through::Reads;
 
 /// The square of the analytic signal's modulus, which is in A; the root is the observation's
 /// job, so A stays closed.
@@ -79,7 +80,11 @@ fn derive_series(s: &crate::closed_form::Series) -> crate::closed_form::Series {
 
 /// Dual, multiply by `-i*sgn`, dual, reflect. It is never a convolution with `pv(t)/pi`.
 pub fn hilbert(n: &SpectralSum) -> Result<SpectralSum, Left> {
-    let spectrum = dual(n)?;
+    hilbert_read(n, &crate::through::Opaque)
+}
+
+pub fn hilbert_read(n: &SpectralSum, reads: &dyn Reads) -> Result<SpectralSum, Left> {
+    let spectrum = dual_read(n, reads)?;
     let mut lanes = Vec::with_capacity(spectrum.lanes.len());
     for lane in &spectrum.lanes {
         if !lane.is_finite_sum() {
@@ -97,7 +102,10 @@ pub fn hilbert(n: &SpectralSum) -> Result<SpectralSum, Left> {
         simplify(&mut out);
         lanes.push(out);
     }
-    reflect(&dual(&SpectralSum::of(spectrum.var, lanes))?)
+    reflect_read(
+        &dual_read(&SpectralSum::of(spectrum.var, lanes), reads)?,
+        reads,
+    )
 }
 
 /// `sgn` is smooth away from the origin, so it reads a delta's own sign; a delta AT the
@@ -170,7 +178,11 @@ fn times_signum(a: &SpectralAtom) -> Result<Vec<SpectralAtom>, Left> {
 }
 
 pub fn analytic(n: &SpectralSum) -> Result<SpectralSum, Left> {
-    let quadrature = hilbert(n)?;
+    analytic_read(n, &crate::through::Opaque)
+}
+
+pub fn analytic_read(n: &SpectralSum, reads: &dyn Reads) -> Result<SpectralSum, Left> {
+    let quadrature = hilbert_read(n, reads)?;
     let mut lanes = Vec::with_capacity(n.lanes.len());
     for (real, imaginary) in n.lanes.iter().zip(quadrature.lanes.iter()) {
         let mut out = Lane::of(
@@ -192,7 +204,11 @@ pub fn analytic(n: &SpectralSum) -> Result<SpectralSum, Left> {
 }
 
 pub fn envelope(n: &SpectralSum) -> Result<Envelope, Left> {
-    let signal = analytic(n)?;
+    envelope_read(n, &crate::through::Opaque)
+}
+
+pub fn envelope_read(n: &SpectralSum, reads: &dyn Reads) -> Result<Envelope, Left> {
+    let signal = analytic_read(n, reads)?;
     let mut lanes = Vec::with_capacity(signal.lanes.len());
     for lane in &signal.lanes {
         let mut atoms = Vec::new();

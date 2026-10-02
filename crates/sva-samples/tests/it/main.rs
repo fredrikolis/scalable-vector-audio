@@ -5,6 +5,7 @@ mod collapse;
 mod collapse_blocks;
 mod collapse_route;
 mod collapse_run;
+mod collapse_series_refs;
 mod collapse_window;
 mod filters;
 mod helpers;

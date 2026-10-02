@@ -6,11 +6,16 @@ use crate::closed_form::{Body, Part, Series, Unary};
 use crate::complex::C64;
 use crate::refusal::{AtomSketch, Factor, Left, LeftReason};
 use crate::spectral_sum::atom::{Indicator, Singular, SpectralAtom};
-use crate::table::series::{Shape, SymDelta, SymLine, read, write};
+use crate::table::series::{Shape, SymDelta, SymLine, read_with, write};
+use crate::through::Reads;
 
 /// A finite line sum times a line series is one series per factor, each moved by that
 /// factor's own frequency and cropped by its own window. A closed form in `f` folds instead.
-pub fn times_atoms(s: &Series, by: &[SpectralAtom]) -> Result<Vec<Series>, Left> {
+pub fn times_atoms(
+    s: &Series,
+    by: &[SpectralAtom],
+    reads: &dyn Reads,
+) -> Result<Vec<Series>, Left> {
     let origin = by.first().map_or(s.term.origin, |a| a.origin);
     let refuse = || {
         Left::new(
@@ -19,9 +24,10 @@ pub fn times_atoms(s: &Series, by: &[SpectralAtom]) -> Result<Vec<Series>, Left>
             LeftReason::SeriesNonUniform,
         )
     };
-    let (body, held) = crate::spectral_sum::image::crop_peeled(&s.term.body);
-    match read(&body) {
-        Some(Shape::Deltas(_)) if held.is_none() => Ok(vec![times_lines(s, by)?]),
+    let (body, held) =
+        crate::spectral_sum::image::crop_peeled(&crate::through::looked(&s.term.body, reads));
+    match read_with(&body, reads) {
+        Some(Shape::Deltas(_)) if held.is_none() => Ok(vec![times_lines(s, by, reads)?]),
         Some(Shape::Lines(lines)) => by.iter().map(|a| moved(s, &lines, a, held)).collect(),
         _ => Err(refuse()),
     }
@@ -83,7 +89,7 @@ fn moved(
 
 /// A factor multiplied into a delta series folds to the factor read at each line's own
 /// frequency, which is FORMAT 10.1's `H(f)*delta(f - f0)` once per term of the series.
-fn times_lines(s: &Series, by: &[SpectralAtom]) -> Result<Series, Left> {
+fn times_lines(s: &Series, by: &[SpectralAtom], reads: &dyn Reads) -> Result<Series, Left> {
     let origin = by.first().map_or(s.term.origin, |a| a.origin);
     let refuse = || {
         Left::new(
@@ -92,7 +98,7 @@ fn times_lines(s: &Series, by: &[SpectralAtom]) -> Result<Series, Left> {
             LeftReason::SeriesNonUniform,
         )
     };
-    let Some(Shape::Deltas(deltas)) = read(&s.term.body) else {
+    let Some(Shape::Deltas(deltas)) = read_with(&s.term.body, reads) else {
         return Err(refuse());
     };
     let mut shaped = Vec::with_capacity(deltas.len());

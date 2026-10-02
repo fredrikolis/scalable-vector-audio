@@ -354,23 +354,34 @@ pub fn shift_line(f: &Body, by: f64) -> Body {
             at: walk(at),
             of: of.clone(),
         },
+        Body::Node(_) => Body::Shift {
+            by,
+            of: Part::bare(f.clone()),
+        },
         other => map_children(other, walk),
     }
 }
 
-/// An edge holds no formula, so a window is warped whole.
+/// An edge holds no formula, so a window is warped whole, and so is a ref.
 pub fn read_at(f: &Body, at: &Body) -> Body {
+    read_at_with(f, at, &|_| None)
+}
+
+pub fn read_at_with(f: &Body, at: &Body, node: &dyn Fn(NodeId) -> Option<NodeId>) -> Body {
     match f {
         Body::Line => at.clone(),
-        Body::Crop { .. } => Body::Warp {
+        Body::Node(id) if let Some(moved) = node(*id) => Body::Node(moved),
+        Body::Crop { .. } | Body::Node(_) => Body::Warp {
             at: Part::bare(at.clone()),
             of: Part::bare(f.clone()),
         },
         Body::Warp { at: inner, of } => Body::Warp {
-            at: Part::new(inner.origin, read_at(&inner.body, at)),
+            at: Part::new(inner.origin, read_at_with(&inner.body, at, node)),
             of: of.clone(),
         },
-        other => map_children(other, |p| Part::new(p.origin, read_at(&p.body, at))),
+        other => map_children(other, |p| {
+            Part::new(p.origin, read_at_with(&p.body, at, node))
+        }),
     }
 }
 
@@ -378,6 +389,6 @@ pub fn read_at(f: &Body, at: &Body) -> Body {
 pub fn shifts_opaquely(f: &Body) -> bool {
     matches!(
         f,
-        Body::Node(_) | Body::Param(_) | Body::Rational(_) | Body::Modal(_) | Body::Run(_)
+        Body::Param(_) | Body::Rational(_) | Body::Modal(_) | Body::Run(_)
     ) || children(f).iter().any(|p| shifts_opaquely(&p.body))
 }

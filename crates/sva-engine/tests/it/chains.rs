@@ -85,3 +85,11 @@ fn an_exponential_window_over_a_sum_twelve_levels_deep() {
     let digest = over(TONE, (12, "1s"), sum, "crop(exp(-3*t)*@n12(t), 0s, 1s)");
     assert_eq!(digest, 0xa515_a431_4935_0c71);
 }
+
+/// Read once per path, each term would be `3^12` copies of the tone.
+#[test]
+fn a_loop_over_a_sum_with_a_modulated_term_twelve_levels_deep() {
+    let body = |p: &str| format!("{p}*sin(2*pi*3*t) + {p}*0.3 + {p}*0.2");
+    let digest = over(TONE, (12, "1s"), body, "@n12(t) + 0.5*self(t - 17ms)");
+    assert_eq!(digest, 0x1491_1a68_85d7_8c9e);
+}

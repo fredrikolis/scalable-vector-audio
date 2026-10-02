@@ -6,12 +6,12 @@ use std::collections::BTreeMap;
 
 use sva_formula::closed_form::children;
 use sva_formula::spectral_sum::atom::Indicator;
-use sva_formula::spectral_sum::build::{multiply_lanes, sole_constant};
+use sva_formula::spectral_sum::build::{multiply_lanes_read, sole_constant};
 use sva_formula::spectral_sum::image;
 use sva_formula::spectral_sum::merge::simplify;
 use sva_formula::{
     Body, C64, ClosedForm, Lane, Left, NodeId, Opaque, Part, Reads, SpectralSum, Through, Var,
-    dual, inverse, normalize_closed_form, normalize_read,
+    dual_read, inverse_read, normalize_closed_form, normalize_read,
 };
 
 use crate::cast::Cast;
@@ -78,11 +78,15 @@ fn composing(
         }
         Value::Cast(Cast::Fourier, source) => {
             let inner = composed(typing, *source, Var::T, open)?;
-            turn(typing, node, dual(&inner))?
+            turn(typing, node, read_through(typing, |t| dual_read(&inner, t)))?
         }
         Value::Cast(Cast::IFourier, source) => {
             let inner = composed(typing, *source, Var::F, open)?;
-            turn(typing, node, inverse(&inner))?
+            turn(
+                typing,
+                node,
+                read_through(typing, |t| inverse_read(&inner, t)),
+            )?
         }
         Value::Op { name, .. } if typing.ty(node).is_closed_form() => {
             return Err(across(typing, node, name));
@@ -115,10 +119,10 @@ fn on_axis(
     if axis == want {
         return Ok(held);
     }
-    let turned = match want {
-        Var::F => dual(&held),
-        Var::T => inverse(&held),
-    };
+    let turned = read_through(typing, |through| match want {
+        Var::F => dual_read(&held, through),
+        Var::T => inverse_read(&held, through),
+    });
     turn(typing, node, turned)
 }
 
@@ -455,7 +459,8 @@ fn multiply(
     let width = a.lanes.len().max(b.lanes.len());
     let mut lanes = Vec::with_capacity(width);
     for at in 0..width {
-        let held = multiply_lanes(lane_at(a, at).clone(), lane_at(b, at).clone());
+        let (x, y) = (lane_at(a, at).clone(), lane_at(b, at).clone());
+        let held = read_through(typing, |through| multiply_lanes_read(x, y, through));
         lanes.push(held.map_err(|left| {
             EngineError::of_closed_form(
                 &left.refusal(),
@@ -478,6 +483,32 @@ pub(crate) fn reads_through(typing: &Typing, body: &Body, var: Var) -> bool {
     nodes_in(body)
         .into_iter()
         .all(|id| inlinable(typing, id, var, open))
+}
+
+/// A form that is one series without end whose term reads refs at a time its index moves, as
+/// a closed loop's does, each ref read through and with a sum of its own: no sample of it sums
+/// those refs read as values, so it is read as one sum.
+pub(crate) fn sums_through(typing: &Typing, form: &ClosedForm) -> bool {
+    let Body::Series(s) = &form.body else {
+        return false;
+    };
+    let refs = nodes_in(&form.body);
+    form.var == Var::T
+        && s.hi == sva_formula::Bound::Infinite
+        && moves_a_ref(&s.term.body, s.index)
+        && reads_through(typing, &form.body, Var::T)
+        && refs
+            .iter()
+            .all(|id| spectral_sum_of(typing, *id, Var::T).is_ok())
+}
+
+fn moves_a_ref(f: &Body, k: sva_formula::IndexId) -> bool {
+    match f {
+        Body::Warp { at, of } if matches!(*of.body, Body::Node(_)) => {
+            sva_formula::series::mentions(&at.body, k)
+        }
+        other => children(other).iter().any(|p| moves_a_ref(&p.body, k)),
+    }
 }
 
 /// A loop met is a loop the node is on or reaches, wherever the walk entered it.

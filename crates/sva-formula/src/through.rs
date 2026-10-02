@@ -5,11 +5,13 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::rc::Rc;
 
-use crate::affine::{Coeff, Reading, key_moves_read, polynomial_read};
-use crate::closed_form::{Body, Part, Var, map_children};
+use crate::affine::{Axis, Coeff, Reading, key_moves_read, polynomial_read};
+use crate::closed_form::{Body, IndexId, Var, map_children, read_at, read_at_with, shift_line};
 use crate::env::NodeId;
+use crate::hash::{Hash, hash_time};
 use crate::origin::Origin;
 use crate::refusal::{Factor, Left, LeftReason};
+use crate::series::IndexGrowth;
 use crate::spectral_sum::SpectralSum;
 use crate::spectral_sum::build::{lower, timeless};
 use crate::spectral_sum::image::left;
@@ -22,13 +24,27 @@ pub trait Reads {
     fn polynomial(&self, id: NodeId, reading: Reading) -> Option<Vec<Coeff>>;
     fn timeless(&self, id: NodeId) -> bool;
     fn key_moves(&self, id: NodeId) -> bool;
+    fn mentions_line(&self, id: NodeId) -> bool;
+    fn axis(&self, id: NodeId) -> Option<Axis>;
     fn line(&self, id: NodeId) -> Option<Line>;
     fn kink(&self, id: NodeId) -> Option<(Body, Crossing)>;
     /// A node standing for `id` with `kink` read as `with` throughout, where it reaches one.
     fn replaced(&self, id: NodeId, scope: usize, kink: &Body, with: &Body) -> Option<NodeId>;
+    /// A node standing for `id` read at `at`, the time written through its form.
+    fn moved(&self, id: NodeId, at: &Body) -> Option<NodeId>;
+    fn stand_for(&self, body: Body) -> Option<NodeId>;
     fn scope(&self) -> usize;
-    /// `id`'s form written out whole, for a representation that holds a written term.
-    fn written(&self, id: NodeId) -> Body;
+    /// The form `id` names as `read` reads it, one level down: its own refs still refs.
+    fn view(&self, id: NodeId, read: &Read) -> Option<Form<'_>>;
+    /// How the form `id` names grows in `k`, read at a time `k` moves.
+    fn growth(&self, id: NodeId, at: &Body, k: IndexId) -> Option<IndexGrowth>;
+}
+
+/// How a ref is read where it stands: as written, at a time, or shifted.
+pub enum Read<'t> {
+    As,
+    At(&'t Body),
+    By(f64),
 }
 
 /// A ref read as nothing but itself: a name whose form is unknown here.
@@ -51,6 +67,14 @@ impl Reads for Opaque {
         true
     }
 
+    fn mentions_line(&self, _: NodeId) -> bool {
+        false
+    }
+
+    fn axis(&self, _: NodeId) -> Option<Axis> {
+        None
+    }
+
     fn line(&self, _: NodeId) -> Option<Line> {
         None
     }
@@ -63,12 +87,24 @@ impl Reads for Opaque {
         None
     }
 
+    fn moved(&self, _: NodeId, _: &Body) -> Option<NodeId> {
+        None
+    }
+
+    fn stand_for(&self, _: Body) -> Option<NodeId> {
+        None
+    }
+
     fn scope(&self) -> usize {
         0
     }
 
-    fn written(&self, id: NodeId) -> Body {
-        Body::Node(id)
+    fn view(&self, _: NodeId, _: &Read) -> Option<Form<'_>> {
+        None
+    }
+
+    fn growth(&self, _: NodeId, _: &Body, _: IndexId) -> Option<IndexGrowth> {
+        None
     }
 }
 
@@ -79,11 +115,22 @@ pub struct Kept {
     polynomials: Each<(NodeId, Reading), Option<Vec<Coeff>>>,
     timeless: Each<NodeId, bool>,
     key_moves: Each<NodeId, bool>,
+    mentions_line: Each<NodeId, bool>,
+    axes: Each<NodeId, Axis>,
     lines: Each<NodeId, Option<Line>>,
     kinks: Each<NodeId, Option<(Body, Crossing)>>,
+    views: Each<(NodeId, View), Rc<Body>>,
+    growths: Each<(NodeId, IndexId, Hash), IndexGrowth>,
 }
 
 type Each<K, V> = RefCell<HashMap<K, V>>;
+
+/// Which rewritten reading of a form a view is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum View {
+    At(Hash),
+    By(u64),
+}
 
 impl Kept {
     pub fn clear(&mut self) {
@@ -103,10 +150,12 @@ pub struct Through<'a> {
     standing: Kept,
     stand_ins: RefCell<Vec<Rc<Body>>>,
     replacing: RefCell<HashMap<(NodeId, usize), Option<NodeId>>>,
+    moving: Each<NodeId, Vec<(Body, Option<NodeId>)>>,
     scopes: Cell<usize>,
 }
 
-enum Form<'a> {
+/// A form a reader hands out: one a node names, or one standing in for a rewritten form.
+pub enum Form<'a> {
     Node(&'a Body),
     Stand(Rc<Body>),
 }
@@ -130,6 +179,7 @@ impl<'a> Through<'a> {
             standing: Kept::default(),
             stand_ins: RefCell::default(),
             replacing: RefCell::default(),
+            moving: RefCell::default(),
             scopes: Cell::new(0),
         }
     }
@@ -217,6 +267,22 @@ impl Reads for Through<'_> {
         once(&self.kept(id).key_moves, id, || key_moves_read(&form, self))
     }
 
+    fn mentions_line(&self, id: NodeId) -> bool {
+        let Some((form, _)) = self.form(id) else {
+            return Opaque.mentions_line(id);
+        };
+        once(&self.kept(id).mentions_line, id, || {
+            crate::series::mentions_line_read(&form, self)
+        })
+    }
+
+    fn axis(&self, id: NodeId) -> Option<Axis> {
+        let (form, _) = self.form(id)?;
+        Some(once(&self.kept(id).axes, id, || {
+            crate::affine::axis_read(&form, &Within(self), self)
+        }))
+    }
+
     fn line(&self, id: NodeId) -> Option<Line> {
         let (form, _) = self.form(id)?;
         once(&self.kept(id).lines, id, || kink::line(&form, self))
@@ -243,23 +309,114 @@ impl Reads for Through<'_> {
         stand
     }
 
+    fn moved(&self, id: NodeId, at: &Body) -> Option<NodeId> {
+        let held = self.moving.borrow().get(&id).and_then(|read| {
+            read.iter()
+                .find_map(|(time, stand)| (time == at).then_some(*stand))
+        });
+        if let Some(held) = held {
+            return held;
+        }
+        let (form, _) = self.form(id)?;
+        let moved = read_at_with(&form, at, &|node| self.moved(node, at));
+        let stand = Some(self.stand(moved));
+        let mut moving = self.moving.borrow_mut();
+        moving.entry(id).or_default().push((at.clone(), stand));
+        stand
+    }
+
+    fn stand_for(&self, body: Body) -> Option<NodeId> {
+        Some(self.stand(body))
+    }
+
     fn scope(&self) -> usize {
         self.scopes.set(self.scopes.get() + 1);
         self.scopes.get()
     }
 
-    fn written(&self, id: NodeId) -> Body {
-        match self.form(id) {
-            Some((form, _)) => written_out(&form, self),
-            None => Opaque.written(id),
+    fn view(&self, id: NodeId, read: &Read) -> Option<Form<'_>> {
+        let (form, _) = self.form(id)?;
+        let key = match read {
+            Read::As => return Some(form),
+            Read::At(at) => View::At(hash_time(at)),
+            Read::By(by) => View::By(by.to_bits()),
+        };
+        let views = &self.kept(id).views;
+        if let Some(held) = views.borrow().get(&(id, key)) {
+            return Some(Form::Stand(Rc::clone(held)));
         }
+        let seen = Rc::new(match read {
+            Read::As => unreachable!("a form read as written is handed out as it stands"),
+            Read::At(at) => read_at(&form, at),
+            Read::By(by) => shift_line(&form, *by),
+        });
+        views.borrow_mut().insert((id, key), Rc::clone(&seen));
+        Some(Form::Stand(seen))
+    }
+
+    fn growth(&self, id: NodeId, at: &Body, k: IndexId) -> Option<IndexGrowth> {
+        let (form, _) = self.form(id)?;
+        Some(once(&self.kept(id).growths, (id, k, hash_time(at)), || {
+            crate::series::growth(&read_at(&form, at), k, &Within(self))
+        }))
     }
 }
 
-/// `f` with every ref `reads` knows written in as the form it names.
-pub fn written_out(f: &Body, reads: &dyn Reads) -> Body {
-    match f {
-        Body::Node(id) => reads.written(*id),
-        other => map_children(other, |p| Part::new(p.origin, written_out(&p.body, reads))),
+/// Types nothing a reader reads through: a ref sits where its form does, and no parameter
+/// reaches a form read through.
+struct Within<'r>(&'r dyn Reads);
+
+impl crate::env::Env for Within<'_> {
+    fn node(&self, _: NodeId) -> crate::ty::Ty {
+        crate::ty::Ty::form(Var::T, false, crate::ty::Codomain::Complex)
+    }
+
+    fn param(&self, _: crate::env::ParamId) -> crate::ty::Ty {
+        crate::ty::Ty::form(Var::T, false, crate::ty::Codomain::Complex)
+    }
+
+    fn reads(&self) -> &dyn Reads {
+        self.0
+    }
+}
+
+/// `f` as a reader of its shape sees it: a ref is the form it names, each level kept per node
+/// and time as the reader walks into it.
+pub fn looked<'b>(f: &'b Body, reads: &'b dyn Reads) -> Seen<'b> {
+    let mut seen = Seen::Here(f);
+    loop {
+        let read = match &*seen {
+            Body::Node(id) => Some((*id, Read::As)),
+            Body::Warp { at, of } => match &*of.body {
+                Body::Node(id) => Some((*id, Read::At(&at.body))),
+                _ => None,
+            },
+            Body::Shift { by, of } => match &*of.body {
+                Body::Node(id) => Some((*id, Read::By(*by))),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(form) = read.and_then(|(id, read)| reads.view(id, &read)) else {
+            return seen;
+        };
+        seen = Seen::Form(form);
+    }
+}
+
+/// A body as a reader sees it: written where it stands, or the form a ref there names.
+pub enum Seen<'b> {
+    Here(&'b Body),
+    Form(Form<'b>),
+}
+
+impl Deref for Seen<'_> {
+    type Target = Body;
+
+    fn deref(&self) -> &Body {
+        match self {
+            Seen::Here(body) => body,
+            Seen::Form(form) => form,
+        }
     }
 }

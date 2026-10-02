@@ -1,7 +1,9 @@
 // Concern: takes one reading off the representation a node declares, a ledger edge by edge | Non-concern: naming the observations (query.rs), the arithmetic of one | IO: (&Render, node) -> Answer
 
 use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
-use sva_formula::{AUDIBLE_CEILING_HZ, Line, SpectralSum, Var, d_dt, envelope, line_atoms};
+use sva_formula::{
+    AUDIBLE_CEILING_HZ, Line, SpectralSum, Var, d_dt, envelope_read, line_atoms_read,
+};
 use sva_samples::{
     AliasScore, Buffer, Consumes, Extent, Peak, PitchFrame, Source, measure::bands, measure::crest,
     measure::envelope, measure::formants, measure::loudness, measure::pitch, measure::spectrum,
@@ -228,13 +230,14 @@ fn exact(
         }
         Representation::Derivative => (Output::Symbolic(Box::new(d_dt(sum))), Listed::NONE),
         Representation::Envelope { .. } => {
-            let held = envelope(sum).map_err(|left| {
-                EngineError::of_closed_form(
-                    &left.refusal(),
-                    render.tys.locate(left.origin),
-                    "read the envelope off sample(...) for a measured one",
-                )
-            })?;
+            let held =
+                refs::read_through(&render.tys, |t| envelope_read(sum, t)).map_err(|left| {
+                    EngineError::of_closed_form(
+                        &left.refusal(),
+                        render.tys.locate(left.origin),
+                        "read the envelope off sample(...) for a measured one",
+                    )
+                })?;
             (Output::Symbolic(Box::new(held.squared)), Listed::NONE)
         }
         other => return Err(not_a_closed_form(render, node, other)),
@@ -279,7 +282,9 @@ fn listed(
     for lane in &sum.lanes {
         held.atoms.extend(lane.clone().expanded().atoms);
         for series in &lane.series {
-            let Some(found) = line_atoms(series, AUDIBLE_CEILING_HZ, floor_db, precision) else {
+            let band = (AUDIBLE_CEILING_HZ, floor_db, precision);
+            let found = refs::read_through(&render.tys, |t| line_atoms_read(series, band, t));
+            let Some(found) = found else {
                 return Err(unenumerable(render, node));
             };
             held.atoms.extend(found.atoms);
@@ -696,13 +701,15 @@ fn oversampled(
     let k = i64::from(oversample);
     let extent = Extent::new(range.start * k, range.end * k);
     let taken = match refs::spectral_sum_of(&render.tys, node, Var::T) {
-        Ok(sum) => sva_samples::of_spectral_sum(
-            &sum,
-            rate,
-            extent,
-            &render.config.profile,
-            AliasScore::NotAsked,
-        ),
+        Ok(sum) => refs::read_through(&render.tys, |t| {
+            sva_samples::of_spectral_sum_read(
+                &sum,
+                (rate, extent),
+                &render.config.profile,
+                AliasScore::NotAsked,
+                t,
+            )
+        }),
         Err(_) => return super::finer(render, node, oversample, extent),
     };
     taken.map(|(buffer, _)| buffer).map_err(|e| {

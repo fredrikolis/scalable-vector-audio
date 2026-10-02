@@ -1,7 +1,7 @@
 // Concern: reads a closed form onto any span of the grid by rows no extent chooses, priced | Non-concern: rows a whole render fits to its extent | IO: (form, rate) -> Rows; (Tape, to) -> samples, work
 
 use sva_formula::spectral_sum::atom::SpectralAtom;
-use sva_formula::{ClosedForm, Lane, SpectralSum, Var, normalize_closed_form};
+use sva_formula::{ClosedForm, Lane, Opaque, Reads, SpectralSum, Var, normalize_closed_form};
 
 use super::active::{self, Window};
 use super::lines::{self, Direct};
@@ -46,19 +46,20 @@ impl Rows {
     /// `collapse::render`'s dispatch.
     pub fn of(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Rows, CollapseError> {
         match normalize_closed_form(form) {
-            Ok(sum) => Rows::of_spectral_sum_or_point(&sum, Some(form), rate, profile),
+            Ok(sum) => Rows::of_spectral_sum_or_point(&sum, Some(form), (rate, profile), &Opaque),
             Err(_) if form.var == Var::T => Ok(Rows::held(of_written(form, rate, profile)?, rate)),
             Err(left) => Err(CollapseError::LeftAlgebra(left.reason.clause())),
         }
     }
 
+    /// Each ref a series term holds read as the form `reads` names; `written` reads none.
     pub fn of_spectral_sum_or_point(
         sum: &SpectralSum,
         written: Option<&ClosedForm>,
-        rate: u32,
-        profile: &Profile,
+        (rate, profile): (u32, &Profile),
+        reads: &dyn Reads,
     ) -> Result<Rows, CollapseError> {
-        let row = match of_sum(sum, rate, profile) {
+        let row = match of_sum(sum, rate, profile, reads) {
             Err(e) if reaches_no_atom(&e) => match written.filter(|t| t.var == Var::T) {
                 Some(form) => of_written(form, rate, profile),
                 None => Err(e),
@@ -175,9 +176,13 @@ struct Group {
 
 /// `plan::LanePlan::Grouped` with every line summed: `None` where a lane is no line sum
 /// under common factors.
-fn grouped(sum: &SpectralSum, band: Audible, grid: Grid) -> Option<Vec<Vec<Group>>> {
+fn grouped(
+    sum: &SpectralSum,
+    (band, grid): (Audible, Grid),
+    reads: &dyn Reads,
+) -> Option<Vec<Vec<Group>>> {
     let lane = |lane: &Lane| {
-        let groups = lines::line_groups(lane, band)?.into_iter();
+        let groups = lines::line_groups(lane, band, reads)?.into_iter();
         Some(
             groups
                 .map(|(factor, held)| Group {
@@ -192,12 +197,17 @@ fn grouped(sum: &SpectralSum, band: Audible, grid: Grid) -> Option<Vec<Vec<Group
 }
 
 /// `plan::of` with each row an extent picks by cost replaced by the one summed per instant.
-fn of_sum(sum: &SpectralSum, rate: u32, profile: &Profile) -> Result<Labelled, CollapseError> {
+fn of_sum(
+    sum: &SpectralSum,
+    rate: u32,
+    profile: &Profile,
+    reads: &dyn Reads,
+) -> Result<Labelled, CollapseError> {
     if sum.var == Var::F {
         return Err(CollapseError::NoBlockRow);
     }
     let ceiling = profile.ceiling(rate);
-    if let Some(found) = plan::kept_lines(sum, profile, ceiling)? {
+    if let Some(found) = plan::kept_lines(sum, profile, ceiling, reads)? {
         let (dropped, dropped_more) = lines::dropped_list(found.dropped());
         let summed = lines::distinct(&found.kept);
         let detail = Detail::Lines {
@@ -212,7 +222,7 @@ fn of_sum(sum: &SpectralSum, rate: u32, profile: &Profile) -> Result<Labelled, C
         let row = Row::Lines(found.kept.iter().map(|kept| Direct::of(kept)).collect());
         return Ok((row, (Source::Exact, detail)));
     }
-    let truncated = truncate::spectral_sum(sum, Audible::of(profile, rate))?;
+    let truncated = truncate::spectral_sum_read(sum, Audible::of(profile, rate), reads)?;
     let label = match () {
         () if atoms::band_limited(&truncated, ceiling, profile) => (
             Source::Exact,
@@ -236,7 +246,7 @@ fn of_sum(sum: &SpectralSum, rate: u32, profile: &Profile) -> Result<Labelled, C
         ),
     };
     let grid = Grid::of(rate);
-    if let Some(lanes) = grouped(sum, Audible::of(profile, rate), grid) {
+    if let Some(lanes) = grouped(sum, (Audible::of(profile, rate), grid), reads) {
         return Ok((Row::Grouped(lanes), label));
     }
     let spans = truncated
@@ -297,7 +307,7 @@ fn of_term(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelled, 
     let Ok(sum) = normalize_closed_form(form) else {
         return of_written(form, rate, profile);
     };
-    match of_sum(&sum, rate, profile) {
+    match of_sum(&sum, rate, profile, &Opaque) {
         Err(nested @ CollapseError::NestedSeries { .. }) => Err(nested),
         Err(_) => of_written(form, rate, profile),
         held => held,
