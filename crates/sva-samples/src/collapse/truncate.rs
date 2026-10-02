@@ -176,20 +176,20 @@ fn terms(s: &Series, band: Audible) -> Result<usize, CollapseError> {
             "a series of more terms than one instant expands",
         ));
     }
-    match cost.terms > MAX_EXPANDED_TERMS {
-        true => Err(CollapseError::NestedSeries {
+    match cost.terms {
+        Some(terms) if terms <= MAX_EXPANDED_TERMS => Ok(cost.own),
+        terms => Err(CollapseError::NestedSeries {
             depth: cost.depth,
-            terms: cost.terms,
+            terms,
             bound: MAX_EXPANDED_TERMS,
         }),
-        false => Ok(cost.own),
     }
 }
 
-/// Series deep, terms the whole nesting takes, terms this level alone takes.
+/// Series deep, terms the whole nesting takes, terms this level takes.
 struct Cost {
     depth: usize,
-    terms: usize,
+    terms: Option<usize>,
     own: usize,
 }
 
@@ -199,29 +199,32 @@ fn cost(s: &Series, band: Audible) -> Option<Cost> {
     let (depth, inner) = price(&inside, band)?;
     Some(Cost {
         depth: depth + 1,
-        terms: own.saturating_mul(inner),
+        terms: inner.and_then(|inner| own.checked_mul(inner)),
         own,
     })
 }
 
-/// A sum of series costs their counts added; every other spelling multiplies.
-fn price(f: &Body, band: Audible) -> Option<(usize, usize)> {
+/// Series counts add under a sum, multiply elsewhere; a part with no series prices nothing.
+fn price(f: &Body, band: Audible) -> Option<(usize, Option<usize>)> {
     if let Body::Series(s) = f {
         let cost = cost(s, band)?;
         return Some((cost.depth, cost.terms));
     }
     let summed = matches!(f, Body::Add(_));
     let mut depth = 0;
-    let mut terms: usize = if summed { 0 } else { 1 };
+    let mut terms: Option<usize> = Some(if summed { 0 } else { 1 });
     for p in children(f) {
         let (d, n) = price(&p.body, band)?;
+        if d == 0 {
+            continue;
+        }
         depth = depth.max(d);
-        terms = match summed {
-            true => terms.saturating_add(n),
-            false => terms.saturating_mul(n),
-        };
+        terms = terms.zip(n).and_then(|(terms, n)| match summed {
+            true => terms.checked_add(n),
+            false => terms.checked_mul(n),
+        });
     }
-    Some((depth, terms.max(1)))
+    Some((depth, terms.map(|n| n.max(1))))
 }
 
 /// A geometric magnitude bound stops where its whole tail rounds away; any other stand-in at

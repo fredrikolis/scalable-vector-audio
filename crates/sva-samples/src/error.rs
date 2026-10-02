@@ -68,9 +68,10 @@ pub enum CollapseError {
         order: i32,
     },
     NotEvaluable(&'static str),
+    /// `terms` is `None` where the count is past what a `usize` holds.
     NestedSeries {
         depth: usize,
-        terms: usize,
+        terms: Option<usize>,
         bound: usize,
     },
     LeftAlgebra(&'static str),
@@ -139,11 +140,18 @@ impl std::fmt::Display for CollapseError {
                 depth,
                 terms,
                 bound,
-            } => write!(
-                f,
-                "a series nested {depth} deep takes {terms} terms at one instant, past the \
-                 {bound} one expansion holds"
-            ),
+            } => match terms {
+                Some(terms) => write!(
+                    f,
+                    "a series nested {depth} deep takes {terms} terms at one instant, past \
+                     the {bound} one expansion holds"
+                ),
+                None => write!(
+                    f,
+                    "a series nested {depth} deep takes more terms at one instant than a \
+                     count holds, past the {bound} one expansion holds"
+                ),
+            },
             CollapseError::LeftAlgebra(clause) => write!(f, "the closed form left A. {clause}"),
             CollapseError::NoBlockRow => write!(
                 f,

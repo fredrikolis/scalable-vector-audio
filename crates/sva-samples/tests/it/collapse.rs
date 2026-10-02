@@ -625,6 +625,7 @@ fn nested_series_beyond_the_bound_refuse_naming_the_count() {
         panic!("the refusal prices the nesting, not {refused:?}");
     };
     assert_eq!(depth, 5, "five series deep");
+    let terms = terms.expect("a count a usize holds");
     let whole = 1.0 / (1.0 - 0.82f64);
     let levels: usize = (0..5)
         .map(|level| kept(whole.powi(level), 0.82) as usize)
@@ -638,6 +639,62 @@ fn nested_series_beyond_the_bound_refuse_naming_the_count() {
         refused.to_string().contains("5 deep"),
         "the message names the depth: {refused}"
     );
+}
+
+/// A series' price counts series terms. A term holding no series is one value at an
+/// instant however many addends its spelling multiplies out to, so forty terms each a product
+/// of sums (a formant weight over a moving pitch, say) take forty terms, not those addends.
+#[test]
+fn a_finite_series_of_products_of_sums_prices_its_own_terms() {
+    let k = IndexId(1);
+    // `(k + tanh(t) + 1)` nine times over: 3^9 addends were once read as 19683 terms.
+    let factor = || {
+        part(Body::Add(vec![
+            part(Body::Index(k)),
+            part(Body::Apply(Unary::Tanh, part(Body::Line))),
+            part(constant(1.0)),
+        ]))
+    };
+    let mut factors: Vec<Part> = (0..9).map(|_| factor()).collect();
+    factors.push(part(cosine(220.0, 1e-12)));
+    let series = Body::Series(Box::new(Series {
+        index: k,
+        lo: 1,
+        hi: Bound::Finite(40),
+        term: part(Body::Mul(factors)),
+    }));
+    render(&form(Var::T, series), RATE, (0.0, 0.01), &PSYCHOACOUSTIC_V1)
+        .expect("forty terms are forty terms at one instant");
+}
+
+/// A nesting whose count overflows a `usize` says so, and never prints the saturated word.
+#[test]
+fn a_nesting_past_any_count_refuses_without_a_saturated_count() {
+    let deep = (0..4).fold(cosine(220.0, 1.0), |inner, level| {
+        let k = IndexId(level + 1);
+        Body::Series(Box::new(Series {
+            index: k,
+            lo: 1,
+            hi: Bound::Finite(1_000_000),
+            term: part(Body::Mul(vec![
+                part(Body::Apply(Unary::Tanh, part(Body::Index(k)))),
+                part(inner),
+            ])),
+        }))
+    });
+    let refused = render(&form(Var::T, deep), RATE, (0.0, 0.01), &PSYCHOACOUSTIC_V1)
+        .expect_err("a million terms four deep are past the bound");
+    let CollapseError::NestedSeries { depth, terms, .. } = &refused else {
+        panic!("the refusal prices the nesting, not {refused:?}");
+    };
+    assert_eq!(*depth, 4);
+    assert_eq!(*terms, None, "10^24 terms is past what a usize counts");
+    let said = refused.to_string();
+    assert!(
+        !said.contains(&usize::MAX.to_string()),
+        "no saturated count leaks: {said}"
+    );
+    assert!(said.contains("4 deep"), "the depth is still named: {said}");
 }
 
 /// An indicator is a pointwise factor and distributes over a sum however long, so a cropped
@@ -1200,6 +1257,7 @@ fn a_nested_series_past_the_bound_refuses_or_labels() {
         panic!("the refusal prices the written bound too, not {refused:?}");
     };
     assert_eq!(depth, 2, "two series deep");
+    let terms = terms.expect("a count a usize holds");
     assert_eq!(
         terms,
         4_000 * per,
