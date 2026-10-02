@@ -10,8 +10,10 @@ mod stored;
 mod tier;
 
 pub use codec::STORE_FORMAT;
-pub use memory::{CachePolicy, Counters, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY, PrunePolicy};
-pub(crate) use memory::{Known, Memory, Offered};
+pub use memory::{
+    BYTES_PER_FLOP, CachePolicy, Counters, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY, PrunePolicy,
+};
+pub(crate) use memory::{Facts, Known, Memory, Offered};
 pub use persist::{Backend, DEFAULT_STORE_BYTES, INDEX_NAME, Persisted, Store};
 pub(crate) use stats::Recording;
 pub use stats::{CacheStats, Lookup, Outcome};

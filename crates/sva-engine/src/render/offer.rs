@@ -10,7 +10,7 @@ use super::Render;
 use super::frontier::Frontier;
 use super::table::segments::Segments;
 use super::table::{self, Table};
-use crate::cache::{Memory, Offered, Stored};
+use crate::cache::{Facts, Memory, Offered, Stored};
 use crate::schedule;
 use crate::typing::Typing;
 
@@ -18,7 +18,7 @@ struct Offer {
     at: usize,
     stored: Stored,
     own: Own,
-    slot: Option<Hash>,
+    facts: Facts,
 }
 
 enum Own {
@@ -37,14 +37,14 @@ pub(crate) struct Offers {
 }
 
 impl Offers {
-    /// Each value a missed node computes, at its own node's key: the root whatever it is, any
-    /// other where a reader may take its samples.
+    /// Each value a missed node computes, at its own node's key, with what memory decides from.
     pub(crate) fn of(
         held: &mut Render,
         (keys, found): (&BTreeMap<String, Hash>, &Frontier),
         memory: &Memory,
     ) -> Offers {
         let mut pending = Vec::new();
+        let range = held.range.unwrap_or(Extent::NOWHERE);
         if let Some(table) = &mut held.table {
             let tys = &held.tys;
             for (path, key) in keys {
@@ -57,11 +57,17 @@ impl Offers {
                 if let Some(mut stored) = offerable(table, tys, (id, at), (path, *key)) {
                     let beneath = found.beneath(path);
                     stored.cuts = table.cuts_of(tys, |name| beneath.contains(name));
+                    let facts = Facts {
+                        slot: table.slot(at),
+                        settled: false,
+                        target: at == table.root,
+                        samples: range.intersect(stored.support).len() as u64,
+                    };
                     pending.push(Offer {
                         at,
                         stored,
                         own: Own::Moves,
-                        slot: table.slot(at),
+                        facts,
                     });
                 }
             }
@@ -74,14 +80,14 @@ impl Offers {
                 }
                 if let Own::Shares(source) = &offer.own {
                     let stored = offer.stored.clone();
-                    memory.offer(stored, source.clone(), (offer.slot, false));
+                    memory.offer(stored, source.clone(), offer.facts);
                 }
             }
         }
         Offers {
             pending,
             keys,
-            range: held.range.unwrap_or(Extent::NOWHERE),
+            range,
         }
     }
 
@@ -126,7 +132,11 @@ impl Offers {
                     Offered::Held(vec![Arc::new(table.samples(offer.at, over))])
                 }
             };
-            memory.offer(offer.stored, source, (offer.slot, true));
+            let facts = Facts {
+                settled: true,
+                ..offer.facts
+            };
+            memory.offer(offer.stored, source, facts);
         }
     }
 }
@@ -139,10 +149,8 @@ fn offerable(
 ) -> Option<Stored> {
     let value = &table.values[at];
     let own = tys.name(id) == path;
-    let readable = readable(tys, id) && value.alias().is_none();
-    let kept =
-        value.pure && value.period.is_none() && !matches!(value.kind, table::Kind::Frames { .. });
-    if !own || !kept || !(at == table.root || readable) {
+    let samples = value.pure && !matches!(value.kind, table::Kind::Frames { .. });
+    if !own || !samples {
         return None;
     }
     let (priced, moved) = under(table, at);
@@ -157,7 +165,7 @@ fn offerable(
         support: value.support(),
         priced,
         moved,
-        readable,
+        readable: readable(tys, id) && value.alias().is_none(),
         sampled: ty.held == Representation::Sampled,
         cuts: Vec::new(),
         held: Vec::new(),

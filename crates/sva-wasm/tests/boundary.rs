@@ -1041,10 +1041,10 @@ fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
     );
 }
 
-/// An in-memory directory handle. A missing name rejects as `NotFoundError`; a write lands on
-/// close; a file moves whole. A file is open from `createWritable` to `close` and while it moves,
-/// and removing or moving it then rejects, as OPFS does. Each call installs fresh exclusive,
-/// queued `navigator.locks`.
+/// An in-memory directory handle, counting under `read` each file read. A missing name rejects
+/// as `NotFoundError`; a write lands on close; a file moves whole. A file is open from
+/// `createWritable` to `close` and while it moves, and removing or moving it then rejects, as
+/// OPFS does. Each call installs fresh exclusive, queued `navigator.locks`.
 fn fake_directory() -> JsValue {
     js_sys::Function::new_no_args(
         r#"
@@ -1071,6 +1071,7 @@ fn fake_directory() -> JsValue {
         Object.defineProperty(globalThis.navigator, "locks", { value: locks, configurable: true });
         const missing = () => Object.assign(new Error("missing"), { name: "NotFoundError" });
         const busy = () => Object.assign(new Error("open elsewhere"), { name: "NoModificationAllowedError" });
+        const read = { count: 0 };
         const directory = (name) => {
             const files = new Map();
             const dirs = new Map();
@@ -1081,6 +1082,7 @@ fn fake_directory() -> JsValue {
             };
             const held = {
                 name,
+                read,
                 files,
                 dirs,
                 open,
@@ -1093,6 +1095,7 @@ fn fake_directory() -> JsValue {
                         async getFile() {
                             const bytes = files.get(name);
                             if (!bytes) throw missing();
+                            read.count += 1;
                             const blob = (held) => ({
                                 size: held.length,
                                 async arrayBuffer() { return held.slice().buffer; },
@@ -1522,6 +1525,32 @@ async fn a_closed_form_key_warmed_and_persisted_warms_off_the_disk() {
         as_text(&tier)
     );
     assert_eq!(as_text(&readings(&warm)), as_text(&readings(&cold)));
+}
+
+/// A closed form a page renders with `out: null`, persisted, is read off the disk by the next
+/// page over the store, which prices nothing.
+#[wasm_bindgen_test]
+async fn a_closed_form_target_prepared_and_persisted_is_read_off_the_disk() {
+    let dir = fake_directory();
+    let target = "@bell([0, 0.5s], f0=440.0000, vel=0.5000, release=inf)";
+    let prepare = |held: Composition| async move {
+        let out = options(&[("out", JsValue::NULL)]);
+        let done = held.render(target, None, out).await;
+        let done = done.unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)));
+        let work = done.work().unwrap_or_else(|_| unreachable!("work"));
+        (held, field(&work, "priced_flops").as_f64())
+    };
+    let (first, cold) = prepare(bells(&dir).await).await;
+    assert!(cold > Some(0.0));
+    first
+        .persist()
+        .await
+        .unwrap_or_else(|e| unreachable!("persisted: {}", as_text(&e)));
+    let before = field(&field(&dir, "read"), "count").as_f64();
+
+    let (_, warm) = prepare(bells(&dir).await).await;
+    assert_eq!(warm, Some(0.0));
+    assert!(field(&field(&dir, "read"), "count").as_f64() > before);
 }
 
 /// `index` set to what an older format wrote, over the values a newer one left under it.

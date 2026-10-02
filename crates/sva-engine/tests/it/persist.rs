@@ -162,7 +162,7 @@ fn opening_a_store_reads_its_index_alone() {
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
-const PINNED: (u32, u64) = (15, 5805619914516694190);
+const PINNED: (u32, u64) = (16, 9698749443223829245);
 
 /// A change to how a value is encoded, or to what the engine computes for any construct here,
 /// fails this until `STORE_FORMAT` is bumped and the digest pinned again: rows, a filter, a
@@ -1640,4 +1640,47 @@ fn a_hit_states_the_cuts_that_shaped_its_samples() {
     let warm = warm.expect("a render");
     assert_eq!(stats(&warm).computed(), 0, "{:?}", stats(&warm));
     assert_eq!(warm.labels[&warm.root], cold.labels[&cold.root]);
+}
+
+fn reads(memory: &Memory) -> usize {
+    memory.reads.lock().unwrap().len()
+}
+
+/// A closed form repeating within the range: its samples are a period laid out, and stored as a
+/// node of its own like any other the render computed.
+#[test]
+fn a_periodic_closed_form_target_prepared_and_persisted_is_read_off_the_disk() {
+    let graph = graph_of("periodic", &[("master", "sin(2*pi*220*t)*0.5\n")]);
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    let cold = prepared(&graph, &store);
+    assert!(cold.work().priced_flops > 0);
+    now(store.persist()).expect("persisted");
+    memory.reads.lock().unwrap().clear();
+
+    let again = prepared(&graph, &opened(&memory, u64::MAX));
+    assert_eq!(again.work().priced_flops, 0, "{:?}", stats(&again));
+    assert!(reads(&memory) >= 1);
+    let warm = rendered(&graph, &opened(&memory, u64::MAX));
+    let fresh = render(
+        &graph,
+        "master",
+        RenderConfig::seconds(RATE, SECONDS),
+        &Tier::default(),
+    );
+    assert_eq!(bits(&warm), bits(&fresh.expect("a render")));
+}
+
+/// Memory writes no node computing costs under a flop per `BYTES_PER_FLOP` bytes it holds: a
+/// sine's period laid out over two seconds is computed again sooner than read back.
+#[test]
+fn a_node_cheaper_to_compute_than_to_read_is_never_written() {
+    let graph = graph_of("cheap", &[("master", "sin(2*pi*200*t)\n")]);
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    let cold = dropped(&graph, RenderConfig::seconds(RATE, 2.0), &store);
+    let held = u128::from(RATE) * 2 * size_of::<f64>() as u128;
+    assert!(cold.work().priced_flops * sva_engine::BYTES_PER_FLOP < held);
+    assert_eq!(now(store.persist()).expect("persisted").written, 0);
+    assert!(memory.entries().is_empty());
 }

@@ -107,6 +107,18 @@ impl Counters {
     }
 }
 
+/// A node cheaper than a priced flop per this many bytes it holds is computed, never read back.
+pub const BYTES_PER_FLOP: u128 = 64;
+
+/// What a render states of a node it offers.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Facts {
+    pub(crate) slot: Option<Hash>,
+    pub(crate) settled: bool,
+    pub(crate) target: bool,
+    pub(crate) samples: u64,
+}
+
 /// The protected segment holds at most this share of the cap, so probation always has a
 /// quarter for a new entry to earn its first hit in.
 const PROTECTED: (u64, u64) = (3, 4);
@@ -168,6 +180,7 @@ enum Item {
         /// Holds what the disk may lack: a node a render still computes always does.
         dirty: bool,
         settled: bool,
+        bound: bool,
     },
 }
 
@@ -269,7 +282,11 @@ impl State {
     }
 
     fn stands(&self, key: Hash) -> bool {
-        self.disk && self.doomed(key).len() > 1
+        let bound = |at: &Hash| {
+            let held = self.entries.get(at).map(|held| &held.item);
+            matches!(held, Some(Item::Node { bound: true, .. }))
+        };
+        self.doomed(key).iter().skip(1).any(bound)
     }
 
     fn unsettled(&self, key: Hash) -> bool {
@@ -371,16 +388,21 @@ impl State {
             return None;
         };
         let head = |samples| Header::new((**stored).clone(), samples);
-        Some(match offered {
-            Offered::Moves { of, by } => {
-                let (of, by) = self.referred(*of, *by)?;
-                Writeback {
-                    key,
-                    head: head(Samples::Of { key: of, by }),
-                    parts: Vec::new(),
-                }
-            }
-            _ => Writeback {
+        let referred = match offered {
+            Offered::Moves { of, by } => match self.referred(*of, *by) {
+                Some(found) => Some(found),
+                None if self.unbound(*of, 0) => None,
+                None => return None,
+            },
+            _ => None,
+        };
+        Some(match referred {
+            Some((of, by)) => Writeback {
+                key,
+                head: head(Samples::Of { key: of, by }),
+                parts: Vec::new(),
+            },
+            None => Writeback {
                 key,
                 head: head(Samples::None),
                 parts: self
@@ -388,6 +410,21 @@ impl State {
                     .unwrap_or_default(),
             },
         })
+    }
+
+    fn unbound(&self, key: Hash, depth: usize) -> bool {
+        match self.entries.get(&key).map(|held| &held.item) {
+            Some(Item::Node { bound: false, .. }) => true,
+            Some(Item::Node {
+                source:
+                    Source::Offered {
+                        offered: Offered::Moves { of, .. },
+                        ..
+                    },
+                ..
+            }) if depth < 64 => self.unbound(*of, depth + 1),
+            _ => false,
+        }
     }
 
     fn referred(&self, of: Hash, by: i64) -> Option<(Hash, i64)> {
@@ -399,6 +436,7 @@ impl State {
                 Samples::Entry { file, shift, .. } => Some((*file, by - shift)),
                 _ => None,
             },
+            Item::Node { bound: false, .. } => None,
             Item::Node {
                 source:
                     Source::Offered {
@@ -855,6 +893,7 @@ impl Memory {
             slot: None,
             dirty: false,
             settled: true,
+            bound: true,
         };
         state
             .entries
@@ -910,14 +949,11 @@ impl Memory {
     /// A node a render computes, standing on samples memory holds, in place of the last one
     /// offered under `slot` or `key`, keeping the segment that one earned. Until `settled` it
     /// holds what is computed so far, and each eviction sends that much to the disk; settled,
-    /// it goes where memory holds none of its samples and has no disk to name it to.
-    pub(crate) fn offer(
-        &self,
-        stored: Stored,
-        offered: Offered,
-        (slot, settled): (Option<Hash>, bool),
-    ) {
+    /// it goes where memory holds none of its samples and will write none to the disk.
+    pub(crate) fn offer(&self, stored: Stored, offered: Offered, facts: Facts) {
         let mut state = self.locked();
+        let Facts { slot, settled, .. } = facts;
+        let bound = state.disk && writes(&stored, facts);
         let key = stored.key;
         let (read, tree) = (state.tick(), state.tree);
         let earned = state.entries.get(&key);
@@ -930,8 +966,9 @@ impl Memory {
                 offered,
             },
             slot,
-            dirty: state.disk,
+            dirty: bound,
             settled,
+            bound,
         };
         let held = Held {
             since,
@@ -942,7 +979,7 @@ impl Memory {
         state.entries.insert(key, held);
         state.misses.remove(&key);
         let covered = state.coverage(key, 0).is_some_and(|held| !held.is_empty());
-        if settled && !covered && !state.disk {
+        if settled && !covered && !bound {
             state.discard(key);
             return;
         }
@@ -1136,6 +1173,12 @@ impl Memory {
             false => Kept::Held,
         }
     }
+}
+
+/// A node a later render is answered by, costing a flop per `BYTES_PER_FLOP` bytes or more.
+fn writes(stored: &Stored, facts: Facts) -> bool {
+    let bytes = u128::from(facts.samples) * u128::from(stored.width) * size_of::<f64>() as u128;
+    (stored.readable || facts.target) && stored.priced * BYTES_PER_FLOP >= bytes
 }
 
 /// A run that starts inside or at the end of the one held continues it: what it holds past
