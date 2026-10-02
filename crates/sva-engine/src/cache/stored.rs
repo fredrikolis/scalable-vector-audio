@@ -133,6 +133,7 @@ pub(crate) fn node_key(identity: Hash, rate: u32, profile: &sva_samples::Profile
             u64::from(rate),
             profile.precision_bits as u64,
             profile.ceiling_hz.to_bits(),
+            profile.prune_db.to_bits(),
             0x6e_6f_64_65_00_00_00_01,
         ],
     )

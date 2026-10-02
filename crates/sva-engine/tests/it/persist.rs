@@ -162,7 +162,7 @@ fn opening_a_store_reads_its_index_alone() {
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
-const PINNED: (u32, u64) = (12, 5341375668263400292);
+const PINNED: (u32, u64) = (13, 3785837670338276788);
 
 /// A change to how a value is encoded, or to what the engine computes for any construct here,
 /// fails this until `STORE_FORMAT` is bumped and the digest pinned again: rows, a filter, a
@@ -1510,4 +1510,36 @@ fn a_moving_index_read_of_a_stored_value_drops_nothing() {
     assert!(warm == cold, "the stored samples, bit for bit");
     assert!(dropped.is_empty(), "{dropped:?}");
     assert_eq!(hits, ["looped"], "the store answers it");
+}
+
+/// A fade the profile's prune level cuts where its bound falls under it: the level decides its
+/// samples, so a node stored at one level never answers a render at another.
+#[test]
+fn a_node_stored_at_one_prune_level_never_answers_another() {
+    let graph = graph_of(
+        "prune-keyed",
+        &[("master", "sample(sin(2*pi*200*t)*exp(-t/0.02))\n")],
+    );
+    let at = |prune_db: f64| RenderConfig {
+        profile: sva_engine::Profile {
+            prune_db,
+            ..sva_engine::PSYCHOACOUSTIC_V1
+        },
+        ..RenderConfig::seconds(RATE, 1.0)
+    };
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    now(render_over(&graph, "master", at(-120.0), &store)).expect("a render");
+    now(store.persist()).expect("persisted");
+
+    let warm = now(render_over(
+        &graph,
+        "master",
+        at(-60.0),
+        &opened(&memory, u64::MAX),
+    ))
+    .expect("a render");
+    assert!(stats(&warm).computed() > 0, "{:?}", stats(&warm));
+    let fresh = render(&graph, "master", at(-60.0), &Tier::default()).expect("a render");
+    assert_eq!(bits(&warm), bits(&fresh));
 }
