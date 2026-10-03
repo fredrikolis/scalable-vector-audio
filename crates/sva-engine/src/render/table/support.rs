@@ -744,16 +744,16 @@ fn lines(tys: &Typing, step: &Step, grid: Grid) -> Option<(i64, i64, i64)> {
             (map.a % map.d == 0).then(|| (slope, map.least(), map.lead()))
         }
         Step::Nearest(time, round) => {
-            let (lo, hi) = offset(tys, *time)?;
+            let (slope, lo, hi) = offset(tys, *time)?;
             let sr = grid.sr();
             let whole = |v: f64| (v.abs() < 2f64.powi(62)).then_some(v as i64);
             // A step each side holds the time's rounding; a non-positive offset reads no later step.
             let most = whole((hi * sr).ceil() + 1.0)?;
-            let most = match hi <= 0.0 && *round != Round::Ceil {
+            let most = match slope == 1 && hi <= 0.0 && *round != Round::Ceil {
                 true => most.min(0),
                 false => most,
             };
-            Some((1, whole((lo * sr).floor() - 1.0)?, most))
+            Some((slope, whole((lo * sr).floor() - 1.0)?, most))
         }
         Step::Add(parts) => {
             each(parts)?
@@ -779,9 +779,8 @@ fn lines(tys: &Typing, step: &Step, grid: Grid) -> Option<(i64, i64, i64)> {
     }
 }
 
-/// `[lo, hi]` holding `time - t` at every instant, where the machine computes it as written:
-/// each node it reads first, then the sum over them.
-fn offset(tys: &Typing, time: NodeId) -> Option<(f64, f64)> {
+/// How many `t` a time holds, none or one, and `[lo, hi]` holding the rest, as the machine sums it.
+fn offset(tys: &Typing, time: NodeId) -> Option<(i64, f64, f64)> {
     let Value::ClosedForm(form) = tys.value(time) else {
         return None;
     };
@@ -795,10 +794,9 @@ fn offset(tys: &Typing, time: NodeId) -> Option<(f64, f64)> {
     };
     let mut held = Addends::default();
     offsets.addends(&form.body, &mut held);
-    let Addends { lines: 1, lo, hi } = held else {
-        return None;
-    };
-    (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
+    let Addends { lines, lo, hi } = held;
+    let slope = i64::try_from(lines).ok().filter(|n| *n <= 1)?;
+    (lo.is_finite() && hi.is_finite()).then_some((slope, lo, hi))
 }
 
 /// How many bare `t` a sum holds and the span of the rest, added from `+0` in written order.

@@ -385,3 +385,35 @@ fn an_unbounded_index_into_a_signal_with_no_ends_refuses() {
         "{said}"
     );
 }
+
+/// A moving delay's index, `t` less a time that holds no `t`, reaches a bounded span back, so
+/// a signal that never starts or ends is asked only there: the bits a cropped one renders.
+#[test]
+fn a_moving_delay_of_a_signal_with_no_ends_reads_only_where_its_index_reaches() {
+    let files = |x: &str| {
+        graph_of(
+            "moving-delay",
+            &[
+                ("rom", "crop(sample(sin(2*pi*100*t)), 0s, 0.01s)\n"),
+                ("ramp", "crop(sample(t/1sp), 0s, 10s)\n"),
+                (
+                    "wrap",
+                    "w = 0\nw[idx(t - 0.01s*@ramp[idx(t*100*1sp, floor)], floor)]\n",
+                ),
+                (
+                    "mdly",
+                    "x = 0\nx[idx(t) - idx(2ms + 0.2ms*sin(2*pi*5*t), floor) - 2]\n",
+                ),
+                ("top", &format!("crop(@mdly(t, x={x}), 0s, 0.05s)\n")),
+            ],
+        )
+    };
+    let config = RenderConfig::at(48_000);
+    let endless = whole(&files("@wrap(t, w=@rom(t))"), "top", &config);
+    let cropped = whole(
+        &files("@wrap(t, w=@rom(t))*crop(1, 0s, 1s)"),
+        "top",
+        &config,
+    );
+    assert_eq!(bits(&endless), bits(&cropped));
+}
