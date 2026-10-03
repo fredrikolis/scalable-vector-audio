@@ -1,12 +1,12 @@
 // Concern: proves a series is a value, truncated once against a ceiling | Non-concern: summing its lines into a buffer (sva-samples) | IO: (a Series) -> the lines it yields
 
-use crate::fixtures::{DUAL, Fixed, constant, part, saw_series, sine, term};
+use crate::fixtures::{DUAL, Fixed, constant, cosine, part, saw_series, sine, term};
 use sva_formula::{
     Body, Bound, Code, IndexId, Series, Unary, Var, commensurate, infer, lines, noise,
     normalize_closed_form,
 };
 
-fn enumerate(s: &Series, ceiling: f64) -> sva_formula::Lines {
+fn enumerate(s: &Series, ceiling: f64) -> Option<sva_formula::Lines> {
     lines(s, ceiling, -20.0, 2f64.powi(-24))
 }
 
@@ -62,7 +62,7 @@ fn a_saw_has_a_dual_and_a_geometric_growth_does_not() {
 
 #[test]
 fn a_series_truncates_against_the_ceiling_and_reports_its_tail() {
-    let answer = enumerate(&series_of(&saw_series(220.0)), 22050.0);
+    let answer = enumerate(&series_of(&saw_series(220.0)), 22050.0).expect("a saw's lines");
     let highest = answer
         .taken
         .iter()
@@ -101,7 +101,7 @@ fn a_frequency_law_that_starts_below_zero_is_walked_to_where_it_leaves_the_band(
             ])),
         )),
     };
-    let answer = enumerate(&ramp, 100.0);
+    let answer = enumerate(&ramp, 100.0).expect("a ramp's lines");
     let highest = answer
         .taken
         .iter()
@@ -114,9 +114,59 @@ fn a_frequency_law_that_starts_below_zero_is_walked_to_where_it_leaves_the_band(
     );
 }
 
+/// `sum(cos(2*pi*440*t) / k^2)` piles every term onto one line, and no ratio bounds `1/k^2`:
+/// the walk stops only where everything it drops sums under the floor, and the tail it
+/// states is that sum, never one term.
+#[test]
+fn a_tail_no_ratio_bounds_is_dropped_only_where_its_whole_sum_is_under_the_floor() {
+    let k = IndexId(0);
+    let series = Series {
+        index: k,
+        lo: 1,
+        hi: Bound::Infinite,
+        term: part(Body::Div(
+            part(cosine(440.0)),
+            part(Body::Pow(part(Body::Index(k)), 2)),
+        )),
+    };
+    let answer = enumerate(&series, 20_000.0).expect("a bounded tail");
+    let last = answer.taken.len() / 2;
+    let kept: f64 = answer.taken.iter().map(|l| l.amp.abs()).sum();
+    let dropped = (std::f64::consts::PI.powi(2) / 6.0 - kept) / 2.0;
+    let loudest = answer
+        .taken
+        .iter()
+        .map(|l| l.amp.abs())
+        .fold(0.0f64, f64::max);
+    assert!(
+        dropped < loudest * 0.1,
+        "the {last} terms kept leave {} dB of tail, over the -20 dB floor",
+        20.0 * (dropped / loudest).log10()
+    );
+    assert!(
+        answer.tail_db >= 20.0 * (dropped / loudest).log10(),
+        "the stated tail {} dB covers the {} dB dropped",
+        answer.tail_db,
+        20.0 * (dropped / loudest).log10()
+    );
+}
+
+/// A tail with no decay any bound proves is not cut on a guess.
+#[test]
+fn a_tail_no_bound_sums_names_no_lines() {
+    let k = IndexId(0);
+    let series = Series {
+        index: k,
+        lo: 1,
+        hi: Bound::Infinite,
+        term: part(Body::Div(part(cosine(440.0)), part(Body::Index(k)))),
+    };
+    assert_eq!(enumerate(&series, 20_000.0), None);
+}
+
 #[test]
 fn noise_spacing_is_the_reciprocal_period() {
-    let answer = enumerate(&noise(7, 2.0, 0.0), 40.0);
+    let answer = enumerate(&noise(7, 2.0, 0.0), 40.0).expect("noise lines");
     let mut hz: Vec<f64> = answer
         .taken
         .iter()
@@ -132,7 +182,7 @@ fn noise_spacing_is_the_reciprocal_period() {
 
 #[test]
 fn noise_lines_are_conjugate_symmetric() {
-    let answer = enumerate(&noise(7, 2.0, -3.0), 20.0);
+    let answer = enumerate(&noise(7, 2.0, -3.0), 20.0).expect("noise lines");
     for line in &answer.taken {
         let mirror = answer
             .taken
@@ -145,7 +195,10 @@ fn noise_lines_are_conjugate_symmetric() {
 
 #[test]
 fn periodic_noise_is_commensurate_with_its_own_horizon() {
-    for line in enumerate(&noise(3, 0.25, 0.0), 200.0).taken {
+    for line in enumerate(&noise(3, 0.25, 0.0), 200.0)
+        .expect("noise lines")
+        .taken
+    {
         assert!(
             commensurate(line.hz, 0.25),
             "{} does not close over its own period",

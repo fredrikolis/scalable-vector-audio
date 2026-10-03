@@ -51,7 +51,8 @@ fn wave(name: &str, hz: f64) -> Series {
 fn runs(name: &str, hz: f64) -> Vec<Run> {
     let p = PSYCHOACOUSTIC_V1;
     let ceiling = p.ceiling(RATE);
-    let found = sva_formula::lines(&wave(name, hz), ceiling, p.floor(ceiling), p.half_lsb());
+    let found = sva_formula::lines(&wave(name, hz), ceiling, p.floor(ceiling), p.half_lsb())
+        .expect("a wave's lines");
     Run::of(&found.taken)
 }
 

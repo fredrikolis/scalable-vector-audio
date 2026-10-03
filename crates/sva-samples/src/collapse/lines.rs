@@ -35,7 +35,7 @@ pub fn of_lane(
         }
     }
     for series in &lane.series {
-        let enumerated = lines_read(series, (ceiling, floor_db, precision), reads);
+        let enumerated = lines_read(series, (ceiling, floor_db, precision), reads)?;
         if enumerated.taken.is_empty() && enumerated.dropped.is_empty() {
             return None;
         }

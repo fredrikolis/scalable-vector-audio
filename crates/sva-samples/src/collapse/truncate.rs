@@ -240,7 +240,7 @@ impl<'a> Terms<'a> {
             term: Part::new(s.term.origin, body),
             ..s.clone()
         };
-        let taken = self.enumerated(&bare, band);
+        let taken = self.enumerated(&bare, band).ok()?;
         (!taken.is_empty()).then_some((taken, window))
     }
 
@@ -286,7 +286,7 @@ impl<'a> Terms<'a> {
         band: Audible,
         named: &mut dyn FnMut(NodeId, Audible) -> Result<NodeId, CollapseError>,
     ) -> Result<Body, CollapseError> {
-        let taken = self.enumerated(s, band);
+        let taken = self.enumerated(s, band)?;
         if !taken.is_empty() {
             let runs = Run::of(&taken).into_iter();
             return Ok(sum(runs.map(|r| Body::Run(Box::new(r))).collect()));
@@ -323,13 +323,22 @@ impl<'a> Terms<'a> {
         }
     }
 
-    fn enumerated(&self, s: &Series, band: Audible) -> Vec<sva_formula::Line> {
+    /// A line series whose tail no decay bounds refuses rather than be summed term by term.
+    fn enumerated(
+        &self,
+        s: &Series,
+        band: Audible,
+    ) -> Result<Vec<sva_formula::Line>, CollapseError> {
         match read_with(&s.term.body, self.reads) {
             Some(Shape::Lines(_)) => {
                 let held = (band.ceiling, band.floor_db, band.precision);
-                lines_read(s, held, self.reads).taken
+                lines_read(s, held, self.reads)
+                    .map(|l| l.taken)
+                    .ok_or(CollapseError::NotEvaluable(
+                        "a series whose tail no bound sums",
+                    ))
             }
-            _ => Vec::new(),
+            _ => Ok(Vec::new()),
         }
     }
 

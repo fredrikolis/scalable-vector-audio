@@ -144,6 +144,69 @@ pub fn ratio(f: &Body, k: IndexId) -> Option<f64> {
     }
 }
 
+/// Bounds every term from an index on by that term's magnitude alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Decay {
+    Geometric(f64),
+    Power(f64),
+}
+
+fn decay(f: &Body, k: IndexId) -> Option<Decay> {
+    if let Some(r) = ratio(f, k).filter(|r| *r < 1.0) {
+        return Some(Decay::Geometric(r));
+    }
+    power(f, k).filter(|p| *p > 1.0).map(Decay::Power)
+}
+
+impl Decay {
+    /// `sum_{j>=k} |c(j)|` from `|c(k)|`; a power law by `sum_{j>k} (k/j)^p <= k/(p-1)`.
+    fn tail(self, here: f64, k: i64) -> Option<f64> {
+        match self {
+            Decay::Geometric(r) => Some(here / (1.0 - r)),
+            Decay::Power(p) => (k >= 1).then(|| here * (1.0 + k as f64 / (p - 1.0))),
+        }
+    }
+}
+
+/// A `p` with `|f(j)| <= |f(i)|*(i/j)^p` for every `j >= i >= 1`.
+fn power(f: &Body, k: IndexId) -> Option<f64> {
+    if let Some(e) = exponent(f, k) {
+        return Some(-e);
+    }
+    match f {
+        Body::Mul(parts) => parts
+            .iter()
+            .try_fold(0.0, |held, p| Some(held + power(&p.body, k)?)),
+        Body::Add(parts) => parts
+            .iter()
+            .try_fold(f64::INFINITY, |held, p| match &*p.body {
+                Body::Apply(Unary::Abs, _) => Some(held.min(power(&p.body, k)?)),
+                _ => None,
+            }),
+        Body::Div(num, den) => Some(power(&num.body, k)? + exponent(&den.body, k)?),
+        Body::Apply(Unary::Abs, arg) => power(&arg.body, k),
+        Body::Pow(base, n) if *n >= 0 => Some(power(&base.body, k)? * f64::from(*n)),
+        _ => ratio(f, k).filter(|r| *r <= 1.0).map(|_| 0.0),
+    }
+}
+
+/// The `e` with `|f(j)| = |f(i)|*(j/i)^e` exactly for every `i, j >= 1`.
+fn exponent(f: &Body, k: IndexId) -> Option<f64> {
+    if !mentions(f, k) {
+        return Some(0.0);
+    }
+    match f {
+        Body::Index(i) if *i == k => Some(1.0),
+        Body::Mul(parts) => parts
+            .iter()
+            .try_fold(0.0, |held, p| Some(held + exponent(&p.body, k)?)),
+        Body::Div(num, den) => Some(exponent(&num.body, k)? - exponent(&den.body, k)?),
+        Body::Apply(Unary::Abs, arg) => exponent(&arg.body, k),
+        Body::Pow(base, n) => Some(exponent(&base.body, k)? * f64::from(*n)),
+        _ => None,
+    }
+}
+
 pub fn mentions(f: &Body, k: IndexId) -> bool {
     reaches(f, &|x| matches!(x, Body::Index(i) if *i == k))
 }
@@ -178,7 +241,8 @@ pub struct Rung {
     pub k: i64,
 }
 
-/// `tail_db` is the loudest dropped line against the loudest taken one.
+/// `tail_db` is what was dropped against the loudest taken line: the loudest dropped line, or
+/// where the walk stopped short, the bound on the summed magnitude of every term it left.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Lines {
     pub taken: Vec<Line>,
@@ -188,10 +252,11 @@ pub struct Lines {
 
 pub const AUDIBLE_CEILING_HZ: f64 = 20_000.0;
 
-/// Stops at the ceiling where the frequency closed form leaves the band. Where it never does, every
-/// term piles onto one line: a geometric weight stops it where the whole tail it bounds is at
-/// most `precision`, and any other where the loudest line falls under the floor.
-pub fn lines(s: &Series, ceiling: f64, floor_db: f64, precision: f64) -> Lines {
+/// Stops at the ceiling where the frequency closed form leaves the band. Where it never does, the
+/// walk stops only where a decay bounds the whole tail: a geometric one at `precision`, a power
+/// law under the floor against the loudest line taken. `None` where the term is no line, or an
+/// infinite tail has no such bound.
+pub fn lines(s: &Series, ceiling: f64, floor_db: f64, precision: f64) -> Option<Lines> {
     lines_read(s, (ceiling, floor_db, precision), &Opaque)
 }
 
@@ -199,15 +264,9 @@ pub fn lines_read(
     s: &Series,
     (ceiling, floor_db, precision): (f64, f64, f64),
     reads: &dyn Reads,
-) -> Lines {
+) -> Option<Lines> {
     let ceiling = ceiling.min(AUDIBLE_CEILING_HZ);
-    let Some(shape) = read_with(&s.term.body, reads) else {
-        return Lines {
-            taken: Vec::new(),
-            dropped: Vec::new(),
-            tail_db: f64::NEG_INFINITY,
-        };
-    };
+    let shape = read_with(&s.term.body, reads)?;
     let voices = places(&shape);
     let band = voices
         .iter()
@@ -227,6 +286,26 @@ pub fn lines_read(
             Some(held.max(ratio(weight, s.index)?))
         })
         .filter(|r| *r < 1.0);
+    let decays: Option<Vec<Decay>> = voices
+        .iter()
+        .map(|(_, weight)| decay(weight, s.index))
+        .collect();
+    let truncates = band.is_none() && s.hi == Bound::Infinite;
+    let unread = |f: &Body| at_index(f, s.index, s.lo, reads).is_none();
+    if truncates
+        && voices
+            .iter()
+            .any(|(place, weight)| unread(place) || unread(weight))
+    {
+        return Some(Lines {
+            taken: Vec::new(),
+            dropped: Vec::new(),
+            tail_db: f64::NEG_INFINITY,
+        });
+    }
+    if truncates && ratio.is_none() && decays.is_none() {
+        return None;
+    }
     let floor = 10f64.powf(floor_db / 20.0);
     let ladders: Vec<Option<(f64, f64)>> = voices
         .iter()
@@ -235,7 +314,8 @@ pub fn lines_read(
 
     let mut taken = Vec::new();
     let mut dropped = Vec::new();
-    let mut first = 0.0f64;
+    let mut peak = 0.0f64;
+    let mut left = None;
     for k in s.lo..=hi {
         let mut here = Vec::new();
         for ((place, weight), ladder) in voices.iter().zip(&ladders) {
@@ -248,38 +328,49 @@ pub fn lines_read(
             let rung = ladder.map(|(offset, step)| Rung { offset, step, k });
             here.push(Line { hz, amp, rung });
         }
-        let loudest = here.iter().map(|l| l.amp.abs()).fold(0.0f64, f64::max);
-        if k == s.lo {
-            first = loudest;
-        }
-        let bound: f64 = here.iter().map(|l| l.amp.abs()).sum();
-        let gone = match ratio {
-            Some(r) => here.len() == voices.len() && bound / (1.0 - r) <= precision,
-            None => first > 0.0 && loudest < first * floor,
+        let whole = here.len() == voices.len();
+        let tail = match (ratio, &decays) {
+            (Some(r), _) => {
+                whole.then(|| here.iter().map(|l| l.amp.abs()).sum::<f64>() / (1.0 - r))
+            }
+            (None, Some(decays)) if whole => here
+                .iter()
+                .zip(decays)
+                .try_fold(0.0, |held, (l, d)| Some(held + d.tail(l.amp.abs(), k)?)),
+            (None, _) => None,
         };
-        if band.is_none() && k > s.lo && gone {
+        let gone = tail.filter(|tail| match ratio {
+            Some(_) => *tail <= precision,
+            None => peak > 0.0 && *tail < peak * floor,
+        });
+        if truncates && k > s.lo && gone.is_some() {
             dropped.extend(here);
+            left = gone;
             break;
         }
         for line in here {
             if line.hz.abs() < ceiling {
+                peak = peak.max(line.amp.abs());
                 taken.push(line);
             } else {
                 dropped.push(line);
             }
         }
     }
+    if truncates && left.is_none() {
+        return None;
+    }
     let loudest = |set: &[Line]| set.iter().map(|l| l.amp.abs()).fold(0.0f64, f64::max);
-    let (kept, gone) = (loudest(&taken), loudest(&dropped));
-    Lines {
-        tail_db: if gone > 0.0 && kept > 0.0 {
-            20.0 * (gone / kept).log10()
+    let gone = loudest(&dropped).max(left.unwrap_or(0.0));
+    Some(Lines {
+        tail_db: if gone > 0.0 && peak > 0.0 {
+            20.0 * (gone / peak).log10()
         } else {
             f64::NEG_INFINITY
         },
         taken,
         dropped,
-    }
+    })
 }
 
 fn ladder(place: &Body, k: IndexId, reads: &dyn Reads) -> Option<(f64, f64)> {
@@ -341,7 +432,7 @@ pub fn line_atoms_read(s: &Series, band: (f64, f64, f64), reads: &dyn Reads) -> 
         Shape::Deltas(_) => true,
         Shape::Lines(_) => false,
     };
-    let found = lines_read(&bare, band, reads);
+    let found = lines_read(&bare, band, reads)?;
     let atoms = found
         .taken
         .into_iter()

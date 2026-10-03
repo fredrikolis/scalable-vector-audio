@@ -476,6 +476,22 @@ fn a_series_no_coefficient_bounds_refuses_at_a_point() {
     assert_eq!(refused.code(), "collapse.not_evaluable");
 }
 
+/// `sum(cos(2*pi*440*t) / k)` piles every term onto one line and its tail sums to no bound,
+/// so no count of terms is its value: it refuses rather than stop where one term is quiet.
+#[test]
+fn a_line_series_whose_tail_no_bound_sums_refuses() {
+    let k = IndexId(1);
+    let law = Body::Series(Box::new(Series {
+        index: k,
+        lo: 1,
+        hi: Bound::Infinite,
+        term: part(Body::Div(part(cosine(440.0, 1.0)), part(Body::Index(k)))),
+    }));
+    let refused = render(&form(Var::T, law), RATE, (0.0, 0.01), &PSYCHOACOUSTIC_V1)
+        .expect_err("no bound sums the tail");
+    assert_eq!(refused.code(), "collapse.not_evaluable");
+}
+
 /// A series no line enumeration reads is summed term by term, as many terms as its own
 /// coefficient keeps before its tail rounds away.
 #[test]
@@ -980,7 +996,8 @@ fn noise_alone_places_through_one_transform() {
         4_096.0,
         -20.0,
         PSYCHOACOUSTIC_V1.half_lsb(),
-    );
+    )
+    .expect("noise lines");
     for i in [0usize, 137, 4_001] {
         let t = i as f64 / f64::from(RATE);
         let direct: f64 = placed
