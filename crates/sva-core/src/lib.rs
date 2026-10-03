@@ -157,9 +157,7 @@ fn settle(job: &Job) -> Result<(Graph, RenderConfig), CliError> {
         until,
         ..RenderConfig::at(rate)
     };
-    if let Some(budget) = job.flop_budget {
-        config.flop_budget = budget;
-    }
+    config.flop_budget = job.flop_budget;
     if let Some(bits) = job.bits {
         config.profile.precision_bits = precision(bits)?;
     }

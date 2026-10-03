@@ -48,8 +48,8 @@ pub struct RenderConfig {
     pub profile: Profile,
     /// What the caller means to read. An empty list is audio out, which collapses the root.
     pub asks: Vec<Ask>,
-    /// The operation count this render may pay.
-    pub flop_budget: u128,
+    /// The operation count this render may pay in place of its profile's.
+    pub flop_budget: Option<u128>,
     /// What reads one of these keeps one value in memory, its last.
     pub volatile: Vec<String>,
     pub out: Out,
@@ -65,6 +65,10 @@ pub enum Out {
 }
 
 impl RenderConfig {
+    pub fn budget(&self) -> u128 {
+        self.flop_budget.unwrap_or(self.profile.flop_budget)
+    }
+
     pub fn at(rate: u32) -> RenderConfig {
         RenderConfig {
             rate,
@@ -72,7 +76,7 @@ impl RenderConfig {
             until: None,
             profile: PSYCHOACOUSTIC_V1,
             asks: Vec::new(),
-            flop_budget: PSYCHOACOUSTIC_V1.flop_budget,
+            flop_budget: None,
             volatile: Vec::new(),
             out: Out::Kept,
         }
@@ -423,7 +427,7 @@ fn affordable(held: &Render) -> Result<(), EngineError> {
         return Ok(());
     }
     let total = crate::flops::total(held);
-    if total <= held.config.flop_budget {
+    if total <= held.config.budget() {
         return Ok(());
     }
     let counted = crate::flops::tree(held);
@@ -583,7 +587,7 @@ fn stamp(held: &mut Render) {
         rate: held.config.rate,
         moved: held.table.as_ref().map(Table::moved),
         pruned: held.table.as_ref().map(|table| table.pruned(&held.tys)),
-        ..label.costing(counted, held.config.flop_budget)
+        ..label.costing(counted, held.config.budget())
     };
     held.labels.insert(root, label);
 }

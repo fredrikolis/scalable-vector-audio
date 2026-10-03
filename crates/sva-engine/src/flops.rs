@@ -68,7 +68,7 @@ pub fn tree_at(render: &Render, node: sva_formula::NodeId) -> Tree {
     else {
         return Tree {
             total: 0,
-            budget: render.config.flop_budget,
+            budget: render.config.budget(),
             rows: Vec::new(),
         };
     };
@@ -78,7 +78,7 @@ pub fn tree_at(render: &Render, node: sva_formula::NodeId) -> Tree {
     emit(&root, table, 0, total, &mut rows);
     Tree {
         total,
-        budget: render.config.flop_budget,
+        budget: render.config.budget(),
         rows,
     }
 }

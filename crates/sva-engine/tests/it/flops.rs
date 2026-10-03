@@ -8,7 +8,7 @@ const RATE: u32 = 8_192;
 fn config(secs: f64, budget: Option<u128>) -> RenderConfig {
     let mut held = RenderConfig::seconds(RATE, secs);
     if let Some(budget) = budget {
-        held.flop_budget = budget;
+        held.flop_budget = Some(budget);
     }
     held
 }
@@ -316,4 +316,24 @@ fn a_cropped_term_is_priced_over_its_own_support() {
         4 * rate + 2 * alone,
         "an add at each of 4 s of instants, and each term only over the second its crop holds"
     );
+}
+
+/// With no budget of its own, a render pays the one its profile names.
+#[test]
+fn a_render_with_no_budget_of_its_own_pays_its_profiles() {
+    let g = graph_of(
+        "flops-profile-budget",
+        &[("node", "sum(k, 1, 200, (1/k)*sin(2*pi*100*k*t))\n")],
+    );
+    let held = RenderConfig {
+        profile: sva_engine::Profile {
+            flop_budget: 1_000,
+            ..sva_engine::PSYCHOACOUSTIC_V1
+        },
+        ..RenderConfig::seconds(RATE, 1.0)
+    };
+    let Err(refused) = render(&g, "node", held, &Tier::default()) else {
+        panic!("a render past its profile's budget refuses");
+    };
+    assert_eq!(refused.code(), "collapse.over_budget", "{refused}");
 }
