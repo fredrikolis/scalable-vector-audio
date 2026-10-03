@@ -1773,3 +1773,119 @@ fn a_chain_a_thousand_refs_deep_renders() {
     let drawn = plane(&render(&held, "c1000"));
     assert!(drawn.iter().any(|v| *v != 0.0), "the chain sounds");
 }
+
+/// A saw computed whole before the first block, dear enough for a store to keep, and a filter
+/// over it block by block.
+fn filtered(held: &mut Composition) {
+    held.insert(
+        "tone",
+        "sample(crop(sum(k, 1, 60, sin(2*pi*k*55*t)/k), 0s, 30s))\n",
+    );
+    held.insert("wet", "lowpass(@tone, cutoff=1000)\n");
+}
+
+const WET: &str = "@wet([0, 30s])";
+
+/// `{ aborted }` false for the first `checks` reads of it, then true.
+fn aborting_after(checks: u32) -> JsValue {
+    js_sys::Function::new_with_args(
+        "checks",
+        "let read = 0; return { get aborted() { read += 1; return read > checks; } };",
+    )
+    .call1(&JsValue::NULL, &checks.into())
+    .unwrap_or_else(|_| unreachable!("the signal builds"))
+}
+
+async fn work_of(held: &Composition, options: JsValue) -> Result<f64, JsValue> {
+    let rendered = held.render(WET, None, options).await?;
+    let work = rendered.work().unwrap_or_else(|_| unreachable!("work"));
+    Ok(field(&work, "priced_flops").as_f64().unwrap_or(f64::NAN))
+}
+
+/// Abandoned after two blocks, the render throws an `AbortError`; the next render of the same
+/// target computes the filter the first left undone, never the saw it finished.
+#[wasm_bindgen_test]
+async fn an_abandoned_render_stops_and_keeps_what_it_computed() {
+    let mut fresh = Composition::new(None);
+    filtered(&mut fresh);
+    let whole = work_of(&fresh, options(&[]))
+        .await
+        .unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)));
+
+    let mut held = Composition::new(None);
+    filtered(&mut held);
+    let signal = aborting_after(2);
+    let stopped = work_of(&held, options(&[("signal", signal)])).await;
+    let error = stopped.err().unwrap_or_else(|| unreachable!("it stops"));
+    assert_eq!(
+        field(&error, "name").as_string().as_deref(),
+        Some("AbortError")
+    );
+
+    let rest = work_of(&held, options(&[]))
+        .await
+        .unwrap_or_else(|e| unreachable!("it renders after: {}", as_text(&e)));
+    assert!(rest > 0.0, "the filter was left undone");
+    assert!(rest < whole, "{rest} of {whole}: the tone was kept");
+}
+
+/// An `AbortController` the page aborts on its own turn stops the render it handed.
+#[wasm_bindgen_test]
+async fn an_aborted_controller_stops_a_render() {
+    let controller = js_sys::Reflect::get(&js_sys::global(), &"AbortController".into())
+        .unwrap_or_else(|_| unreachable!("a global AbortController"));
+    let controller = js_sys::Reflect::construct(&controller.into(), &js_sys::Array::new())
+        .unwrap_or_else(|_| unreachable!("a controller"));
+    let signal = field(&controller, "signal");
+    js_sys::Function::new_with_args("c", "setTimeout(() => c.abort(), 0);")
+        .call1(&JsValue::NULL, &controller)
+        .unwrap_or_else(|_| unreachable!("the abort is queued"));
+    let mut held = Composition::new(None);
+    filtered(&mut held);
+    let stopped = work_of(&held, options(&[("signal", signal)])).await;
+    let error = stopped.err().unwrap_or_else(|| unreachable!("it stops"));
+    assert_eq!(
+        field(&error, "name").as_string().as_deref(),
+        Some("AbortError")
+    );
+}
+
+/// The store commits what an abandoned render computed, and a page over it reads it: the
+/// filter's first two blocks answer a render of its first half second whole.
+#[wasm_bindgen_test]
+async fn what_an_abandoned_render_computed_persists() {
+    let dir = fake_directory();
+    let mut held = over_store(&dir).await;
+    filtered(&mut held);
+    let stopped = work_of(&held, options(&[("signal", aborting_after(2))])).await;
+    assert!(stopped.is_err(), "it stops");
+    let written = held
+        .persist()
+        .await
+        .unwrap_or_else(|_| unreachable!("persisted"));
+    assert!(written > 0, "what it computed is committed");
+
+    let early = |held: Composition| async move {
+        let rendered = held.render("@wet([0, 0.5s])", None, options(&[])).await;
+        let rendered = rendered.unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)));
+        let work = rendered.work().unwrap_or_else(|_| unreachable!("work"));
+        field(&work, "priced_flops").as_f64()
+    };
+    let mut fresh = Composition::new(None);
+    filtered(&mut fresh);
+    assert!(early(fresh).await.is_some_and(|flops| flops > 0.0));
+    let mut reopened = over_store(&dir).await;
+    filtered(&mut reopened);
+    assert_eq!(early(reopened).await, Some(0.0), "the store answers it");
+}
+
+/// A `signal` that is no `AbortSignal` refuses by name.
+#[wasm_bindgen_test]
+fn a_signal_that_is_no_abort_signal_refuses() {
+    let refused = page().rendered("@master([0, 0.1s])", None, options(&[("signal", 3.into())]));
+    let error = refused.err().unwrap_or_else(|| unreachable!("it refuses"));
+    assert_eq!(
+        field(&error, "name").as_string().as_deref(),
+        Some("validation_error")
+    );
+}

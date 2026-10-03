@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use crate::fixtures::{Now, graph_of};
 use sva_ast::Graph;
-use sva_engine::{Render, RenderConfig, Session, Tier, identity, render_in, render_over};
+use sva_engine::{Never, Render, RenderConfig, Session, Tier, identity, render_in, render_over};
 
 const RATE: u32 = 8_000;
 
@@ -27,7 +27,7 @@ fn mixed(name: &str, hz: u32) -> Graph {
 }
 
 fn rendered(session: &mut Session, graph: &Graph, tier: &Tier) -> Render {
-    let held = render_in(session, graph, "master", config(), tier).now();
+    let held = render_in(session, graph, "master", config(), tier, &Never).now();
     held.unwrap_or_else(|e| panic!("{e}"))
 }
 
@@ -109,7 +109,7 @@ fn a_refused_render_leaves_the_session_as_it_was() {
             ("master", "sample(@p*0.5) + lowpass(1)\n"),
         ],
     );
-    let refused = render_in(&mut session, &broken, "master", config(), &tier).now();
+    let refused = render_in(&mut session, &broken, "master", config(), &tier, &Never).now();
     assert!(refused.is_err(), "a lowpass of no cutoff refuses");
     let edited = mixed("retype-mended", 440);
     let after = rendered(&mut session, &edited, &tier);
@@ -133,7 +133,15 @@ fn knob(cutoff: u32) -> Graph {
 fn turned(session: &mut Session, cutoff: u32, tier: &Tier) -> (Vec<String>, Render) {
     let mut config = config();
     config.volatile = vec!["cutoff".to_string()];
-    let held = render_in(session, &knob(cutoff), "master", config.clone(), tier).now();
+    let held = render_in(
+        session,
+        &knob(cutoff),
+        "master",
+        config.clone(),
+        tier,
+        &Never,
+    )
+    .now();
     let held = held.unwrap_or_else(|e| panic!("{e}"));
     let alone = render_over(&knob(cutoff), "master", config, &Tier::default()).now();
     assert_eq!(bits(&held), bits(&alone.unwrap_or_else(|e| panic!("{e}"))));

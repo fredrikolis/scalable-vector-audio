@@ -39,7 +39,7 @@ use sva_engine::{
     render, render_in,
 };
 
-pub use sva_engine::{Handle, Out, Placed, Session, Stream, Until};
+pub use sva_engine::{Abandon, Handle, Never, Out, Placed, Session, Stream, Until};
 
 pub use sva_engine::{Answer, Extent, Label, Output, Representation};
 pub use sva_engine::{
@@ -96,6 +96,7 @@ pub struct Job<'a> {
     pub flop_budget: Option<u128>,
     pub volatile: &'a [String],
     pub out: Out,
+    pub abandon: &'a dyn Abandon,
 }
 
 impl<'a> Job<'a> {
@@ -110,6 +111,7 @@ impl<'a> Job<'a> {
             flop_budget: None,
             volatile: &[],
             out: Out::Kept,
+            abandon: &Never,
         }
     }
 }
@@ -221,7 +223,7 @@ pub async fn execute_over<B: Backend>(
     session: &mut Session,
 ) -> Result<Rendered, CliError> {
     let (graph, config) = settle(&job)?;
-    let render = render_in(session, &graph, PROBE, config, tier).await;
+    let render = render_in(session, &graph, PROBE, config, tier, job.abandon).await;
     rendered(&job, graph, render)
 }
 

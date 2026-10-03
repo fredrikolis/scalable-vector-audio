@@ -1,6 +1,7 @@
 // Concern: renders a target over memory, from the root down to what it answers | Non-concern: what memory keeps or writes, computing a value | IO: (&Graph, target, Tier) -> Render
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use sva_ast::Graph;
@@ -16,6 +17,19 @@ use crate::instantiate;
 use crate::schedule;
 use crate::typing::Typing;
 
+/// Whether a render's caller let it go, asked between blocks.
+pub trait Abandon {
+    fn abandoned(&self) -> Pin<Box<dyn Future<Output = bool> + '_>>;
+}
+
+pub struct Never;
+
+impl Abandon for Never {
+    fn abandoned(&self) -> Pin<Box<dyn Future<Output = bool> + '_>> {
+        Box::pin(std::future::ready(false))
+    }
+}
+
 /// `target` over `tier`, from the root down, in a session of its own.
 pub async fn render_over<B: Backend>(
     graph: &Graph,
@@ -23,19 +37,20 @@ pub async fn render_over<B: Backend>(
     config: RenderConfig,
     tier: &Tier<B>,
 ) -> Result<Render, EngineError> {
-    render_in(&mut Session::default(), graph, target, config, tier).await
+    render_in(&mut Session::default(), graph, target, config, tier, &Never).await
 }
 
 /// `target` over `tier`, from the root down: every node is named by what it computes, typed
 /// anew only where `session` typed it otherwise, and a node memory answers stands as its
 /// samples, nothing under it planned or computed; with `out` dropped and no reading, a root it
-/// answers ends the render unread.
+/// answers ends the render unread. Abandoned, it stops before its next block.
 pub async fn render_in<B: Backend>(
     session: &mut Session,
     graph: &Graph,
     target: &str,
     config: RenderConfig,
     tier: &Tier<B>,
+    abandon: &dyn Abandon,
 ) -> Result<Render, EngineError> {
     let round = tier.begin();
     let mut recording = Recording::over(tier.memory());
@@ -109,7 +124,13 @@ pub async fn render_in<B: Backend>(
     let walked = recording.stats();
     match driving(&mut held, recording)? {
         Some(mut driver) => {
-            while driver.pull()? {
+            loop {
+                if abandon.abandoned().await {
+                    return Err(EngineError::Abandoned);
+                }
+                if !driver.pull()? {
+                    break;
+                }
                 offers.whole(&driver.table, tier.memory());
                 let needs = driver.table.needs(driver.next());
                 for (key, parts) in tier.fetch(&needs).await.handed {

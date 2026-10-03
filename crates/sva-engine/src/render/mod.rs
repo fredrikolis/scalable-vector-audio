@@ -102,7 +102,7 @@ impl RenderConfig {
 
 pub use answer::{answer, answer_buffer, sketch_atom};
 pub use drive::Block;
-pub use run::{render_in, render_over};
+pub use run::{Abandon, Never, render_in, render_over};
 pub use session::Session;
 pub use stream::{
     Built, Change, Changed, Counts, LATEST, Placed, STREAMED, Stream, StreamConfig, change, fetch,

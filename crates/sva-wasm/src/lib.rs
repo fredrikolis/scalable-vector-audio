@@ -9,6 +9,7 @@ mod opfs;
 pub use opfs::DirectoryHandle;
 
 use std::cell::{Cell, RefCell};
+use std::pin::Pin;
 use std::rc::Rc;
 
 use sva_core::{
@@ -16,7 +17,10 @@ use sva_core::{
     counters_json, error_envelope, execute_over, query_data, stats_json, stream_stats_json,
     work_json,
 };
-use sva_engine::{CacheStats, DEFAULT_STORE_BYTES, Handle, Placed, Session, Store, Tier};
+use sva_engine::{
+    Abandon, CacheStats, DEFAULT_STORE_BYTES, EngineError, Handle, Never, Placed, Session, Store,
+    Tier,
+};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -39,6 +43,66 @@ extern "C" {
 
     #[wasm_bindgen(js_namespace = console)]
     fn warn(message: &str);
+
+    type MessageChannel;
+
+    #[wasm_bindgen(constructor)]
+    fn new() -> MessageChannel;
+
+    #[wasm_bindgen(method, getter)]
+    fn port1(this: &MessageChannel) -> MessagePort;
+
+    #[wasm_bindgen(method, getter)]
+    fn port2(this: &MessageChannel) -> MessagePort;
+
+    type MessagePort;
+
+    #[wasm_bindgen(method, setter)]
+    fn set_onmessage(this: &MessagePort, handler: &js_sys::Function);
+
+    #[wasm_bindgen(method, js_name = postMessage)]
+    fn post_message(this: &MessagePort, message: &JsValue);
+
+    #[wasm_bindgen(method)]
+    fn close(this: &MessagePort);
+}
+
+/// Resolves once the page's queued tasks ran, a message an abort sends among them.
+async fn yielded() {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        let channel = MessageChannel::new();
+        let (port, other) = (channel.port1(), channel.port2());
+        let ends: [MessagePort; 2] = [
+            port.clone().unchecked_into(),
+            other.clone().unchecked_into(),
+        ];
+        let done = wasm_bindgen::closure::Closure::once_into_js(move || {
+            ends.iter().for_each(MessagePort::close);
+            let _ = resolve.call0(&JsValue::UNDEFINED);
+        });
+        port.set_onmessage(done.unchecked_ref());
+        other.post_message(&JsValue::UNDEFINED);
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
+/// A page's `AbortSignal`, read between blocks after the page has had its turn.
+struct Signal(JsValue);
+
+impl Abandon for Signal {
+    fn abandoned(&self) -> Pin<Box<dyn Future<Output = bool> + '_>> {
+        Box::pin(async move {
+            yielded().await;
+            aborted(&self.0)
+        })
+    }
+}
+
+fn aborted(signal: &JsValue) -> bool {
+    js_sys::Reflect::get(signal, &JsValue::from_str("aborted"))
+        .ok()
+        .and_then(|aborted| aborted.as_bool())
+        .unwrap_or(false)
 }
 
 /// A failing store fails no call: why goes to the console, and memory runs alone.
@@ -87,6 +151,7 @@ struct Options {
     at: Option<Placed>,
     channels: Option<usize>,
     out: Out,
+    signal: Option<JsValue>,
 }
 
 /// `keys` are the options this call reads; any other is refused by name.
@@ -125,6 +190,15 @@ fn options_of(options: &JsValue, keys: &[&str]) -> Result<Options, JsValue> {
             "readings" => held.readings = names(&key, &value)?,
             "at" => held.at = Some(placed(&text(&key, &value)?)?),
             "out" if value.is_null() => held.out = Out::Dropped,
+            "signal" if js_sys::Reflect::has(&value, &"aborted".into()).unwrap_or(false) => {
+                held.signal = Some(value)
+            }
+            "signal" => {
+                return Err(refuse(
+                    "`signal` is no AbortSignal".into(),
+                    "pass an AbortController's `signal`",
+                ));
+            }
             "out" => {
                 return Err(refuse(
                     "`out` is not null".into(),
@@ -268,15 +342,23 @@ impl Composition {
 
     /// `target` as `sva-cli render` takes it, `@piano([0, 2b], f0=C4)`; `representations`
     /// what `representations()` answers, each a call as `--representation` writes it.
-    /// `options`: `rate`, `bits`, `flop_budget`, `until`, `volatile`, and `out: null`, which
-    /// hands back no samples and reads only `representations`, `samples` otherwise.
+    /// `options`: `rate`, `bits`, `flop_budget`, `until`, `volatile`, `out: null` (no samples),
+    /// and `signal`: aborted, it throws an `AbortError` before its next block.
     pub async fn render(
         &self,
         target: &str,
         representations: Option<Vec<String>>,
         options: JsValue,
     ) -> Result<Rendering, JsValue> {
-        let keys = ["rate", "bits", "flop_budget", "until", "volatile", "out"];
+        let keys = [
+            "rate",
+            "bits",
+            "flop_budget",
+            "until",
+            "volatile",
+            "out",
+            "signal",
+        ];
         let options = options_of(&options, &keys)?;
         let out = options.out;
         let names = representations.unwrap_or_else(|| match out {
@@ -296,6 +378,7 @@ impl Composition {
                 "render without `out` to read its samples",
             ));
         }
+        let signal = options.signal.map(Signal);
         let job = Job {
             until: options.until.as_deref(),
             rate: options.rate,
@@ -304,12 +387,20 @@ impl Composition {
             flop_budget: options.flop_budget,
             volatile: &options.volatile,
             out,
+            abandon: signal
+                .as_ref()
+                .map_or(&Never, |signal| signal as &dyn Abandon),
             ..Job::over(&self.inner, target)
         };
         let mut session = self.session.take();
         let inner = execute_over(job, &*self.tier, &mut session).await;
         self.session.set(session);
-        let inner = inner.map_err(|e| thrown(&e))?;
+        let inner = inner.map_err(|e| match e {
+            CliError::Engine(EngineError::Abandoned) => {
+                crossed("AbortError", &e.message(), &e.diagnostics())
+            }
+            e => thrown(&e),
+        })?;
         unstaged(inner.render.cache_stats.as_ref());
         Ok(Rendering { inner, asked })
     }

@@ -132,6 +132,8 @@ pub enum EngineError {
     Refused(Box<Diagnostic>),
     /// A bar is a duration this graph never resolved; the tempo pass runs above the engine.
     UnresolvedBars(Located),
+    /// Its caller let the render go before it ended.
+    Abandoned,
 }
 
 impl EngineError {
@@ -145,6 +147,7 @@ impl EngineError {
             EngineError::BadArity(_) => "engine.bad_arity",
             EngineError::Refused(d) => &d.code,
             EngineError::UnresolvedBars(_) => "engine.unresolved_bar_literal",
+            EngineError::Abandoned => "render.abandoned",
         }
     }
 
@@ -197,6 +200,7 @@ impl fmt::Display for EngineError {
                 f,
                 "`{at}` holds a bar literal and this composition declares no bpm/meter"
             ),
+            EngineError::Abandoned => write!(f, "the render was let go before it ended"),
         }
     }
 }
@@ -205,7 +209,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 85] = [
+pub static REGISTRY: [(&str, &str); 86] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -509,5 +513,9 @@ pub static REGISTRY: [(&str, &str); 85] = [
     (
         "render.unrepresentable_sample",
         "a sample past what the output's float or integer PCM encoding holds",
+    ),
+    (
+        "render.abandoned",
+        "a render its caller let go before it ended",
     ),
 ];
