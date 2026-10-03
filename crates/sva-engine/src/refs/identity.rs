@@ -2,14 +2,14 @@
 
 use sva_formula::{
     ClosedForm, Hash, NodeId, Var, hash_closed_form, hash_closed_form_with, hash_spectral_sum,
-    hash_spectral_sum_with, normalize_closed_form,
+    hash_spectral_sum_with, normalize_closed_form, normalize_read,
 };
 
 use crate::error::EngineError;
 use crate::index::Round;
 use crate::typing::{Step, SumSlot, Typing, Value, When};
 
-use super::{cyclic, nodes_in, spectral_sum_of};
+use super::{cyclic, nodes_in, read_through, spectral_sum_of};
 
 /// What keys a closed form's spectral sum wherever a reading composes one: a ref a series
 /// term reads is named by what it is.
@@ -58,11 +58,33 @@ fn identity_of(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<
 
 /// A closed form that reads no other node: its own spectral sum, where it has one, so two
 /// spellings of one form are one value; else its written form.
-pub(crate) fn formula_identity(form: &ClosedForm) -> Hash {
+fn formula_identity(form: &ClosedForm) -> Hash {
     match normalize_closed_form(form) {
         Ok(sum) => hash_spectral_sum(&sum),
         Err(_) => hash_closed_form(form),
     }
+}
+
+/// A subterm a node wrote as a value of its own: its spectral sum, each ref read as the form it
+/// names, where it has one; else its written form; either naming each ref by what it is.
+pub(crate) fn subterm_identity(typing: &Typing, form: &ClosedForm) -> Result<Hash, EngineError> {
+    if nodes_in(&form.body).is_empty() {
+        return Ok(formula_identity(form));
+    }
+    let mut refused = None;
+    let mut read = |id: NodeId| match identity(typing, id) {
+        Ok(held) => held,
+        Err(e) => {
+            refused.get_or_insert(e);
+            Hash(0, 0)
+        }
+    };
+    let summed = read_through(typing, |t| normalize_read(&form.body, form.var, t));
+    let hash = match summed {
+        Ok(sum) => hash_spectral_sum_with(&sum, &mut read),
+        Err(_) => hash_closed_form_with(form, &mut read),
+    };
+    refused.map_or(Ok(hash), Err)
 }
 
 fn built(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, EngineError> {

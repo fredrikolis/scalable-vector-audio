@@ -794,7 +794,7 @@ impl Building<'_> {
                 }
                 refs::identity(self.tys, *id)?
             }
-            (Source::Formula(form), _) => refs::formula_identity(form),
+            (Source::Formula(form), _) => refs::subterm_identity(self.tys, form)?,
         };
         let grid = match source {
             Source::Node(id) => self.grid(*id),
@@ -886,7 +886,12 @@ impl Building<'_> {
             let Source::Formula(form) = source else {
                 unreachable!("a node or a formula");
             };
-            let sum = sva_formula::normalize_closed_form(form).ok();
+            let sum = match refs::nodes_in(&form.body).is_empty() {
+                true => sva_formula::normalize_closed_form(form).ok(),
+                false => refs::read_through(tys, |t| {
+                    sva_formula::normalize_read(&form.body, form.var, t).ok()
+                }),
+            };
             return none(self.formula(value, sum, Some(form))?);
         };
         let id = *id;
@@ -956,17 +961,23 @@ impl Building<'_> {
     ) -> Result<Value, EngineError> {
         let grid = value.grid;
         let tys = self.tys;
-        let rows = whole_rate(grid).map(|rate| match (&sum, written) {
-            (Some(sum), written) => refs::read_through(tys, |t| {
-                Rows::of_spectral_sum_or_point(sum, written, (rate, self.profile), t)
-            }),
-            (None, Some(form)) => Rows::of(form, rate, self.profile),
+        let reads = written.is_some_and(|form| !refs::nodes_in(&form.body).is_empty());
+        let free = written.filter(|_| !reads);
+        let rows = whole_rate(grid).and_then(|rate| match (&sum, free) {
+            (Some(sum), free) => {
+                let rows = refs::read_through(tys, |t| {
+                    Rows::of_spectral_sum_or_point(sum, free, (rate, self.profile), t)
+                });
+                (rows.is_ok() || !reads).then_some(rows)
+            }
+            (None, Some(form)) => Some(Rows::of(form, rate, self.profile)),
+            (None, None) if reads => None,
             (None, None) => unreachable!("a formula is a sum or a written form"),
         });
         match rows {
             Some(Ok(rows)) => {
                 value.width = rows.width();
-                value.period = period::period(written, &rows, grid);
+                value.period = period::period(free, &rows, grid);
                 value.label = Some(rows.label(self.profile));
                 value.kind = Kind::Rows(Arc::new(rows));
                 Ok(value)
@@ -981,6 +992,9 @@ impl Building<'_> {
                 });
                 let formula = match (summed, written) {
                     (Some(Ok(sum)), _) => Formula::Sum(Box::new(sum)),
+                    (_, Some(form)) if reads => Formula::Written(Box::new(
+                        program::shared(tys, &form.body, band).map_err(|e| refused(&e))?,
+                    )),
                     (_, Some(form)) => Formula::Written(Box::new(Written {
                         body: truncate_written(&form.body, band).map_err(|e| refused(&e))?,
                         refs: Vec::new(),

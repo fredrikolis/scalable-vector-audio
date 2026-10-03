@@ -90,3 +90,21 @@ fn a_closed_loop_reads_each_ref_its_body_reads_at_each_terms_time() {
     ];
     assert_eq!(digest(&files, "top", 0.5), 0x451a_bb5d_2453_5915);
 }
+
+/// A series term reading a closed form at its own instant renders the bits it does with that
+/// form written in.
+#[test]
+fn a_series_term_reading_a_form_at_its_instant_is_that_form_written_in() {
+    let read = [
+        ("x", "0.5 + 0.25*sin(2*pi*3*t)\n"),
+        (
+            "top",
+            "crop(sum(k, 1, inf, @x(t)*sin(2*pi*110*k*t)/(k*k)), 0s, 0.1s)\n",
+        ),
+    ];
+    let written = [(
+        "top",
+        "crop(sum(k, 1, inf, (0.5 + 0.25*sin(2*pi*3*t))*sin(2*pi*110*k*t)/(k*k)), 0s, 0.1s)\n",
+    )];
+    assert_eq!(digest(&read, "top", 0.1), digest(&written, "top", 0.1));
+}

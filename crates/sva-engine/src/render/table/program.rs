@@ -233,15 +233,13 @@ impl Build<'_> {
                 }
             }
             // A finite sum is its terms; an infinite one over an opaque node never ends.
-            Body::Series(_) => match (inlined(self.tys, body), written_out(body)) {
-                (Some(free), _) => self.formula(free),
-                (None, Some(written)) => self.body(&written)?,
-                (None, None) => return Err(unsummed(self.tys, self.owner)),
+            Body::Series(_) if one_value(self.tys, body) => self.formula(body.clone()),
+            Body::Series(_) => match written_out(body) {
+                Some(written) => self.body(&written)?,
+                None => return Err(unsummed(self.tys, self.owner)),
             },
-            other => match inlined(self.tys, other) {
-                Some(free) => self.formula(free),
-                None => return Err(unevaluated(self.tys, self.owner, "a construct")),
-            },
+            other if one_value(self.tys, other) => self.formula(other.clone()),
+            _ => return Err(unevaluated(self.tys, self.owner, "a construct")),
         })
     }
 
@@ -528,32 +526,21 @@ impl Build<'_> {
 }
 
 /// A construct no sample evaluates part by part, every node it reads a closed form reading
-/// none, read at the construct's own instant: the construct with each written in, as-if.
-fn inlined(tys: &Typing, body: &Body) -> Option<Body> {
+/// none, read at the construct's own instant: one value, each ref read as the form it names.
+fn one_value(tys: &Typing, body: &Body) -> bool {
     match body {
-        Body::Node(id) => match tys.value(*id) {
-            Value::ClosedForm(form) if form.var == Var::T && nodes_in(&form.body).is_empty() => {
-                Some(form.body.clone())
-            }
-            _ => None,
-        },
+        Body::Node(id) => matches!(
+            tys.value(*id),
+            Value::ClosedForm(form) if form.var == Var::T && nodes_in(&form.body).is_empty()
+        ),
         Body::Shift { of, .. } | Body::Warp { of, .. } | Body::Deriv { of, .. }
             if !nodes_in(&of.body).is_empty() =>
         {
-            None
+            false
         }
-        other => {
-            let mut held = true;
-            let out =
-                sva_formula::closed_form::map_children(other, |p| match inlined(tys, &p.body) {
-                    Some(body) => Part::new(p.origin, body),
-                    None => {
-                        held = false;
-                        p.clone()
-                    }
-                });
-            held.then_some(out)
-        }
+        other => sva_formula::closed_form::children(other)
+            .iter()
+            .all(|p| one_value(tys, &p.body)),
     }
 }
 
@@ -623,26 +610,28 @@ fn warped(
         Value::ClosedForm(written)
             if written.var == Var::T && crate::refs::reads_through(tys, &written.body, Var::T) =>
         {
-            let shared = crate::refs::read_through(tys, |through| {
-                let mut sharing = Sharing {
-                    through,
-                    named: HashMap::new(),
-                    refs: Vec::new(),
-                };
-                let body = truncate_written_with(&written.body, band, through, &mut |id, band| {
-                    sharing.name(id, band)
-                })?;
-                Ok(Written {
-                    body,
-                    refs: sharing.refs,
-                })
-            });
-            Ok(Some(Formula::Written(Box::new(
-                shared.map_err(|e| truncated(&e))?,
-            ))))
+            let shared = shared(tys, &written.body, band).map_err(|e| truncated(&e))?;
+            Ok(Some(Formula::Written(Box::new(shared))))
         }
         _ => refused.map_or(Ok(None), Err),
     }
+}
+
+/// `body` truncated under `band`, each node it reads truncated once beside it, never written in.
+pub(super) fn shared(tys: &Typing, body: &Body, band: Audible) -> Result<Written, CollapseError> {
+    crate::refs::read_through(tys, |through| {
+        let mut sharing = Sharing {
+            through,
+            named: HashMap::new(),
+            refs: Vec::new(),
+        };
+        let body =
+            truncate_written_with(body, band, through, &mut |id, band| sharing.name(id, band))?;
+        Ok(Written {
+            body,
+            refs: sharing.refs,
+        })
+    })
 }
 
 /// Each node a written form reads, truncated once per band it is read in, after what it reads;
