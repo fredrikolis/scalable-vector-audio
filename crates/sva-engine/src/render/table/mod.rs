@@ -247,7 +247,7 @@ impl Table {
             .cuts
             .iter()
             .map(|(id, at)| (tys.name(*id).to_string(), *at));
-        let carried = self.carried(&|_| true);
+        let carried: Vec<(Hash, i64)> = self.carried().flat_map(|(_, cuts)| cuts).collect();
         let named: Vec<(Hash, NodeId)> = match carried.is_empty() {
             true => Vec::new(),
             false => {
@@ -271,28 +271,29 @@ impl Table {
         }
     }
 
-    /// Each cut of a node `within` names, by what the node computes, those a stored node
-    /// carries among them.
-    pub(crate) fn cut_identities(
-        &self,
-        tys: &Typing,
-        within: impl Fn(&str) -> bool,
-    ) -> Vec<(Hash, i64)> {
-        let own = self.cuts.iter().filter(|(id, _)| within(tys.name(**id)));
-        let own = own.filter_map(|(id, at)| Some((refs::identity(tys, *id).ok()?, *at)));
-        let cuts = own.chain(self.carried(&within));
-        cuts.collect::<BTreeSet<_>>().into_iter().collect()
+    /// Each node's own cuts, by what the node computes, a stored one's those it carries.
+    pub(crate) fn cuts_by_name(&self, tys: &Typing) -> HashMap<String, Vec<(Hash, i64)>> {
+        let mut out: HashMap<String, Vec<(Hash, i64)>> = HashMap::new();
+        for (id, at) in &self.cuts {
+            if let Ok(identity) = refs::identity(tys, *id) {
+                let name = tys.name(*id).to_string();
+                out.entry(name).or_default().push((identity, *at));
+            }
+        }
+        for (name, cuts) in self.carried() {
+            out.entry(name.to_string()).or_default().extend(cuts);
+        }
+        out
     }
 
-    fn carried(&self, within: &dyn Fn(&str) -> bool) -> Vec<(Hash, i64)> {
-        let stored = self
-            .values
+    /// Each stored value's name and the cuts it carries.
+    fn carried(&self) -> impl Iterator<Item = (&str, impl Iterator<Item = (Hash, i64)>)> {
+        self.values
             .iter()
             .filter_map(|(_, value)| match &value.kind {
-                Kind::Resident(stored) if within(&value.name) => Some(stored.cuts.iter().copied()),
+                Kind::Resident(stored) => Some((value.name.as_str(), stored.cuts.iter().copied())),
                 _ => None,
-            });
-        stored.flatten().collect()
+            })
     }
 
     pub(crate) fn of(&self, node: NodeId) -> Option<usize> {

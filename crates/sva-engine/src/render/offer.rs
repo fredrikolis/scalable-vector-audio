@@ -1,6 +1,7 @@
 // Concern: which values a render offers memory as nodes, with their meta, and when | Non-concern: whether memory keeps or writes them | IO: (Render, keys, frontier) -> offers; (Table, Memory) -> offered
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use sva_formula::{Hash, Held as Representation, NodeId};
@@ -47,6 +48,9 @@ impl Offers {
         let range = held.range.unwrap_or(Extent::NOWHERE);
         if let Some(table) = &mut held.table {
             let tys = &held.tys;
+            let own = table.cuts_by_name(tys);
+            let cuts = found.beneath(&|name| own.get(name).map(Vec::as_slice));
+            let under = Under::of(table);
             for (path, key) in keys {
                 if found.stored.contains_key(path) || !found.visited.contains(path) {
                     continue;
@@ -54,9 +58,9 @@ impl Offers {
                 let Some((id, at)) = tys.id(path).and_then(|id| Some((id, table.of(id)?))) else {
                     continue;
                 };
-                if let Some(mut stored) = offerable(table, tys, (id, at), (path, *key)) {
-                    let beneath = found.beneath(path);
-                    stored.cuts = table.cut_identities(tys, |name| beneath.contains(name));
+                if let Some(mut stored) = offerable(table, tys, (id, at), (path, *key), &under) {
+                    let held = cuts.get(path.as_str());
+                    stored.cuts = held.map_or(Vec::new(), |set| set.iter().copied().collect());
                     let facts = Facts {
                         slot: table.slot(at),
                         settled: false,
@@ -149,6 +153,7 @@ fn offerable(
     tys: &Typing,
     (id, at): (NodeId, usize),
     (path, key): (&str, Hash),
+    under: &Under,
 ) -> Option<Stored> {
     let value = &table.values[at];
     let own = tys.name(id) == path && crate::refs::passes(tys, id).is_none();
@@ -156,7 +161,7 @@ fn offerable(
     if !own || !samples {
         return None;
     }
-    let (priced, moved) = under(table, at);
+    let (priced, moved) = under.of_value(at);
     let ty = tys.ty(id);
     Some(Stored {
         key,
@@ -211,19 +216,98 @@ fn moves(table: &Table) -> HashMap<usize, (usize, i64)> {
     feet
 }
 
-/// What a value and every value under it cost over the range, and the most any moved a read.
-fn under(table: &Table, at: usize) -> (u128, f64) {
-    let (mut seen, mut open) = (BTreeSet::from([at]), vec![at]);
-    let (mut priced, mut moved) = (0u128, 0.0f64);
-    while let Some(at) = open.pop() {
-        priced += table.planned[at];
-        moved = moved.max(table.values[at].moved);
-        open.extend(
-            table.values[at]
-                .reads
-                .iter()
-                .filter(|read| seen.insert(**read)),
-        );
+/// What each value and all under it cost, and the most any moved a read: a value one other
+/// reads sums into its reader's own tree; one more read is summed once into each value over it.
+struct Under {
+    own: Vec<u128>,
+    apart: Vec<Rc<BTreeSet<usize>>>,
+    moved: Vec<f64>,
+}
+
+impl Under {
+    fn of(table: &Table) -> Under {
+        let span = table.values.span();
+        let mut readers = vec![0u32; span];
+        let distinct = |at: usize| {
+            let mut reads = table.values[at].reads.clone();
+            reads.sort_unstable();
+            reads.dedup();
+            reads
+        };
+        for at in table.values.ordered() {
+            for read in distinct(at) {
+                readers[read] += 1;
+            }
+        }
+        let mut under = Under {
+            own: vec![0; span],
+            apart: vec![Rc::default(); span],
+            moved: vec![0.0; span],
+        };
+        for at in table.values.ordered() {
+            let (mut own, mut moved) = (table.planned[at], table.values[at].moved);
+            let mut sets: Vec<Rc<BTreeSet<usize>>> = Vec::new();
+            let mut more = Vec::new();
+            for read in distinct(at) {
+                crate::steps::step(1);
+                moved = moved.max(under.moved[read]);
+                match readers[read] {
+                    1 => own += under.own[read],
+                    _ => more.push(read),
+                }
+                let held = &under.apart[read];
+                if !held.is_empty() && !sets.iter().any(|set| Rc::ptr_eq(set, held)) {
+                    sets.push(Rc::clone(held));
+                }
+            }
+            under.apart[at] = match (sets.len(), more.is_empty()) {
+                (0, true) => Rc::default(),
+                (1, true) => Rc::clone(&sets[0]),
+                _ => Rc::new(
+                    sets.iter()
+                        .flat_map(|s| s.iter())
+                        .copied()
+                        .chain(more)
+                        .collect(),
+                ),
+            };
+            (under.own[at], under.moved[at]) = (own, moved);
+        }
+        under
     }
-    (priced, moved)
+
+    fn of_value(&self, at: usize) -> (u128, f64) {
+        crate::steps::step(self.apart[at].len());
+        let apart = self.apart[at].iter().map(|s| self.own[*s]).sum::<u128>();
+        (self.own[at] + apart, self.moved[at])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{RenderConfig, Tier, render};
+
+    /// The steps a render folds, offering and bounding, over a chain `depth` nodes deep, each
+    /// reading the one below 10 ms late, every node a miss.
+    fn folded(depth: usize) -> u64 {
+        let mut files = sva_ast::Composition::new();
+        let decays = "sample(crop(sin(2*pi*440*t)*exp(-t/0.1), 0s, 10s))\n";
+        files.insert("c0", decays);
+        for k in 1..=depth {
+            files.insert(format!("c{k}"), format!("@c{}(t - 10ms)\n", k - 1));
+        }
+        let g = sva_ast::load(&files).expect("a composition");
+        let before = crate::steps::taken();
+        let top = format!("c{depth}");
+        render(&g, &top, RenderConfig::at(8_000), &Tier::default()).expect("a render");
+        crate::steps::taken() - before
+    }
+
+    /// Four times the nodes, four times the steps: no node walks what lies under it.
+    #[test]
+    fn a_chains_offers_and_bounds_fold_steps_linear_in_its_nodes() {
+        let (short, long) = (folded(100), folded(400));
+        assert!(short > 0);
+        assert!(long <= 4 * short, "{short} then {long}");
+    }
 }

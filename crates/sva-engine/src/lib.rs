@@ -17,6 +17,7 @@ mod recent;
 mod refs;
 pub mod render;
 mod schedule;
+mod steps;
 mod time;
 mod trace;
 mod typing;

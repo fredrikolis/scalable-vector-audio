@@ -1,6 +1,7 @@
 // Concern: walks down from the root to the nodes memory answers, each keyed by what it computes | Non-concern: naming a node, computing the rest | IO: (Tier, root) -> hits, visited nodes, lookups
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use sva_formula::Hash;
@@ -115,16 +116,39 @@ impl<'w> Frontier<'w> {
         self.opened(path.to_string());
     }
 
-    /// `path` and every node it reads, down to the leaves.
-    pub(crate) fn beneath(&self, path: &str) -> BTreeSet<String> {
-        let (mut out, mut open) = (BTreeSet::from([path.to_string()]), vec![path]);
-        while let Some(at) = open.pop() {
-            let fresh = self
-                .order
-                .deps(at)
-                .iter()
-                .filter(|read| out.insert((*read).clone()));
-            open.extend(fresh.map(String::as_str).collect::<Vec<_>>());
+    /// Each node's `own` with that of every node under it: one fold over the walk's groups,
+    /// dependencies first, a node adding nothing sharing the set it reads.
+    pub(crate) fn beneath<'o, T: Ord + Copy + 'o>(
+        &self,
+        own: &dyn Fn(&str) -> Option<&'o [T]>,
+    ) -> HashMap<&'w str, Rc<BTreeSet<T>>> {
+        let order: &'w Order<'w> = self.order;
+        let mut out: HashMap<&'w str, Rc<BTreeSet<T>>> = HashMap::new();
+        for group in &order.groups {
+            let inside = |dep: &String| group.contains(dep);
+            let mut sets: Vec<Rc<BTreeSet<T>>> = Vec::new();
+            for member in group {
+                let read = order.deps(member).iter().filter(|d| !inside(d));
+                for held in read.filter_map(|dep| out.get(dep.as_str())) {
+                    if !sets.iter().any(|set| Rc::ptr_eq(set, held)) {
+                        sets.push(Rc::clone(held));
+                    }
+                }
+            }
+            let mine = group.iter().filter_map(|m| own(m)).flatten();
+            let set = match (sets.len(), mine.clone().next()) {
+                (0, None) => Rc::default(),
+                (1, None) => Rc::clone(&sets[0]),
+                _ => {
+                    crate::steps::step(sets.iter().map(|set| set.len()).sum());
+                    let all = sets.iter().flat_map(|set| set.iter()).copied();
+                    Rc::new(all.chain(mine.copied()).collect())
+                }
+            };
+            for member in group {
+                crate::steps::step(1);
+                out.insert(member.as_str(), Rc::clone(&set));
+            }
         }
         out
     }

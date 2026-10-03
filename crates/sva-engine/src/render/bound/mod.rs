@@ -39,7 +39,7 @@ enum Form {
     /// Every value a draw takes.
     Within(f64),
     /// A read at `k*t + c`, `k >= 0`, at most `step` early; any other time reads anywhere.
-    Read(Rc<Tail>, Option<(f64, f64, f64)>),
+    Read(Rc<Tail>, Map),
 }
 
 /// Where a node is nonzero, its prune included; `false` where it is still being found.
@@ -171,7 +171,13 @@ impl Bounding<'_> {
                     self.opened(id).then_some(())?;
                     let inner = self.tail(*source);
                     self.open.remove(&id);
-                    return Tail::new(Form::Read(inner?, read));
+                    let inner = inner?;
+                    return Tail::new(match &inner.form {
+                        Form::Read(foot, under) if let Some(map) = composed(read, *under) => {
+                            Form::Read(Rc::clone(foot), map)
+                        }
+                        _ => Form::Read(inner, read),
+                    });
                 }
                 Value::Filter {
                     shape,
@@ -253,6 +259,7 @@ impl Tail {
                     }
                 }
             };
+            crate::steps::step(1);
             let bound = tail.bound_from(at, &read);
             let missing = missing.into_inner();
             if missing.is_empty() {
@@ -293,6 +300,21 @@ impl Tail {
             Form::Within(m) => *m,
             Form::Read(source, Some((k, c, step))) if *k >= 0.0 => read(source, k * t + c - step),
             Form::Read(source, _) => read(source, f64::NEG_INFINITY),
+        }
+    }
+}
+
+type Map = Option<(f64, f64, f64)>;
+
+/// A read of a read as one read of what the inner one reads, so a chain of them bounds in one
+/// step; `None` where the two do not compose. A map reading anywhere, or backwards, is `None`.
+fn composed(outer: Map, inner: Map) -> Option<Map> {
+    let forward = |map: Map| map.filter(|(k, ..)| *k >= 0.0);
+    match (forward(outer), forward(inner)) {
+        (_, None) => Some(None),
+        (None, Some((k, ..))) => (k > 0.0).then_some(None),
+        (Some((k1, c1, s1)), Some((k2, c2, s2))) => {
+            Some(Some((k2 * k1, k2 * c1 + c2, k2 * s1 + s2)))
         }
     }
 }
@@ -342,4 +364,46 @@ fn sampled(tys: &Typing, name: &str, args: &[NodeId]) -> Option<Body> {
         }
         other => Body::Apply(Unary::from_name(other)?, part(args.first()?)),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Map, composed};
+
+    /// Where a map reads at `t`; anywhere is `-inf`, as a bound reads it.
+    fn at(map: Map, t: f64) -> f64 {
+        match map {
+            Some((k, c, s)) if k >= 0.0 => k * t + c - s,
+            _ => f64::NEG_INFINITY,
+        }
+    }
+
+    #[test]
+    fn a_read_of_a_read_reads_where_the_two_in_turn_do() {
+        let maps: [Map; 6] = [
+            Some((1.0, -0.01, 1.0 / 8_000.0)),
+            Some((2.0, 0.25, 1.0 / 48_000.0)),
+            Some((0.5, 3.0, 1.0 / 44_100.0)),
+            Some((0.0, 1.5, 1.0 / 8_000.0)),
+            Some((-1.0, 0.0, 1.0 / 8_000.0)),
+            None,
+        ];
+        for outer in maps {
+            for inner in maps {
+                let Some(one) = composed(outer, inner) else {
+                    let nowhere = at(inner, at(outer, 0.0)).is_nan();
+                    assert!(nowhere, "{outer:?} over {inner:?} composes");
+                    continue;
+                };
+                for t in [-2.0, 0.0, 0.37, 5.0] {
+                    let (two, one) = (at(inner, at(outer, t)), at(one, t));
+                    let near = (two - one).abs() <= 1e-12 * two.abs().max(1.0);
+                    assert!(
+                        two == one || near,
+                        "{outer:?} {inner:?} at {t}: {two} {one}"
+                    );
+                }
+            }
+        }
+    }
 }
