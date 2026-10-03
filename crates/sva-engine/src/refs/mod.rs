@@ -32,29 +32,48 @@ pub fn spectral_sum_of(
     node: NodeId,
     want: Var,
 ) -> Result<SpectralSum, EngineError> {
-    composed(typing, node, want, &mut Vec::new())
+    composed(typing, node, want, &mut Open::default())
+}
+
+/// Whether a composition met a ref still being composed: that refusal depends on where the
+/// walk entered the loop.
+#[derive(Default)]
+struct Open {
+    chain: Vec<NodeId>,
+    cut: bool,
 }
 
 /// Kept under the node's identity, unlocated, and answered as written where `node` is: two
-/// nodes that are one value compose once. Only a sum is kept, as a refusal depends on the
-/// chain of refs that met it.
+/// nodes that are one value compose once. A refusal is kept per node, unless a loop of refs
+/// made it.
 fn composed(
     typing: &Typing,
     node: NodeId,
     want: Var,
-    open: &mut Vec<NodeId>,
+    open: &mut Open,
 ) -> Result<SpectralSum, EngineError> {
     let here = written_at(typing, node);
     let key = identity(typing, node).ok().map(|held| (held, want));
     if let Some(held) = key.and_then(|key| typing.folds().composed(key)) {
         return Ok(held.located(here));
     }
-    let found = composing(typing, node, want, open)?;
-    if let Some(key) = key {
-        let unlocated = found.clone().located(sva_formula::Origin::UNKNOWN);
-        typing.folds().keep_composed(key, unlocated);
+    if let Some(refused) = typing.folds().refused((node, want)) {
+        return Err(refused);
     }
-    Ok(found.located(here))
+    let outer = std::mem::take(&mut open.cut);
+    let found = composing(typing, node, want, open);
+    match (&found, key) {
+        (Ok(found), Some(key)) => {
+            let unlocated = found.clone().located(sva_formula::Origin::UNKNOWN);
+            typing.folds().keep_composed(key, unlocated);
+        }
+        (Err(refused), _) if !open.cut => {
+            typing.folds().keep_refused((node, want), refused.clone());
+        }
+        _ => {}
+    }
+    open.cut |= outer;
+    Ok(found?.located(here))
 }
 
 fn written_at(typing: &Typing, node: NodeId) -> sva_formula::Origin {
@@ -65,23 +84,24 @@ fn written_at(typing: &Typing, node: NodeId) -> sva_formula::Origin {
     }
 }
 
-/// `open` is the chain of refs still being composed: a form reaching itself through
-/// another is a loop no substitution closes.
+/// A form reaching itself through a ref `open` still composes is a loop no substitution
+/// closes.
 fn composing(
     typing: &Typing,
     node: NodeId,
     want: Var,
-    open: &mut Vec<NodeId>,
+    open: &mut Open,
 ) -> Result<SpectralSum, EngineError> {
     #[cfg(test)]
     typing
         .folds()
         .composings
         .set(typing.folds().composings.get() + 1);
-    if open.contains(&node) {
+    if open.chain.contains(&node) {
+        open.cut = true;
         return Err(cyclic(typing, node));
     }
-    open.push(node);
+    open.chain.push(node);
     let held = match typing.value(node) {
         Value::ClosedForm(form) => {
             let body = fold_constants(typing, &form.body);
@@ -104,7 +124,7 @@ fn composing(
         }
         _ => return Err(no_closed_form(typing, node)),
     };
-    open.pop();
+    open.chain.pop();
     on_axis(typing, node, held, typing.var(node), want)
 }
 
@@ -263,9 +283,10 @@ fn compose(
     typing: &Typing,
     body: &Body,
     var: Var,
-    open: &mut Vec<NodeId>,
+    open: &mut Open,
 ) -> Result<SpectralSum, EngineError> {
     let here = *open
+        .chain
         .last()
         .expect("compose runs inside the node it composes");
     if !holds_node(body) {
@@ -629,6 +650,29 @@ mod tests {
         assert_eq!(composings(&tys), 9);
         spectral_sum_of(&tys, root, Var::T).expect("a sum");
         assert_eq!(composings(&tys), 9);
+    }
+
+    /// Twenty filters deep, the poles pass what a sum holds and every level above refuses:
+    /// each refusal is kept, so asking any level again composes nothing.
+    #[test]
+    fn a_refusal_a_chain_meets_is_composed_once_per_node() {
+        let names: Vec<String> = (0..=20).map(|k| format!("n{k}")).collect();
+        let tone = "crop(sin(2*pi*220*t), 0s, 0.1s)\n".to_string();
+        let mut files = vec![(names[0].as_str(), tone)];
+        for pair in names.windows(2) {
+            files.push((&pair[1], format!("lowpass(@{}(t), 1000)\n", pair[0])));
+        }
+        let tys = typed("refused", &files, "n20");
+        let at = |k: usize| tys.id(&names[k]).expect("a level");
+        assert!(
+            spectral_sum_of(&tys, at(20), Var::T).is_err(),
+            "the poles refuse"
+        );
+        let once = composings(&tys);
+        for k in (0..=20).rev() {
+            let _ = spectral_sum_of(&tys, at(k), Var::T);
+        }
+        assert_eq!(composings(&tys), once, "a kept refusal composes nothing");
     }
 
     /// Lowering one node and its reader anew lets go of what they folded to, and only that:

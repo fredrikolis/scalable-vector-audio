@@ -5,11 +5,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use sva_formula::{C64, Hash, Kept, NodeId, SpectralSum, Var};
 
+use crate::error::EngineError;
+
 #[derive(Debug, Default)]
 pub(crate) struct Folds {
     numbers: RefCell<BTreeMap<NodeId, Option<C64>>>,
     identities: RefCell<BTreeMap<NodeId, Hash>>,
     composed: RefCell<HashMap<(Hash, Var), SpectralSum>>,
+    refused: RefCell<HashMap<(NodeId, Var), EngineError>>,
     inlinable: RefCell<HashMap<(NodeId, Var), bool>>,
     written: Kept,
     #[cfg(test)]
@@ -37,6 +40,7 @@ impl Folds {
         self.numbers.get_mut().retain(|id, _| !out(*id));
         self.identities.get_mut().retain(|id, _| !out(*id));
         self.inlinable.get_mut().retain(|(id, _), _| !out(*id));
+        self.refused.get_mut().retain(|(id, _), _| !out(*id));
         self.written.forget(&out);
         let named: HashSet<Hash> = self.identities.get_mut().values().copied().collect();
         self.composed
@@ -66,6 +70,14 @@ impl Folds {
 
     pub(crate) fn keep_composed(&self, key: (Hash, Var), sum: SpectralSum) {
         self.composed.borrow_mut().insert(key, sum);
+    }
+
+    pub(crate) fn refused(&self, key: (NodeId, Var)) -> Option<EngineError> {
+        self.refused.borrow().get(&key).cloned()
+    }
+
+    pub(crate) fn keep_refused(&self, key: (NodeId, Var), refused: EngineError) {
+        self.refused.borrow_mut().insert(key, refused);
     }
 
     pub(crate) fn inlinable(&self, key: (NodeId, Var)) -> Option<bool> {
