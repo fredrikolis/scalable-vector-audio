@@ -330,22 +330,22 @@ fn reads() -> Graph {
         &[
             (
                 "filtered",
-                "lowpass(sample(0.3*saw(220*t)), cutoff=900, q=0.8)\n",
+                "lowpass(sample(0.3*saw(2000 + 20*t)), cutoff=900, q=0.8)\n",
             ),
             ("shifted", "@filtered(t - 3sp)\n"),
             ("between", "@filtered(t - 0.0123456s)\n"),
             ("scaled", "@filtered(0.75*t)\n"),
             ("warped", "@filtered(t - t*t/4)\n"),
             ("reversed", "@filtered(1s - t)\n"),
-            ("tone", "crop(0.3*saw(220*t), 0s, 0.1s)\n"),
+            ("tone", "crop(0.3*saw(2000 + 20*t), 0s, 0.1s)\n"),
             ("formula", "@tone(0.75*t - 0.0123456s) + @filtered\n"),
             (
                 "looped",
-                "crop(sample(0.3*saw(220*t)), 0s, 0.05s) + 0.5*self[idx(t - 2ms) - 1]\n",
+                "crop(sample(0.3*saw(2000 + 20*t)), 0s, 0.05s) + 0.5*self[idx(t - 2ms) - 1]\n",
             ),
             (
                 "wobbled",
-                "crop(sample(0.3*saw(220*t)), 0s, 0.05s) + \
+                "crop(sample(0.3*saw(2000 + 20*t)), 0s, 0.05s) + \
                  0.5*lp(self[idx(t - 0.005s - 0.002s*sin(2*pi*0.5*t))], cutoff=2000)\n",
             ),
             (

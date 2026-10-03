@@ -546,6 +546,7 @@ fn scored(held: &mut Render) -> Result<(), EngineError> {
         let sva_samples::Detail::Point {
             rule,
             alias_db: None,
+            tail_db,
         } = held.labels[&id].detail
         else {
             continue;
@@ -553,7 +554,11 @@ fn scored(held: &mut Render) -> Result<(), EngineError> {
         let buffer = held.output(id)?;
         let alias_db = Some(answer::alias_db(held, id, &buffer)?);
         let label = held.labels.get_mut(&id).expect("an asked label");
-        label.detail = sva_samples::Detail::Point { rule, alias_db };
+        label.detail = sva_samples::Detail::Point {
+            rule,
+            alias_db,
+            tail_db,
+        };
     }
     Ok(())
 }

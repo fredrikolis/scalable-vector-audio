@@ -168,6 +168,7 @@ pub(crate) fn lower(
             }
         }
         Body::Rational(r) => Ok(SpectralSum::mono(var, expand(r, origin)?)),
+        Body::Banded(_) => Err(left(origin, Factor::Value, LeftReason::Nonlinearity)),
         Body::Series(s) => Ok(SpectralSum::of(
             var,
             vec![Lane {

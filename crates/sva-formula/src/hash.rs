@@ -503,6 +503,19 @@ impl<'a> Sink<'a> {
                     }
                 }
             }
+            Body::Banded(b) => {
+                self.byte(0x29);
+                self.series(&b.series);
+                for sum in [&b.slope, &b.offset] {
+                    self.u64(sum.lanes.len() as u64);
+                    sum.lanes.iter().for_each(|lane| self.lane(lane));
+                }
+                for x in [b.omega, b.reach, b.dropped_db] {
+                    self.f64(x);
+                }
+                self.i64(b.most);
+                self.i64(b.widest);
+            }
             Body::Keyed { seed, of } => {
                 self.byte(0x26);
                 self.u64(*seed);

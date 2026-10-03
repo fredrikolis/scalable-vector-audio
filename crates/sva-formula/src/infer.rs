@@ -110,6 +110,7 @@ fn walk(f: &Body, origin: Origin, var: Var, env: &dyn Env) -> Result<Info, Refus
         Body::Channel(of, k) => channel(of, *k, origin, var, env),
         Body::Rational(r) => Ok(closed_form(rational_alg(r), var, 1, Codomain::Complex)),
         Body::Series(s) => series(s, origin, var, env),
+        Body::Banded(b) => series(&b.series, origin, var, env),
         Body::Modal(_) => Ok(closed_form(
             Alg::atom(AtomClass {
                 factors: Factors {

@@ -73,6 +73,7 @@ pub enum Detail {
     Point {
         rule: Rule,
         alias_db: Option<f64>,
+        tail_db: Option<f64>,
     },
     Spectrum {
         rule: Rule,

@@ -4,7 +4,7 @@ use std::cell::RefCell;
 
 use sva_formula::closed_form::{Fold, Unary, children};
 use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
-use sva_formula::{Body, C64, Lane, NodeId, SpectralSum};
+use sva_formula::{Banded, Body, C64, IndexId, Lane, NodeId, SpectralSum};
 
 use crate::error::CollapseError;
 
@@ -136,7 +136,15 @@ pub fn eval_body(
     t: f64,
     refs: &dyn Refs,
 ) -> Result<C64, CollapseError> {
-    let of = |p: &sva_formula::Part| eval_body(&p.body, component, t, refs);
+    eval_at(fm, component, t, (refs, &[]))
+}
+
+/// Each index a banded series binds, at the value it holds for the term being summed.
+type Bound<'a> = (&'a dyn Refs, &'a [(IndexId, f64)]);
+
+fn eval_at(fm: &Body, component: usize, t: f64, at: Bound) -> Result<C64, CollapseError> {
+    let (refs, bound) = at;
+    let of = |p: &sva_formula::Part| eval_at(&p.body, component, t, at);
     let value = match fm {
         Body::Const(c) => *c,
         Body::Line => C64::real(t),
@@ -145,11 +153,14 @@ pub fn eval_body(
         Body::Div(a, b) => of(a)? / of(b)?,
         Body::Pow(a, n) => power(of(a)?, *n),
         Body::Apply(op, a) => unary(*op, of(a)?),
-        Body::Fold(op, parts) => fold(*op, parts, component, t, refs)?,
-        Body::Shift { by, of: inner } => eval_body(&inner.body, component, t - by, refs)?,
-        Body::Warp { at, of: inner } => {
-            let when = eval_body(&at.body, component, t, refs)?.re;
-            eval_body(&inner.body, component, when, refs)?
+        Body::Fold(op, parts) => fold(*op, parts, component, t, at)?,
+        Body::Shift { by, of: inner } => eval_at(&inner.body, component, t - by, at)?,
+        Body::Warp {
+            at: when,
+            of: inner,
+        } => {
+            let when = eval_at(&when.body, component, t, at)?.re;
+            eval_at(&inner.body, component, when, at)?
         }
         Body::Crop {
             of: inner,
@@ -161,7 +172,7 @@ pub fn eval_body(
             0.0 => C64::ZERO,
             gain => of(inner)?.scale(gain),
         },
-        Body::Channel(inner, k) => eval_body(&inner.body, usize::from(*k), t, refs)?,
+        Body::Channel(inner, k) => eval_at(&inner.body, usize::from(*k), t, at)?,
         Body::Delta { order, .. } => {
             return Err(CollapseError::SingularInCt {
                 at: t,
@@ -175,9 +186,9 @@ pub fn eval_body(
         ),
         Body::Join(parts) => {
             let widths: Vec<usize> = parts.iter().map(|p| width_of(&p.body, refs)).collect();
-            let (at, inner) = lane_of(&widths, component)
+            let (lane, inner) = lane_of(&widths, component)
                 .ok_or(CollapseError::NotEvaluable("a component past the width"))?;
-            eval_body(&parts[at].body, inner, t, refs)?
+            eval_at(&parts[lane].body, inner, t, at)?
         }
         Body::Modal(bank) => {
             let mut sum = C64::ZERO;
@@ -188,6 +199,8 @@ pub fn eval_body(
         }
         Body::Node(id) => refs.value(*id, component, t)?,
         Body::Run(run) => super::run::at(run, t),
+        Body::Index(i) if let Some((_, k)) = bound.iter().find(|(j, _)| j == i) => C64::real(*k),
+        Body::Banded(b) => banded(b, component, t, at)?,
         other => return Err(CollapseError::NotEvaluable(sketch(other))),
     };
     finite(value)
@@ -291,19 +304,40 @@ fn fold(
     parts: &[sva_formula::Part],
     component: usize,
     t: f64,
-    refs: &dyn Refs,
+    at: Bound,
 ) -> Result<C64, CollapseError> {
     let mut it = parts.iter();
     let head = it.next().expect("a fold holds one part");
-    let first = eval_body(&head.body, component, t, refs)?;
+    let first = eval_at(&head.body, component, t, at)?;
     it.try_fold(first, |acc, p| {
-        let v = eval_body(&p.body, component, t, refs)?;
+        let v = eval_at(&p.body, component, t, at)?;
         Ok(C64::real(match op {
             Fold::Max => acc.re.max(v.re),
             Fold::Min => acc.re.min(v.re),
             Fold::Mod => acc.re.rem_euclid(v.re),
         }))
     })
+}
+
+/// The terms whose carrier turns under the ceiling at `t`, summed from +0 in index order.
+fn banded(b: &Banded, component: usize, t: f64, at: Bound) -> Result<C64, CollapseError> {
+    let Some((from, to)) = b.within(turning(&b.slope, t)?, turning(&b.offset, t)?) else {
+        return Ok(C64::ZERO);
+    };
+    let (refs, outer) = at;
+    let mut bound = outer.to_vec();
+    bound.push((b.series.index, 0.0));
+    let mut sum = C64::ZERO;
+    for k in from..=to {
+        *bound.last_mut().expect("the index pushed") = (b.series.index, k as f64);
+        sum = sum + eval_at(&b.series.term.body, component, t, (refs, &bound))?;
+    }
+    Ok(sum)
+}
+
+/// How fast a carrier's angle turns at `t`, in radians a second.
+pub(crate) fn turning(rate: &SpectralSum, t: f64) -> Result<f64, CollapseError> {
+    Ok(eval_spectral_sum(rate, 0, t)?.re)
 }
 
 fn sketch(f: &Body) -> &'static str {

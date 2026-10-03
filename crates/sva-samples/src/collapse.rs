@@ -29,7 +29,7 @@ use plan::Plan;
 pub(crate) use point::Shared;
 pub use point::{Refs, crop_gain, lane_of, shoulders, unary};
 pub use truncate::{
-    Audible, spectral_sum as truncate_spectral_sum,
+    Audible, dropped_db, spectral_sum as truncate_spectral_sum,
     spectral_sum_read as truncate_spectral_sum_read, written as truncate_written,
     written_with as truncate_written_with,
 };
@@ -215,6 +215,7 @@ fn point_row(
         Detail::Point {
             rule: Rule::PointSampled,
             alias_db,
+            tail_db: truncate::dropped_db(&written.body),
         },
     ))
 }
@@ -429,7 +430,11 @@ fn sampled_row(
                 rate,
                 extent,
                 profile,
-                Detail::Point { rule, alias_db },
+                Detail::Point {
+                    rule,
+                    alias_db,
+                    tail_db: None,
+                },
             ))
         }
     }

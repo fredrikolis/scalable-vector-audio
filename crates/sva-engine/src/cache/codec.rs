@@ -11,7 +11,7 @@ use super::Stored;
 use super::stored::{Header, Laid, Samples};
 
 /// Bumped by, and only by, a change to a stored value's bytes or to the key it is stored under.
-pub const STORE_FORMAT: u32 = 25;
+pub const STORE_FORMAT: u32 = 26;
 
 /// Every entry opens with its format, so one another format wrote is never read as a value,
 /// even where a wipe left it.
@@ -404,10 +404,15 @@ fn detailed(out: &mut Vec<u8>, detail: &Detail) {
             rule(out, r);
             float(out, *tail_db);
         }
-        Detail::Point { rule: r, alias_db } => {
+        Detail::Point {
+            rule: r,
+            alias_db,
+            tail_db,
+        } => {
             out.push(3);
             rule(out, r);
             float(out, *alias_db);
+            float(out, *tail_db);
         }
         Detail::Spectrum { rule: r, wrap_db } => {
             out.push(4);
@@ -585,6 +590,7 @@ impl Reader<'_> {
             3 => Detail::Point {
                 rule: self.rule()?,
                 alias_db: self.float()?,
+                tail_db: self.float()?,
             },
             4 => Detail::Spectrum {
                 rule: self.rule()?,

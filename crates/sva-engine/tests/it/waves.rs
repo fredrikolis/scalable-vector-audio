@@ -108,3 +108,31 @@ fn a_vibrato_saw_keeps_its_harmonics_up_to_the_ceiling() {
         "energy above 15 kHz: {vibrato} against the plain saw's {plain}"
     );
 }
+
+/// A saw whose pitch moves, `saw(1000 + 200*t)`, sums at each instant every harmonic under
+/// the profile's ceiling there, as many as the instant's own frequency leaves, and says how
+/// loud the first harmonic its fastest pitch drops can be.
+#[test]
+fn a_saw_whose_pitch_moves_keeps_every_harmonic_under_the_ceiling() {
+    let g = graph_of("moving", &[("moving", "saw(1000 + 200*t)\n")]);
+    let config = RenderConfig::seconds(44_100, 0.05);
+    let ceiling = config.profile.ceiling(44_100);
+    let held = render(&g, "moving", config, &Tier::default()).expect("a moving saw renders");
+    let id = held.id("moving").expect("the root");
+    let samples = held.output(id).expect("its samples").plane(0).to_vec();
+    for (i, s) in samples.iter().enumerate() {
+        let t = i as f64 / 44_100.0;
+        let (turns, hz) = ((1000.0 + 200.0 * t) * t, 1000.0 + 400.0 * t);
+        let want: f64 = (1..)
+            .take_while(|n| f64::from(*n) * hz < ceiling - 1e-6)
+            .map(|n| (TAU * f64::from(n) * turns).sin() / f64::from(n))
+            .sum::<f64>()
+            * 2.0
+            / std::f64::consts::PI;
+        assert!((s - want).abs() < 1e-9, "sample {i}: {s} against {want}");
+    }
+    let sva_engine::Detail::Point { tail_db, .. } = held.labels[&id].detail else {
+        panic!("a point row, not {:?}", held.labels[&id].detail);
+    };
+    assert!(tail_db.is_some(), "it states what it may drop");
+}

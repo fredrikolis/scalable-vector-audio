@@ -6,14 +6,15 @@ use std::f64::consts::TAU;
 
 use sva_formula::affine::{Axis, axis_read, exact_constant_read};
 use sva_formula::closed_form::{Bound, Series, children, map_children};
-use sva_formula::series::{mentions, mentions_line_read, ratio, substitute};
+use sva_formula::series::{falls, mentions, mentions_line_read, ratio, substitute};
 use sva_formula::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom};
 use sva_formula::spectral_sum::merge::simplify;
+use sva_formula::spectral_sum::sup::sup_from;
 use sva_formula::table::series::{Shape, read_with};
 use sva_formula::through::{Read, looked};
 use sva_formula::{
-    Body, C64, Codomain, Env, IndexId, Lane, NodeId, Opaque, ParamId, Part, Reads, Run,
-    SpectralSum, Ty, Unary, Var, lines_read, normalize_read,
+    Banded, Body, C64, Codomain, Env, IndexId, Lane, NodeId, Opaque, ParamId, Part, Reads, Run,
+    SpectralSum, Ty, Unary, Var, d_dt, lines_read, normalize_read,
 };
 
 use crate::error::CollapseError;
@@ -62,6 +63,11 @@ impl Audible {
 /// becomes a formula the sample loop walks, which is what this caps.
 const MAX_EXPANDED_TERMS: usize = 1 << 13;
 
+/// The most terms of a carrier series one instant sums: every term under a 20 kHz ceiling
+/// down to a 19.5 Hz fundamental, the bottom of the audible band; below it what an instant
+/// leaves out is bounded and reported.
+const MOST_PER_INSTANT: i64 = 1 << 10;
+
 /// FORMAT 6.2 truncates a series once, at collapse: every term the ceiling and the precision
 /// leave becomes an ordinary atom before the first sample is read.
 pub fn spectral_sum(n: &SpectralSum, band: Audible) -> Result<SpectralSum, CollapseError> {
@@ -90,6 +96,16 @@ pub fn written_with(
     named: &mut dyn FnMut(NodeId, Audible) -> Result<NodeId, CollapseError>,
 ) -> Result<Body, CollapseError> {
     Terms::new(reads).written(f, band, named)
+}
+
+/// The loudest term any banded series in `f` may drop, in dB against its loudest.
+pub fn dropped_db(f: &Body) -> Option<f64> {
+    let own = match f {
+        Body::Banded(b) => Some(b.dropped_db),
+        _ => None,
+    };
+    let inner = children(f).into_iter().filter_map(|p| dropped_db(&p.body));
+    own.into_iter().chain(inner).reduce(f64::max)
 }
 
 pub(super) fn windowed_lines(
@@ -262,6 +278,11 @@ impl<'a> Terms<'a> {
                 })
                 .collect());
         }
+        if self.carried(s).is_some() && self.precise(s, band).is_none() {
+            return Err(CollapseError::NotEvaluable(
+                "a series summed instant by instant",
+            ));
+        }
         let body = self.expanded(s, band, &mut |id, b| self.summed(id, b))?;
         let held = normalize_read(&body, Var::T, self.reads)
             .map_err(|_| CollapseError::NotEvaluable("a series term"))?;
@@ -290,6 +311,11 @@ impl<'a> Terms<'a> {
         if !taken.is_empty() {
             let runs = Run::of(&taken).into_iter();
             return Ok(sum(runs.map(|r| Body::Run(Box::new(r))).collect()));
+        }
+        if self.precise(s, band).is_none()
+            && let Some(banded) = self.banded(s, band, named)?
+        {
+            return Ok(Body::Banded(Box::new(banded)));
         }
         let count = self.terms(s, band)?;
         let mut parts = Vec::with_capacity(count);
@@ -413,33 +439,125 @@ impl<'a> Terms<'a> {
         found
     }
 
-    /// A geometric magnitude bound stops where its whole tail rounds away; any other stand-in at
-    /// the profile's floor.
+    /// A geometric magnitude bound stops where its whole tail rounds away; a carrier summed
+    /// instant by instant expands at most `MOST_PER_INSTANT` terms an instant.
     fn counted(&self, s: &Series, band: Audible) -> Option<usize> {
-        let hi = match s.hi {
-            Bound::Finite(n) => return usize::try_from((n - s.lo + 1).max(0)).ok(),
-            Bound::Infinite => MAX_EXPANDED_TERMS,
-        };
+        if let Bound::Finite(n) = s.hi {
+            return usize::try_from((n - s.lo + 1).max(0)).ok();
+        }
+        let precise = self.precise(s, band);
+        precise.or_else(|| self.carried(s).map(|_| MOST_PER_INSTANT as usize))
+    }
+
+    /// The terms before the whole tail of a geometric magnitude bound rounds away.
+    fn precise(&self, s: &Series, band: Audible) -> Option<usize> {
         let bound = self.bound(&s.term.body, band)?;
-        let ratio = match bound.exact {
-            true => ratio(&bound.body, s.index).filter(|r| *r < 1.0),
-            false => None,
-        };
-        let floor = 10f64.powf(band.floor_db / 20.0);
-        let mut peak = 0.0f64;
-        for i in 0..hi {
+        let ratio = ratio(&bound.body, s.index).filter(|r| *r < 1.0 && bound.exact)?;
+        for i in 0..MAX_EXPANDED_TERMS {
             let at = substitute(&bound.body, s.index, (s.lo + i as i64) as f64);
             let held = exact_constant_read(&at, self.reads)?.abs();
-            peak = peak.max(held);
-            let gone = match ratio {
-                Some(r) => held / (1.0 - r) <= band.precision,
-                None => peak > 0.0 && held < peak * floor,
-            };
-            if gone {
+            if held / (1.0 - ratio) <= band.precision {
                 return Some(i.max(1));
             }
         }
         None
+    }
+
+    /// The angle of a term's one carrier, where it turns at a rate affine in the index and
+    /// nothing else in the term moves with both the index and time.
+    fn carried<'s>(&self, s: &'s Series) -> Option<&'s Body> {
+        if s.hi != Bound::Infinite {
+            return None;
+        }
+        let angle = carrier(&s.term.body, s.index, self.reads)?;
+        (degree(angle, s.index)? == 1 && self.real(angle)).then_some(angle)
+    }
+
+    /// `s` summed at each instant over only the terms whose carrier turns under the ceiling
+    /// there, each turning at the time derivative of its angle read off a spectral sum.
+    fn banded(
+        &self,
+        s: &Series,
+        band: Audible,
+        named: &mut dyn FnMut(NodeId, Audible) -> Result<NodeId, CollapseError>,
+    ) -> Result<Option<Banded>, CollapseError> {
+        let Some(angle) = self.carried(s) else {
+            return Ok(None);
+        };
+        let at = |k: f64| substitute(angle, s.index, k);
+        let (still, once) = (at(0.0), at(1.0));
+        let per = Body::Add(vec![
+            Part::bare(once),
+            Part::bare(Body::Mul(vec![
+                Part::bare(Body::Const(C64::real(-1.0))),
+                Part::bare(still.clone()),
+            ])),
+        ]);
+        let turning = |f: &Body| {
+            let sum = normalize_read(f, Var::T, self.reads).ok()?;
+            let [lane] = sum.lanes.as_slice() else {
+                return None;
+            };
+            (lane.series.is_empty() && lane.modal.is_empty()).then(|| d_dt(&sum))
+        };
+        let (Some(slope), Some(offset)) = (turning(&per), turning(&still)) else {
+            return Ok(None);
+        };
+        let term = self.written(&s.term.body, band, named)?;
+        let weight = steady(&s.term.body, angle);
+        let mut banded = Banded {
+            series: Series {
+                term: Part::new(s.term.origin, term),
+                ..s.clone()
+            },
+            slope,
+            offset,
+            omega: TAU * band.ceiling,
+            most: MOST_PER_INSTANT,
+            widest: MOST_PER_INSTANT,
+            reach: f64::INFINITY,
+            dropped_db: f64::INFINITY,
+        };
+        self.bounded(&mut banded, &weight, band);
+        match banded.dropped_db.is_finite() {
+            true => Ok(Some(banded)),
+            false => Err(CollapseError::NotEvaluable(
+                "a series whose dropped terms no bound holds",
+            )),
+        }
+    }
+
+    /// The most terms an instant sums, a bound on the sum, and the loudest term it may drop.
+    fn bounded(&self, b: &mut Banded, weight: &Body, band: Audible) {
+        let (lo, k) = (b.series.lo, b.series.index);
+        let (fastest, drift) = (sup(&b.slope), sup(&b.offset));
+        let (slowest, still) = (least(&b.slope), least(&b.offset).max(0.0));
+        let count = |last: f64| (last.ceil().clamp(-9e18, 9e18) as i64 - lo).clamp(0, b.most);
+        let kept = match fastest > 0.0 {
+            true => count((b.omega - drift) / fastest),
+            false if drift < b.omega => b.most,
+            false => 0,
+        };
+        b.widest = match slowest > 0.0 {
+            true => count((b.omega + drift.max(still)) / slowest),
+            false => b.most,
+        };
+        let Some(bound) = self.bound(weight, band).filter(|w| w.exact) else {
+            return;
+        };
+        let at = |n: i64| {
+            let held = substitute(&bound.body, k, n as f64);
+            Some(exact_constant_read(&held, self.reads)?.abs())
+        };
+        b.reach = (lo..lo + b.widest)
+            .try_fold(0.0, |held, n| Some(held + at(n)?))
+            .unwrap_or(f64::INFINITY);
+        if lo >= 1
+            && falls(&bound.body, k)
+            && let (Some(top), Some(gone)) = (at(lo), at(lo + kept))
+        {
+            b.dropped_db = 20.0 * (gone / top).log10();
+        }
     }
 
     fn bound(&self, f: &Body, band: Audible) -> Option<Bounded> {
@@ -545,6 +663,96 @@ fn sum(parts: Vec<Body>) -> Body {
         1 => parts.into_iter().next().expect("one part"),
         _ => Body::Add(parts.into_iter().map(Part::bare).collect()),
     }
+}
+
+/// The one `sin` or `cos` whose argument moves with the index, where nothing else moving with
+/// both the index and time is in the term.
+fn carrier<'f>(f: &'f Body, k: IndexId, reads: &dyn Reads) -> Option<&'f Body> {
+    let (mut found, mut clean) = (Vec::new(), true);
+    moving(f, k, reads, (&mut found, &mut clean));
+    match found.as_slice() {
+        [angle] if clean => Some(*angle),
+        _ => None,
+    }
+}
+
+fn moving<'f>(
+    f: &'f Body,
+    k: IndexId,
+    reads: &dyn Reads,
+    (found, clean): (&mut Vec<&'f Body>, &mut bool),
+) {
+    if !mentions(f, k) {
+        return;
+    }
+    match f {
+        Body::Apply(Unary::Sin | Unary::Cos, arg) => found.push(&arg.body),
+        Body::Apply(_, arg) if mentions_line_read(&arg.body, reads) => *clean = false,
+        Body::Warp { .. }
+        | Body::Series(_)
+        | Body::Banded(_)
+        | Body::Keyed { .. }
+        | Body::Delta { .. }
+        | Body::Pv(_)
+        | Body::Deriv { .. } => *clean = false,
+        other => {
+            for p in children(other) {
+                moving(&p.body, k, reads, (&mut *found, &mut *clean));
+            }
+        }
+    }
+}
+
+/// How many times the index multiplies into `f`, where it is a polynomial in it.
+fn degree(f: &Body, k: IndexId) -> Option<u32> {
+    if !mentions(f, k) {
+        return Some(0);
+    }
+    match f {
+        Body::Index(i) if *i == k => Some(1),
+        Body::Add(parts) => parts
+            .iter()
+            .try_fold(0, |held, p| Some(held.max(degree(&p.body, k)?))),
+        Body::Mul(parts) => parts
+            .iter()
+            .try_fold(0, |held, p| Some(held + degree(&p.body, k)?)),
+        Body::Div(num, den) if !mentions(&den.body, k) => degree(&num.body, k),
+        Body::Pow(base, n) if *n >= 0 => Some(degree(&base.body, k)? * n.unsigned_abs()),
+        _ => None,
+    }
+}
+
+/// `term` with its carrier at its loudest: the weight bounding every term's magnitude.
+fn steady(term: &Body, angle: &Body) -> Body {
+    match term {
+        Body::Apply(Unary::Sin | Unary::Cos, arg) if std::ptr::eq(&*arg.body, angle) => {
+            Body::Const(C64::ONE)
+        }
+        other => map_children(other, |p| Part::new(p.origin, steady(&p.body, angle))),
+    }
+}
+
+/// At least `sup |f(t)|` over every instant; infinite where an atom grows without bound.
+fn sup(f: &SpectralSum) -> f64 {
+    let atoms = f.lanes.iter().flat_map(|lane| lane.atoms.iter());
+    atoms
+        .map(|a| sup_from(a, f64::NEG_INFINITY).unwrap_or(f64::INFINITY))
+        .sum()
+}
+
+/// At most `inf |f(t)|` over every instant: its constant less all that moves it.
+fn least(f: &SpectralSum) -> f64 {
+    let atoms = f.lanes.iter().flat_map(|lane| lane.atoms.iter());
+    let (still, moving): (Vec<_>, Vec<_>) = atoms.partition(|a| a.is_bare());
+    let held = still
+        .iter()
+        .fold(C64::ZERO, |held, a: &&SpectralAtom| held + a.c)
+        .abs();
+    let moves: f64 = moving
+        .iter()
+        .map(|a| sup_from(a, f64::NEG_INFINITY).unwrap_or(f64::INFINITY))
+        .sum();
+    (held - moves).max(0.0)
 }
 
 struct Unread;

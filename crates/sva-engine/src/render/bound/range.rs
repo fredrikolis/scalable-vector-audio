@@ -113,6 +113,11 @@ impl Range {
             Body::Shift { by, of } => Range::Shift(one(of)?, *by),
             Body::Warp { at, of } => Range::Warp(Box::new(Range::time(&at.body)?), one(of)?),
             Body::Join(parts) => Range::Wide(each(parts)?),
+            // A rendered term may sit anywhere its magnitude bound allows.
+            Body::Banded(b) if b.reach.is_finite() => {
+                let rounded = 1.0 + OP * (b.widest as f64 + TRANSFORM_OPS);
+                Range::Run(b.reach, 2.0 * b.reach * rounded)
+            }
             Body::Channel(of, _) => Range::Wide(vec![Range::of(&of.body)?]),
             _ => return Err("a written constructor with no bound"),
         })

@@ -304,6 +304,26 @@ impl Clock {
         }
     }
 
+    /// The terms a banded series sums over the span, each instant's own count; where a warp
+    /// moves the instants, the most any instant sums.
+    fn summed(&self, b: &sva_formula::Banded, (from, to): Window) -> u128 {
+        let Some(shifts) = &self.shifts else {
+            return (to - from).max(0) as u128 * b.widest as u128;
+        };
+        let at = |n: i64| shifts.iter().fold(self.grid.instant(n), |t, by| t - by);
+        let count = |n: i64| {
+            let t = at(n);
+            let turning = |rate| point::turning(rate, t).unwrap_or(f64::NAN);
+            match turning(&b.slope).is_nan() || turning(&b.offset).is_nan() {
+                true => b.widest as u128,
+                false => b
+                    .within(turning(&b.slope), turning(&b.offset))
+                    .map_or(0, |(lo, hi)| (hi - lo + 1) as u128),
+            }
+        };
+        (from..to).map(count).sum()
+    }
+
     fn warped(&self) -> Clock {
         Clock {
             grid: self.grid,
@@ -347,6 +367,11 @@ fn walked(f: &Body, component: usize, clock: &Clock, span: Window) -> (u128, u12
     };
     match f {
         Body::Run(run) => (super::run::steps(run) as u128 * n, run.len() as u128 * n),
+        Body::Banded(b) => {
+            let (priced, waves) = walked(&b.series.term.body, component, clock, span);
+            let terms = clock.summed(b, span);
+            (2 * n + priced * terms / n, waves * terms / n)
+        }
         Body::Join(parts) => {
             let widths: Vec<usize> = parts
                 .iter()

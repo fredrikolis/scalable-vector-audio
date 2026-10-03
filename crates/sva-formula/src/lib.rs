@@ -2,6 +2,7 @@
 
 pub mod affine;
 pub mod alg;
+pub mod banded;
 pub mod calculus;
 pub mod closed_form;
 pub mod complex;
@@ -24,6 +25,7 @@ pub mod through;
 pub mod ty;
 pub mod underflow;
 
+pub use banded::Banded;
 pub use calculus::{Envelope, analytic, d_dt, envelope, envelope_read, hilbert};
 pub use closed_form::{
     Body, Bound, ClosedForm, Edge, Excitation, Fold, IndexId, ModalBank, Mode, Part, Rational,

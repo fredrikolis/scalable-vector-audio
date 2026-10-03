@@ -437,7 +437,13 @@ fn detail_json(detail: &Detail) -> String {
             maybe(*tail_db)
         ),
         Detail::Cropped { tail_db, .. } => format!(", \"tail_db\": {}", maybe(*tail_db)),
-        Detail::Point { alias_db, .. } => format!(", \"alias_db\": {}", maybe(*alias_db)),
+        Detail::Point {
+            alias_db, tail_db, ..
+        } => format!(
+            ", \"alias_db\": {}, \"tail_db\": {}",
+            maybe(*alias_db),
+            maybe(*tail_db)
+        ),
         Detail::Spectrum { wrap_db, .. } => format!(", \"wrap_db\": {}", num(*wrap_db)),
         Detail::Roundtrip { edited, .. } => format!(", \"edited\": {edited}"),
         Detail::Continuous { .. } | Detail::Reading { .. } => String::new(),

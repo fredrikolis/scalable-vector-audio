@@ -17,7 +17,7 @@ pub mod stft;
 pub use biquad::Coeffs;
 pub use buffer::Buffer;
 pub use collapse::{
-    ALIAS_OVERSAMPLE, AliasScore, Audible, Extent, Planned, Refs, Rows, crop_gain,
+    ALIAS_OVERSAMPLE, AliasScore, Audible, Extent, Planned, Refs, Rows, crop_gain, dropped_db,
     eval_spectral_sum_at, eval_written_at, lane_of, of_spectral_sum, of_spectral_sum_or_point,
     of_spectral_sum_read, planned, planned_read, render, render_written, truncate_spectral_sum,
     truncate_spectral_sum_read, truncate_written, truncate_written_with, unary,

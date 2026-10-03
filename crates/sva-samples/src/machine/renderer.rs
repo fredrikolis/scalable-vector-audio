@@ -534,6 +534,9 @@ impl Formula {
         fn terms(body: &Body, refs: &[usize]) -> usize {
             match body {
                 Body::Node(id) => refs[id.0 as usize],
+                Body::Banded(b) => (b.widest.max(0) as usize)
+                    .saturating_mul(terms(&b.series.term.body, refs))
+                    .saturating_add(2),
                 _ => sva_formula::closed_form::children(body)
                     .iter()
                     .fold(1usize, |held, p| held.saturating_add(terms(&p.body, refs))),

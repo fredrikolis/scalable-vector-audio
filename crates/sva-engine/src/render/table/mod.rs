@@ -1110,6 +1110,18 @@ impl Building<'_> {
                     width: value.width,
                     time: Box::new(NodeRenderer::Time),
                 };
+                if let Some(tail_db) = dropped_db(&renderer) {
+                    value.label = Some(Label::new(
+                        sva_samples::Source::Measured,
+                        self.profile.name,
+                        grid.rate,
+                        sva_samples::Detail::Point {
+                            rule: sva_samples::Rule::PointSampled,
+                            alias_db: None,
+                            tail_db: Some(tail_db),
+                        },
+                    ));
+                }
                 self.running(value, renderer, (Vec::new(), Vec::new()), Vec::new(), None)
             }
         }
@@ -1121,6 +1133,12 @@ impl Building<'_> {
         mut value: Value,
         id: NodeId,
     ) -> Result<(Value, Then, Vec<Step>), EngineError> {
+        let built = program::of(
+            self.tys,
+            self.supports,
+            (id, value.grid),
+            (self.profile, self.bounds),
+        )?;
         if self.tys.ty(id).is_closed_form() {
             value.label = Some(Label::new(
                 sva_samples::Source::Measured,
@@ -1129,15 +1147,10 @@ impl Building<'_> {
                 sva_samples::Detail::Point {
                     rule: sva_samples::Rule::PointSampled,
                     alias_db: None,
+                    tail_db: dropped_db(&built.renderer),
                 },
             ));
         }
-        let built = program::of(
-            self.tys,
-            self.supports,
-            (id, value.grid),
-            (self.profile, self.bounds),
-        )?;
         value.moved = built.moved;
         let reads = built
             .reads
@@ -1343,6 +1356,24 @@ fn leaf_reads(values: &Values, value: &Value) -> Vec<store::Unread> {
         }
     });
     out
+}
+
+/// The loudest term any series a program's formulas sum instant by instant may drop.
+fn dropped_db(renderer: &NodeRenderer) -> Option<f64> {
+    let mut held: Option<f64> = None;
+    program::leaves(renderer, &mut |leaf| {
+        if let NodeRenderer::Formula {
+            formula: Formula::Written(written),
+            ..
+        } = leaf
+        {
+            let found = std::iter::once(&written.body).chain(&written.refs);
+            for db in found.filter_map(sva_samples::dropped_db) {
+                held = Some(held.map_or(db, |held| held.max(db)));
+            }
+        }
+    });
+    held
 }
 
 /// A short-time transform reads its input whole.

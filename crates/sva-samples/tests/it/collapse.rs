@@ -235,7 +235,7 @@ fn a_ct_collapse_reports_alias() {
         render(&law, RATE, whole_second(), &PSYCHOACOUSTIC_V1).expect("a closed form in t");
 
     assert_eq!(label.source, Source::Measured);
-    let Detail::Point { rule, alias_db } = label.detail else {
+    let Detail::Point { rule, alias_db, .. } = label.detail else {
         panic!("expected a point label, got {:?}", label.detail);
     };
     assert_eq!(rule, Rule::PointSampled);
@@ -598,9 +598,9 @@ fn a_series_of_warped_terms_takes_the_point_row() {
     }
 }
 
-/// A node's magnitude is not in the term, so a series reading one keeps the profile's floor.
+/// Nothing bounds what a series reading a node leaves: it refuses rather than keep a floor.
 #[test]
-fn a_series_reading_a_node_keeps_the_floor() {
+fn a_series_reading_a_node_no_bound_holds_refuses() {
     let k = IndexId(1);
     let turning = Body::Apply(
         Unary::Cos,
@@ -625,12 +625,68 @@ fn a_series_reading_a_node_keeps_the_floor() {
         ])),
     }));
     let band = sva_samples::Audible::of(&PSYCHOACOUSTIC_V1, RATE);
-    let Body::Add(terms) = sva_samples::truncate_written(&series, band).expect("a count") else {
-        panic!("a truncated series is a sum");
+    let refused = sva_samples::truncate_written(&series, band).expect_err("no bound");
+    assert_eq!(refused.code(), "collapse.not_evaluable");
+}
+
+/// `sum(sin(k*(2*pi*220*t + 10*sin(2*pi*5*t)))/k)`, a saw whose pitch moves between 170 and
+/// 270 Hz, sums at each instant every harmonic under the ceiling there and no other; the
+/// loudest it may drop is the first the fastest pitch carries past the ceiling.
+#[test]
+fn a_saw_whose_pitch_moves_sums_every_harmonic_under_the_ceiling_at_each_instant() {
+    let k = IndexId(1);
+    let wobble = Body::Mul(vec![
+        part(constant(10.0)),
+        part(Body::Apply(
+            Unary::Sin,
+            part(Body::Mul(vec![part(constant(TAU * 5.0)), part(Body::Line)])),
+        )),
+    ]);
+    let phase = Body::Add(vec![
+        part(Body::Mul(vec![
+            part(constant(TAU * 220.0)),
+            part(Body::Line),
+        ])),
+        part(wobble),
+    ]);
+    let carrier = Body::Apply(
+        Unary::Sin,
+        part(Body::Mul(vec![part(Body::Index(k)), part(phase)])),
+    );
+    let law = Body::Series(Box::new(Series {
+        index: k,
+        lo: 1,
+        hi: Bound::Infinite,
+        term: part(Body::Div(part(carrier), part(Body::Index(k)))),
+    }));
+    let (buffer, label) = render(&form(Var::T, law), RATE, (0.0, 0.25), &PSYCHOACOUSTIC_V1)
+        .expect("a moving pitch sums instant by instant");
+    let ceiling = PSYCHOACOUSTIC_V1.ceiling(RATE);
+    for i in 0..buffer.len() {
+        let t = i as f64 / f64::from(RATE);
+        let (angle, hz) = (
+            TAU * 220.0 * t + 10.0 * (TAU * 5.0 * t).sin(),
+            220.0 + 50.0 * (TAU * 5.0 * t).cos(),
+        );
+        let want: f64 = (1..)
+            .take_while(|n| f64::from(*n) * hz < ceiling - 1e-6)
+            .map(|n| (f64::from(n) * angle).sin() / f64::from(n))
+            .sum();
+        assert!(
+            (buffer.at(0, i) - want).abs() < 1e-9,
+            "sample {i}: {} against {want}",
+            buffer.at(0, i)
+        );
+    }
+    let Detail::Point { tail_db, .. } = label.detail else {
+        panic!("a point row, not {:?}", label.detail);
     };
-    let floor = 10f64.powf(PSYCHOACOUSTIC_V1.floor(PSYCHOACOUSTIC_V1.ceiling(RATE)) / 20.0);
-    let counted = (0..).find(|n| 0.5f64.powi(*n) < floor).expect("a floor");
-    assert_eq!(terms.len(), counted as usize);
+    let first = (1..)
+        .find(|n| f64::from(*n) * 270.0 >= ceiling)
+        .expect("a harmonic past it");
+    let loudest = 20.0 * (1.0 / f64::from(first)).log10();
+    let tail = tail_db.expect("a bound on what it drops");
+    assert!((tail - loudest).abs() < 1e-9, "{tail} dB against {loudest}");
 }
 
 /// Series inside series expand as their counts multiply. Where that product is past what

@@ -144,6 +144,11 @@ pub fn ratio(f: &Body, k: IndexId) -> Option<f64> {
     }
 }
 
+/// Whether `|f(j)| <= |f(i)|` for every `j >= i >= 1`.
+pub fn falls(f: &Body, k: IndexId) -> bool {
+    power(f, k).is_some_and(|p| p >= 0.0)
+}
+
 /// Bounds every term from an index on by that term's magnitude alone.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Decay {
@@ -183,10 +188,27 @@ fn power(f: &Body, k: IndexId) -> Option<f64> {
                 Body::Apply(Unary::Abs, _) => Some(held.min(power(&p.body, k)?)),
                 _ => None,
             }),
-        Body::Div(num, den) => Some(power(&num.body, k)? + exponent(&den.body, k)?),
+        Body::Div(num, den) => Some(power(&num.body, k)? + rises(&den.body, k)?),
         Body::Apply(Unary::Abs, arg) => power(&arg.body, k),
         Body::Pow(base, n) if *n >= 0 => Some(power(&base.body, k)? * f64::from(*n)),
         _ => ratio(f, k).filter(|r| *r <= 1.0).map(|_| 0.0),
+    }
+}
+
+/// An `e` with `|f(j)| >= |f(i)|*(j/i)^e` for every `j >= i >= 1`: `a*k + b`, `a > 0`,
+/// `b <= 0 < a + b`, rises at least as `k` does.
+fn rises(f: &Body, k: IndexId) -> Option<f64> {
+    if let Some(e) = exponent(f, k) {
+        return Some(e);
+    }
+    match f {
+        Body::Pow(base, n) if *n >= 0 => Some(rises(&base.body, k)? * f64::from(*n)),
+        _ => {
+            let (slope, offset) = affine_in(f, Reading::Index(k))?;
+            let (a, b) = (slope.exact()?, offset.exact()?);
+            let real = a.im == 0.0 && b.im == 0.0;
+            (real && a.re > 0.0 && b.re <= 0.0 && a.re + b.re > 0.0).then_some(1.0)
+        }
     }
 }
 

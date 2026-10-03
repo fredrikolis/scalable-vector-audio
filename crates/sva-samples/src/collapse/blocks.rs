@@ -242,6 +242,7 @@ fn of_sum(
             Detail::Point {
                 rule: Rule::PointSampled,
                 alias_db: None,
+                tail_db: None,
             },
         ),
     };
@@ -319,6 +320,7 @@ fn point(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelled, Co
         body: truncate::written(&form.body, Audible::of(profile, rate))?,
         ..form.clone()
     };
+    let tail_db = truncate::dropped_db(&written.body);
     let width = point::width_of(&written.body, &point::NoRefs).max(1);
     let windows = plan::summed(&written.body).map_or_else(Vec::new, |parts| {
         plan::addend_windows(&parts, Grid::of(rate))
@@ -331,6 +333,7 @@ fn point(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelled, Co
     let detail = Detail::Point {
         rule: Rule::PointSampled,
         alias_db: None,
+        tail_db,
     };
     Ok((row, (Source::Measured, detail)))
 }

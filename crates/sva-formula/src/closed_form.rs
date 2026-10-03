@@ -240,6 +240,7 @@ pub enum Body {
     Series(Box<Series>),
     Modal(ModalBank),
     Run(Box<crate::run::Run>),
+    Banded(Box<crate::banded::Banded>),
 }
 
 /// The subterms of one node: a walker states its recursion once, and every new variant
@@ -268,6 +269,7 @@ pub fn children(f: &Body) -> Vec<&Part> {
         | Body::Deriv { of, .. }
         | Body::Crop { of, .. } => vec![of],
         Body::Series(s) => vec![&s.term],
+        Body::Banded(b) => vec![&b.series.term],
     }
 }
 
@@ -325,6 +327,11 @@ pub fn map_children(f: &Body, mut g: impl FnMut(&Part) -> Part) -> Body {
             term: g(&s.term),
             ..(**s).clone()
         })),
+        Body::Banded(b) => {
+            let mut held = (**b).clone();
+            held.series.term = g(&b.series.term);
+            Body::Banded(Box::new(held))
+        }
     }
 }
 
@@ -389,6 +396,6 @@ pub fn read_at_with(f: &Body, at: &Body, node: &dyn Fn(NodeId) -> Option<NodeId>
 pub fn shifts_opaquely(f: &Body) -> bool {
     matches!(
         f,
-        Body::Param(_) | Body::Rational(_) | Body::Modal(_) | Body::Run(_)
+        Body::Param(_) | Body::Rational(_) | Body::Modal(_) | Body::Run(_) | Body::Banded(_)
     ) || children(f).iter().any(|p| shifts_opaquely(&p.body))
 }
