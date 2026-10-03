@@ -1,6 +1,9 @@
 // Concern: the memory tier: every resident value and node under one cap, what it evicts and writes back, the misses it keeps | Non-concern: the disk | IO: (key) -> held, answered; offers -> kept
 
-use std::collections::HashMap;
+#[cfg(test)]
+mod chains;
+
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use sva_formula::Hash;
@@ -391,7 +394,7 @@ impl State {
         let referred = match offered {
             Offered::Moves { of, by } => match self.referred(*of, *by) {
                 Some(found) => Some(found),
-                None if self.unbound(*of, 0) => None,
+                None if self.unbound(*of) => None,
                 None => return None,
             },
             _ => None,
@@ -412,42 +415,76 @@ impl State {
         })
     }
 
-    fn unbound(&self, key: Hash, depth: usize) -> bool {
-        match self.entries.get(&key).map(|held| &held.item) {
-            Some(Item::Node { bound: false, .. }) => true,
-            Some(Item::Node {
-                source:
-                    Source::Offered {
-                        offered: Offered::Moves { of, .. },
-                        ..
-                    },
-                ..
-            }) if depth < 64 => self.unbound(*of, depth + 1),
-            _ => false,
-        }
-    }
-
-    fn referred(&self, of: Hash, by: i64) -> Option<(Hash, i64)> {
-        match &self.entries.get(&of)?.item {
-            Item::Node {
-                source: Source::Disk { head, .. },
-                ..
-            } => match head.samples() {
-                Samples::Entry { file, shift, .. } => Some((*file, by - shift)),
-                _ => None,
-            },
-            Item::Node { bound: false, .. } => None,
-            Item::Node {
+    /// `key` and each node the one before moves, with the shift to each; a loop ends unrepeated.
+    fn chain(&self, key: Hash) -> Vec<(Hash, i64)> {
+        let mut out = vec![(key, 0)];
+        let mut seen = HashSet::from([key]);
+        while let Some(&(at, by)) = out.last()
+            && let Some(Item::Node {
                 source:
                     Source::Offered {
                         offered: Offered::Moves { of, by: more },
                         ..
                     },
                 ..
-            } => self.referred(*of, by + more),
-            Item::Node { .. } => Some((of, by)),
-            Item::Value { .. } => None,
+            }) = self.entries.get(&at).map(|held| &held.item)
+            && seen.insert(*of)
+        {
+            out.push((*of, by + more));
         }
+        out
+    }
+
+    fn foot(&self, key: Hash) -> Option<(Hash, i64)> {
+        let (foot, by) = *self.chain(key).last()?;
+        let moves = matches!(
+            self.entries.get(&foot).map(|held| &held.item),
+            Some(Item::Node {
+                source: Source::Offered {
+                    offered: Offered::Moves { .. },
+                    ..
+                },
+                ..
+            })
+        );
+        (!moves).then_some((foot, by))
+    }
+
+    fn unbound(&self, key: Hash) -> bool {
+        self.chain(key).iter().any(|(at, _)| {
+            matches!(
+                self.entries.get(at).map(|held| &held.item),
+                Some(Item::Node { bound: false, .. })
+            )
+        })
+    }
+
+    fn referred(&self, of: Hash, by: i64) -> Option<(Hash, i64)> {
+        for (at, more) in self.chain(of) {
+            match &self.entries.get(&at)?.item {
+                Item::Node {
+                    source: Source::Disk { head, .. },
+                    ..
+                } => {
+                    return match head.samples() {
+                        Samples::Entry { file, shift, .. } => Some((*file, by + more - shift)),
+                        _ => None,
+                    };
+                }
+                Item::Node { bound: false, .. } => return None,
+                Item::Node {
+                    source:
+                        Source::Offered {
+                            offered: Offered::Moves { .. },
+                            ..
+                        },
+                    ..
+                } => {}
+                Item::Node { .. } => return Some((at, by + more)),
+                Item::Value { .. } => return None,
+            }
+        }
+        None
     }
 
     /// Each part the values under `keys` hold, with the stretch of it that is the node's.
@@ -485,7 +522,10 @@ impl State {
                 let met = met.filter(|(_, held)| !held.intersect(within).is_empty());
                 (met.map(|(part, held)| clipped(&part, held)).collect(), *by)
             }
-            Offered::Moves { of, by } => (self.resident(*of, over.shifted(*by))?.0, *by),
+            Offered::Moves { of, by } => {
+                let (foot, more) = self.foot(*of)?;
+                (self.resident(foot, over.shifted(by + more))?.0, by + more)
+            }
             Offered::Held(parts) => (parts.clone(), 0),
         };
         let over = over.shifted(by);
@@ -521,26 +561,30 @@ impl State {
         }
     }
 
-    fn coverage(&self, key: Hash, depth: usize) -> Option<Vec<Extent>> {
-        let Item::Node { source, .. } = &self.entries.get(&key)?.item else {
+    fn coverage(&self, key: Hash) -> Option<Vec<Extent>> {
+        let (foot, by) = self.foot(key)?;
+        let Item::Node { source, .. } = &self.entries.get(&foot)?.item else {
             return None;
         };
-        let offered = match source {
-            Source::Disk { head, .. } => return Some(head.stored().extents().to_vec()),
-            Source::Offered { offered, .. } => offered,
-        };
-        match offered {
-            Offered::Moves { of, by } if depth < 64 => {
-                let held = self.coverage(*of, depth + 1)?;
-                Some(held.into_iter().map(|e| e.shifted(-by)).collect())
-            }
-            Offered::Moves { .. } => None,
-            Offered::Values { keys, by } => {
+        let held = match source {
+            Source::Disk { head, .. } => head.stored().extents().to_vec(),
+            Source::Offered {
+                offered: Offered::Values { keys, by },
+                ..
+            } => {
                 let shares = self.shares(keys)?.into_iter();
-                Some(shares.map(|(_, held)| held.shifted(-by)).collect())
+                shares.map(|(_, held)| held.shifted(-by)).collect()
             }
-            Offered::Held(parts) => Some(parts.iter().map(|p| p.extent()).collect()),
-        }
+            Source::Offered {
+                offered: Offered::Held(parts),
+                ..
+            } => parts.iter().map(|p| p.extent()).collect(),
+            Source::Offered {
+                offered: Offered::Moves { .. },
+                ..
+            } => return None,
+        };
+        Some(held.into_iter().map(|e| e.shifted(-by)).collect())
     }
 
     fn evict(&mut self, key: Hash) {
@@ -841,7 +885,7 @@ impl Memory {
 
     pub(crate) fn answer(&self, key: Hash, round: u64) -> Known {
         let mut state = self.locked();
-        let covered = state.coverage(key, 0);
+        let covered = state.coverage(key);
         if let Some(held) = covered.clone().filter(|held| !held.is_empty()) {
             state.hit(key, Some(round));
             let Some(Item::Node { source, .. }) = state.entries.get(&key).map(|held| &held.item)
@@ -978,7 +1022,7 @@ impl Memory {
         state.bytes += held.bytes();
         state.entries.insert(key, held);
         state.misses.remove(&key);
-        let covered = state.coverage(key, 0).is_some_and(|held| !held.is_empty());
+        let covered = state.coverage(key).is_some_and(|held| !held.is_empty());
         if settled && !covered && !bound {
             state.discard(key);
             return;
