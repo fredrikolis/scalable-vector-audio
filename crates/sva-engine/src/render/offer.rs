@@ -290,11 +290,18 @@ mod tests {
     /// The steps a render folds, offering and bounding, over a chain `depth` nodes deep, each
     /// reading the one below 10 ms late, every node a miss.
     fn folded(depth: usize) -> u64 {
+        folded_as(depth, "@P(t - 10ms)")
+    }
+
+    fn folded_as(depth: usize, body: &str) -> u64 {
         let mut files = sva_ast::Composition::new();
         let decays = "sample(crop(sin(2*pi*440*t)*exp(-t/0.1), 0s, 10s))\n";
         files.insert("c0", decays);
         for k in 1..=depth {
-            files.insert(format!("c{k}"), format!("@c{}(t - 10ms)\n", k - 1));
+            files.insert(
+                format!("c{k}"),
+                body.replace('P', &format!("c{}", k - 1)) + "\n",
+            );
         }
         let g = sva_ast::load(&files).expect("a composition");
         let before = crate::steps::taken();
@@ -309,5 +316,14 @@ mod tests {
         let (short, long) = (folded(100), folded(400));
         assert!(short > 0);
         assert!(long <= 4 * short, "{short} then {long}");
+    }
+
+    /// Four times the nodes, under five times the steps.
+    #[test]
+    fn a_chain_of_scaled_and_summed_reads_folds_steps_linear_in_its_nodes() {
+        for body in ["0.9*@P(t - 10ms)", "@P(t)*0.5 + @P(t - 10ms)*0.4"] {
+            let (short, long) = (folded_as(50, body), folded_as(200, body));
+            assert!(long < 5 * short, "{body}: {short} then {long}");
+        }
     }
 }

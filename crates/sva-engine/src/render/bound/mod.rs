@@ -48,8 +48,8 @@ enum Form {
     Filter(Ringing, Grid),
     /// Every value a draw takes.
     Within(f64),
-    /// A read at `k*t + c`, `k >= 0`, at most `step` early; any other time reads anywhere.
-    Read(Rc<Tail>, Map),
+    /// A read at `k*t + c - step`, `k >= 0`, scaled; any other time reads anywhere.
+    Read(Rc<Tail>, Map, f64),
 }
 
 /// Where a node is nonzero, its prune included; `false` where it is still being found.
@@ -104,7 +104,7 @@ impl Tail {
             Form::Atoms(atoms, _) => steady(atoms),
             Form::Written(range, reads) => range.floor(&|n| reads[&n].floor).unwrap_or(0.0),
             Form::Within(m) => *m,
-            Form::Read(source, _) => source.floor,
+            Form::Read(source, _, gain) => times(*gain, source.floor),
             Form::Filter(..) | Form::Listed(_) => 0.0,
         };
         Tail::floored(form, floor)
@@ -262,10 +262,10 @@ impl Bounding<'_> {
                 self.open.remove(&id);
                 let inner = inner?;
                 return Tail::new(match &inner.form {
-                    Form::Read(foot, under) if let Some(map) = composed(read, *under) => {
-                        Form::Read(Rc::clone(foot), map)
+                    Form::Read(foot, under, gain) if let Some(map) = composed(read, *under) => {
+                        Form::Read(Rc::clone(foot), map, *gain)
                     }
-                    _ => Form::Read(inner, read),
+                    _ => Form::Read(inner, read, 1.0),
                 });
             }
             Value::Filter {
@@ -323,7 +323,7 @@ impl Bounding<'_> {
             self.written.insert(id, range);
             return None;
         }
-        Tail::new(Form::Written(range, reads))
+        Tail::new(linear(&range, &reads).unwrap_or(Form::Written(range, reads)))
     }
 }
 
@@ -397,8 +397,10 @@ impl Tail {
                 ringing.from(grid.count(t).floor().clamp(-9e18, 9e18) as i64)
             }
             Form::Within(m) => *m,
-            Form::Read(source, Some((k, c, step))) if *k >= 0.0 => read(source, k * t + c - step),
-            Form::Read(source, _) => read(source, f64::NEG_INFINITY),
+            Form::Read(source, Some((k, c, step)), gain) if *k >= 0.0 => {
+                times(*gain, read(source, k * t + c - step))
+            }
+            Form::Read(source, _, gain) => times(*gain, read(source, f64::NEG_INFINITY)),
         }
     }
 }
@@ -461,6 +463,42 @@ fn atoms_of(sum: &SpectralSum) -> Vec<SpectralAtom> {
 fn steady(atoms: &[SpectralAtom]) -> f64 {
     let steady = atoms.iter().filter(|a| fate(a) == Fate::Steady);
     steady.map(|a| a.c.abs()).fold(0.0, f64::max)
+}
+
+fn times(gain: f64, bound: f64) -> f64 {
+    match gain == 0.0 {
+        true => 0.0,
+        false => gain * bound,
+    }
+}
+
+/// A form linear in reads of one foot on one clock, as one scaled read of it where any reads
+/// earliest: bounds never rise with their instant, and the span is homogeneous in its reads.
+fn linear(range: &Range, reads: &BTreeMap<NodeId, Rc<Tail>>) -> Option<Form> {
+    if reads.is_empty() || !range.linear() {
+        return None;
+    }
+    let identity = Some((1.0, 0.0, 0.0));
+    let feet = reads.values().map(|tail| match &tail.form {
+        Form::Read(foot, map, gain) => (foot, *map, *gain),
+        _ => (tail, identity, 1.0),
+    });
+    let feet: Vec<(&Rc<Tail>, Map, f64)> = feet.collect();
+    let (foot, first, _) = feet[0];
+    let (k, ..) = first?;
+    let mut earliest = f64::INFINITY;
+    for (other, map, _) in &feet {
+        let (k_n, c, step) = (*map)?;
+        if !Rc::ptr_eq(other, foot) || k_n != k || k < 0.0 {
+            return None;
+        }
+        earliest = earliest.min(c - step);
+    }
+    let gains: BTreeMap<NodeId, f64> = reads.keys().zip(&feet).map(|(n, f)| (*n, f.2)).collect();
+    let span = range.from(f64::NEG_INFINITY, &|n, _| gains[&n])?;
+    let gain = (span.reach() + span.err) * (1.0 + OP);
+    gain.is_finite()
+        .then(|| Form::Read(Rc::clone(foot), Some((k, earliest, 0.0)), gain))
 }
 
 /// A read of a read as one read of what the inner one reads, so a chain of them bounds in one

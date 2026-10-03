@@ -177,6 +177,24 @@ impl Range {
         }
     }
 
+    /// Whether its span is monotone in each node's magnitude and scales with all at once.
+    pub(super) fn linear(&self) -> bool {
+        match self {
+            Range::Node(_) => true,
+            Range::Add(parts) | Range::Wide(parts) => parts.iter().all(Range::linear),
+            Range::Mul(parts) => {
+                let real = |p: &&Range| matches!(p, Range::Real(_));
+                let (_, rest): (Vec<&Range>, Vec<&Range>) = parts.iter().partition(real);
+                matches!(rest.as_slice(), [one] if one.linear())
+            }
+            Range::Div(num, den) => {
+                matches!(**den, Range::Real(c) if c != 0.0 && c.is_finite()) && num.linear()
+            }
+            Range::Crop(of, ..) => of.linear(),
+            _ => false,
+        }
+    }
+
     pub(super) fn nodes(&self, out: &mut Vec<NodeId>) {
         match self {
             Range::Node(id) => out.push(*id),
