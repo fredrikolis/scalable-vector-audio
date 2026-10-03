@@ -1,7 +1,7 @@
-// Concern: runs each op of one program over a block of samples, slot after slot | Non-concern: which program runs where, or how long a block may be | IO: (Program, reads, states) -> each slot's samples
+// Concern: runs one program over a block op by op, its recurrent ops sample by sample | Non-concern: which program runs where, how long a block runs | IO: (Program, reads, states) -> each slot's samples
 
 use super::ops::Op;
-use super::read::Source;
+use super::read::{Fresh, Source};
 use super::renderer::{Grid, Slot};
 use super::tape::Window;
 use super::{Program, State, part};
@@ -15,6 +15,8 @@ pub(super) struct Block {
     values: Vec<f64>,
     offsets: Vec<usize>,
     times: Vec<f64>,
+    /// Each slot run sample by sample over this block, its own past read inside it.
+    pub(super) recurrent: Vec<bool>,
 }
 
 impl Block {
@@ -30,6 +32,7 @@ impl Block {
             values: vec![0.0; end],
             offsets,
             times: vec![0.0; BLOCK],
+            recurrent: Vec::with_capacity(widths.len()),
         }
     }
 
@@ -49,25 +52,27 @@ pub(super) struct Here<'a> {
     pub(super) grid: Grid,
 }
 
-impl Here<'_> {
-    fn source(&self, slot: Slot, n: i64) -> Source<'_> {
+impl<'a> Here<'a> {
+    fn source(&self, slot: Slot, n: i64, fresh: Fresh<'a>) -> Source<'a> {
         match slot {
             Slot::Read(id) => Source {
                 window: self.reads[id.0 as usize],
                 limit: None,
+                fresh,
             },
             Slot::Own => Source {
                 window: self.own,
                 limit: Some(n),
+                fresh,
             },
         }
     }
 }
 
-/// Samples `[from, from + len)`, every op over the block before the next. How many samples
-/// hold, and the refusal the first sample short of that met: each op runs only up to the
-/// sample some op before it refused at, so that refusal is the one a sample-at-a-time run
-/// meets first.
+/// Samples `[from, from + len)`: every op the block's recurrence leaves out over the block
+/// before the next, then the recurrent ops sample after sample. How many samples hold, and
+/// the refusal a sample-at-a-time run meets first: the earliest sample, and within it the
+/// earliest op.
 pub(super) fn run(
     p: &Program,
     block: &mut Block,
@@ -75,16 +80,35 @@ pub(super) fn run(
     states: &mut [State],
     (from, len): (i64, usize),
 ) -> (usize, Option<SampleError>) {
+    #[cfg(test)]
+    super::counts::PASSES.with(|n| n.set(n.get() + 1));
     for (i, t) in block.times[..len].iter_mut().enumerate() {
         *t = here.grid.instant(from + i as i64);
     }
-    let (mut held, mut refused) = (len, None);
-    for slot in 0..p.ops.len() {
-        if let Err((at, e)) = fill(p, slot, block, here, states, (from, held)) {
-            (held, refused) = (at, Some(e));
+    let mut first: Option<(usize, usize, SampleError)> = None;
+    let held = |first: &Option<(usize, usize, SampleError)>| first.as_ref().map_or(len, |f| f.0);
+    let (recurrent, whole): (Vec<usize>, Vec<usize>) =
+        (0..p.ops.len()).partition(|s| block.recurrent[*s]);
+    for slot in whole {
+        if let Err((at, e)) = fill(p, slot, block, here, states, (from, 0, held(&first))) {
+            first = Some((at, slot, e));
         }
     }
-    (held, refused)
+    'samples: for i in 0..len {
+        for &slot in &recurrent {
+            if first
+                .as_ref()
+                .is_some_and(|(at, op, _)| (i, slot) > (*at, *op))
+            {
+                break 'samples;
+            }
+            if let Err((at, e)) = fill(p, slot, block, here, states, (from, i, i + 1)) {
+                first = Some((at, slot, e));
+                break 'samples;
+            }
+        }
+    }
+    (held(&first), first.map(|(_, _, e)| e))
 }
 
 type Refused = (usize, SampleError);
@@ -92,9 +116,14 @@ type Refused = (usize, SampleError);
 /// Sample `i` of the block, at index `n`, into its components.
 type Sample<'a> = dyn FnMut(usize, i64, &mut [f64]) -> Result<(), SampleError> + 'a;
 
-/// `f` at each sample in order, and the first it refuses at.
-fn each(out: &mut [f64], (from, w): (i64, usize), f: &mut Sample) -> Result<(), Refused> {
-    for (i, sample) in out.chunks_exact_mut(w).enumerate() {
+/// `f` at each sample in order from the block's sample `at`, and the first it refuses at.
+fn each(
+    out: &mut [f64],
+    (from, at, w): (i64, usize, usize),
+    f: &mut Sample,
+) -> Result<(), Refused> {
+    for (k, sample) in out.chunks_exact_mut(w).enumerate() {
+        let i = at + k;
         f(i, from + i as i64, sample).map_err(|e| (i, e))?;
     }
     Ok(())
@@ -144,18 +173,32 @@ fn binary(
     }
 }
 
+/// Samples `[start, end)` of the block, of one slot.
 fn fill(
     p: &Program,
     slot: usize,
     block: &mut Block,
     here: &Here,
     states: &mut [State],
-    (from, len): (i64, usize),
+    (from, start, end): (i64, usize, usize),
 ) -> Result<(), Refused> {
-    let (op, w) = (&p.ops[slot], p.widths[slot]);
-    let (done, rest) = block.values.split_at_mut(block.offsets[slot]);
-    let out = &mut rest[..w * len];
-    let (offsets, times, args) = (&block.offsets, &block.times, &p.args[slot]);
+    #[cfg(test)]
+    super::counts::FILLS.with(|n| n.set(n.get() + 1));
+    let (op, w, len) = (&p.ops[slot], p.widths[slot], end - start);
+    let (offsets, times, args) = (&block.offsets, &block.times[start..end], &p.args[slot]);
+    let (done, rest) = block.values.split_at_mut(offsets[slot]);
+    let (own, after) = rest.split_at_mut(offsets[slot + 1] - offsets[slot]);
+    let (before, own) = own.split_at_mut(start * w);
+    let out = &mut own[..w * len];
+    let top = p.ops.len() - 1;
+    let fresh = Fresh {
+        from,
+        values: match slot == top {
+            true => before,
+            false => &after[offsets[top] - offsets[slot + 1]..][..start * p.widths[top]],
+        },
+        width: p.widths[top],
+    };
     let arg = |k: usize, i: usize| {
         let s = args[k];
         let w = p.widths[s];
@@ -163,7 +206,7 @@ fn fill(
     };
     let operand = |s: usize| {
         let w = p.widths[s];
-        (&done[offsets[s]..][..w * len], w)
+        (&done[offsets[s] + start * w..][..w * len], w)
     };
     match op {
         Op::Const(v) => {
@@ -171,23 +214,23 @@ fn fill(
             Ok(())
         }
         Op::Time => {
-            out.copy_from_slice(&times[..len]);
+            out.copy_from_slice(times);
             Ok(())
         }
-        Op::Wrap(wrap) => each(out, (from, w), &mut |_, n, s| {
+        Op::Wrap(wrap) => each(out, (from, start, w), &mut |_, n, s| {
             s[0] = wrap
                 .and_then(|wrap| wrap.at(n))
                 .ok_or(SampleError::UnreadablePosition)?;
             Ok(())
         }),
-        Op::Noise { seed, at } => each(out, (from, w), &mut |_, n, s| {
+        Op::Noise { seed, at } => each(out, (from, start, w), &mut |_, n, s| {
             let step = at.ok_or(SampleError::UnreadablePosition)?.at(n);
             s[0] = sva_formula::draw(*seed, step);
             Ok(())
         }),
         Op::Indexed {
             slot, at, reach, ..
-        } => each(out, (from, w), &mut |i, n, s| {
+        } => each(out, (from, start, w), &mut |i, n, s| {
             let k = p.indices[*at]
                 .at(n, here.grid, &|j| arg(*j, i)[0])
                 .ok_or(SampleError::UnreadablePosition)?;
@@ -196,26 +239,29 @@ fn fill(
             {
                 return Err(SampleError::ReadsAhead { at: k });
             }
-            here.source(*slot, n).nearest(k, s)
+            here.source(*slot, n, fresh).nearest(k, s)
         }),
-        Op::Instant { at, .. } => each(out, (from, w), &mut |i, n, s| {
+        Op::Instant { at, .. } => each(out, (from, start, w), &mut |i, n, s| {
             let k = p.indices[*at]
                 .at(n, here.grid, &|j| arg(*j, i)[0])
                 .ok_or(SampleError::UnreadablePosition)?;
             s[0] = here.grid.instant(k);
             Ok(())
         }),
-        Op::Read { slot, at } => each(out, (from, w), &mut |_, n, s| {
-            here.source(*slot, n).mapped(*at, n, s)
-        }),
-        Op::ReadScaled { slot, at, by } => each(out, (from, w), &mut |_, n, s| {
-            here.source(*slot, n).mapped(*at, n, s)?;
-            for v in s.iter_mut() {
-                *v *= by;
+        Op::Read { slot, at } | Op::ReadScaled { slot, at, .. } => {
+            let n = from + start as i64;
+            let copied = here.source(*slot, n, fresh).copied(*at, n, (out, w));
+            if !copied {
+                each(out, (from, start, w), &mut |_, n, s| {
+                    here.source(*slot, n, fresh).mapped(*at, n, s)
+                })?;
+            }
+            if let Op::ReadScaled { by, .. } = op {
+                out.iter_mut().for_each(|v| *v *= by);
             }
             Ok(())
-        }),
-        Op::Formula { at } => each(out, (from, w), &mut |i, n, s| {
+        }
+        Op::Formula { at } => each(out, (from, start, w), &mut |i, n, s| {
             for (c, v) in s.iter_mut().enumerate() {
                 *v = p.formulas[*at]
                     .at(c, part(arg(0, i), c))
@@ -251,7 +297,7 @@ fn fill(
         Op::Map(f) => {
             for (i, s) in out.chunks_exact_mut(w).enumerate() {
                 for (c, v) in s.iter_mut().enumerate() {
-                    *v = f.apply(part(arg(0, i), c));
+                    *v = f.apply(part(arg(0, start + i), c));
                 }
             }
             Ok(())
@@ -264,7 +310,7 @@ fn fill(
             fall,
         } => {
             for (i, s) in out.chunks_exact_mut(w).enumerate() {
-                let n = from + i as i64;
+                let n = from + (start + i) as i64;
                 let gain = match window.0 <= n && n < window.1 {
                     true => crate::collapse::shoulders(times[i], *a, *b, *rise, *fall),
                     false => 0.0,
@@ -272,7 +318,7 @@ fn fill(
                 for (c, v) in s.iter_mut().enumerate() {
                     *v = match gain {
                         0.0 => 0.0,
-                        gain => part(arg(0, i), c) * gain,
+                        gain => part(arg(0, start + i), c) * gain,
                     };
                 }
             }
@@ -282,7 +328,7 @@ fn fill(
             for (i, s) in out.chunks_exact_mut(w).enumerate() {
                 let mut c = 0;
                 for k in 0..args.len() {
-                    for &v in arg(k, i) {
+                    for &v in arg(k, start + i) {
                         s[c] = v;
                         c += 1;
                     }
@@ -292,17 +338,17 @@ fn fill(
         }
         Op::Channel(k) => {
             for (i, v) in out.iter_mut().enumerate() {
-                *v = arg(0, i)[*k];
+                *v = arg(0, start + i)[*k];
             }
             Ok(())
         }
-        Op::Filter { site, from: start } => {
+        Op::Filter { site, from: begins } => {
             let State::Filter(filter) = &mut states[site.0 as usize] else {
                 unreachable!("a filter op names a filter site")
             };
             let sr = here.grid.sr();
-            each(out, (from, w), &mut |i, n, s| {
-                match n < *start {
+            each(out, (from, start, w), &mut |i, n, s| {
+                match n < *begins {
                     true => s.fill(0.0),
                     false => filter.process(arg(0, i), arg(1, i), arg(2, i), arg(3, i), s, sr, n),
                 }
@@ -310,13 +356,13 @@ fn fill(
             })
         }
         Op::Physics {
-            site, from: start, ..
+            site, from: begins, ..
         } => {
             let State::Physics(solver) = &mut states[site.0 as usize] else {
                 unreachable!("a physics op names a physics site")
             };
-            each(out, (from, w), &mut |i, n, s| {
-                if n < *start {
+            each(out, (from, start, w), &mut |i, n, s| {
+                if n < *begins {
                     s.fill(0.0);
                     return Ok(());
                 }

@@ -86,6 +86,10 @@ impl Map {
         }
     }
 
+    pub fn moved(self) -> Option<i64> {
+        (self.a == 1 && self.d == 1).then(|| i64::try_from(self.b).ok())?
+    }
+
     pub fn at(self, n: i64) -> i64 {
         let clamp = |k: i128| k.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
         self.whole_at(n)

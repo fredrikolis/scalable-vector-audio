@@ -165,6 +165,15 @@ impl<'a> Window<'a> {
         }
     }
 
+    /// Samples `[k, k + len)` of component `c`, where held unfolded.
+    pub fn run(&self, c: usize, k: i64, len: usize) -> Option<&'a [f64]> {
+        if self.period.is_some() {
+            return None;
+        }
+        let at = usize::try_from(k.checked_add(self.offset)?.checked_sub(self.base)?).ok()?;
+        self.planes.get(c)?.get(at..at.checked_add(len)?)
+    }
+
     /// A sample not held inside the support is a reader past its extent.
     pub fn at(&self, c: usize, k: i64) -> f64 {
         let k = self.fold(k);

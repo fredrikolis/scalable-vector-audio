@@ -204,7 +204,8 @@ impl Machine {
         let p = &self.program;
         while own.end() < to {
             let from = own.end();
-            let len = p.block(from, (to - from).min(BLOCK as i64) as usize);
+            let most = (to - from).min(BLOCK as i64) as usize;
+            let len = p.block(from, most, &mut self.block.recurrent);
             let here = Here {
                 reads,
                 own: own.window(),
@@ -267,41 +268,67 @@ impl Machine {
 }
 
 impl Program {
-    /// Up to `most` samples from `from`, each reading its own past only before `from`.
-    fn block(&self, from: i64, most: usize) -> usize {
-        let mut len = most;
-        for op in &self.ops {
-            match op {
-                Op::Read {
-                    slot: Slot::Own,
-                    at,
-                }
-                | Op::ReadScaled {
-                    slot: Slot::Own,
-                    at,
-                    ..
-                } => {
-                    let last = |len: usize| from + len as i64 - 1;
-                    while len > 1 && at.at(from).max(at.at(last(len))) >= from {
-                        len /= 2;
-                    }
-                }
-                Op::Indexed {
-                    slot: Slot::Own,
-                    reach,
-                    ..
-                } => {
-                    len = match reach {
-                        Some((_, most)) if *most < 0 => len.min(most.unsigned_abs() as usize),
-                        _ => 1,
-                    }
-                }
-                _ => {}
-            }
+    /// Up to `most` samples from `from`, and the slots run sample by sample: each reading its
+    /// own past inside the block, and what reads one.
+    fn block(&self, from: i64, most: usize, recurrent: &mut Vec<bool>) -> usize {
+        let reach: Vec<Option<usize>> = self
+            .ops
+            .iter()
+            .map(|op| own_reach(op, from, most))
+            .collect();
+        let len = reach
+            .iter()
+            .flatten()
+            .filter(|n| **n >= RUN)
+            .fold(most, |len, n| len.min(*n))
+            .max(1);
+        recurrent.clear();
+        for (slot, reach) in reach.iter().enumerate() {
+            let reads = self.args[slot].iter().any(|a| recurrent[*a]);
+            recurrent.push(reads || reach.is_some_and(|n| n < len));
         }
-        len.max(1)
+        len
     }
 }
+
+/// How long a block from `from` may run with an own-past read reading only before it.
+fn own_reach(op: &Op, from: i64, most: usize) -> Option<usize> {
+    match op {
+        Op::Read {
+            slot: Slot::Own,
+            at,
+        }
+        | Op::ReadScaled {
+            slot: Slot::Own,
+            at,
+            ..
+        } => {
+            let last = |len: usize| from + len as i64 - 1;
+            let mut len = most;
+            while len > 1 && at.at(from).max(at.at(last(len))) >= from {
+                len /= 2;
+            }
+            Some(match at.at(from).max(at.at(last(len))) < from {
+                true => len,
+                false => 0,
+            })
+        }
+        Op::Indexed {
+            slot: Slot::Own,
+            reach,
+            ..
+        } => Some(match reach {
+            Some((_, most)) if *most < 0 => {
+                usize::try_from(most.unsigned_abs()).unwrap_or(usize::MAX)
+            }
+            _ => 0,
+        }),
+        _ => None,
+    }
+}
+
+/// The fewest samples a block an own-past read shortens runs; a nearer read runs per sample.
+const RUN: usize = 16;
 
 fn arity_of(op: &Op) -> usize {
     match op {
@@ -317,5 +344,107 @@ fn arity_of(op: &Op) -> usize {
         Op::Sub | Op::Div | Op::Pow | Op::Zip(_) => 2,
         Op::Add(n) | Op::Mul(n) | Op::Join(n) => *n,
         Op::Filter { .. } => 4,
+    }
+}
+
+/// Passes over a block, ops run over part of one, and samples read one by one, per thread.
+#[cfg(test)]
+mod counts {
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(super) static PASSES: Cell<u64> = const { Cell::new(0) };
+        pub(super) static FILLS: Cell<u64> = const { Cell::new(0) };
+        pub(super) static READS: Cell<u64> = const { Cell::new(0) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::counts::{FILLS, PASSES, READS};
+    use super::renderer::{BufId, Grid, Map, NodeRenderer, Slot};
+    use super::*;
+    use crate::collapse::Extent;
+
+    const LONG: [i64; 2] = [1489, 1721];
+
+    /// A reverb's loop: two lines fed back through a mix, each damped by its last sample.
+    fn feedback() -> NodeRenderer {
+        let own = |lag: i64, k: usize| NodeRenderer::Channel {
+            x: Box::new(NodeRenderer::Read {
+                slot: Slot::Own,
+                map: Map::shift(-lag),
+            }),
+            k,
+        };
+        let input = NodeRenderer::Read {
+            slot: Slot::Read(BufId(0)),
+            map: Map::shift(0),
+        };
+        let line = |k: usize| {
+            let mix = LONG
+                .iter()
+                .enumerate()
+                .map(|(j, lag)| NodeRenderer::Mul(vec![NodeRenderer::Const(0.6), own(*lag, j)]));
+            let fed = NodeRenderer::Add(std::iter::once(input.clone()).chain(mix).collect());
+            NodeRenderer::Add(vec![
+                NodeRenderer::Mul(vec![NodeRenderer::Const(0.7), fed]),
+                NodeRenderer::Mul(vec![NodeRenderer::Const(0.2), own(1, k)]),
+            ])
+        };
+        NodeRenderer::Join(vec![line(0), line(1)])
+    }
+
+    fn ran(to: i64, step: i64) -> (Vec<Vec<f64>>, [u64; 3]) {
+        let layout = Layout {
+            grid: Grid::of(48_000),
+            width: 2,
+            read_widths: vec![1],
+            sites: Vec::new(),
+        };
+        let spanned =
+            Spanned::new(&feedback(), &layout, (0, to), &[Extent::EVERYWHERE]).expect("a program");
+        let mut input = Tape::new(1, to as usize, 0);
+        (0..to).for_each(|n| input.push(0, f64::from(u8::from(n % 4800 == 0))));
+        let mut out = Tape::new(2, to as usize, 0);
+        let mut machine = Machine::over(&spanned, 0).expect("a machine");
+        let counted = || [&PASSES, &FILLS, &READS].map(|c| c.with(std::cell::Cell::get));
+        let before = counted();
+        let mut at = 0;
+        while at < to {
+            at = (at + step).min(to);
+            machine
+                .run_to(at, &[input.window()], &mut out)
+                .expect("samples");
+        }
+        let after = counted();
+        (out.into_planes(), [0, 1, 2].map(|k| after[k] - before[k]))
+    }
+
+    /// A pass per block, the far reads copied whole and only the damping run sample by sample,
+    /// writing what a sample-at-a-time run does.
+    #[test]
+    fn a_loop_reading_itself_one_sample_back_runs_a_pass_per_block() {
+        let to = 24_000;
+        let (whole, [passes, fills, reads]) = ran(to, to);
+        let (single, [one_by_one, ..]) = ran(to, 1);
+        assert_eq!(whole, single);
+        assert_eq!(one_by_one, to as u64);
+        let blocks = (to as u64).div_ceil(BLOCK as u64);
+        assert!(passes <= blocks + 1, "{passes} passes over {blocks} blocks");
+        let per_sample = 2 * 4 + 1;
+        let ops = feedback().ops(&Layout {
+            grid: Grid::of(48_000),
+            width: 2,
+            read_widths: vec![1],
+            sites: Vec::new(),
+        });
+        let ops = ops.expect("ops") as u64;
+        assert!(
+            fills <= passes * ops + per_sample * to as u64,
+            "{fills} op runs"
+        );
+        let far = 2 * 2 * LONG.iter().sum::<i64>() as u64;
+        assert!(reads <= 2 * 2 * to as u64 + far, "{reads} reads");
     }
 }
