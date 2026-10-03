@@ -117,3 +117,41 @@ fn a_refused_render_leaves_the_session_as_it_was() {
     assert_eq!(typed(&after), share);
     same_as_alone(&after, &edited);
 }
+
+/// A note through a tone knob at `cutoff`.
+fn knob(cutoff: u32) -> Graph {
+    graph_of(
+        "retype-knob",
+        &[
+            ("note", "sample(sin(2*pi*220*t))*0.5\n"),
+            ("tone", "lowpass(x, cutoff=cutoff, q=0.7)\n"),
+            ("master", &format!("@tone(t, x=@note, cutoff={cutoff})\n")),
+        ],
+    )
+}
+
+fn turned(session: &mut Session, cutoff: u32, tier: &Tier) -> (Vec<String>, Render) {
+    let mut config = config();
+    config.volatile = vec!["cutoff".to_string()];
+    let held = render_in(session, &knob(cutoff), "master", config.clone(), tier).now();
+    let held = held.unwrap_or_else(|e| panic!("{e}"));
+    let alone = render_over(&knob(cutoff), "master", config, &Tier::default()).now();
+    assert_eq!(bits(&held), bits(&alone.unwrap_or_else(|e| panic!("{e}"))));
+    let stats = held.cache_stats.as_ref().expect("a render over memory");
+    (stats.typed.clone(), held)
+}
+
+/// A volatile knob's move types the nodes it reaches once, and the composition with the knob at
+/// its stand-in not at all.
+#[test]
+fn a_knob_move_types_only_what_the_knob_reaches() {
+    let mut session = Session::default();
+    let tier = Tier::default();
+    turned(&mut session, 400, &tier);
+    let (moved, _) = turned(&mut session, 800, &tier);
+    let reached = |path: &String| path == "master" || path.starts_with("tone(");
+    assert!(moved.iter().all(reached), "{moved:?}");
+    assert_eq!(moved.len(), 2, "{moved:?}");
+    let (again, _) = turned(&mut session, 800, &tier);
+    assert_eq!(again, Vec::<String>::new());
+}

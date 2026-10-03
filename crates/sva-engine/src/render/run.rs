@@ -42,7 +42,8 @@ pub async fn render_in<B: Backend>(
     let instances = instantiate::instantiate(graph, target, config.rate)?;
     let root = instances.instance_of(target)?;
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&root))?;
-    let typed = session.typed(&instances, &order)?;
+    let Session { own, stand_in } = session;
+    let typed = own.typed(&instances, &order)?;
     let lowered = typed.lowered().to_vec();
     let keys = keys(typed, &order, &config);
     let mut found = frontier::Frontier::from((&instances, &order), &keys, &root, &config);
@@ -63,6 +64,7 @@ pub async fn render_in<B: Backend>(
         held.cache_stats = Some(stats);
         return Ok(held);
     }
+    let mut retyped = lowered;
     let mut held = loop {
         found.walked(tier, round).await;
         let tys = stood(&found.stored);
@@ -77,9 +79,10 @@ pub async fn render_in<B: Backend>(
         let mut held = planned_over(
             (graph, target, &instances),
             (tys, id),
-            config.clone(),
+            (config.clone(), &mut *stand_in),
             &bounds,
         )?;
+        retyped.append(&mut held.stand_in_typed);
         let short = match (&mut held.table, held.range) {
             (Some(table), Some(range)) => {
                 let mut needs = table.needs(range);
@@ -124,7 +127,7 @@ pub async fn render_in<B: Backend>(
         computed.map(|(_, v)| v.name.clone()).collect()
     });
     if let Some(stats) = &mut held.cache_stats {
-        stats.typed = lowered;
+        stats.typed = retyped;
         stats.planned = computed;
         stats.unslotted = held.unslotted.clone();
     }

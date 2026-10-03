@@ -135,6 +135,8 @@ pub struct Render {
     /// The price of what its pulls computed.
     computed: u128,
     pub(crate) unslotted: Option<String>,
+    /// Each node typed with every volatile parameter at its stand-in.
+    pub(crate) stand_in_typed: Vec<String>,
 }
 
 impl Render {
@@ -162,6 +164,7 @@ impl Render {
             table: None,
             computed: 0,
             unslotted: None,
+            stand_in_typed: Vec::new(),
         }
     }
 
@@ -278,13 +281,14 @@ fn planned(
         tys,
         root,
     } = prepared;
+    let config = (config, &mut session::Typed::default());
     planned_over((graph, target, &instances), (tys, root), config, bounds)
 }
 
 fn planned_over(
     (graph, target, instances): (&Graph, &str, &instantiate::Instances),
     (tys, root): (Typing, NodeId),
-    config: RenderConfig,
+    (config, stand_in): (RenderConfig, &mut session::Typed),
     bounds: &BTreeSet<NodeId>,
 ) -> Result<Render, EngineError> {
     let schedule = schedule::plan(&tys, root, &config.asks);
@@ -295,11 +299,12 @@ fn planned_over(
     let mut held = Render::shell(tys, root, config, schedule);
     held.bindings = bindings;
     ranged(&mut held, bounds)?;
-    let volatile = volatile::mark((graph, instances), &held, target)?;
+    let volatile = volatile::mark((graph, instances), &held, (target, stand_in))?;
     if let Some(table) = &mut held.table {
         table.slots(|id| volatile.slot(id));
     }
     held.unslotted = volatile.unslotted.clone();
+    held.stand_in_typed = volatile.typed;
     Ok(held)
 }
 

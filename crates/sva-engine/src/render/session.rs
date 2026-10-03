@@ -10,6 +10,13 @@ use crate::typing::Typing;
 /// Renders made in turn: each types only what changed since the last, and what reads it.
 #[derive(Default)]
 pub struct Session {
+    pub(super) own: Typed,
+    /// The composition with every volatile parameter at its stand-in.
+    pub(super) stand_in: Typed,
+}
+
+#[derive(Default)]
+pub(crate) struct Typed {
     held: Option<Held>,
 }
 
@@ -19,8 +26,8 @@ struct Held {
     typing: Typing,
 }
 
-impl Session {
-    /// On a refusal the session holds what it held.
+impl Typed {
+    /// On a refusal it holds what it held.
     pub(crate) fn typed(
         &mut self,
         instances: &Instances,

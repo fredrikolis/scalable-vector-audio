@@ -8,6 +8,7 @@ use sva_formula::{Hash, NodeId};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Instances, ScopeId};
 use crate::render::Render;
+use crate::render::session::Typed;
 use crate::typing::{Typing, Value};
 
 /// The base of each volatile node's slot; a node absent here keeps every value it stores.
@@ -16,6 +17,8 @@ pub(super) struct Volatile {
     slots: BTreeMap<NodeId, Hash>,
     /// Why the knobs' values keep an entry each: the stand-in refused.
     pub(super) unslotted: Option<String>,
+    /// Each node the stand-in typed.
+    pub(super) typed: Vec<String>,
 }
 
 impl Volatile {
@@ -30,7 +33,7 @@ impl Volatile {
 pub(super) fn mark(
     (graph, inst): (&Graph, &Instances),
     held: &Render,
-    target: &str,
+    (target, stand_in): (&str, &mut Typed),
 ) -> Result<Volatile, EngineError> {
     let (tys, config) = (&held.tys, &held.config);
     if config.volatile.is_empty() {
@@ -43,21 +46,21 @@ pub(super) fn mark(
         bound: HashMap::new(),
     };
     let instances: BTreeSet<&str> = inst.paths().filter(|p| reach.instance(p)).collect();
-    let (paired, at) = match stand_in(graph, target, config) {
+    let (paired, at) = match at_stand_in(graph, target, (config, stand_in)) {
         Ok(held) => held,
         Err(refused) => {
             return Ok(Volatile {
-                slots: BTreeMap::new(),
                 unslotted: Some(refused.to_string()),
+                ..Volatile::default()
             });
         }
     };
     let (mut marked, mut slots, mut unslotted) = (HashMap::new(), BTreeMap::new(), None);
-    for (id, at) in pair((tys, held.root), (&paired, at)) {
+    for (id, at) in pair((tys, held.root), (paired, at)) {
         if !volatile(tys, id, &instances, &mut marked) {
             continue;
         }
-        match crate::refs::identity(&paired, at) {
+        match crate::refs::identity(paired, at) {
             Ok(identity) => {
                 let words = [u64::from(config.rate), u64::from(tys.ty(id).width)];
                 slots.insert(id, crate::cache::mixed(identity, &words));
@@ -67,15 +70,20 @@ pub(super) fn mark(
             }
         }
     }
-    Ok(Volatile { slots, unslotted })
+    let typed = paired.lowered().to_vec();
+    Ok(Volatile {
+        slots,
+        unslotted,
+        typed,
+    })
 }
 
 /// The target typed with each volatile parameter at a stand-in, and its root.
-fn stand_in(
+fn at_stand_in<'t>(
     graph: &Graph,
     target: &str,
-    config: &super::RenderConfig,
-) -> Result<(Typing, NodeId), EngineError> {
+    (config, stand_in): (&super::RenderConfig, &'t mut Typed),
+) -> Result<(&'t Typing, NodeId), EngineError> {
     let names = &config.volatile;
     let held = |name: &str| {
         let at = names.iter().position(|n| n == name)?;
@@ -85,7 +93,7 @@ fn stand_in(
     let inst = crate::instantiate::instantiate(&rebound, target, config.rate)?;
     let root = inst.instance_of(target)?;
     let order = crate::schedule::schedule_from(&inst, std::slice::from_ref(&root))?;
-    let tys = crate::typing::infer_all(&inst, &order)?;
+    let tys = stand_in.typed(&inst, &order)?;
     let at = tys.id(&root).ok_or(EngineError::UnknownNode(root))?;
     Ok((tys, at))
 }
