@@ -111,7 +111,7 @@ pub struct Node {
 }
 
 /// Every node keeps one id while held; a node lowered anew takes a free one.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Typing {
     nodes: Vec<Option<Node>>,
     free: Vec<u32>,

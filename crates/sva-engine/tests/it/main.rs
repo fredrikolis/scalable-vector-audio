@@ -31,6 +31,7 @@ mod rebuild;
 mod refs;
 mod refusals;
 mod release;
+mod retype;
 mod ringing;
 mod sampled;
 mod segments;

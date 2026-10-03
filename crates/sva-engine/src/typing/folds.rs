@@ -16,6 +16,14 @@ pub(crate) struct Folds {
     pub(crate) composings: std::cell::Cell<usize>,
 }
 
+/// A copy folds anew: what a node folds to is recomputed on demand, and a copy is made to be
+/// changed.
+impl Clone for Folds {
+    fn clone(&self) -> Folds {
+        Folds::default()
+    }
+}
+
 impl PartialEq for Folds {
     fn eq(&self, _: &Folds) -> bool {
         true

@@ -16,6 +16,7 @@ use sva_ast::is_builtin;
 use build::Journal;
 pub use build::{from_roots, instantiate};
 use edges::Edges;
+pub(crate) use resolved::Resolution;
 
 pub(crate) type ScopeId = u32;
 

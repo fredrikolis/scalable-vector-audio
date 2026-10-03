@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use sva_core::{
-    Answer, Asked, CliError, Diagnostic, Job, Output, Printed, Report, SAMPLE_LIMIT, Tier, cwd,
-    execute_over, query_data,
+    Answer, Asked, CliError, Diagnostic, Job, Output, Printed, Report, SAMPLE_LIMIT, Session, Tier,
+    cwd, execute_over, query_data,
 };
 use sva_engine::{
     Buffer, DEFAULT_FRAME_SECS, PSYCHOACOUSTIC_V1, Representation, answer_buffer, cache_log,
@@ -53,7 +53,7 @@ fn answered(
         flop_budget: args.flop_budget,
         ..Job::over(&source, target)
     };
-    let rendered = wait(execute_over(job, tier))?;
+    let rendered = wait(execute_over(job, tier, &mut Session::default()))?;
 
     let rate = rendered.config.rate;
     let stats = rendered.render.cache_stats.as_ref();

@@ -7,19 +7,31 @@ use sva_ast::Graph;
 use sva_formula::{Hash, NodeId};
 
 use super::offer::{Offers, readable};
+use super::session::Session;
 use super::table::{self, Table};
 use super::{Render, RenderConfig, closed, driving, dropped, drove, frontier, planned_over};
 use crate::cache::{Backend, Recording, Stored, Tier};
 use crate::error::EngineError;
 use crate::instantiate;
 use crate::schedule;
-use crate::typing::{self, Typing};
+use crate::typing::Typing;
 
-/// `target` over `tier`, from the root down: every node is typed and named by what it
-/// computes, and a node memory answers stands as its samples, nothing under it planned, looked
-/// up or computed; with `out` dropped and no reading, a root it answers ends the render
-/// unread. What the rest computes memory keeps as it says.
+/// `target` over `tier`, from the root down, in a session of its own.
 pub async fn render_over<B: Backend>(
+    graph: &Graph,
+    target: &str,
+    config: RenderConfig,
+    tier: &Tier<B>,
+) -> Result<Render, EngineError> {
+    render_in(&mut Session::default(), graph, target, config, tier).await
+}
+
+/// `target` over `tier`, from the root down: every node is named by what it computes, typed
+/// anew only where `session` typed it otherwise, and a node memory answers stands as its
+/// samples, nothing under it planned or computed; with `out` dropped and no reading, a root it
+/// answers ends the render unread.
+pub async fn render_in<B: Backend>(
+    session: &mut Session,
     graph: &Graph,
     target: &str,
     config: RenderConfig,
@@ -30,24 +42,19 @@ pub async fn render_over<B: Backend>(
     let instances = instantiate::instantiate(graph, target, config.rate)?;
     let root = instances.instance_of(target)?;
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&root))?;
-    let typed = typing::infer_all(&instances, &order)?;
+    let typed = session.typed(&instances, &order)?;
     let lowered = typed.lowered().to_vec();
-    let keys = keys(&typed, &order, &config);
-    let mut fresh = Some(typed);
+    let keys = keys(typed, &order, &config);
     let mut found = frontier::Frontier::from((&instances, &order), &keys, &root, &config);
     found.walked(tier, round).await;
-    let mut stood = |stored: &BTreeMap<String, Arc<Stored>>| {
-        let typed = fresh
-            .take()
-            .map_or_else(|| typing::infer_all(&instances, &order), Ok);
-        typed.map(|mut tys| {
-            tys.stand(stored);
-            tys
-        })
+    let stood = |stored: &BTreeMap<String, Arc<Stored>>| {
+        let mut tys = typed.clone();
+        tys.stand(stored);
+        tys
     };
     if dropped(&config) && found.stored.contains_key(&root) {
         recording.found(std::mem::take(&mut found.lookups));
-        let tys = stood(&found.stored)?;
+        let tys = stood(&found.stored);
         let id = tys.id(&root).ok_or(EngineError::UnknownNode(root))?;
         let schedule = schedule::plan(&tys, id, &config.asks);
         let mut held = Render::shell(tys, id, config, schedule);
@@ -58,7 +65,7 @@ pub async fn render_over<B: Backend>(
     }
     let mut held = loop {
         found.walked(tier, round).await;
-        let tys = stood(&found.stored)?;
+        let tys = stood(&found.stored);
         let id = tys
             .id(&root)
             .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;

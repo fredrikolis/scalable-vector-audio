@@ -1,4 +1,4 @@
-// Concern: writes a resolved walk back out, as source text or as a substituted Expr | Non-concern: the walk itself (mod.rs) | IO: (&Expr, Cx) -> String, Expr
+// Concern: writes a resolved walk back out, as source text, a substituted Expr or what an instance is typed from | Non-concern: the walk itself (mod.rs) | IO: (&Expr, Cx) -> String, Expr
 
 use std::collections::BTreeMap;
 
@@ -6,7 +6,31 @@ use sva_ast::{Arg, Expr};
 
 use crate::instantiate::{Bound, Cx, Instances, Node};
 
+/// What an instance is typed from, each parameter standing for what it was bound to.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Resolution {
+    file: String,
+    body: Expr,
+    binds: Vec<(String, Expr)>,
+    reads: Vec<String>,
+}
+
 impl Instances {
+    pub(crate) fn resolution(&self, path: &str) -> Option<Resolution> {
+        let held = self.nodes.get(path)?;
+        let (body, cx) = self.at(path)?;
+        let binds = self.vars(held.body.scope).map(|(name, bound)| {
+            let cx = self.cx(bound.scope);
+            (name.to_string(), self.copy(bound.expr, cx))
+        });
+        Some(Resolution {
+            file: held.file.clone(),
+            body: self.copy(body, cx),
+            binds: binds.collect(),
+            reads: self.deps(path).to_vec(),
+        })
+    }
+
     pub(crate) fn display_name(&self, file: &str, binds: &[(String, Bound)]) -> String {
         if binds.is_empty() {
             return file.to_string();

@@ -17,7 +17,7 @@ use sva_core::{
     work_json,
 };
 use sva_engine::{
-    CachePolicy, CacheStats, DEFAULT_STORE_BYTES, Handle, Placed, PrunePolicy, Store, Tier,
+    CachePolicy, CacheStats, DEFAULT_STORE_BYTES, Handle, Placed, PrunePolicy, Session, Store, Tier,
 };
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
@@ -218,6 +218,8 @@ pub fn outline(text: &str) -> Result<JsValue, JsValue> {
 pub struct Composition {
     inner: sva_ast::Composition,
     tier: Rc<Tier<opfs::Opfs>>,
+    /// A render in flight holds it; one beside it types in a session of its own.
+    session: Cell<Session>,
 }
 
 fn unstored(why: String) -> JsValue {
@@ -242,6 +244,7 @@ impl Composition {
                 None => inner,
             },
             tier: Rc::new(tier),
+            session: Cell::default(),
         }
     }
 
@@ -318,9 +321,10 @@ impl Composition {
             out,
             ..Job::over(&self.inner, target)
         };
-        let inner = execute_over(job, &*self.tier)
-            .await
-            .map_err(|e| thrown(&e))?;
+        let mut session = self.session.take();
+        let inner = execute_over(job, &*self.tier, &mut session).await;
+        self.session.set(session);
+        let inner = inner.map_err(|e| thrown(&e))?;
         unstaged(inner.render.cache_stats.as_ref());
         Ok(Rendering { inner, asked })
     }

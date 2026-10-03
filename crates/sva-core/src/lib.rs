@@ -36,10 +36,10 @@ use std::path::Path;
 use sva_ast::{Dir, Graph, Refusal, Source};
 use sva_engine::{
     Ask, Change, Changed, DEFAULT_SAMPLE_RATE, EngineError, Range, RenderConfig, StreamConfig,
-    render, render_over,
+    render, render_in,
 };
 
-pub use sva_engine::{Handle, Out, Placed, Stream, Until};
+pub use sva_engine::{Handle, Out, Placed, Session, Stream, Until};
 
 pub use sva_engine::{Answer, Extent, Label, Output, Representation};
 pub use sva_engine::{
@@ -213,10 +213,15 @@ pub fn execute(job: Job, tier: &Tier) -> Result<Rendered, CliError> {
     rendered(&job, graph, render)
 }
 
-/// `job` over `tier`; only `persist` commits what it offers a disk beneath.
-pub async fn execute_over<B: Backend>(job: Job<'_>, tier: &Tier<B>) -> Result<Rendered, CliError> {
+/// `job` over `tier`, typing anew only what `session` typed otherwise; only `persist` commits
+/// what it offers a disk beneath.
+pub async fn execute_over<B: Backend>(
+    job: Job<'_>,
+    tier: &Tier<B>,
+    session: &mut Session,
+) -> Result<Rendered, CliError> {
     let (graph, config) = settle(&job)?;
-    let render = render_over(&graph, PROBE, config, tier).await;
+    let render = render_in(session, &graph, PROBE, config, tier).await;
     rendered(&job, graph, render)
 }
 

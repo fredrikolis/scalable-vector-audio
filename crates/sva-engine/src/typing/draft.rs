@@ -10,7 +10,7 @@ use crate::instantiate::Instances;
 use crate::time::Grid;
 
 /// What a draft did, in order, so a pass of a loop can be undone back to where it began.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum Entry {
     Node(NodeId, (String, Grid)),
     Origin(u32, (String, Grid)),
@@ -22,7 +22,7 @@ pub(super) enum Entry {
 
 /// What a typing lowers beside the nodes it holds: the paths it lowers anew, hidden from what
 /// is held, and every name it gives until committed.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Draft {
     pub(super) hidden: BTreeSet<String>,
     pub(super) by_path: BTreeMap<String, NodeId>,
@@ -33,13 +33,13 @@ pub(super) struct Draft {
 }
 
 /// What lowering one path wrote, on each grid it was lowered on, and the file it is of.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Units {
     file: String,
     grids: Vec<(Grid, Unit)>,
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 struct Unit {
     nodes: Vec<NodeId>,
     origins: Vec<u32>,
