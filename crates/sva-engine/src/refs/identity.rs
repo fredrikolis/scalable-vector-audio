@@ -1,15 +1,14 @@
 // Concern: content-addresses one node, whatever representation it holds | Non-concern: composing a closed form across a ref (mod.rs) | IO: (NodeId) -> Hash
 
-use sva_formula::{
-    ClosedForm, Hash, NodeId, Var, hash_closed_form, hash_closed_form_with, hash_spectral_sum,
-    hash_spectral_sum_with, normalize_closed_form, normalize_read,
-};
+use sva_formula::{Body, ClosedForm, Hash, NodeId, Var, hash_spectral_sum_with, hash_written_with};
+
+use sva_samples::Params;
 
 use crate::error::EngineError;
 use crate::index::Round;
 use crate::typing::{Step, SumSlot, Typing, Value, When};
 
-use super::{cyclic, nodes_in, read_through, spectral_sum_of};
+use super::{cyclic, spectral_sum_of};
 
 /// What keys a closed form's spectral sum wherever a reading composes one: a ref a series
 /// term reads is named by what it is.
@@ -56,35 +55,56 @@ fn identity_of(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<
     Ok(found)
 }
 
-/// A closed form that reads no other node: its own spectral sum, where it has one, so two
-/// spellings of one form are one value; else its written form.
-fn formula_identity(form: &ClosedForm) -> Hash {
-    match normalize_closed_form(form) {
-        Ok(sum) => hash_spectral_sum(&sum),
-        Err(_) => hash_closed_form(form),
-    }
-}
-
-/// A subterm a node wrote as a value of its own: its spectral sum, each ref read as the form it
-/// names, where it has one; else its written form; either naming each ref by what it is.
-pub(crate) fn subterm_identity(typing: &Typing, form: &ClosedForm) -> Result<Hash, EngineError> {
-    if nodes_in(&form.body).is_empty() {
-        return Ok(formula_identity(form));
-    }
+/// `named` over every node `with` reads, its first refusal answered in place of the hash.
+fn naming(
+    named: &mut dyn FnMut(NodeId) -> Result<Hash, EngineError>,
+    with: impl FnOnce(&mut dyn FnMut(NodeId) -> Hash) -> Hash,
+) -> Result<Hash, EngineError> {
     let mut refused = None;
-    let mut read = |id: NodeId| match identity(typing, id) {
+    let hash = with(&mut |id| match named(id) {
         Ok(held) => held,
         Err(e) => {
             refused.get_or_insert(e);
             Hash(0, 0)
         }
-    };
-    let summed = read_through(typing, |t| normalize_read(&form.body, form.var, t));
-    let hash = match summed {
-        Ok(sum) => hash_spectral_sum_with(&sum, &mut read),
-        Err(_) => hash_closed_form_with(form, &mut read),
-    };
+    });
     refused.map_or(Ok(hash), Err)
+}
+
+/// A subterm named as the same form written as a node is: as written, which decides its
+/// samples, bound and support alike.
+pub(crate) fn subterm_identity(typing: &Typing, form: &ClosedForm) -> Result<Hash, EngineError> {
+    let mut read = |id: NodeId| identity(typing, id).map(|held| across(typing, form, id, held));
+    naming(&mut read, |read| hash_written_with(form, read))
+}
+
+/// A ref to a form of the other variable reads across its transform.
+fn across(typing: &Typing, form: &ClosedForm, read: NodeId, held: Hash) -> Hash {
+    match typing.var(read) == form.var {
+        true => held,
+        false => {
+            let mut sink = Sink::new();
+            sink.text("across");
+            sink.hash(held);
+            sink.finish()
+        }
+    }
+}
+
+/// A solver, its varying fields named by their nodes: one name, held or read to a switch.
+pub(super) fn solver(params: &Params, varying: &[(&str, Hash)]) -> Hash {
+    let mut held = params.clone();
+    for (key, _) in varying {
+        *crate::lower::field(&mut held, key).expect("a varying field") = f64::NAN;
+    }
+    let mut sink = Sink::new();
+    sink.text("solver");
+    held.words().into_iter().for_each(|w| sink.word(w));
+    for (key, at) in varying {
+        sink.text(key);
+        sink.hash(*at);
+    }
+    sink.finish()
 }
 
 fn built(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, EngineError> {
@@ -92,26 +112,23 @@ fn built(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, 
         return Err(cyclic(typing, node));
     }
     open.push(node);
+    let found = shape(typing, node, open);
+    open.pop();
+    found
+}
+
+/// Its own value's shape over the identities of what it reads.
+fn shape(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, EngineError> {
     let mut sink = Sink::new();
     match typing.value(node) {
-        Value::ClosedForm(form) if nodes_in(&form.body).is_empty() => {
-            open.pop();
-            return Ok(formula_identity(form));
-        }
         Value::ClosedForm(form) => {
-            let mut refused = None;
-            let mut read = |id: NodeId| match identity_of(typing, id, open) {
-                Ok(held) => held,
-                Err(e) => {
-                    refused.get_or_insert(e);
-                    Hash(0, 0)
-                }
+            let mut read = |id: NodeId| {
+                identity_of(typing, id, open).map(|held| across(typing, form, id, held))
             };
-            sink.text("closed form");
-            sink.hash(hash_closed_form_with(form, &mut read));
-            if let Some(e) = refused {
-                return Err(e);
-            }
+            return naming(&mut read, |read| hash_written_with(form, read));
+        }
+        Value::Read { .. } if let Some(source) = passes(typing, node) => {
+            return identity_of(typing, source, open);
         }
         Value::Cast(cast, source) => {
             sink.text(cast.name());
@@ -120,30 +137,23 @@ fn built(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, 
         Value::Read { source, at, .. } => {
             sink.text("read");
             sink.hash(identity_of(typing, *source, open)?);
-            when(&mut sink, typing, at);
+            when(&mut sink, typing, at)?;
         }
         Value::SelfAt { at, .. } => {
             sink.text("self");
-            when(&mut sink, typing, at);
+            when(&mut sink, typing, at)?;
         }
         Value::Noise(seed) => {
             sink.text("noise");
             sink.word(*seed);
         }
-        Value::Stored(held) => {
-            sink.text("stored");
-            sink.hash(held.key);
-        }
+        Value::Stored(held) => return Ok(held.identity),
         Value::Solver { params, varying } => {
-            let mut held = (**params).clone();
-            for (key, _) in varying {
-                *crate::lower::field(&mut held, key).expect("a varying field") = f64::NAN;
-            }
-            sink.text(&format!("{held:?}"));
+            let mut read = Vec::with_capacity(varying.len());
             for (key, arg) in varying {
-                sink.text(key);
-                sink.hash(identity_of(typing, *arg, open)?);
+                read.push((*key, identity_of(typing, *arg, open)?));
             }
+            return Ok(solver(params, &read));
         }
         Value::Filter {
             shape,
@@ -159,17 +169,42 @@ fn built(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, 
         }
         Value::Op { name, args } => {
             sink.text(name);
+            let mut held = Vec::with_capacity(args.len());
             for arg in args {
-                sink.hash(identity_of(typing, *arg, open)?);
+                held.push(identity_of(typing, *arg, open)?);
             }
+            if matches!(name.as_str(), "+" | "*") {
+                sva_formula::either_order(&mut held);
+            }
+            held.into_iter().for_each(|h| sink.hash(h));
         }
     }
-    open.pop();
     Ok(sink.finish())
 }
 
+/// The node `node` only passes on, read at its own instant and grid: that value itself.
+pub(crate) fn passes(typing: &Typing, node: NodeId) -> Option<NodeId> {
+    if typing.sum_slots(node).is_some() {
+        return None;
+    }
+    match typing.value(node) {
+        Value::Read {
+            source,
+            at: When::At(time),
+            ..
+        } if *time == crate::time::Affine::NOW && typing.grid(*source) == typing.grid(node) => {
+            Some(*source)
+        }
+        Value::ClosedForm(form) => match &form.body {
+            Body::Node(read) if typing.var(*read) == form.var => Some(*read),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// A moving time is named by its closed form, which holds no ref back to the reader.
-pub(super) fn when(sink: &mut Sink, typing: &Typing, at: &When) {
+pub(super) fn when(sink: &mut Sink, typing: &Typing, at: &When) -> Result<(), EngineError> {
     sink.text("at");
     match at {
         When::At(time) => {
@@ -181,20 +216,14 @@ pub(super) fn when(sink: &mut Sink, typing: &Typing, at: &When) {
                 sink.word((q.den() >> 64) as u64);
             }
         }
-        When::Moving(id) => moving(sink, typing, *id),
+        When::Moving(id) => sink.hash(identity(typing, *id)?),
         When::Index(index) => exact(sink, *index),
         When::Step(step) => {
             sink.text("step");
-            stepped(sink, typing, step);
+            stepped(sink, typing, step)?;
         }
     }
-}
-
-fn moving(sink: &mut Sink, typing: &Typing, id: NodeId) {
-    match identity(typing, id) {
-        Ok(held) => sink.hash(held),
-        Err(_) => sink.text(typing.name(id)),
-    }
+    Ok(())
 }
 
 fn exact(sink: &mut Sink, index: crate::index::Index) {
@@ -206,25 +235,26 @@ fn exact(sink: &mut Sink, index: crate::index::Index) {
     sink.word(index.plus as u64);
 }
 
-fn stepped(sink: &mut Sink, typing: &Typing, step: &Step) {
+fn stepped(sink: &mut Sink, typing: &Typing, step: &Step) -> Result<(), EngineError> {
     let each = |sink: &mut Sink, what: &str, parts: &[Step]| {
         sink.text(what);
         sink.word(parts.len() as u64);
-        parts.iter().for_each(|p| stepped(sink, typing, p));
+        parts.iter().try_for_each(|p| stepped(sink, typing, p))
     };
     match step {
         Step::Index(index) => exact(sink, *index),
         Step::Nearest(time, how) => {
             round(sink, "nearest", *how);
-            moving(sink, typing, *time);
+            sink.hash(identity(typing, *time)?);
         }
-        Step::Add(parts) => each(sink, "sum", parts),
-        Step::Mul(parts) => each(sink, "product", parts),
+        Step::Add(parts) => each(sink, "sum", parts)?,
+        Step::Mul(parts) => each(sink, "product", parts)?,
         Step::Neg(part) => {
             sink.text("negated");
-            stepped(sink, typing, part);
+            stepped(sink, typing, part)?;
         }
     }
+    Ok(())
 }
 
 fn round(sink: &mut Sink, what: &str, round: Round) {

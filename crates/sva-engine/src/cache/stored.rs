@@ -6,6 +6,7 @@ use sva_samples::{Extent, Grid, Label};
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stored {
     pub key: Hash,
+    pub identity: Hash,
     pub label: Label,
     pub width: u8,
     pub codomain: Codomain,
@@ -18,7 +19,7 @@ pub struct Stored {
     pub moved: f64,
     pub readable: bool,
     pub sampled: bool,
-    pub cuts: Vec<(String, i64)>,
+    pub cuts: Vec<(Hash, i64)>,
     pub(crate) held: Vec<Extent>,
 }
 
@@ -127,7 +128,7 @@ impl Header {
     }
 }
 
-/// Keyed by its source's identity, the rate and the profile.
+/// Keyed by what it computes, the rate and the profile.
 pub(crate) fn node_key(identity: Hash, rate: u32, profile: &sva_samples::Profile) -> Hash {
     let tag = [0x6e_6f_64_65_00_00_00_01];
     super::mixed(

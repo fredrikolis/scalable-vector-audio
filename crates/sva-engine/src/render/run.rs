@@ -1,6 +1,7 @@
 // Concern: renders a target over memory, from the root down to what it answers | Non-concern: what memory keeps or writes, computing a value | IO: (&Graph, target, Tier) -> Render
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use sva_ast::Graph;
 use sva_formula::{Hash, NodeId};
@@ -8,15 +9,16 @@ use sva_formula::{Hash, NodeId};
 use super::offer::{Offers, readable};
 use super::table::{self, Table};
 use super::{Render, RenderConfig, closed, driving, dropped, drove, frontier, planned_over};
-use crate::cache::{Backend, Recording, Tier};
+use crate::cache::{Backend, Recording, Stored, Tier};
 use crate::error::EngineError;
 use crate::instantiate;
 use crate::schedule;
-use crate::typing;
+use crate::typing::{self, Typing};
 
-/// `target` over `tier`, from the root down: a node memory answers stands as its samples, and
-/// nothing under it is typed, planned or looked up; with `out` dropped and no reading, a root
-/// it answers ends the render unread. What the rest computes memory keeps as it says.
+/// `target` over `tier`, from the root down: every node is typed and named by what it
+/// computes, and a node memory answers stands as its samples, nothing under it planned, looked
+/// up or computed; with `out` dropped and no reading, a root it answers ends the render
+/// unread. What the rest computes memory keeps as it says.
 pub async fn render_over<B: Backend>(
     graph: &Graph,
     target: &str,
@@ -28,21 +30,35 @@ pub async fn render_over<B: Backend>(
     let instances = instantiate::instantiate(graph, target, config.rate)?;
     let root = instances.instance_of(target)?;
     let order = schedule::schedule_from(&instances, std::slice::from_ref(&root))?;
-    let keys = keys(graph, &instances, &order, &config);
+    let typed = typing::infer_all(&instances, &order)?;
+    let lowered = typed.lowered().to_vec();
+    let keys = keys(&typed, &order, &config);
+    let mut fresh = Some(typed);
     let mut found = frontier::Frontier::from((&instances, &order), &keys, &root, &config);
     found.walked(tier, round).await;
+    let mut stood = |stored: &BTreeMap<String, Arc<Stored>>| {
+        let typed = fresh
+            .take()
+            .map_or_else(|| typing::infer_all(&instances, &order), Ok);
+        typed.map(|mut tys| {
+            tys.stand(stored);
+            tys
+        })
+    };
     if dropped(&config) && found.stored.contains_key(&root) {
         recording.found(std::mem::take(&mut found.lookups));
-        let tys = typing::infer_over(&instances, &order.within(&found.visited), &found.stored)?;
+        let tys = stood(&found.stored)?;
         let id = tys.id(&root).ok_or(EngineError::UnknownNode(root))?;
         let schedule = schedule::plan(&tys, id, &config.asks);
         let mut held = Render::shell(tys, id, config, schedule);
-        held.cache_stats = Some(recording.stats());
+        let mut stats = recording.stats();
+        stats.typed = lowered;
+        held.cache_stats = Some(stats);
         return Ok(held);
     }
-    let (mut held, typed) = loop {
+    let mut held = loop {
         found.walked(tier, round).await;
-        let tys = typing::infer_over(&instances, &order.within(&found.visited), &found.stored)?;
+        let tys = stood(&found.stored)?;
         let id = tys
             .id(&root)
             .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;
@@ -51,7 +67,6 @@ pub async fn render_over<B: Backend>(
             .filter_map(|path| tys.id(path))
             .filter(|id| readable(&tys, *id))
             .collect();
-        let typed = tys.lowered().to_vec();
         let mut held = planned_over(&instances, (tys, id), config.clone(), &bounds)?;
         let short = match (&mut held.table, held.range) {
             (Some(table), Some(range)) => {
@@ -68,7 +83,7 @@ pub async fn render_over<B: Backend>(
             _ => Vec::new(),
         };
         if short.is_empty() {
-            break (held, typed);
+            break held;
         }
         for path in short {
             found.reopen(&path);
@@ -97,27 +112,27 @@ pub async fn render_over<B: Backend>(
         computed.map(|(_, v)| v.name.clone()).collect()
     });
     if let Some(stats) = &mut held.cache_stats {
-        stats.typed = typed;
+        stats.typed = lowered;
         stats.planned = computed;
     }
     closed(&mut held)?;
     Ok(held)
 }
 
-/// Each instance's node key: its source identity at the render's rate and profile.
+/// Each instance's node key: what it computes, at the render's rate and profile; an instance
+/// whose identity refuses is never looked up.
 pub(crate) fn keys(
-    graph: &Graph,
-    instances: &instantiate::Instances,
+    tys: &Typing,
     order: &schedule::Order,
     config: &RenderConfig,
 ) -> BTreeMap<String, Hash> {
-    crate::source::identities(graph, instances, order)
-        .into_iter()
-        .map(|(path, identity)| {
-            let key = crate::cache::node_key(identity, config.rate, &config.profile);
-            (path, key)
-        })
-        .collect()
+    let paths = order.groups.iter().flatten();
+    let named = paths.filter_map(|path| {
+        let identity = crate::refs::identity(tys, tys.id(path)?).ok()?;
+        let key = crate::cache::node_key(identity, config.rate, &config.profile);
+        Some((path.clone(), key))
+    });
+    named.collect()
 }
 
 /// Each node memory answered whose samples miss some its readers ask over `range`.

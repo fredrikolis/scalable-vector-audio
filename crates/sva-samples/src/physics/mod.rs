@@ -106,6 +106,160 @@ impl Params {
         }
     }
 
+    /// The model and every field's bits in declaration order: what a solver is, for whoever
+    /// content-addresses one. Each struct is taken apart whole, so a new field cannot be left
+    /// out.
+    pub fn words(&self) -> Vec<u64> {
+        let model = match self {
+            Params::ChaigneAskenfelt(_) => 0,
+            Params::WillemsenBilbaoSerafin(_) => 1,
+            Params::DarabunditScavone(_) => 2,
+            Params::RhaoutiChaigneJoly(_) => 3,
+            Params::ChaigneDoutaut(_) => 4,
+            Params::Botteldooren(_) => 5,
+        };
+        let mut out = vec![model];
+        let mut put = |vs: &[f64]| out.extend(vs.iter().map(|v| v.to_bits()));
+        match self {
+            Params::ChaigneAskenfelt(ChaigneAskenfeltParams {
+                f0,
+                b,
+                strike_pos,
+                vel,
+                hammer_mass,
+                hammer_k,
+                hammer_p,
+                damp_dc,
+                damp_freq,
+                unison_count,
+                detune,
+                bridge_coupling,
+                bridge_mass,
+                string_cents,
+                string_hammer_k_ratio,
+                damper_pos,
+                damper_r,
+                damper_k,
+            }) => {
+                put(&[
+                    *f0,
+                    *b,
+                    *strike_pos,
+                    *vel,
+                    *hammer_mass,
+                    *hammer_k,
+                    *hammer_p,
+                ]);
+                put(&[
+                    *damp_dc,
+                    *damp_freq,
+                    *unison_count,
+                    *detune,
+                    *bridge_coupling,
+                ]);
+                put(&[*bridge_mass]);
+                put(string_cents);
+                put(string_hammer_k_ratio);
+                put(&[*damper_pos, *damper_r, *damper_k]);
+            }
+            Params::WillemsenBilbaoSerafin(WillemsenBilbaoSerafinParams {
+                f0,
+                b,
+                bow_pos,
+                bow_vel,
+                bow_force,
+                mu_s,
+                mu_c,
+                stribeck_vel,
+                bristle_stiffness,
+                bristle_damping,
+                viscous_friction,
+                damp_dc,
+                damp_freq,
+            }) => {
+                put(&[*f0, *b, *bow_pos, *bow_vel, *bow_force, *mu_s, *mu_c]);
+                put(&[*stribeck_vel, *bristle_stiffness, *bristle_damping]);
+                put(&[*viscous_friction, *damp_dc, *damp_freq]);
+            }
+            Params::DarabunditScavone(BoreParams {
+                length,
+                radius_in,
+                radius_out,
+                excite_pos,
+                pulse_amp,
+                pulse_width,
+                damp_dc,
+                damp_freq,
+                holes,
+            }) => {
+                put(&[*length, *radius_in, *radius_out, *excite_pos, *pulse_amp]);
+                put(&[*pulse_width, *damp_dc, *damp_freq]);
+                for hole in holes {
+                    match hole {
+                        None => put(&[0.0]),
+                        Some(darabundit_scavone::ToneholeSpec {
+                            pos,
+                            open,
+                            radius,
+                            height,
+                        }) => put(&[1.0, *pos, f64::from(u8::from(*open)), *radius, *height]),
+                    }
+                }
+            }
+            Params::RhaoutiChaigneJoly(RhaoutiChaigneJolyParams {
+                f0,
+                aspect_ratio,
+                strike_x,
+                strike_y,
+                vel,
+                hammer_mass,
+                hammer_k,
+                hammer_p,
+                damp_dc,
+                damp_freq,
+            }) => {
+                put(&[*f0, *aspect_ratio, *strike_x, *strike_y, *vel, *hammer_mass]);
+                put(&[*hammer_k, *hammer_p, *damp_dc, *damp_freq]);
+            }
+            Params::ChaigneDoutaut(ChaigneDoutautParams {
+                f0,
+                strike_pos,
+                vel,
+                hammer_mass,
+                hammer_k,
+                hammer_p,
+                damp_dc,
+                damp_freq,
+            }) => {
+                put(&[*f0, *strike_pos, *vel, *hammer_mass, *hammer_k, *hammer_p]);
+                put(&[*damp_dc, *damp_freq]);
+            }
+            Params::Botteldooren(BotteldoorenParams {
+                f0,
+                aspect_y,
+                aspect_z,
+                listener_x,
+                listener_y,
+                listener_z,
+                pulse_amp,
+                pulse_width,
+                damp_dc,
+                damp_freq,
+            }) => {
+                put(&[
+                    *f0,
+                    *aspect_y,
+                    *aspect_z,
+                    *listener_x,
+                    *listener_y,
+                    *listener_z,
+                ]);
+                put(&[*pulse_amp, *pulse_width, *damp_dc, *damp_freq]);
+            }
+        }
+        out
+    }
+
     pub fn valid(&self) -> bool {
         match self {
             Params::ChaigneAskenfelt(p) => p.valid(),

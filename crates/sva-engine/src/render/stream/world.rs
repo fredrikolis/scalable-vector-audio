@@ -36,10 +36,10 @@ pub(super) struct World {
 /// What one instance was last named and found as.
 #[derive(Clone)]
 struct Known {
-    key: Hash,
-    identity: Hash,
+    /// What it computes at the stream's rate and profile; none where its identity refuses.
+    key: Option<Hash>,
     group: Arc<[String]>,
-    /// A loop's member, a term or a reader of the note sum: never looked up.
+    /// A loop's member, a term, a reader of the note sum or one with no key: never looked up.
     pinned: bool,
     reads_notes: bool,
     looked: bool,
@@ -56,14 +56,13 @@ pub(super) struct Wanted<'a> {
     pub(super) from: Option<(&'a Graph, Vec<String>)>,
 }
 
-/// What a change named and found, and the groups it lowers, dependencies first.
+/// What a change named, typed and found.
 pub(super) struct Plan {
     pub(super) adopted: usize,
     pub(super) named: usize,
     pub(super) visited: usize,
     pub(super) hits: Vec<Lookup>,
     pub(super) prefixes: BTreeMap<String, Arc<Stored>>,
-    pub(super) groups: Vec<Vec<String>>,
     found: BTreeMap<String, Known>,
 }
 
@@ -92,9 +91,9 @@ impl World {
         })
     }
 
-    /// The graph set to what `wanted` plays, what changed named and scanned, each instance
-    /// it may rename keyed, and a walk to what the store answers of each changed or newly
-    /// read. Undone on a refusal or keys to look up.
+    /// The graph set to what `wanted` plays, what changed named, scanned and typed, each
+    /// instance it may rename keyed by what it computes, and a walk to what the store answers
+    /// of each changed or newly read. Undone on a refusal or keys to look up.
     pub(super) fn plan(&mut self, wanted: &Wanted, found: Found) -> Result<Walked, EngineError> {
         let planned = self.planned(wanted, found);
         match &planned {
@@ -147,6 +146,8 @@ impl World {
         let (named, rescanned): (Vec<String>, Vec<(String, Vec<String>)>) =
             (named.to_vec(), rescanned.collect());
         let region = self.region(&named, &rescanned);
+        self.typing.lower(&self.instances, &region.groups)?;
+        wanted.terms.name(&mut self.typing);
         let (found_known, changed) = self.named(&region);
         let mut fresh: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
         for name in &named {
@@ -170,11 +171,6 @@ impl World {
         if !asks.is_empty() {
             return Ok(Walked::Asks(asks));
         }
-        let groups = region
-            .groups
-            .into_iter()
-            .filter(|group| group.iter().any(|path| changed.contains(path)))
-            .collect();
         let prefixes = hits
             .iter()
             .filter_map(|hit| {
@@ -188,7 +184,6 @@ impl World {
             visited,
             hits,
             prefixes,
-            groups,
             found: found_known,
         }))
     }
@@ -256,16 +251,11 @@ impl World {
         Region { groups }
     }
 
-    /// Each member of the region named, dependencies first, and those whose key moved.
+    /// Each member of the region named by what its typing computes, and those whose key moved.
     fn named(&self, region: &Region) -> (BTreeMap<String, Known>, BTreeSet<String>) {
         let mut found: BTreeMap<String, Known> = BTreeMap::new();
         let mut changed = BTreeSet::new();
         for group in &region.groups {
-            let of = |read: &str| {
-                let known = found.get(read).or_else(|| self.known.get(read));
-                known.expect("a read named before its reader").identity
-            };
-            let named = crate::source::group_identities(&self.graph, &self.instances, group, &of);
             let looped = schedule::is_loop(&self.instances, group);
             let reads_notes = !self.own_notes
                 && group.iter().any(|path| {
@@ -276,23 +266,30 @@ impl World {
                         })
                 });
             let members: Arc<[String]> = group.clone().into();
-            for (path, identity) in named {
-                let key = crate::cache::node_key(identity, self.config.rate, &self.config.profile);
-                let old = self.known.get(&path).filter(|old| old.key == key);
+            for path in group {
+                let typed = self.typing.id(path);
+                let identity = typed.and_then(|id| crate::refs::identity(&self.typing, id).ok());
+                let key = identity.map(|held| {
+                    crate::cache::node_key(held, self.config.rate, &self.config.profile)
+                });
+                let old = self
+                    .known
+                    .get(path)
+                    .filter(|old| key.is_some() && old.key == key);
                 if old.is_none() {
                     changed.insert(path.clone());
                 }
-                let pinned = reads_notes || looped || (!self.own_notes && is_term(&path));
+                let pinned =
+                    key.is_none() || reads_notes || looped || (!self.own_notes && is_term(path));
                 let known = Known {
                     key,
-                    identity,
                     group: Arc::clone(&members),
                     pinned,
                     reads_notes,
                     looked: old.is_some_and(|old| old.looked),
                     stored: old.and_then(|old| old.stored.clone()),
                 };
-                found.insert(path, known);
+                found.insert(path.clone(), known);
             }
         }
         (found, changed)
@@ -363,8 +360,10 @@ impl Walk<'_> {
             let mut known = self.known(&path);
             if visited.contains(&path) {
                 let asked = anew && !known.pinned && known.stored.is_none();
-                if asked && matches!((self.found)(known.key), Answer::Unknown) {
-                    asks.push(known.key);
+                if let Some(key) = known.key.filter(|_| asked)
+                    && matches!((self.found)(key), Answer::Unknown)
+                {
+                    asks.push(key);
                 }
                 continue;
             }
@@ -373,13 +372,13 @@ impl Walk<'_> {
                 continue;
             }
             visited.insert(path.clone());
-            let stored = match known.pinned {
-                true => None,
-                false => match (self.found)(known.key) {
+            let stored = match known.key.filter(|_| !known.pinned) {
+                None => None,
+                Some(key) => match (self.found)(key) {
                     Answer::Hit(hit) => Some(hit),
                     Answer::Miss => None,
                     Answer::Unknown => {
-                        asks.push(known.key);
+                        asks.push(key);
                         continue;
                     }
                 },
@@ -388,8 +387,8 @@ impl Walk<'_> {
             let stored = stored.filter(|hit| answers(hit, false, config));
             known.looked = true;
             known.stored = stored.clone();
-            if stored.is_some() {
-                hits.push(noted(&path, known.key, Outcome::Hit));
+            if let (Some(_), Some(key)) = (&stored, known.key) {
+                hits.push(noted(&path, key, Outcome::Hit));
             } else {
                 let fresh = self.fresh.get(path.as_str());
                 for read in self.world.instances.deps(&path).iter().rev() {

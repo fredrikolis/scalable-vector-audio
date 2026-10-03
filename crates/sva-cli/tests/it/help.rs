@@ -56,6 +56,18 @@ fn help_states_where_the_store_lives_and_its_budget() {
     }
 }
 
+/// The store is keyed by what a value computes, and the page says so, never that a file's
+/// text or path names an entry.
+#[test]
+fn help_says_the_store_names_a_value_by_what_it_computes() {
+    let page = help_text();
+    let flat = page.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains("named by what it computes"), "{page}");
+    for gone in ["file text", "neither types"] {
+        assert!(!flat.contains(gone), "{gone}: {page}");
+    }
+}
+
 /// The two subcommands the standard's verb list has no word for.
 #[test]
 fn help_says_where_the_two_verbs_with_no_standard_name_sit() {

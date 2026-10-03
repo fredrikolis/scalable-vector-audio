@@ -40,6 +40,8 @@ pub(crate) struct Program {
     /// A program that only reads one value at a whole-sample shift is that value moved: the
     /// slot and the shift, and it computes and holds nothing of its own.
     pub(crate) alias: Option<(usize, i64)>,
+    /// Each slot's node, a ledger's row.
+    pub(crate) sources: Arc<[Option<sva_formula::NodeId>]>,
     pub(crate) machine: Option<Machine>,
     /// Its state where its run passes each of these, kept for memory.
     pub(crate) marks: std::collections::BTreeMap<i64, sva_samples::MachineState>,
@@ -130,8 +132,7 @@ impl Value {
             .then(|| (self.reads[slot.0 as usize], map.at(0)))
     }
 
-    /// A stateful value with nothing of its past computed: silent before `now`, stepping from
-    /// there.
+    /// A stateful value with nothing of its past computed: silent before `now`.
     pub(crate) fn silent_from(&mut self, now: i64) -> Result<(), sva_samples::SampleError> {
         let Kind::Program(program) = &mut self.kind else {
             unreachable!("a stateful value is a program");

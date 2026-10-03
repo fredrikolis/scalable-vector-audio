@@ -162,7 +162,7 @@ fn opening_a_store_reads_its_index_alone() {
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
-const PINNED: (u32, u64) = (24, 6691196697900420569);
+const PINNED: (u32, u64) = (25, 7419060751425265790);
 
 /// A change to how a value is encoded, or to what the engine computes for any construct here,
 /// fails this until `STORE_FORMAT` is bumped and the digest pinned again: rows, a filter, a
@@ -471,8 +471,10 @@ fn sorted(names: &[String]) -> Vec<&str> {
     out
 }
 
+/// The root is named by what it computes, which takes typing it; nothing under the hit is
+/// looked up, planned or computed.
 #[test]
-fn a_warm_render_whose_root_hits_visits_one_key_and_types_and_plans_nothing() {
+fn a_warm_render_whose_root_hits_visits_one_key_and_plans_nothing() {
     let memory = Memory::default();
     let graph = two_voices("root-hit", 330);
     let store = opened(&memory, u64::MAX);
@@ -484,8 +486,8 @@ fn a_warm_render_whose_root_hits_visits_one_key_and_types_and_plans_nothing() {
     assert_eq!(stats.lookups.len(), 1, "one key: {stats:?}");
     assert_eq!(stats.lookups[0].node, "master");
     assert_eq!(stats.lookups[0].outcome, Outcome::Hit);
-    assert!(stats.typed.is_empty(), "typed {:?}", stats.typed);
     assert!(stats.planned.is_empty(), "planned {:?}", stats.planned);
+    assert_eq!(warm.work().priced_flops, 0, "nothing is computed");
     assert_eq!(bits(&cold), bits(&warm));
 }
 
@@ -504,7 +506,7 @@ fn nested(name: &str, hz: u32) -> Graph {
 }
 
 #[test]
-fn an_edit_visits_the_missed_path_and_its_hit_siblings_and_types_only_the_missed() {
+fn an_edit_visits_the_missed_path_and_its_hit_siblings_and_plans_only_the_missed() {
     let memory = Memory::default();
     let store = opened(&memory, u64::MAX);
     rendered(&nested("path-before", 220), &store);
@@ -525,7 +527,6 @@ fn an_edit_visits_the_missed_path_and_its_hit_siblings_and_types_only_the_missed
         let hit = ["q", "s"].contains(&lookup.node.as_str());
         assert_eq!(lookup.outcome == Outcome::Hit, hit, "{lookup:?}");
     }
-    assert_eq!(sorted(&stats.typed), ["e", "master", "p"]);
     assert_eq!(sorted(&stats.planned), ["e", "master", "p"]);
     let fresh = render(
         &edited,
@@ -622,8 +623,10 @@ fn memory_writes_back_what_it_evicts_and_only_persist_commits_it() {
     assert!(memory.staged().is_empty(), "every staged value moved");
 }
 
+/// A node is keyed by what it computes: a comment written into it, or a file beside it that
+/// nothing reads, changes no key, and the stored root answers.
 #[test]
-fn a_comment_changes_a_nodes_identity_and_a_file_nothing_reads_changes_none() {
+fn a_comment_or_a_file_nothing_reads_changes_no_nodes_key() {
     let memory = Memory::default();
     let store = opened(&memory, u64::MAX);
     let before = rendered(&two_voices("comment-before", 330), &store);
@@ -645,17 +648,8 @@ fn a_comment_changes_a_nodes_identity_and_a_file_nothing_reads_changes_none() {
         ],
     );
     let after = rendered(&commented, &opened(&memory, u64::MAX));
-    assert_ne!(key(&before, "master"), key(&after, "master"));
-    assert!(
-        outcomes(stats(&after), "master")
-            .iter()
-            .all(|o| *o != Outcome::Hit)
-    );
-    assert!(
-        outcomes(stats(&after), "x")
-            .iter()
-            .all(|o| *o == Outcome::Hit)
-    );
+    assert_eq!(key(&before, "master"), key(&after, "master"));
+    assert_eq!(stats(&after).lookups.len(), 1, "the root hits");
 
     let beside = graph_of(
         "unread-after",
@@ -1340,39 +1334,59 @@ fn a_live_stream_plays_on_while_its_edits_await_a_slow_store() {
 /// copy of them: its entry is a header alone, and a warm render reads it back bit for bit.
 #[test]
 fn a_crop_of_a_stored_node_stores_no_copy() {
-    for (name, target) in [
-        ("crop-range", "@string(t, f0=261.63)\n"),
-        ("crop-call", "crop(@string(t, f0=261.63), 0.01s, 0.2s)\n"),
-    ] {
-        let graph = graph_of(name, &[("string", HELD), ("warm", target)]);
-        let memory = Memory::default();
-        let config = RenderConfig {
-            range: Range {
-                start: Some(0),
-                end: Some(2_000),
-            },
-            ..RenderConfig::at(RATE)
-        };
-        let store = opened(&memory, u64::MAX);
-        let cold = now(render_over(&graph, "warm", config.clone(), &store)).expect("a render");
-        now(store.persist()).expect("persisted");
-        let root = stats(&cold).lookups.iter().find(|l| l.node == "warm");
-        let root = root.expect("the root was looked up").key;
-        let entry = memory
-            .bytes(&format!("{:016x}{:016x}", root.0, root.1))
-            .expect("the root is stored");
-        assert_eq!(
-            entry.len(),
-            head_of(&entry),
-            "{name}: the root holds no sample"
-        );
-        assert_eq!(memory.entries().len(), 2, "{name}: the note and the root");
+    let graph = graph_of(
+        "crop-call",
+        &[
+            ("string", HELD),
+            ("warm", "crop(@string(t, f0=261.63), 0.01s, 0.2s)\n"),
+        ],
+    );
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    let cold = now(render_over(&graph, "warm", crop_range(), &store)).expect("a render");
+    now(store.persist()).expect("persisted");
+    let root = stats(&cold).lookups.iter().find(|l| l.node == "warm");
+    let root = root.expect("the root was looked up").key;
+    let entry = memory
+        .bytes(&format!("{:016x}{:016x}", root.0, root.1))
+        .expect("the root is stored");
+    assert_eq!(entry.len(), head_of(&entry), "the root holds no sample");
+    assert_eq!(memory.entries().len(), 2, "the note and the root");
 
-        let store = opened(&memory, u64::MAX);
-        let warm = now(render_over(&graph, "warm", config, &store)).expect("a render");
-        assert_eq!(stats(&warm).computed(), 0, "{name}: {:?}", stats(&warm));
-        assert_eq!(bits(&warm), bits(&cold), "{name}");
+    let store = opened(&memory, u64::MAX);
+    let warm = now(render_over(&graph, "warm", crop_range(), &store)).expect("a render");
+    assert_eq!(stats(&warm).computed(), 0, "{:?}", stats(&warm));
+    assert_eq!(bits(&warm), bits(&cold));
+}
+
+fn crop_range() -> RenderConfig {
+    RenderConfig {
+        range: Range {
+            start: Some(0),
+            end: Some(2_000),
+        },
+        ..RenderConfig::at(RATE)
     }
+}
+
+/// A target that only reads a stored node at its own instant is that node: one entry holds
+/// both, and a warm render reads it back bit for bit.
+#[test]
+fn a_target_passing_a_stored_node_on_is_that_node_s_entry() {
+    let graph = graph_of(
+        "crop-range",
+        &[("string", HELD), ("warm", "@string(t, f0=261.63)\n")],
+    );
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    let cold = now(render_over(&graph, "warm", crop_range(), &store)).expect("a render");
+    now(store.persist()).expect("persisted");
+    assert_eq!(memory.entries().len(), 1, "the note alone");
+
+    let store = opened(&memory, u64::MAX);
+    let warm = now(render_over(&graph, "warm", crop_range(), &store)).expect("a render");
+    assert_eq!(stats(&warm).computed(), 0, "{:?}", stats(&warm));
+    assert_eq!(bits(&warm), bits(&cold));
 }
 
 fn entry_of(memory: &Memory, render: &Render, node: &str) -> Vec<u8> {

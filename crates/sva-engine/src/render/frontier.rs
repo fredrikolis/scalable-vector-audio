@@ -1,4 +1,4 @@
-// Concern: walks down from the root to the nodes memory answers, before any typing | Non-concern: naming a node, computing the rest | IO: (Tier, root) -> hits, visited nodes, lookups
+// Concern: walks down from the root to the nodes memory answers, each keyed by what it computes | Non-concern: naming a node, computing the rest | IO: (Tier, root) -> hits, visited nodes, lookups
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -42,7 +42,7 @@ impl<'w> Frontier<'w> {
             keys,
             root,
             config,
-            pinned: pinned(inst, order, config),
+            pinned: pinned(inst, order, config, keys),
             asked: asked(inst, config),
             stack: vec![Step::Visit(root.to_string())],
             stored: BTreeMap::new(),
@@ -69,9 +69,9 @@ impl<'w> Frontier<'w> {
             if self.visited.contains(&path) {
                 continue;
             }
-            let key = self.keys[&path];
-            let found = match self.pinned.contains(&path) {
-                false => match known(key) {
+            let key = self.keys.get(&path).copied();
+            let found = match key.filter(|_| !self.pinned.contains(&path)) {
+                Some(key) => match known(key) {
                     Known::Hit(hit) => Some(hit),
                     Known::Miss => None,
                     Known::Unknown => {
@@ -79,7 +79,7 @@ impl<'w> Frontier<'w> {
                         return Some(key);
                     }
                 },
-                true => None,
+                None => None,
             };
             self.visited.insert(path.clone());
             let root = path == self.root;
@@ -87,7 +87,7 @@ impl<'w> Frontier<'w> {
             let answering = |hit: &Arc<Stored>| {
                 answers(hit, root, self.config) && read.iter().all(|r| r.off_samples(hit.sampled))
             };
-            if let Some(hit) = found.filter(answering) {
+            if let (Some(hit), Some(key)) = (found.filter(answering), key) {
                 self.lookups.push(noted(&path, key, Outcome::Hit));
                 self.stored.insert(path.clone(), hit);
                 continue;
@@ -163,17 +163,23 @@ pub(crate) fn answers(hit: &Stored, root: bool, config: &RenderConfig) -> bool {
     hit.holds(Extent::new(start, end.max(start)).intersect(support))
 }
 
-/// A node looked up nowhere: a loop's member, whose samples hold its own past, a node a reading
-/// asks more of than samples, and every node above one a reading asks of, which a hit would
-/// hide; a ledger reads every node under its own.
-fn pinned(inst: &Instances, order: &Order, config: &RenderConfig) -> BTreeSet<String> {
-    let mut out: BTreeSet<String> = order
+/// A node looked up nowhere: one with no key, a loop's member, whose samples hold its own past,
+/// a node a reading asks more of than samples, and every node above one a reading asks of,
+/// which a hit would hide; a ledger reads every node under its own.
+fn pinned(
+    inst: &Instances,
+    order: &Order,
+    config: &RenderConfig,
+    keys: &BTreeMap<String, Hash>,
+) -> BTreeSet<String> {
+    let groups = order.groups.iter();
+    let looped = groups.filter(|group| order.is_loop(group)).flatten();
+    let unkeyed = order
         .groups
         .iter()
-        .filter(|group| order.is_loop(group))
         .flatten()
-        .cloned()
-        .collect();
+        .filter(|path| !keys.contains_key(*path));
+    let mut out: BTreeSet<String> = looped.chain(unkeyed).cloned().collect();
     let ledger = config
         .asks
         .iter()

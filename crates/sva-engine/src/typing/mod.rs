@@ -499,41 +499,25 @@ impl Env for Table<'_> {
 
 /// Dependencies first, so a ref reads a type already decided.
 pub fn infer_all(inst: &Instances, order: &Order) -> Result<Typing, EngineError> {
-    infer_over(inst, order, &BTreeMap::new())
-}
-
-/// Each node `stored` names stands as its samples, and nothing under it is typed.
-pub(crate) fn infer_over(
-    inst: &Instances,
-    order: &Order,
-    stored: &BTreeMap<String, Arc<Stored>>,
-) -> Result<Typing, EngineError> {
     let mut typing = Typing::default();
-    typing.lower(inst, &order.groups, stored)?;
+    typing.lower(inst, &order.groups)?;
     typing.commit(inst);
     Ok(typing)
 }
 
 impl Typing {
-    /// Lowers `groups`, dependencies first, beside what is held, each path hidden first and each
-    /// `stored` names standing as its samples.
+    /// Lowers `groups`, dependencies first, beside what is held, each path hidden first.
     pub(crate) fn lower(
         &mut self,
         inst: &Instances,
         groups: &[Vec<String>],
-        stored: &BTreeMap<String, Arc<Stored>>,
     ) -> Result<(), EngineError> {
         self.lowered.clear();
         self.hide(groups.iter().flatten().cloned());
         for group in groups {
-            match (crate::schedule::is_loop(inst, group), group.as_slice()) {
-                (false, [path]) if let Some(held) = stored.get(path) => {
-                    self.begin(path, inst.grid());
-                    self.push(standing(path, held), Some(path));
-                    self.end();
-                }
-                (true, _) => settle_loop(self, inst, group)?,
-                (false, _) => {
+            match crate::schedule::is_loop(inst, group) {
+                true => settle_loop(self, inst, group)?,
+                false => {
                     for path in group {
                         lower::node(path, inst, self)?;
                     }
@@ -541,6 +525,22 @@ impl Typing {
             }
         }
         Ok(())
+    }
+
+    /// Each node `stored` names stands as the samples memory answered it with: what it
+    /// computes is what it was, so its readers read it as they would have.
+    pub(crate) fn stand(&mut self, stored: &BTreeMap<String, Arc<Stored>>) {
+        for (path, held) in stored {
+            let Some(id) = self.id(path) else {
+                continue;
+            };
+            let grid = self.grid(id);
+            self.nodes[id.0 as usize] = Some(Node {
+                grid,
+                ..standing(path, held)
+            });
+        }
+        self.folds.clear();
     }
 }
 

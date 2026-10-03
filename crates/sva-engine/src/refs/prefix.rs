@@ -4,12 +4,12 @@ use std::collections::BTreeSet;
 
 use sva_formula::closed_form::{children, map_children};
 use sva_formula::{
-    Body, C64, ClosedForm, Edge, Hash, NodeId, Part, Through, Var, hash_closed_form_with,
-    hash_spectral_sum, normalize_read,
+    Body, C64, ClosedForm, Edge, Hash, NodeId, Part, Through, Var, hash_written_with,
+    normalize_read,
 };
 use sva_samples::Grid;
 
-use super::identity::{Sink, identity};
+use super::identity::{identity, solver};
 use super::{PerNode, read_through, reads_through};
 use crate::error::EngineError;
 use crate::lower::field;
@@ -42,16 +42,7 @@ pub(crate) fn switches(typing: &Typing, id: NodeId) -> Result<Vec<(i64, Hash)>, 
                 Argued::Node(h) => read.push((*key, h)),
             }
         }
-        for (key, _) in &read {
-            *field(&mut held, key).expect("a varying field") = f64::NAN;
-        }
-        let mut sink = Sink::new();
-        sink.text(&format!("{held:?}"));
-        for (key, h) in read {
-            sink.text(key);
-            sink.hash(h);
-        }
-        out.push((at, sink.finish()));
+        out.push((at, solver(&held, &read)));
     }
     Ok(out)
 }
@@ -89,7 +80,7 @@ fn argument_before(
         };
         Ok(match written.constant_value(&body, form.var) {
             Some(v) => Argued::Number(v + 0.0),
-            None => Argued::Node(written.identity(&ClosedForm { body, ..*form })?),
+            None => Argued::Node(written.written(&ClosedForm { body, ..*form })?),
         })
     })
 }
@@ -271,18 +262,10 @@ impl Written<'_, '_> {
         }
     }
 
-    /// Its spectral sum where it has one, so two spellings of one form are one value; else its
-    /// written form, each ref named by what it is.
-    fn identity(&self, form: &ClosedForm) -> Result<Hash, EngineError> {
-        match normalize_read(&form.body, form.var, self.through) {
-            Ok(sum) => Ok(hash_spectral_sum(&sum)),
-            Err(_) => self.written(form),
-        }
-    }
-
+    /// As the same form written as a node is named, each stand-in by the form it stands for.
     fn written(&self, form: &ClosedForm) -> Result<Hash, EngineError> {
         let mut refused = None;
-        let hash = hash_closed_form_with(form, &mut |id| match self.named(id, form.var) {
+        let hash = hash_written_with(form, &mut |id| match self.named(id, form.var) {
             Ok(held) => held,
             Err(e) => {
                 refused.get_or_insert(e);

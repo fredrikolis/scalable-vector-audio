@@ -157,6 +157,9 @@ impl Bounding<'_> {
                 Value::Cast(Cast::Sample, source) => return self.tail(*source),
                 Value::Noise(_) => return Tail::new(Form::Within(1.0)),
                 Value::Op { name, args } => sampled(tys, name, args)?,
+                Value::Read { .. } if let Some(source) = crate::refs::passes(tys, id) => {
+                    return self.tail(source);
+                }
                 Value::Read { source, at, .. } => {
                     let read = match at {
                         When::At(map) => {

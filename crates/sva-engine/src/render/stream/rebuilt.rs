@@ -31,16 +31,12 @@ impl Stream {
             from: None,
         };
         let missed = |_| crate::cache::Known::Miss;
-        let plan = match fresh.plan(&wanted, &missed) {
-            Ok(Walked::Planned(plan)) => plan,
+        match fresh.plan(&wanted, &missed) {
+            Ok(Walked::Planned(_)) => {}
             Ok(Walked::Asks(_)) => unreachable!("every key a miss"),
             Err(e) => panic!("what a stream plays plans: {e}"),
-        };
+        }
         let theirs = &mut fresh.typing;
-        theirs
-            .lower(&fresh.instances, &plan.groups, &BTreeMap::new())
-            .expect("what a stream plays types");
-        self.terms.name(theirs);
         let id = theirs.id(STREAMED).expect("the root");
         let mut table = Table::new(&self.config.render.profile);
         let root = table.grow(theirs, id, &BTreeMap::new()).expect("a table");

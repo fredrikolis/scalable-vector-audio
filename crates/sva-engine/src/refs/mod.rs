@@ -21,8 +21,8 @@ use crate::typing::{Typing, Value};
 mod identity;
 mod prefix;
 
-pub(crate) use identity::subterm_identity;
 pub use identity::{identity, symbolic_hash};
+pub(crate) use identity::{passes, subterm_identity};
 pub(crate) use prefix::switches;
 
 /// The spectral sum of one node read on `want`'s axis, with every ref it holds already

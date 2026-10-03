@@ -66,14 +66,35 @@ pub fn hash_closed_form_under(t: &ClosedForm, table_version: u64) -> Hash {
     s.finish()
 }
 
-/// A closed form that reads other nodes, each ref hashed as what `node` names it: the node's
-/// own content, never the number a graph gave it.
-pub fn hash_closed_form_with(t: &ClosedForm, node: &mut dyn FnMut(NodeId) -> Hash) -> Hash {
-    let mut s = Sink::new(0x04, TABLE_VERSION);
-    s.node = Some(node);
-    s.var(t.var);
-    s.formula(&t.body);
-    s.finish()
+/// Two operands of a sum or product, which IEEE commutes bit for bit; three never associate so.
+pub fn either_order(operands: &mut [Hash]) {
+    if let [a, b] = operands
+        && b < a
+    {
+        std::mem::swap(a, b);
+    }
+}
+
+/// A closed form as written, each subterm by its own hash and each ref as `node` names it, so a
+/// node named by its form's hash reads alike by ref or written in place.
+pub fn hash_written_with(t: &ClosedForm, node: &mut dyn FnMut(NodeId) -> Hash) -> Hash {
+    let mut s = Sink {
+        lanes: Lanes::default(),
+        node: Some(node),
+        bound: Vec::new(),
+        free: true,
+        merkle: true,
+    };
+    let held = s.part(&t.body);
+    match t.var {
+        Var::T => held,
+        Var::F => {
+            let mut f = Sink::new(0x06, 0);
+            f.u64(held.0);
+            f.u64(held.1);
+            f.finish()
+        }
+    }
 }
 
 /// A time a ref is read at, as a reading of that ref is kept under: an index it holds is one
@@ -107,6 +128,8 @@ struct Sink<'a> {
     bound: Vec<IndexId>,
     /// Whether an index no binder here names is named by its own number.
     free: bool,
+    /// Each subterm named by its own hash, as a ref is by its node's.
+    merkle: bool,
 }
 
 impl<'a> Sink<'a> {
@@ -116,6 +139,7 @@ impl<'a> Sink<'a> {
             node: None,
             bound: Vec::new(),
             free: false,
+            merkle: false,
         };
         s.byte(tag);
         s.u64(table_version);
@@ -279,8 +303,54 @@ impl<'a> Sink<'a> {
     fn parts(&mut self, parts: &[Part]) {
         self.u64(parts.len() as u64);
         for p in parts {
-            self.formula(&p.body);
+            self.child(&p.body);
         }
+    }
+
+    fn commuting(&mut self, parts: &[Part]) {
+        let [a, b] = parts else {
+            return self.parts(parts);
+        };
+        if !self.merkle {
+            return self.parts(parts);
+        }
+        let mut held = [self.part(&a.body), self.part(&b.body)];
+        either_order(&mut held);
+        self.u64(2);
+        for Hash(x, y) in held {
+            self.u64(x);
+            self.u64(y);
+        }
+    }
+
+    fn child(&mut self, f: &Body) {
+        match self.merkle {
+            true => {
+                let Hash(x, y) = self.part(f);
+                self.u64(x);
+                self.u64(y);
+            }
+            false => self.formula(f),
+        }
+    }
+
+    fn part(&mut self, f: &Body) -> Hash {
+        if let Body::Node(n) = f
+            && let Some(named) = self.node.as_mut()
+        {
+            return named(*n);
+        }
+        let mut sub = Sink {
+            lanes: Lanes::default(),
+            node: self.node.take(),
+            bound: std::mem::take(&mut self.bound),
+            free: self.free,
+            merkle: true,
+        };
+        sub.formula(f);
+        self.node = sub.node.take();
+        self.bound = std::mem::take(&mut sub.bound);
+        sub.finish()
     }
 
     fn rational(&mut self, r: &Rational) {
@@ -329,26 +399,26 @@ impl<'a> Sink<'a> {
             }
             Body::Add(parts) => {
                 self.byte(0x15);
-                self.parts(parts);
+                self.commuting(parts);
             }
             Body::Mul(parts) => {
                 self.byte(0x16);
-                self.parts(parts);
+                self.commuting(parts);
             }
             Body::Div(a, b) => {
                 self.byte(0x17);
-                self.formula(&a.body);
-                self.formula(&b.body);
+                self.child(&a.body);
+                self.child(&b.body);
             }
             Body::Pow(base, n) => {
                 self.byte(0x18);
-                self.formula(&base.body);
+                self.child(&base.body);
                 self.i64(i64::from(*n));
             }
             Body::Apply(op, arg) => {
                 self.byte(0x19);
                 self.byte(unary_tag(*op));
-                self.formula(&arg.body);
+                self.child(&arg.body);
             }
             Body::Fold(op, args) => {
                 self.byte(0x1a);
@@ -361,27 +431,27 @@ impl<'a> Sink<'a> {
             }
             Body::Delta { at, order } => {
                 self.byte(0x1b);
-                self.formula(&at.body);
+                self.child(&at.body);
                 self.u64(u64::from(*order));
             }
             Body::Pv(at) => {
                 self.byte(0x1c);
-                self.formula(&at.body);
+                self.child(&at.body);
             }
             Body::Warp { at, of } => {
                 self.byte(0x27);
-                self.formula(&at.body);
-                self.formula(&of.body);
+                self.child(&at.body);
+                self.child(&of.body);
             }
             Body::Shift { by, of } => {
                 self.byte(0x1d);
                 self.f64(*by);
-                self.formula(&of.body);
+                self.child(&of.body);
             }
             Body::Deriv { order, of } => {
                 self.byte(0x1e);
                 self.u64(u64::from(*order));
-                self.formula(&of.body);
+                self.child(&of.body);
             }
             Body::Crop {
                 of,
@@ -391,7 +461,7 @@ impl<'a> Sink<'a> {
                 fall,
             } => {
                 self.byte(0x1f);
-                self.formula(&of.body);
+                self.child(&of.body);
                 self.edge(*l);
                 self.edge(*r);
                 self.f64(*rise);
@@ -403,7 +473,7 @@ impl<'a> Sink<'a> {
             }
             Body::Channel(of, k) => {
                 self.byte(0x22);
-                self.formula(&of.body);
+                self.child(&of.body);
                 self.byte(*k);
             }
             Body::Rational(r) => {
@@ -436,7 +506,7 @@ impl<'a> Sink<'a> {
             Body::Keyed { seed, of } => {
                 self.byte(0x26);
                 self.u64(*seed);
-                self.formula(&of.body);
+                self.child(&of.body);
             }
         }
     }

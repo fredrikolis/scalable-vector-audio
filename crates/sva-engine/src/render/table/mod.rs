@@ -247,34 +247,59 @@ impl Table {
         moved.fold(0.0, f64::max)
     }
 
+    /// Each node cut, by name: those this table cut, and each node named as a cut a stored one
+    /// carries names.
     pub(crate) fn pruned(&self, tys: &Typing) -> sva_samples::Pruned {
-        sva_samples::Pruned {
-            db: self.profile.prune_db,
-            cuts: self.cuts_of(tys, |_| true),
-        }
-    }
-
-    /// Each cut of a node `within` names, those a stored node carries among them, by name.
-    pub(crate) fn cuts_of(
-        &self,
-        tys: &Typing,
-        within: impl Fn(&str) -> bool,
-    ) -> Vec<(String, i64)> {
         let own = self
             .cuts
             .iter()
             .map(|(id, at)| (tys.name(*id).to_string(), *at));
-        let carried = self
+        let carried = self.carried(&|_| true);
+        let named: Vec<(Hash, NodeId)> = match carried.is_empty() {
+            true => Vec::new(),
+            false => {
+                let named = tys
+                    .ids()
+                    .filter_map(|id| Some((refs::identity(tys, id).ok()?, id)));
+                named.collect()
+            }
+        };
+        let carried = carried.into_iter().flat_map(|(cut, at)| {
+            let held = named.iter().filter(move |(identity, _)| *identity == cut);
+            held.map(move |(_, id)| (tys.name(*id).to_string(), at))
+        });
+        sva_samples::Pruned {
+            db: self.profile.prune_db,
+            cuts: own
+                .chain(carried)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// Each cut of a node `within` names, by what the node computes, those a stored node
+    /// carries among them.
+    pub(crate) fn cut_identities(
+        &self,
+        tys: &Typing,
+        within: impl Fn(&str) -> bool,
+    ) -> Vec<(Hash, i64)> {
+        let own = self.cuts.iter().filter(|(id, _)| within(tys.name(**id)));
+        let own = own.filter_map(|(id, at)| Some((refs::identity(tys, *id).ok()?, *at)));
+        let cuts = own.chain(self.carried(&within));
+        cuts.collect::<BTreeSet<_>>().into_iter().collect()
+    }
+
+    fn carried(&self, within: &dyn Fn(&str) -> bool) -> Vec<(Hash, i64)> {
+        let stored = self
             .values
             .iter()
             .filter_map(|(_, value)| match &value.kind {
-                Kind::Resident(stored) if within(&value.name) => Some(stored.cuts.iter().cloned()),
+                Kind::Resident(stored) if within(&value.name) => Some(stored.cuts.iter().copied()),
                 _ => None,
             });
-        let cuts = own
-            .filter(|(name, _)| within(name))
-            .chain(carried.flatten());
-        cuts.collect::<BTreeSet<_>>().into_iter().collect()
+        stored.flatten().collect()
     }
 
     pub(crate) fn of(&self, node: NodeId) -> Option<usize> {
@@ -724,6 +749,11 @@ impl Building<'_> {
         if let Some(at) = self.table.nodes.get(&id) {
             return Ok(*at);
         }
+        if let Some(source) = refs::passes(self.tys, id) {
+            let at = self.node(source)?;
+            self.table.name(id, at);
+            return Ok(at);
+        }
         let grid = self.grid(id);
         let key = Key {
             identity: refs::identity(self.tys, id)?,
@@ -1020,7 +1050,7 @@ impl Building<'_> {
                     width: value.width,
                     time: Box::new(NodeRenderer::Time),
                 };
-                self.running(value, renderer, Vec::new(), Vec::new(), None)
+                self.running(value, renderer, (Vec::new(), Vec::new()), Vec::new(), None)
             }
         }
     }
@@ -1067,6 +1097,11 @@ impl Building<'_> {
             true => refs::switches(self.tys, id)?,
             false => Vec::new(),
         };
+        let sources = built.reads.iter().map(|source| match source {
+            Source::Node(id) => Some(*id),
+            Source::Formula(_) => None,
+        });
+        let reads = (reads, sources.collect());
         self.running(value, renderer, reads, built.sites, start)
     }
 
@@ -1074,7 +1109,7 @@ impl Building<'_> {
         &mut self,
         mut value: Value,
         renderer: NodeRenderer,
-        reads: Vec<usize>,
+        (reads, sources): (Vec<usize>, Vec<Option<NodeId>>),
         sites: Vec<sva_samples::Site>,
         start: Option<i64>,
     ) -> Result<Value, EngineError> {
@@ -1105,6 +1140,7 @@ impl Building<'_> {
         };
         value.kind = Kind::Program(Box::new(Program {
             alias,
+            sources: sources.into(),
             own: own_reach(&renderer),
             renderer: Arc::new(renderer),
             spanned: Arc::new(spanned),

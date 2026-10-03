@@ -234,7 +234,7 @@ impl Stream {
             Walked::Asks(keys) => return Ok(Attempt::Asks(keys)),
             Walked::Planned(plan) => plan,
         };
-        let built = self.built(prospect, &mut plan);
+        let built = self.built(&mut plan);
         let (root, range) = match built {
             Ok(held) => held,
             Err(e) => {
@@ -262,18 +262,11 @@ impl Stream {
     }
 
     /// The plan typed and built: the root's value and its range.
-    fn built(
-        &mut self,
-        prospect: &Prospect,
-        plan: &mut Plan,
-    ) -> Result<(usize, Extent), EngineError> {
-        let world = &mut self.world;
-        let typing = &mut world.typing;
-        typing.lower(&world.instances, &plan.groups, &BTreeMap::new())?;
+    fn built(&mut self, plan: &mut Plan) -> Result<(usize, Extent), EngineError> {
+        let typing = &mut self.world.typing;
         let id = typing
             .id(STREAMED)
             .ok_or_else(|| EngineError::UnknownNode(STREAMED.to_string()))?;
-        prospect.terms.name(typing);
         let prefixes: BTreeMap<NodeId, Arc<Stored>> = plan
             .prefixes
             .iter()

@@ -113,9 +113,12 @@ RENDER:
   `--flop-budget <n>` is the operation count paid before a render refuses.
 
   Every node's value a render computes is kept in a store on disk, named by
-  the node's file text, its bindings and what it reads, so the next render of
-  anything that reads the same node reads it back, bit for bit, and neither
-  types nor computes anything under it. The store is on by default, at
+  what it computes: never its file's name, directory, comments, spacing, or
+  the order its named arguments are written in, so a renamed or moved copy, a
+  constant lifted into a default, an expression split into a file of its own or
+  written back inline, and two addends swapped all read one entry. The next
+  render of anything that reads the same value reads it back, bit for bit, and
+  computes nothing under it. The store is on by default, at
   `$XDG_CACHE_HOME/sva`, else `~/.cache/sva`; `--cache <path>` moves it (a
   `/dev/shm` path keeps it in memory) and `--cache none` turns it off. It holds
   at most {store_gb} GB, the least recently used values going first, and a

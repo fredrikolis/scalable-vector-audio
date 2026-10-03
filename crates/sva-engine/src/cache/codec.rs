@@ -11,7 +11,7 @@ use super::Stored;
 use super::stored::{Header, Laid, Samples};
 
 /// Bumped by, and only by, a change to a stored value's bytes or to the key it is stored under.
-pub const STORE_FORMAT: u32 = 24;
+pub const STORE_FORMAT: u32 = 25;
 
 /// Every entry opens with its format, so one another format wrote is never read as a value,
 /// even where a wipe left it.
@@ -66,6 +66,8 @@ fn header(head: &Header, laid: &[Laid]) -> Vec<u8> {
     let mut out = entry_tag();
     word(&mut out, stored.key.0);
     word(&mut out, stored.key.1);
+    word(&mut out, stored.identity.0);
+    word(&mut out, stored.identity.1);
     labelled(&mut out, &stored.label);
     out.push(stored.width);
     out.push(match stored.codomain {
@@ -83,8 +85,9 @@ fn header(head: &Header, laid: &[Laid]) -> Vec<u8> {
     out.push(u8::from(stored.readable));
     out.push(u8::from(stored.sampled));
     word(&mut out, stored.cuts.len() as u64);
-    for (node, at) in &stored.cuts {
-        text(&mut out, node);
+    for (cut, at) in &stored.cuts {
+        word(&mut out, cut.0);
+        word(&mut out, cut.1);
         word(&mut out, *at as u64);
     }
     match head.samples() {
@@ -121,6 +124,7 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Header, u64)> {
     let span = head_len(bytes)?;
     let mut r = Reader(opened(bytes.get(8..span)?, &entry_tag())?);
     let key = Hash(r.word()?, r.word()?);
+    let identity = Hash(r.word()?, r.word()?);
     let label = r.label()?;
     let width = r.byte()?;
     let codomain = match r.byte()? {
@@ -145,7 +149,7 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Header, u64)> {
     let sampled = r.flag()?;
     let mut cuts = Vec::new();
     for _ in 0..r.word()?.min(r.0.len() as u64) {
-        cuts.push((r.text()?.to_string(), r.word()? as i64));
+        cuts.push((Hash(r.word()?, r.word()?), r.word()? as i64));
     }
     let of = match r.byte()? {
         0 => None,
@@ -190,6 +194,7 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Header, u64)> {
     };
     let stored = Stored {
         key,
+        identity,
         label,
         width,
         codomain,

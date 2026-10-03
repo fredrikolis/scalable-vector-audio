@@ -56,7 +56,7 @@ impl Offers {
                 };
                 if let Some(mut stored) = offerable(table, tys, (id, at), (path, *key)) {
                     let beneath = found.beneath(path);
-                    stored.cuts = table.cuts_of(tys, |name| beneath.contains(name));
+                    stored.cuts = table.cut_identities(tys, |name| beneath.contains(name));
                     let facts = Facts {
                         slot: table.slot(at),
                         settled: false,
@@ -148,7 +148,7 @@ fn offerable(
     (path, key): (&str, Hash),
 ) -> Option<Stored> {
     let value = &table.values[at];
-    let own = tys.name(id) == path;
+    let own = tys.name(id) == path && crate::refs::passes(tys, id).is_none();
     let samples = value.pure && !matches!(value.kind, table::Kind::Frames { .. });
     if !own || !samples {
         return None;
@@ -157,6 +157,7 @@ fn offerable(
     let ty = tys.ty(id);
     Some(Stored {
         key,
+        identity: crate::refs::identity(tys, id).ok()?,
         label: table.label(at),
         width: u8::try_from(value.width).expect("a width the typing held"),
         codomain: ty.codomain,

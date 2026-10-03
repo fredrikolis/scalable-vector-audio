@@ -13,13 +13,16 @@ pub(super) fn refs_read(
     node: NodeId,
     holds: &dyn Fn(NodeId) -> bool,
 ) -> Result<Vec<NodeId>, EngineError> {
+    if let Some(only) = crate::refs::passes(&render.tys, node) {
+        return Ok(holds(only).then_some(only).into_iter().collect());
+    }
     let Some((table, at)) = program(render, node) else {
         return Ok(Vec::new());
     };
     let here = render.tys.name(node);
     let mut out: Vec<NodeId> = Vec::new();
-    for read in &table.values[at].reads {
-        let Some(source) = table.values[*read].node else {
+    for source in sources(&table.values[at]) {
+        let Some(source) = source else {
             continue;
         };
         let Some(ref_node) = behind(render, here, source, holds) else {
@@ -31,6 +34,14 @@ pub(super) fn refs_read(
         }
     }
     Ok(out)
+}
+
+/// The node each slot of a program was built for.
+fn sources(value: &crate::render::table::Value) -> Vec<Option<NodeId>> {
+    match &value.kind {
+        Kind::Program(program) => program.sources.to_vec(),
+        _ => Vec::new(),
+    }
 }
 
 /// The table's program for `node`, where it computes one.
@@ -75,6 +86,12 @@ pub(super) fn contributed(
     child: NodeId,
 ) -> Result<Option<Buffer>, EngineError> {
     let holds = |id: NodeId| render.buffers.contains_key(&id);
+    if crate::refs::passes(&render.tys, parent) == Some(child) {
+        let range = render.range.expect("a ledger reads a decided range");
+        return Ok(render
+            .buffer(parent)
+            .map(|held| held.over(range, held.extent())));
+    }
     let Some((renderer, kept)) = isolated(render, parent, child, &holds)? else {
         return Ok(None);
     };
@@ -99,13 +116,12 @@ pub(super) fn isolated(
         return Ok(None);
     };
     let (here, name) = (render.tys.name(parent), render.tys.name(child));
-    let kept: Vec<BufId> = table.values[at]
-        .reads
+    let kept: Vec<BufId> = program
+        .sources
         .iter()
         .enumerate()
-        .filter(|(_, read)| {
-            table.values[**read]
-                .node
+        .filter(|(_, source)| {
+            source
                 .and_then(|source| behind(render, here, source, holds))
                 .is_some_and(|id| render.tys.name(id) == name)
         })

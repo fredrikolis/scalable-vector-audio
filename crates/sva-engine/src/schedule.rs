@@ -21,18 +21,6 @@ impl<'i> Order<'i> {
         self.inst.deps(path)
     }
 
-    pub(crate) fn within(&self, kept: &BTreeSet<String>) -> Order<'i> {
-        Order {
-            groups: self
-                .groups
-                .iter()
-                .filter(|group| group.iter().all(|path| kept.contains(path)))
-                .cloned()
-                .collect(),
-            inst: self.inst,
-        }
-    }
-
     /// A group of one not reading itself is no loop; any other is.
     pub fn is_loop(&self, group: &[String]) -> bool {
         is_loop(self.inst, group)
@@ -318,7 +306,7 @@ pub(crate) fn anywhere(typing: &Typing, id: NodeId) -> bool {
     }
 }
 
-/// Every ref one node reads; `materialized_operands` answers a narrower one.
+/// Every ref one node reads.
 pub(crate) fn read_operands(typing: &Typing, id: NodeId) -> Vec<NodeId> {
     match typing.value(id) {
         Value::ClosedForm(form) => crate::refs::nodes_in(&form.body),

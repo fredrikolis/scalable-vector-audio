@@ -168,3 +168,126 @@ fn a_render_over_an_unusable_cache_answers_and_logs_why() {
         "{printed}"
     );
 }
+
+const HEADER: &str = "; Models: x | Neglects: y | IO: (t) -> amplitude | Tags: t\n";
+const TONE: &str = "crop(lowpass(sin(2*pi*220*t), 880), 0s, 0.05s)";
+const HISS: &str = "crop(lowpass(sample(crop(noise(1, period=0.5, color=1), 0s, 0.05s)), \
+                    880 + 400*sin(2*pi*t)), 0s, 0.05s)";
+const SOURCE: &str = "sample(crop(noise(1, period=0.5, color=1), 0s, 0.05s))";
+const READER: &str = "crop(lowpass(@src/n(t), 880 + 400*sin(2*pi*t)), 0s, 0.05s)";
+
+/// Files of one composition, each a path and a body.
+type Files<'a> = Vec<(&'a str, String)>;
+
+/// A composition of `files`, each under the one header comment.
+fn framed(name: &str, files: &[(&str, String)]) -> PathBuf {
+    let dir = scratch(name);
+    for (rel, body) in files {
+        put(&dir, rel, &format!("{HEADER}{body}\n"));
+    }
+    dir
+}
+
+/// The reading a render answered, whatever its target was spelled.
+fn reading(out: &Output) -> String {
+    let data = data(out);
+    data[data.find("\"representations\"").expect("a reading")..].to_string()
+}
+
+/// Each framing of one value, rendered by a process of its own after the original, its first
+/// file, over one store, reads the entry the original wrote: nothing is computed or written.
+#[test]
+fn every_framing_of_a_value_reads_the_entry_its_original_stored() {
+    let lifted = "hz = 220\ncrop(lowpass(sin(2*pi*hz*t), 4*hz), 0s, 0.05s)".to_string();
+    let reordered = HISS.replace("period=0.5, color=1", "color=1, period=0.5");
+    let split = vec![("hiss", READER.to_string()), ("src/n", SOURCE.to_string())];
+    let sum = "sample(crop(lowpass(sin(2*pi*220*t) + 0.5*sin(2*pi*330*t), 880), 0s, 0.05s))";
+    let swapped = "sample(crop(lowpass(0.5*sin(2*pi*330*t) + sin(2*pi*220*t), 880), 0s, 0.05s))";
+    let leaves = |master: &str| -> Files {
+        vec![
+            ("master", master.to_string()),
+            ("a", "sample(crop(sin(2*pi*220*t), 0s, 0.05s))".to_string()),
+            ("b", "sample(crop(sin(2*pi*330*t), 0s, 0.05s))".to_string()),
+        ]
+    };
+    let tone = vec![("tone", TONE.to_string())];
+    let hiss = vec![("hiss", HISS.to_string())];
+    let cases: Vec<(&str, Files, Files, &str)> = vec![
+        (
+            "renamed",
+            tone.clone(),
+            vec![("voice", TONE.to_string())],
+            "@voice",
+        ),
+        (
+            "moved",
+            tone.clone(),
+            vec![("fx/deep/tone", TONE.to_string())],
+            "@fx/deep/tone",
+        ),
+        (
+            "comment",
+            tone.clone(),
+            vec![("tone", format!("; other words\n{TONE}"))],
+            "@tone",
+        ),
+        (
+            "spacing",
+            tone.clone(),
+            vec![(
+                "tone",
+                "crop( lowpass( sin(2*pi*220*t),  880 ),  0s, 0.05s )".to_string(),
+            )],
+            "@tone",
+        ),
+        ("named", hiss.clone(), vec![("hiss", reordered)], "@hiss"),
+        ("lifted", tone.clone(), vec![("tone", lifted)], "@tone"),
+        ("split", hiss.clone(), split.clone(), "@hiss"),
+        ("inlined", split, hiss, "@hiss"),
+        (
+            "addends",
+            vec![("hiss", sum.to_string())],
+            vec![("hiss", swapped.to_string())],
+            "@hiss",
+        ),
+        ("sampled", leaves("@a + @b"), leaves("@b + @a"), "@master"),
+    ];
+    for (name, original, framing, target) in cases {
+        let store = scratch(&format!("framing-{name}-store"));
+        let cache = [
+            "--representation",
+            "loudness",
+            "--cache",
+            store.to_str().unwrap(),
+        ];
+        let first = framed(&format!("framing-{name}-original"), &original);
+        let wrote = format!("@{}", original[0].0);
+        let args: Vec<&str> = [wrote.as_str()].into_iter().chain(cache).collect();
+        let cold = run(&first, &args, None);
+        assert!(
+            cold.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&cold.stdout)
+        );
+        assert!(total(&cold, "miss") > 0, "{name}: the original computes");
+        let held = values_in(&store);
+
+        let second = framed(&format!("framing-{name}-framing"), &framing);
+        let args: Vec<&str> = [target].into_iter().chain(cache).collect();
+        let warm = run(&second, &args, None);
+        assert!(
+            warm.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&warm.stdout)
+        );
+        assert_eq!(total(&warm, "miss"), 0, "{name}: nothing is computed");
+        assert_eq!(
+            total(&warm, "store-miss"),
+            0,
+            "{name}: the stored entry answers"
+        );
+        assert!(total(&warm, "store-hit") > 0, "{name}");
+        assert_eq!(values_in(&store), held, "{name}: nothing is written");
+        assert_eq!(reading(&cold), reading(&warm), "{name}: the stored reading");
+    }
+}

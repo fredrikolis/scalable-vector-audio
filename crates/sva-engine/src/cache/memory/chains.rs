@@ -10,6 +10,7 @@ use super::{Facts, Known, Memory, Offered, Stored};
 fn stored(key: Hash) -> Stored {
     Stored {
         key,
+        identity: key,
         label: Label::measured("psychoacoustic-v1", 8_000),
         width: 1,
         codomain: Codomain::Real,

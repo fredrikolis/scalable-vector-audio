@@ -283,6 +283,7 @@ pub(crate) fn rerun(
         start: program.start,
         own: program.own,
         alias: None,
+        sources: std::sync::Arc::clone(&program.sources),
         machine: None,
         marks: Default::default(),
     };
