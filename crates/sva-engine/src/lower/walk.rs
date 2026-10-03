@@ -1,5 +1,7 @@
 // Concern: the recursion over one node's written expression | Non-concern: what a call lowers to (calls.rs), classifying a loop (loops.rs) | IO: (&Expr, Cx, Var) -> a Piece
 
+use std::collections::HashMap;
+
 use sva_ast::{Address, Arg, BinOp, ByteSpan, Expr, Literal};
 use sva_formula::{Body, C64, Held, IndexId, NodeId, Ty, Var};
 
@@ -564,7 +566,7 @@ impl Lowering<'_> {
     /// A stateful node has a value only at the steps it takes, which a time that moves
     /// lands between.
     fn stateful_warp(&self, path: &str, span: ByteSpan) -> EngineError {
-        let note = match self.construct(path, 0) {
+        let note = match self.construct(path) {
             Some((what, at)) => format!("\nnote: `{path}` is stateful: {what} at {at}"),
             None => String::new(),
         };
@@ -577,10 +579,44 @@ impl Lowering<'_> {
     }
 
     /// The first construct in `path`'s body that steps: a filter, a solver, `self`, an index
-    /// read, or one inside a stateful node it reads.
-    fn construct(&self, path: &str, depth: usize) -> Option<(String, Located)> {
-        let (e, cx) = self.inst.at(path)?;
-        let mut found = None;
+    /// read, or one inside a stateful node it reads; a read back into an open node names none.
+    fn construct(&self, path: &str) -> Option<(String, Located)> {
+        let mut folded: HashMap<String, Option<(String, Located)>> = HashMap::new();
+        let mut steps: HashMap<String, Vec<Stepping>> = HashMap::new();
+        let mut open = vec![(path.to_string(), 0usize)];
+        while let Some((at, next)) = open.last().cloned() {
+            let body = steps
+                .entry(at.clone())
+                .or_insert_with(|| self.stepping(&at));
+            let found = match body.get(next).cloned() {
+                None => Some(None),
+                Some(Stepping::Here(what, located)) => Some(Some((what, located))),
+                Some(Stepping::Within(read)) => match folded.get(&read) {
+                    Some(Some(held)) => Some(Some(held.clone())),
+                    Some(None) => None,
+                    None if open.iter().any(|(p, _)| *p == read) => None,
+                    None => {
+                        open.push((read, 0));
+                        continue;
+                    }
+                },
+            };
+            match found {
+                Some(held) => {
+                    folded.insert(at, held);
+                    open.pop();
+                }
+                None => open.last_mut().expect("the node being folded").1 += 1,
+            }
+        }
+        folded.remove(path).flatten()
+    }
+
+    fn stepping(&self, path: &str) -> Vec<Stepping> {
+        let Some((e, cx)) = self.inst.at(path) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
         self.visit(e, cx, &mut |node| {
             let (what, span) = match node {
                 Node::Call { name, span, .. }
@@ -604,18 +640,17 @@ impl Lowering<'_> {
                 } => (format!("`@{read}[…]`"), span),
                 Node::Signal { name, span, .. } => (format!("`{name}[…]`"), span),
                 Node::Read { path: read, .. }
-                    if depth < 32
-                        && self.typing.id(read).is_some_and(|id| self.holds_state(id)) =>
+                    if self.typing.id(read).is_some_and(|id| self.holds_state(id)) =>
                 {
-                    found = self.construct(read, depth + 1);
-                    return found.is_some();
+                    out.push(Stepping::Within(read.to_string()));
+                    return false;
                 }
                 _ => return false,
             };
-            found = Some((what, Located::at(path, Some(span))));
-            true
+            out.push(Stepping::Here(what, Located::at(path, Some(span))));
+            false
         });
-        found
+        out
     }
 
     fn holds_state(&self, id: NodeId) -> bool {
@@ -767,4 +802,10 @@ fn pruned(body: Body, var: Var) -> Body {
         [only] => (*only.body).clone(),
         _ => Body::Add(kept),
     }
+}
+
+#[derive(Clone)]
+enum Stepping {
+    Here(String, Located),
+    Within(String),
 }

@@ -218,6 +218,34 @@ fn a_stateful_node_read_at_a_moving_time_refuses_at_typing() {
     }
 }
 
+/// The construct holding the state is named however many stateful nodes lie between it and
+/// the read that moves.
+#[test]
+fn a_stateful_warp_names_the_construct_under_a_long_chain() {
+    let mut files = vec![
+        (
+            "n0".to_string(),
+            "lowpass(sample(sin(2*pi*220*t)), cutoff=900)\n".to_string(),
+        ),
+        ("d".to_string(), "0.001*sin(2*pi*3*t)\n".to_string()),
+    ];
+    for i in 1..=40 {
+        files.push((format!("n{i}"), format!("@n{}*0.5\n", i - 1)));
+    }
+    files.push(("warped".to_string(), "@n40(t - @d)\n".to_string()));
+    let named: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(n, b)| (n.as_str(), b.as_str()))
+        .collect();
+    let g = graph_of("warped-chain", &named);
+    let Err(refused) = sva_engine::types(&g, "warped") else {
+        panic!("a filter has no value at a time that moves");
+    };
+    assert_eq!(refused.code(), "type.stateful_warp", "{refused}");
+    let said = refused.to_string();
+    assert!(said.contains("`lowpass(…)`"), "the filter is named: {said}");
+}
+
 #[test]
 fn a_store_answers_a_stepped_node_only_at_its_own_rate() {
     let g = composition();
