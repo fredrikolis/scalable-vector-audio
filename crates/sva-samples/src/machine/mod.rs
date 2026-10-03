@@ -35,16 +35,10 @@ pub(super) struct Program {
 impl NodeRenderer {
     pub(super) fn compile(&self, layout: &Layout) -> Result<Program, SampleError> {
         let (lowered, width) = lowered(self, layout)?;
-        let mut pending = Vec::new();
-        let mut args = Vec::with_capacity(lowered.ops.len());
-        for (slot, op) in lowered.ops.iter().enumerate() {
-            args.push(pending.split_off(pending.len() - arity_of(op)));
-            pending.push(slot);
-        }
         Ok(Program {
             ops: lowered.ops,
             widths: lowered.widths,
-            args,
+            args: lowered.args,
             formulas: lowered.formulas,
             indices: lowered.indices,
             sites: layout.sites.clone(),
@@ -330,23 +324,6 @@ fn own_reach(op: &Op, from: i64, most: usize) -> Option<usize> {
 /// The fewest samples a block an own-past read shortens runs; a nearer read runs per sample.
 const RUN: usize = 16;
 
-fn arity_of(op: &Op) -> usize {
-    match op {
-        Op::Const(_)
-        | Op::Time
-        | Op::Wrap(_)
-        | Op::Noise { .. }
-        | Op::Read { .. }
-        | Op::ReadScaled { .. } => 0,
-        Op::Physics { arity, .. } => *arity,
-        Op::Map(_) | Op::Crop { .. } | Op::Channel(_) | Op::Formula { .. } => 1,
-        Op::Indexed { arity, .. } | Op::Instant { arity, .. } => *arity,
-        Op::Sub | Op::Div | Op::Pow | Op::Zip(_) => 2,
-        Op::Add(n) | Op::Mul(n) | Op::Join(n) => *n,
-        Op::Filter { .. } => 4,
-    }
-}
-
 /// Passes over a block, ops run over part of one, and samples read one by one, per thread.
 #[cfg(test)]
 mod counts {
@@ -446,6 +423,51 @@ mod tests {
         );
         let far = 2 * 2 * LONG.iter().sum::<i64>() as u64;
         assert!(reads <= 2 * 2 * to as u64 + far, "{reads} reads");
+    }
+
+    /// Each line reads both long lines and its own last sample, and both mix the same input:
+    /// every identical read and mix runs once, writing the bits the loop's own arithmetic does.
+    #[test]
+    fn identical_reads_of_a_loops_own_past_run_once() {
+        let to = 24_000;
+        let layout = Layout {
+            grid: Grid::of(48_000),
+            width: 2,
+            read_widths: vec![1],
+            sites: Vec::new(),
+        };
+        assert_eq!(feedback().ops(&layout).expect("ops"), 20);
+        let (planes, [_, fills, reads]) = ran(to, to);
+        let mut y = vec![vec![0.0f64; to as usize]; 2];
+        let past = |y: &[Vec<f64>], k: usize, n: i64| match n {
+            n if n < 0 => 0.0,
+            n => y[k][n as usize],
+        };
+        for n in 0..to {
+            let input = f64::from(u8::from(n % 4800 == 0));
+            let mut fed = 0.0 + input;
+            for (j, lag) in LONG.iter().enumerate() {
+                fed += 1.0 * 0.6 * past(&y, j, n - lag);
+            }
+            for k in 0..2 {
+                y[k][n as usize] = 0.0 + 1.0 * 0.7 * fed + 1.0 * 0.2 * past(&y, k, n - 1);
+            }
+        }
+        let bits = |p: &[Vec<f64>]| -> Vec<Vec<u64>> {
+            p.iter()
+                .map(|c| c.iter().map(|v| v.to_bits()).collect())
+                .collect()
+        };
+        assert_eq!(bits(&planes), bits(&y));
+        let blocks = (to as u64).div_ceil(BLOCK as u64) + 1;
+        let (last, channels, scaled, sums, join) = (1, 2, 2, 2, 1);
+        let per_sample = last + channels + scaled + sums + join;
+        assert!(
+            fills <= blocks * 20 + per_sample * to as u64,
+            "{fills} op runs"
+        );
+        let far = 2 * 2 * LONG.iter().sum::<i64>() as u64;
+        assert!(reads <= 2 * to as u64 + far, "{reads} reads");
     }
 
     /// A delay read at a moving length and a loop reading itself far back, by index.

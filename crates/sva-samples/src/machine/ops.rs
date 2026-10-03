@@ -1,4 +1,6 @@
-// Concern: the postfix op array one node renderer lowers to, and the width each slot holds | Non-concern: lowering into it or running it (mod.rs) | IO: (&NodeRenderer, &Layout) -> Vec<Op> + Vec<usize>
+// Concern: the op array one node renderer lowers to, each identical op once, and the width each slot holds | Non-concern: running it (mod.rs) | IO: (&NodeRenderer, &Layout) -> ops, widths, operands
+
+use std::collections::HashMap;
 
 use crate::error::SampleError;
 use crate::machine::renderer::{
@@ -89,31 +91,71 @@ fn meet(a: usize, b: usize) -> Result<usize, SampleError> {
     }
 }
 
-/// The ops, one width per op, and the formulas a `Formula` op names by position.
+/// Each op's width and operands, and the formulas a `Formula` op names by position.
 #[derive(Default)]
 pub(crate) struct Lowered {
     pub(crate) ops: Vec<Op>,
     pub(crate) widths: Vec<usize>,
+    pub(crate) args: Vec<Vec<usize>>,
     pub(crate) formulas: Vec<Formula>,
     pub(crate) indices: Vec<Index<usize>>,
+    held: HashMap<String, usize>,
 }
 
-/// Postfix, so the runner needs no recursion and every operand's width is already settled
-/// by the time the op that consumes it is reached.
+/// Operands before the ops reading them, so the runner needs no recursion and every operand's
+/// width is settled by the time the op that consumes it is reached; the root is the last op.
 pub(crate) fn lowered(
     renderer: &NodeRenderer,
     layout: &Layout,
 ) -> Result<(Lowered, usize), SampleError> {
     let mut out = Lowered::default();
-    let width = lower(renderer, layout, &mut out)?;
+    let root = lower(renderer, layout, &mut out)?;
+    debug_assert_eq!(root, out.ops.len() - 1, "an op is never its own operand");
+    let width = out.widths[root];
     Ok((out, width))
 }
 
 impl Lowered {
-    fn push(&mut self, op: Op, width: usize) -> usize {
+    /// `op`'s slot; an identical op already pushed is that slot, evaluated once as priced once.
+    fn push(&mut self, op: Op, width: usize, args: Vec<usize>) -> usize {
+        let key = self.key(&op, &args);
+        if let Some(slot) = key.as_ref().and_then(|key| self.held.get(key)) {
+            if matches!(op, Op::Indexed { .. } | Op::Instant { .. }) {
+                self.indices.pop();
+            }
+            return *slot;
+        }
         self.ops.push(op);
         self.widths.push(width);
-        width
+        self.args.push(args);
+        let slot = self.ops.len() - 1;
+        if let Some(key) = key {
+            self.held.insert(key, slot);
+        }
+        slot
+    }
+
+    /// What `op` computes, numbers by their bits; `None` for a state or a formula, never shared.
+    fn key(&self, op: &Op, args: &[usize]) -> Option<String> {
+        let bits = |v: &[f64]| v.iter().map(|v| v.to_bits()).collect::<Vec<u64>>();
+        let what = match op {
+            Op::Const(v) => format!("const {:?}", bits(&[*v])),
+            Op::ReadScaled { slot, at, by } => format!("scaled {slot:?} {at:?} {:?}", bits(&[*by])),
+            Op::Crop {
+                window,
+                a,
+                b,
+                rise,
+                fall,
+            } => format!("crop {window:?} {:?}", bits(&[*a, *b, *rise, *fall])),
+            Op::Indexed {
+                slot, at, reach, ..
+            } => format!("indexed {slot:?} {reach:?} {:?}", self.indices[*at]),
+            Op::Instant { at, .. } => format!("instant {:?}", self.indices[*at]),
+            Op::Formula { .. } | Op::Filter { .. } | Op::Physics { .. } => return None,
+            other => format!("{other:?}"),
+        };
+        Some(format!("{what} {args:?}"))
     }
 }
 
@@ -122,20 +164,22 @@ fn indexed(
     layout: &Layout,
     out: &mut Lowered,
 ) -> Result<(usize, Vec<usize>), SampleError> {
-    let mut widths = Vec::new();
+    let mut operands = Vec::new();
     let program = index.mapped(&mut |time| {
-        widths.push(lower(time, layout, out)?);
-        Ok::<usize, SampleError>(widths.len() - 1)
+        operands.push(lower(time, layout, out)?);
+        Ok::<usize, SampleError>(operands.len() - 1)
     })?;
     out.indices.push(program);
-    Ok((out.indices.len() - 1, widths))
+    Ok((out.indices.len() - 1, operands))
 }
 
+/// The slot holding `r`.
 fn lower(r: &NodeRenderer, layout: &Layout, out: &mut Lowered) -> Result<usize, SampleError> {
     if let NodeRenderer::Mul(parts) = r
         && let Some((slot, at, by)) = scaled_read(parts)
     {
-        return Ok(out.push(Op::ReadScaled { slot, at, by }, slot_width(slot, layout)));
+        let width = slot_width(slot, layout);
+        return Ok(out.push(Op::ReadScaled { slot, at, by }, width, Vec::new()));
     }
     let (op, operands) = match r {
         NodeRenderer::Formula { formula, time, .. } => {
@@ -168,8 +212,9 @@ fn lower(r: &NodeRenderer, layout: &Layout, out: &mut Lowered) -> Result<usize, 
             (op_of(other, layout), operands)
         }
     };
-    let w = width(r, &operands, layout)?;
-    Ok(out.push(op, w))
+    let widths: Vec<usize> = operands.iter().map(|s| out.widths[*s]).collect();
+    let w = width(r, &widths, layout)?;
+    Ok(out.push(op, w, operands))
 }
 
 fn op_of(r: &NodeRenderer, layout: &Layout) -> Op {
