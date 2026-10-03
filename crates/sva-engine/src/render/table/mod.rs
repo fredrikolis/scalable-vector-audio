@@ -224,14 +224,15 @@ impl Table {
 
     /// Prices every value over `range` before a sample is computed; a stored one costs what
     /// computing it did.
-    pub(crate) fn plan(&mut self, range: Extent) {
-        let needs = self.demand(range);
+    pub(crate) fn plan(&mut self, range: Extent) -> Result<(), EngineError> {
+        let needs = self.bounded_demand(range)?;
         self.planned = self.price(&needs);
         for (at, value) in self.values.iter() {
             if let Kind::Resident(stored) = &value.kind {
                 self.planned[at] += stored.priced;
             }
         }
+        Ok(())
     }
 
     /// The most seconds any read was moved to a whole sample.
@@ -305,6 +306,24 @@ impl Table {
         demand::demand(&self.values, &self.asked(window))
     }
 
+    /// What a window asks, refused where a value would compute samples without end.
+    fn bounded_demand(&self, window: Extent) -> Result<Vec<Need>, EngineError> {
+        let needs = self.demand(window);
+        self.endless(&needs)?;
+        Ok(needs)
+    }
+
+    fn endless(&self, needs: &[Need]) -> Result<(), EngineError> {
+        let endless = self.values.iter().find(|(at, _)| {
+            let asked = needs[*at].compute.hull();
+            !asked.is_empty() && !asked.is_bounded()
+        });
+        match endless {
+            Some((_, value)) => Err(unbounded_read(&value.name)),
+            None => Ok(()),
+        }
+    }
+
     fn asked(&self, window: Extent) -> Vec<(usize, Extent)> {
         std::iter::once(self.root)
             .chain(self.wanted.iter().copied())
@@ -331,7 +350,7 @@ impl Table {
         block: i64,
         recording: &mut Recording,
     ) -> Result<Pulled, EngineError> {
-        let needs = self.demand(window);
+        let needs = self.bounded_demand(window)?;
         let spans: Vec<(usize, Extent)> = self
             .values
             .iter()
@@ -377,7 +396,7 @@ impl Table {
     pub(crate) fn skipped(&mut self, window: Extent) -> Result<Vec<usize>, EngineError> {
         let mut silenced = Vec::new();
         loop {
-            let needs = self.demand(window);
+            let needs = self.bounded_demand(window)?;
             let behind = self.values.ordered().rev().find(|at| {
                 let need = &needs[*at];
                 let stateful = matches!(&self.values[*at].kind, Kind::Program(p) if p.stateful());
@@ -418,6 +437,7 @@ impl Table {
             }
             needs = demand::demand(&self.values, asked);
         }
+        self.endless(&needs)?;
         let mut pulled = Pulled::default();
         for at in order {
             let need = &needs[at];
@@ -1367,6 +1387,21 @@ fn unbounded(name: &str) -> EngineError {
         message: format!("`{name}` reads its input over every instant, and that input never ends"),
         location: crate::error::Located::at(name, None),
         help: "crop what a short-time transform takes to a window".to_string(),
+    })
+}
+
+/// A value asked for every sample of a support that never starts or ends.
+fn unbounded_read(name: &str) -> EngineError {
+    EngineError::refused(crate::error::Diagnostic {
+        code: "engine.unbounded_read".to_string(),
+        message: format!(
+            "`{name}` is asked for every one of its samples, and it never starts or ends"
+        ),
+        location: crate::error::Located::at(name, None),
+        help: format!(
+            "crop `{name}` to a window, or bound how far an index reading it reaches, as `t` \
+             plus a bounded offset does"
+        ),
     })
 }
 

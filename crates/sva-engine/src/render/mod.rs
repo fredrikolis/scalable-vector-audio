@@ -372,7 +372,7 @@ fn ranged(held: &mut Render, bounds: &BTreeSet<NodeId>) -> Result<(), EngineErro
     let wanted: Vec<NodeId> = held.schedule.wanted.clone();
     let root = (held.root, wanted.as_slice());
     let mut table = Table::bounded(&held.tys, root, &held.config.profile, (bounds, found))?;
-    table.plan(held.range.expect("a range was decided"));
+    table.plan(held.range.expect("a range was decided"))?;
     held.table = Some(table);
     Ok(())
 }
@@ -579,7 +579,7 @@ pub(crate) fn render_apart(
     if let (Some(range), Some(_)) = (held.range, &held.table) {
         let wanted = held.schedule.wanted.clone();
         let mut table = Table::apart(&held.tys, held.root, &wanted, &held.config.profile)?;
-        table.plan(range);
+        table.plan(range)?;
         held.table = Some(table);
     }
     pulled(&mut held, Recording::over(&Memory::holding(0)))?;

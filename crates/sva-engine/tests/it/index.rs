@@ -344,3 +344,44 @@ fn index_reads_stream_the_samples_a_whole_render_writes_bit_for_bit() {
         }
     }
 }
+
+/// An index taken off another node's samples holds no bound, so the read asks every sample of
+/// a signal that never starts or ends: refused by name, whole or streamed, never computed.
+#[test]
+fn an_unbounded_index_into_a_signal_with_no_ends_refuses() {
+    let g = graph_of(
+        "endless-index",
+        &[
+            ("rom", "crop(sample(sin(2*pi*100*t)), 0s, 0.01s)\n"),
+            ("ramp", "crop(sample(t/1sp), 0s, 10s)\n"),
+            ("lfo", "sample(2ms + 0.2ms*sin(2*pi*5*t))\n"),
+            (
+                "wrap",
+                "w = 0\nw[idx(t - 0.01s*@ramp[idx(t*100*1sp, floor)], floor)]\n",
+            ),
+            ("mdly", "x = 0\nx[idx(t) - idx(@lfo(t), floor) - 2]\n"),
+            ("top", "crop(@mdly(t, x=@wrap(t, w=@rom(t))), 0s, 0.05s)\n"),
+        ],
+    );
+    let refused = render(&g, "top", RenderConfig::at(48_000), &Tier::default())
+        .err()
+        .expect("every sample of `wrap` is asked");
+    let said = refused.to_string();
+    assert!(
+        said.contains("wrap") && said.contains("never starts or ends"),
+        "{said}"
+    );
+    let config = StreamConfig {
+        block: 64,
+        channels: None,
+        render: RenderConfig::at(48_000),
+    };
+    let at = sva_ast::parse_expr("@top").expect("a ref");
+    let opened = Stream::open(&g, &at, config, &Tier::default()).now();
+    let refused = opened.and_then(|mut stream| next(&mut stream)).err();
+    let said = refused.expect("a stream refuses too").to_string();
+    assert!(
+        said.contains("wrap") && said.contains("never starts or ends"),
+        "{said}"
+    );
+}
