@@ -89,7 +89,44 @@ fn resolve_bar_literals(e: &Expr, per_bar: PerBar) -> Expr {
     }
 }
 
+fn rebind(e: &Expr, to: &dyn Fn(&str) -> Option<Expr>) -> Expr {
+    match e {
+        Expr::Ref {
+            path,
+            arg,
+            binds,
+            address,
+            span,
+        } => Expr::Ref {
+            path: path.clone(),
+            arg: Box::new(rebind(arg, to)),
+            binds: binds
+                .iter()
+                .map(|(k, v)| (k.clone(), to(k).unwrap_or_else(|| rebind(v, to))))
+                .collect(),
+            address: *address,
+            span: *span,
+        },
+        _ => map_children_ok(e, Binds::Substitute, |c| rebind(c, to)),
+    }
+}
+
 impl Graph {
+    /// Every binding of a parameter `to` answers, by a ref or a default, bound to that answer.
+    pub fn rebound(&self, to: &dyn Fn(&str) -> Option<Expr>) -> Graph {
+        let mut out = self.clone();
+        for defined in out.nodes.values_mut() {
+            let defaults = defined.defaults.iter();
+            let defaults =
+                defaults.map(|(k, v)| (k.clone(), to(k).unwrap_or_else(|| rebind(v, to))));
+            *defined = Arc::new(Defined {
+                body: rebind(&defined.body, to),
+                defaults: defaults.collect(),
+            });
+        }
+        out
+    }
+
     pub fn defines(&self, path: &str) -> bool {
         self.nodes.contains_key(path)
     }

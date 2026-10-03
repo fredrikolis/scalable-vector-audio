@@ -67,7 +67,12 @@ pub async fn render_over<B: Backend>(
             .filter_map(|path| tys.id(path))
             .filter(|id| readable(&tys, *id))
             .collect();
-        let mut held = planned_over(&instances, (tys, id), config.clone(), &bounds)?;
+        let mut held = planned_over(
+            (graph, target, &instances),
+            (tys, id),
+            config.clone(),
+            &bounds,
+        )?;
         let short = match (&mut held.table, held.range) {
             (Some(table), Some(range)) => {
                 let mut needs = table.needs(range);
@@ -114,6 +119,7 @@ pub async fn render_over<B: Backend>(
     if let Some(stats) = &mut held.cache_stats {
         stats.typed = lowered;
         stats.planned = computed;
+        stats.unslotted = held.unslotted.clone();
     }
     closed(&mut held)?;
     Ok(held)

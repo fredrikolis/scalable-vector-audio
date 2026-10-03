@@ -148,3 +148,58 @@ fn a_knob_passed_down_under_another_name_is_still_volatile() {
     assert_eq!(moved.stored(), 0, "{moved:?}");
     assert_eq!(store.entries(), entries);
 }
+
+/// A slot is what a node computes with its knob held, never its file's name: the same knob on
+/// a renamed copy of the fx moves the one value it kept.
+#[test]
+fn a_knob_on_a_renamed_fx_moves_the_value_its_original_kept() {
+    let graph = |fx: &str, cutoff: f64| {
+        graph_of(
+            "renamed-knob",
+            &[
+                ("note", "sample(sin(2*pi*220*t))*0.5\n"),
+                (fx, "lowpass(x, cutoff=cutoff, q=0.7)\n"),
+                ("master", &format!("@{fx}(t, x=@note, cutoff={cutoff})\n")),
+            ],
+        )
+    };
+    let store = Tier::default();
+    let played = |fx: &str, cutoff: f64| {
+        run(&graph(fx, cutoff), &["cutoff"], &store)
+            .expect("a render")
+            .cache_stats
+            .expect("stats")
+    };
+    played("tone", 400.0);
+    let entries = store.entries();
+    let moved = played("fx/colour", 900.0);
+    assert!(
+        moved
+            .lookups
+            .iter()
+            .any(|l| l.outcome == Outcome::ComputedReplaced),
+        "{moved:?}"
+    );
+    assert_eq!(
+        store.entries(),
+        entries,
+        "one value for the knob, whatever the file"
+    );
+}
+
+/// A knob read where its stand-in cannot be, as a whole count of samples back, still renders;
+/// its values keep an entry each, and the render says why.
+#[test]
+fn a_knob_its_stand_in_cannot_type_renders_and_says_why_it_keeps_each_value() {
+    let graph = graph_of(
+        "uncountable-knob",
+        &[
+            ("note", "sample(crop(sin(2*pi*220*t), 0s, 0.02s))\n"),
+            ("echo", "x + 0.5*self[idx(t) - back]\n"),
+            ("master", "@echo(t, x=@note, back=40)\n"),
+        ],
+    );
+    let held = run(&graph, &["back"], &Tier::default()).expect("a render");
+    let stats = held.cache_stats.expect("stats");
+    assert!(stats.unslotted.is_some(), "{stats:?}");
+}

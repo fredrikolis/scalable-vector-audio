@@ -301,6 +301,7 @@ impl Typing {
             .map(|(at, _)| NodeId(at as u32))
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.nodes.len() - self.free.len()
     }

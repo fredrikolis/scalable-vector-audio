@@ -1,19 +1,21 @@
-// Concern: marks the nodes volatile parameters reach and names each one's slot | Non-concern: the store, what a node computes | IO: (Instances, Typing, names) -> a slot per volatile node
+// Concern: marks the nodes volatile parameters reach and names each one's slot | Non-concern: the store, what a node computes | IO: (Graph, Instances, Typing, names) -> a slot per volatile node
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use sva_ast::{Arg, Expr};
+use sva_ast::{Expr, Graph, Literal};
 use sva_formula::{Hash, NodeId};
 
 use crate::error::{Diagnostic, EngineError, Located};
-use crate::instantiate::{Cx, Instances, Node, ScopeId};
+use crate::instantiate::{Instances, ScopeId};
 use crate::render::Render;
-use crate::typing::Typing;
+use crate::typing::{Typing, Value};
 
 /// The base of each volatile node's slot; a node absent here keeps every value it stores.
 #[derive(Default)]
 pub(super) struct Volatile {
     slots: BTreeMap<NodeId, Hash>,
+    /// Why the knobs' values keep an entry each: the stand-in refused.
+    pub(super) unslotted: Option<String>,
 }
 
 impl Volatile {
@@ -23,8 +25,13 @@ impl Volatile {
 }
 
 /// A node is volatile when its instance reads a volatile parameter, directly or through what a
-/// caller bound, or when anything it is built from is.
-pub(super) fn mark(inst: &Instances, held: &Render, target: &str) -> Result<Volatile, EngineError> {
+/// caller bound, or anything it is built from is. Its slot is what it computes with every
+/// volatile parameter at one stand-in, however far a knob moves.
+pub(super) fn mark(
+    (graph, inst): (&Graph, &Instances),
+    held: &Render,
+    target: &str,
+) -> Result<Volatile, EngineError> {
     let (tys, config) = (&held.tys, &held.config);
     if config.volatile.is_empty() {
         return Ok(Volatile::default());
@@ -34,27 +41,86 @@ pub(super) fn mark(inst: &Instances, held: &Render, target: &str) -> Result<Vola
         inst,
         names: &config.volatile,
         bound: HashMap::new(),
-        text: HashMap::new(),
     };
     let instances: BTreeSet<&str> = inst.paths().filter(|p| reach.instance(p)).collect();
-    let mut marked: Vec<Option<bool>> = vec![None; tys.len()];
-    let mut ordinal: HashMap<&str, u64> = HashMap::new();
-    let mut slots = BTreeMap::new();
-    for id in (0..tys.len()).map(|at| NodeId(at as u32)) {
-        let name = tys.name(id);
-        let nth = ordinal.entry(name).or_default();
-        *nth += 1;
+    let (paired, at) = match stand_in(graph, target, config) {
+        Ok(held) => held,
+        Err(refused) => {
+            return Ok(Volatile {
+                slots: BTreeMap::new(),
+                unslotted: Some(refused.to_string()),
+            });
+        }
+    };
+    let (mut marked, mut slots, mut unslotted) = (HashMap::new(), BTreeMap::new(), None);
+    for (id, at) in pair((tys, held.root), (&paired, at)) {
         if !volatile(tys, id, &instances, &mut marked) {
             continue;
         }
-        let mut sink = Sink::default();
-        sink.text(&reach.stripped(name));
-        for word in [*nth, u64::from(config.rate), u64::from(tys.ty(id).width)] {
-            sink.0.word(word);
+        match crate::refs::identity(&paired, at) {
+            Ok(identity) => {
+                let words = [u64::from(config.rate), u64::from(tys.ty(id).width)];
+                slots.insert(id, crate::cache::mixed(identity, &words));
+            }
+            Err(refused) => {
+                unslotted.get_or_insert_with(|| refused.to_string());
+            }
         }
-        slots.insert(id, sink.0.finish());
     }
-    Ok(Volatile { slots })
+    Ok(Volatile { slots, unslotted })
+}
+
+/// The target typed with each volatile parameter at a stand-in, and its root.
+fn stand_in(
+    graph: &Graph,
+    target: &str,
+    config: &super::RenderConfig,
+) -> Result<(Typing, NodeId), EngineError> {
+    let names = &config.volatile;
+    let held = |name: &str| {
+        let at = names.iter().position(|n| n == name)?;
+        Some(Expr::Lit(Literal::Num(STAND_IN + at as f64)))
+    };
+    let rebound = graph.rebound(&held);
+    let inst = crate::instantiate::instantiate(&rebound, target, config.rate)?;
+    let root = inst.instance_of(target)?;
+    let order = crate::schedule::schedule_from(&inst, std::slice::from_ref(&root))?;
+    let tys = crate::typing::infer_all(&inst, &order)?;
+    let at = tys.id(&root).ok_or(EngineError::UnknownNode(root))?;
+    Ok((tys, at))
+}
+
+/// No knob lands on it by chance.
+const STAND_IN: f64 = 0.618_033_988_749_894_8;
+
+/// Each node beside the stand-in's node built the same way, walked down from the two roots
+/// operand by operand.
+fn pair((tys, root): (&Typing, NodeId), (stood, at): (&Typing, NodeId)) -> Vec<(NodeId, NodeId)> {
+    let (mut out, mut seen, mut open) = (Vec::new(), BTreeSet::new(), vec![(root, at)]);
+    while let Some((id, at)) = open.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        out.push((id, at));
+        let (mine, theirs) = (tys.operands(id), stood.operands(at));
+        if mine.len() == theirs.len() && alike(tys, id, stood, at) {
+            open.extend(mine.into_iter().zip(theirs));
+        }
+    }
+    out
+}
+
+/// One construct, whatever numbers it holds.
+fn alike(tys: &Typing, id: NodeId, stood: &Typing, at: NodeId) -> bool {
+    match (tys.value(id), stood.value(at)) {
+        (Value::Op { name, .. }, Value::Op { name: theirs, .. }) => name == theirs,
+        (Value::Cast(cast, _), Value::Cast(theirs, _)) => cast == theirs,
+        (Value::Filter { shape, .. }, Value::Filter { shape: theirs, .. }) => shape == theirs,
+        (Value::Solver { params, .. }, Value::Solver { params: theirs, .. }) => {
+            params.name() == theirs.name()
+        }
+        (mine, theirs) => std::mem::discriminant(mine) == std::mem::discriminant(theirs),
+    }
 }
 
 fn refuse_unbound(inst: &Instances, names: &[String], target: &str) -> Result<(), EngineError> {
@@ -76,24 +142,23 @@ fn refuse_unbound(inst: &Instances, names: &[String], target: &str) -> Result<()
     }))
 }
 
-/// Dependencies first; a node met again on its own path reads as settled, since a loop
-/// closes through `self`, never through an edge here.
+/// A node met again on its own path reads as settled: a loop closes through `self`.
 fn volatile(
     tys: &Typing,
     id: NodeId,
     instances: &BTreeSet<&str>,
-    marked: &mut [Option<bool>],
+    marked: &mut HashMap<NodeId, bool>,
 ) -> bool {
-    if let Some(held) = marked[id.0 as usize] {
-        return held;
+    if let Some(held) = marked.get(&id) {
+        return *held;
     }
-    marked[id.0 as usize] = Some(false);
+    marked.insert(id, false);
     let held = instances.contains(tys.name(id))
         || tys
             .operands(id)
             .into_iter()
             .any(|op| volatile(tys, op, instances, marked));
-    marked[id.0 as usize] = Some(held);
+    marked.insert(id, held);
     held
 }
 
@@ -101,7 +166,6 @@ struct Reach<'a> {
     inst: &'a Instances,
     names: &'a [String],
     bound: HashMap<(ScopeId, String), bool>,
-    text: HashMap<String, String>,
 }
 
 impl Reach<'_> {
@@ -140,112 +204,5 @@ impl Reach<'_> {
         };
         self.bound.insert((scope, name.to_string()), held);
         held
-    }
-
-    /// An instance's name with every volatile value written as its parameter's name, and every
-    /// instance it reads named the same way, so a knob's values share one slot.
-    fn stripped(&mut self, path: &str) -> String {
-        if let Some(held) = self.text.get(path) {
-            return held.clone();
-        }
-        self.text.insert(path.to_string(), path.to_string());
-        let Some((_, cx)) = self.inst.at(path) else {
-            return path.to_string();
-        };
-        let file = self.inst.origin(path).unwrap_or(path).to_string();
-        let inst = self.inst;
-        let mut args = Vec::new();
-        for (name, thunk) in inst.vars(cx.scope) {
-            let value = match self.declared(name) {
-                true => format!("?{name}"),
-                false => sva_ast::render_expr(&self.copy(thunk.expr, inst.cx(thunk.scope))),
-            };
-            args.push(format!("{name}={value}"));
-        }
-        let text = format!("{file}({})", args.join(", "));
-        self.text.insert(path.to_string(), text.clone());
-        text
-    }
-
-    fn copy(&mut self, e: &Expr, cx: Cx) -> Expr {
-        let inst = self.inst;
-        if let Expr::Var(name) | Expr::Call { name, .. } = e
-            && self.declared(name)
-            && inst.binds(cx.scope, name).is_some()
-        {
-            return Expr::Var(format!("?{name}"));
-        }
-        if let Some(r) = inst.follow(e, cx, |e2, cx2| self.copy(e2, cx2)) {
-            return r;
-        }
-        match inst.node(e, cx) {
-            Node::Lit(l) => Expr::Lit(l.clone()),
-            Node::Name(name) => Expr::Var(name.to_string()),
-            Node::Bin(op, l, r) => {
-                Expr::Bin(op, Box::new(self.copy(l, cx)), Box::new(self.copy(r, cx)))
-            }
-            Node::Call { name, args, span } => Expr::Call {
-                name: name.to_string(),
-                args: args
-                    .iter()
-                    .map(|a| match a {
-                        Arg::Pos(x) => Arg::Pos(self.copy(x, cx)),
-                        Arg::Named(k, x) => Arg::Named(k.clone(), self.copy(x, cx)),
-                    })
-                    .collect(),
-                span,
-            },
-            Node::Read {
-                path,
-                arg,
-                address,
-                span,
-            } => Expr::Ref {
-                address,
-                path: match inst.holds(path) {
-                    true => self.stripped(path),
-                    false => path.to_string(),
-                },
-                arg: Box::new(self.copy(arg, cx)),
-                binds: Vec::new(),
-                span,
-            },
-            Node::Own { arg, address, span } => Expr::SelfRef {
-                arg: Box::new(self.copy(arg, cx)),
-                address,
-                span,
-            },
-            // The signal written out in place of its name: two bindings, two slots.
-            Node::Signal {
-                name,
-                of,
-                arg,
-                span,
-            } => Expr::Indexed {
-                name: match self.declared(name) {
-                    true => format!("?{name}"),
-                    false => format!(
-                        "({})",
-                        sva_ast::render_expr(&self.copy(of.expr, inst.signal(of, cx)))
-                    ),
-                },
-                arg: Box::new(self.copy(arg, cx)),
-                span,
-            },
-        }
-    }
-}
-
-const SLOT_ROTATE: u32 = 19;
-
-#[derive(Default)]
-struct Sink(sva_formula::Lanes<SLOT_ROTATE>);
-
-impl Sink {
-    fn text(&mut self, what: &str) {
-        self.0.word(what.len() as u64);
-        for byte in what.as_bytes() {
-            self.0.word(u64::from(*byte));
-        }
     }
 }

@@ -132,6 +132,7 @@ pub struct Render {
     pub(crate) table: Option<Table>,
     /// The price of what its pulls computed.
     computed: u128,
+    pub(crate) unslotted: Option<String>,
 }
 
 impl Render {
@@ -158,6 +159,7 @@ impl Render {
             unranged: None,
             table: None,
             computed: 0,
+            unslotted: None,
         }
     }
 
@@ -264,6 +266,7 @@ pub(crate) fn prepared(graph: &Graph, target: &str, rate: u32) -> Result<Prepare
 }
 
 fn planned(
+    (graph, target): (&Graph, &str),
     prepared: Prepared,
     config: RenderConfig,
     bounds: &BTreeSet<NodeId>,
@@ -273,11 +276,11 @@ fn planned(
         tys,
         root,
     } = prepared;
-    planned_over(&instances, (tys, root), config, bounds)
+    planned_over((graph, target, &instances), (tys, root), config, bounds)
 }
 
 fn planned_over(
-    instances: &instantiate::Instances,
+    (graph, target, instances): (&Graph, &str, &instantiate::Instances),
     (tys, root): (Typing, NodeId),
     config: RenderConfig,
     bounds: &BTreeSet<NodeId>,
@@ -290,17 +293,18 @@ fn planned_over(
     let mut held = Render::shell(tys, root, config, schedule);
     held.bindings = bindings;
     ranged(&mut held, bounds)?;
-    let target = held.tys.name(held.root).to_string();
-    let volatile = volatile::mark(instances, &held, &target)?;
+    let volatile = volatile::mark((graph, instances), &held, target)?;
     if let Some(table) = &mut held.table {
         table.slots(|id| volatile.slot(id));
     }
+    held.unslotted = volatile.unslotted.clone();
     Ok(held)
 }
 
 /// The range and every value a render of `target` would compute, and no sample.
 pub fn plan(graph: &Graph, target: &str, config: RenderConfig) -> Result<Render, EngineError> {
     planned(
+        (graph, target),
         prepared(graph, target, config.rate)?,
         config,
         &BTreeSet::new(),
@@ -555,6 +559,7 @@ pub(crate) fn render_apart(
     config: RenderConfig,
 ) -> Result<Render, EngineError> {
     let mut held = planned(
+        (graph, target),
         prepared(graph, target, config.rate)?,
         config,
         &BTreeSet::new(),

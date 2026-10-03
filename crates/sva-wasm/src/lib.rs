@@ -52,6 +52,9 @@ fn unstaged(stats: Option<&CacheStats>) {
     if let Some(why) = stats.and_then(|stats| stats.unstaged.as_deref()) {
         logged(&format!("writing what this call computed stopped: {why}"));
     }
+    if let Some(why) = stats.and_then(|stats| stats.unslotted.as_deref()) {
+        logged(&format!("each knob value keeps its own entry: {why}"));
+    }
 }
 
 /// One crossing for every refusal: `name` is the CLI's own error code and `refusal` the

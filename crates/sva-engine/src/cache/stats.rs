@@ -46,6 +46,7 @@ pub struct CacheStats {
     pub planned: Vec<String>,
     /// Why memory stopped writing to the disk meanwhile.
     pub unstaged: Option<String>,
+    pub unslotted: Option<String>,
 }
 
 impl CacheStats {
@@ -145,6 +146,7 @@ impl Recording {
             typed: Vec::new(),
             planned: Vec::new(),
             unstaged: why.filter(|_| failed || memory.blocked()),
+            unslotted: None,
         }
     }
 
