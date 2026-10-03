@@ -972,6 +972,19 @@ impl Memory {
         state.bounded();
     }
 
+    /// The nodes read after `since`, least recent first, and the clock now.
+    pub(crate) fn read_since(&self, since: u64) -> (Vec<Hash>, u64) {
+        let state = self.locked();
+        let mut read: Vec<(u64, Hash)> = state
+            .entries
+            .iter()
+            .filter(|(_, held)| held.read > since && matches!(held.item, Item::Node { .. }))
+            .map(|(key, held)| (held.read, *key))
+            .collect();
+        read.sort_unstable();
+        (read.into_iter().map(|(_, key)| key).collect(), state.clock)
+    }
+
     /// Every node not yet on the disk, on its way there.
     pub(crate) fn flush(&self) {
         let mut state = self.locked();

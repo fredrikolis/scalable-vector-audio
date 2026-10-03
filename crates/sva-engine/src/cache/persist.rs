@@ -130,6 +130,10 @@ impl<B: Backend> Store<B> {
         locked(&self.index).held.contains_key(&key)
     }
 
+    pub(crate) fn used(&self, key: Hash) {
+        locked(&self.index).used(key);
+    }
+
     /// Reads headers, never a sample; one standing for another's samples reads that one's.
     pub(crate) async fn lookup(&self, key: Hash) -> Option<Header> {
         let found = self.written(key).await?;
@@ -243,13 +247,16 @@ impl<B: Backend> Store<B> {
         Ok(())
     }
 
-    /// Free, without the lock, while nothing is staged and the budget holds. Under it, the
-    /// index file is every store's account, listed afresh only when unreadable, and names each
-    /// value before it moves: one cut short leaves a gone entry named, never one unnamed. A
-    /// value staged without its meta is dropped; one failed or over an open entry stays staged.
+    /// Free while nothing is staged or used since and the budget holds. The index file is
+    /// every store's account and names each value before it moves: one cut short leaves a
+    /// gone entry named, never one unnamed. A value staged without its meta is dropped; one
+    /// failed or over an open entry stays staged.
     pub(crate) async fn persist(&self) -> Result<Persisted, String> {
-        let within = locked(&self.index).bytes <= self.max_bytes;
-        if within && locked(&self.staged).is_empty() {
+        let idle = {
+            let index = locked(&self.index);
+            index.bytes <= self.max_bytes && index.unsynced().is_empty()
+        };
+        if idle && locked(&self.staged).is_empty() {
             return Ok(Persisted::default());
         }
         let _held = self.backend.lock().await?;

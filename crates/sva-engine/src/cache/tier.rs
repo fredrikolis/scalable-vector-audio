@@ -1,6 +1,7 @@
 // Concern: memory over a disk or over nothing, and the one passage between them | Non-concern: what memory keeps, the disk's medium | IO: (keys, needs) -> answers, samples; persist() -> commits
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use sva_formula::Hash;
 use sva_samples::{Buffer, Extent};
@@ -62,6 +63,8 @@ pub(crate) struct Fetched {
 pub struct Tier<B = Nothing> {
     memory: Memory,
     disk: Option<Store<B>>,
+    /// Memory's clock where the disk last heard of its reads.
+    reported: AtomicU64,
 }
 
 impl Default for Tier {
@@ -81,6 +84,7 @@ impl<B: Backend> Tier<B> {
         Tier {
             memory: Memory::holding(max_bytes),
             disk: None,
+            reported: AtomicU64::new(0),
         }
     }
 
@@ -88,6 +92,7 @@ impl<B: Backend> Tier<B> {
         Tier {
             memory: Memory::over_disk(max_bytes),
             disk: Some(disk),
+            reported: AtomicU64::new(0),
         }
     }
 
@@ -193,11 +198,16 @@ impl<B: Backend> Tier<B> {
         Ok(())
     }
 
-    /// Every node memory holds that the disk lacks, written, then committed there.
+    /// Every node memory holds that the disk lacks, committed; each it answered since, used.
     pub async fn persist(&self) -> Result<Persisted, String> {
         let Some(disk) = &self.disk else {
             return Ok(Persisted::default());
         };
+        let (read, now) = self
+            .memory
+            .read_since(self.reported.load(Ordering::Relaxed));
+        read.into_iter().for_each(|key| disk.used(key));
+        self.reported.fetch_max(now, Ordering::Relaxed);
         self.memory.flush();
         let pending = self.memory.pending();
         if let Err((why, left)) = self.written(disk, pending).await {

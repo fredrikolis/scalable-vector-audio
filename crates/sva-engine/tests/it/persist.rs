@@ -285,6 +285,64 @@ fn past_its_budget_the_store_evicts_the_least_recently_used_first() {
     assert!(all_held(&memory, &c), "just written, so kept");
 }
 
+/// The bytes one tone's render persists, and a store holding tones 100 then 200 under a budget
+/// of two and a half tones.
+fn two_tones() -> (Memory, u64) {
+    let (_, one) = persisted_tone(&Memory::default(), u64::MAX, 100);
+    let budget = one * 5 / 2;
+    let memory = Memory::default();
+    persisted_tone(&memory, budget, 100);
+    persisted_tone(&memory, budget, 200);
+    (memory, budget)
+}
+
+fn tone_keys(render: &Render) -> Vec<Hash> {
+    nodes(stats(render)).iter().map(|l| l.key).collect()
+}
+
+/// A store that only read reaches the index at its next persist, ahead of another's commit.
+#[test]
+fn what_a_store_only_read_outlives_what_no_store_used_since() {
+    let (memory, budget) = two_tones();
+    let reader = opened(&memory, budget);
+    let a = tone_keys(&rendered(&tone("tone-100", 100), &reader));
+    let b = tone_keys(&rendered(
+        &tone("tone-200", 200),
+        &opened(&memory, u64::MAX),
+    ));
+    now(reader.persist()).expect("persisted");
+    let (c, _) = persisted_tone(&memory, budget, 300);
+    assert!(all_held(&memory, &a), "read, so kept");
+    assert!(
+        !all_held(&memory, &b),
+        "read by a store that never persisted, so gone"
+    );
+    assert!(all_held(&memory, &c), "just written, so kept");
+}
+
+/// Memory answering a value is a use of its entry: the disk keeps what memory still serves.
+#[test]
+fn a_value_memory_keeps_answering_outlives_one_read_off_the_disk_since() {
+    let (memory, budget) = two_tones();
+    let hot = opened(&memory, budget);
+    let a = tone_keys(&rendered(&tone("tone-100", 100), &hot));
+    now(hot.persist()).expect("persisted");
+    let other = opened(&memory, budget);
+    let b = tone_keys(&rendered(&tone("tone-200", 200), &other));
+    now(other.persist()).expect("persisted");
+    let again = rendered(&tone("tone-100", 100), &hot);
+    assert!(
+        outcomes(stats(&again), "master")
+            .iter()
+            .all(|o| *o == Outcome::Hit)
+    );
+    let c = tone_keys(&rendered(&tone("tone-300", 300), &hot));
+    now(hot.persist()).expect("persisted");
+    assert!(all_held(&memory, &a), "answered by memory last, so kept");
+    assert!(!all_held(&memory, &b), "least recently used, so gone");
+    assert!(all_held(&memory, &c), "just written, so kept");
+}
+
 /// A node rendered short and persisted, then rendered longer and persisted by the same memory,
 /// sends the disk only what it lacks, and the entry holds both: a new process renders the
 /// longer range off the disk alone.
@@ -358,7 +416,7 @@ fn stores_sharing_a_directory_keep_one_budget_over_what_both_persisted() {
     );
 }
 
-/// A store that only read from the disk, or that already committed everything, persists
+/// A store that committed everything and used nothing since, its reads among them, persists
 /// without a single call of the disk: no lock, no index.
 #[test]
 fn a_persist_with_nothing_to_commit_calls_nothing_of_the_disk() {
@@ -370,6 +428,7 @@ fn a_persist_with_nothing_to_commit_calls_nothing_of_the_disk() {
     let reader = opened(&memory, u64::MAX);
     let warm = rendered(&graph, &reader);
     assert_eq!(stats(&warm).computed(), 0, "{:?}", stats(&warm));
+    now(reader.persist()).expect("its reads reach the index");
     for store in [&reader, &store] {
         memory.calls.store(0, Ordering::Relaxed);
         let done = now(store.persist()).expect("persisted");
