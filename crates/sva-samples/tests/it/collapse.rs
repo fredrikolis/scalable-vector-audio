@@ -335,7 +335,10 @@ fn an_empty_band_refuses() {
 fn empty_band_names_the_ceiling_not_the_window() {
     let law = form(Var::T, sum(vec![cosine(6000.0, 1.0), cosine(7000.0, 0.5)]));
     let refused = render(&law, RATE, whole_second(), &PSYCHOACOUSTIC_V1).expect_err("all gone");
-    let CollapseError::EmptyBand { ceiling, lowest } = refused else {
+    let CollapseError::EmptyBand {
+        ceiling, lowest, ..
+    } = refused
+    else {
         panic!("expected an empty band, got {refused:?}");
     };
     assert_eq!(ceiling, (RATE / 2) as f64, "the ceiling this rate names");
@@ -346,6 +349,29 @@ fn empty_band_names_the_ceiling_not_the_window() {
     assert!(
         said.contains("--rate"),
         "under 20 kHz the ceiling is this rate's own half, and a higher rate raises it: {said}"
+    );
+}
+
+/// A profile's own ceiling is no rate's half: no rate raises it, so the repair never says to.
+#[test]
+fn an_empty_band_under_the_profiles_ceiling_names_the_profile() {
+    let profile = sva_samples::Profile {
+        ceiling_hz: 3_000.0,
+        ..PSYCHOACOUSTIC_V1
+    };
+    let law = form(Var::T, cosine(3_500.0, 1.0));
+    let refused = render(&law, RATE, whole_second(), &profile).expect_err("all gone");
+    let CollapseError::EmptyBand { ceiling, .. } = refused else {
+        panic!("expected an empty band, got {refused:?}");
+    };
+    assert_eq!(
+        ceiling, 3_000.0,
+        "the profile's ceiling, under this rate's half"
+    );
+    assert!(
+        !refused.help().contains("--rate"),
+        "no rate raises the profile's ceiling: {}",
+        refused.help()
     );
 }
 

@@ -59,9 +59,11 @@ pub enum SampleError {
 /// What a collapse refuses, per FORMAT 16.3.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CollapseError {
+    /// `by_rate` where the ceiling is the rate's own half, under the profile's.
     EmptyBand {
         ceiling: f64,
         lowest: f64,
+        by_rate: bool,
     },
     SingularInCt {
         at: f64,
@@ -96,14 +98,12 @@ impl CollapseError {
 impl CollapseError {
     pub fn help(&self) -> &'static str {
         match self {
-            CollapseError::EmptyBand { ceiling, .. }
-                if *ceiling < sva_formula::AUDIBLE_CEILING_HZ =>
-            {
+            CollapseError::EmptyBand { by_rate: true, .. } => {
                 "this rate's own half is the ceiling: raise --rate past twice the \
                  lowest line"
             }
             CollapseError::EmptyBand { .. } => {
-                "the profile's 20 kHz ceiling is what no rate raises; read it with \
+                "the profile's ceiling is what no rate raises; read it with \
                  `--representation lines`, or bring the line into the band"
             }
             CollapseError::SingularInCt { .. } => {
@@ -125,7 +125,9 @@ impl CollapseError {
 impl std::fmt::Display for CollapseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CollapseError::EmptyBand { ceiling, lowest } => write!(
+            CollapseError::EmptyBand {
+                ceiling, lowest, ..
+            } => write!(
                 f,
                 "every line is at or above the {ceiling} Hz ceiling, the lowest at {lowest} Hz"
             ),

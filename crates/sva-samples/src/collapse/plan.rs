@@ -491,7 +491,11 @@ pub(super) fn kept_lines(
             .flatten()
             .map(|l| l.hz.abs())
             .fold(f64::INFINITY, f64::min);
-        return Err(CollapseError::EmptyBand { ceiling, lowest });
+        return Err(CollapseError::EmptyBand {
+            ceiling,
+            lowest,
+            by_rate: ceiling < profile.ceiling_hz,
+        });
     }
     Ok(Some(Kept {
         kept,

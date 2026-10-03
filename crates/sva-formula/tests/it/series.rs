@@ -68,11 +68,8 @@ fn a_series_truncates_against_the_ceiling_and_reports_its_tail() {
         .iter()
         .map(|l| l.hz.abs())
         .fold(0.0f64, f64::max);
-    assert!(
-        highest <= 20_000.0,
-        "nothing above hearing is kept at any rate"
-    );
-    assert!((highest - 220.0 * 90.0).abs() < 1e-6, "{highest}");
+    assert!(highest < 22050.0, "nothing at or above the ceiling is kept");
+    assert!((highest - 220.0 * 100.0).abs() < 1e-6, "{highest}");
     assert!(
         !answer.dropped.is_empty(),
         "the first line out of band is listed"
@@ -80,6 +77,21 @@ fn a_series_truncates_against_the_ceiling_and_reports_its_tail() {
     assert!(
         answer.tail_db < 0.0,
         "the tail is quieter than what was kept"
+    );
+}
+
+/// The ceiling is the caller's: a profile reaching past 20 kHz keeps the lines under it.
+#[test]
+fn a_series_keeps_every_line_under_the_ceiling_it_is_given() {
+    let answer = enumerate(&series_of(&saw_series(1_000.0)), 24_000.0).expect("a saw's lines");
+    let highest = answer
+        .taken
+        .iter()
+        .map(|l| l.hz.abs())
+        .fold(0.0f64, f64::max);
+    assert!(
+        (highest - 23_000.0).abs() < 1e-6,
+        "the 23rd harmonic is under a 24 kHz ceiling: {highest}"
     );
 }
 

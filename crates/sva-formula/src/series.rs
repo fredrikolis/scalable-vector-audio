@@ -250,8 +250,6 @@ pub struct Lines {
     pub tail_db: f64,
 }
 
-pub const AUDIBLE_CEILING_HZ: f64 = 20_000.0;
-
 /// Stops at the ceiling where the frequency closed form leaves the band. Where it never does, the
 /// walk stops only where a decay bounds the whole tail: a geometric one at `precision`, a power
 /// law under the floor against the loudest line taken. `None` where the term is no line, or an
@@ -265,7 +263,6 @@ pub fn lines_read(
     (ceiling, floor_db, precision): (f64, f64, f64),
     reads: &dyn Reads,
 ) -> Option<Lines> {
-    let ceiling = ceiling.min(AUDIBLE_CEILING_HZ);
     let shape = read_with(&s.term.body, reads)?;
     let voices = places(&shape);
     let band = voices

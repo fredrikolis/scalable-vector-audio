@@ -45,8 +45,8 @@ pub use origin::Origin;
 pub use refusal::{AtomSketch, Code, Factor, Left, LeftReason, Refusal};
 pub use run::{Mirror, Run};
 pub use series::{
-    AUDIBLE_CEILING_HZ, Enumerated, Line, Lines, Rung, commensurate, line_atoms, line_atoms_read,
-    lines, lines_read, spacing, spacing_read, summable,
+    Enumerated, Line, Lines, Rung, commensurate, line_atoms, line_atoms_read, lines, lines_read,
+    spacing, spacing_read, summable,
 };
 pub use spectral_sum::atom::{Exp, Factors, Gauss, Indicator, Pole, Singular, SpectralAtom};
 pub use spectral_sum::build::{normalize, normalize_closed_form, normalize_read};

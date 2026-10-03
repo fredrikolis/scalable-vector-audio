@@ -51,6 +51,31 @@ fn every_representation_reports_source_and_profile() {
     }
 }
 
+/// A rate-free line list stops at the profile's own ceiling, whatever it is.
+#[test]
+fn a_line_list_stops_at_the_profiles_ceiling() {
+    let g = graph_of("ceiling", &[("node", "saw(1000)\n")]);
+    let config = RenderConfig {
+        profile: sva_engine::Profile {
+            ceiling_hz: 10_000.0,
+            ..sva_engine::PSYCHOACOUSTIC_V1
+        },
+        ..RenderConfig::seconds(8_192, 1.0)
+    };
+    let law = render(&g, "node", config, &Tier::default()).expect("a saw");
+    let id = law.id("node").expect("the root");
+    let found = answer(&law, id, Representation::Lines).expect("an exact line list");
+    let Output::Lines(lines) = &found.value else {
+        panic!("expected lines");
+    };
+    let highest = lines.iter().map(|l| l.hz.abs()).fold(0.0f64, f64::max);
+    assert_eq!(
+        highest.round(),
+        9_000.0,
+        "the harmonics under a 10 kHz ceiling"
+    );
+}
+
 /// The node's own type decides which `envelope` runs, and `source` says which one did.
 #[test]
 fn envelope_of_samples_labels_measured() {

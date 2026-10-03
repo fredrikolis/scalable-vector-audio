@@ -1,13 +1,11 @@
 // Concern: takes one reading off the representation a node declares, a ledger edge by edge | Non-concern: naming the observations (query.rs), the arithmetic of one | IO: (&Render, node) -> Answer
 
 use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
-use sva_formula::{
-    AUDIBLE_CEILING_HZ, Line, SpectralSum, Var, d_dt, envelope_read, line_atoms_read,
-};
+use sva_formula::{Line, SpectralSum, Var, d_dt, envelope_read, line_atoms_read};
 use sva_samples::{
-    AliasScore, Buffer, Consumes, Extent, Peak, PitchFrame, Source, measure::bands, measure::crest,
-    measure::envelope, measure::formants, measure::loudness, measure::pitch, measure::spectrum,
-    measure::stereo, measure_alias,
+    AliasScore, Buffer, Consumes, Extent, Peak, PitchFrame, Profile, Source, measure::bands,
+    measure::crest, measure::envelope, measure::formants, measure::loudness, measure::pitch,
+    measure::spectrum, measure::stereo, measure_alias,
 };
 
 use crate::error::{Diagnostic, EngineError, Located};
@@ -163,15 +161,7 @@ fn exact(
     sum: &SpectralSum,
 ) -> Result<(Output, Listed, Source), EngineError> {
     let source = Source::Exact;
-    let enumerated = || {
-        listed(
-            render,
-            node,
-            sum,
-            render.config.profile.floor(AUDIBLE_CEILING_HZ),
-            render.config.profile.half_lsb(),
-        )
-    };
+    let enumerated = || listed(render, node, sum, &render.config.profile);
     let (value, listed) = match representation {
         Representation::Lines => {
             let listed = enumerated()?;
@@ -275,14 +265,14 @@ fn listed(
     render: &Render,
     node: sva_formula::NodeId,
     sum: &SpectralSum,
-    floor_db: f64,
-    precision: f64,
+    profile: &Profile,
 ) -> Result<Listed, EngineError> {
+    let ceiling = profile.ceiling_hz;
+    let band = (ceiling, profile.floor(ceiling), profile.half_lsb());
     let mut held = Listed::NONE;
     for lane in &sum.lanes {
         held.atoms.extend(lane.clone().expanded().atoms);
         for series in &lane.series {
-            let band = (AUDIBLE_CEILING_HZ, floor_db, precision);
             let found = refs::read_through(&render.tys, |t| line_atoms_read(series, band, t));
             let Some(found) = found else {
                 return Err(unenumerable(render, node));
