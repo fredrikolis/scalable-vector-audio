@@ -99,19 +99,46 @@ fn an_edit_recomputes_only_the_edited_node_and_its_readers() {
     }
 }
 
-#[test]
-fn a_store_another_format_wrote_is_wiped_on_open() {
-    let memory = Memory::default();
-    let store = opened(&memory, u64::MAX);
-    rendered(&two_voices("version", 330), &store);
-    now(store.persist()).expect("persisted");
-    assert!(!memory.entries().is_empty());
+/// `memory`'s index as format 1 wrote it, beside `n` of its entries.
+fn left_by_format_1(memory: &Memory, n: usize) -> Vec<String> {
+    let mut index = String::from("sva store format 1\n");
+    let mut names = Vec::new();
+    for i in 0..n {
+        let name = format!("{:032x}", 0xbeef_0000 + i);
+        memory.set(&name, vec![0; 64]);
+        index += &format!("{name} 64\n");
+        names.push(name);
+    }
+    memory.set(INDEX_NAME, index.into_bytes());
+    names
+}
 
-    memory.set(INDEX_NAME, b"sva-engine 0.0.0 format 0\n".to_vec());
-    let reopened = opened(&memory, u64::MAX);
-    assert_eq!(memory.names(), vec![INDEX_NAME.to_string()]);
+/// The calls one open makes over what format 1 left of `n` entries.
+fn opening_over_format_1(n: usize) -> usize {
+    let memory = Memory::default();
+    left_by_format_1(&memory, n);
+    memory.calls.store(0, Ordering::Relaxed);
+    opened(&memory, u64::MAX);
+    memory.calls.load(Ordering::Relaxed)
+}
+
+/// Opening over a store another format wrote costs the same however much it holds: a fresh
+/// index, and none of its files listed, read or removed.
+#[test]
+fn opening_over_another_formats_store_never_touches_its_files() {
+    assert_eq!(opening_over_format_1(10), opening_over_format_1(800));
+    let memory = Memory::default();
+    let mut names = left_by_format_1(&memory, 800);
+    memory.reads.lock().unwrap().clear();
+    let store = opened(&memory, u64::MAX);
+    let reads = memory.reads.lock().unwrap().clone();
+    assert_eq!(reads.len(), 1, "{reads:?}");
+    assert_eq!(reads[0].0, INDEX_NAME);
+    assert_eq!(memory.lists.load(Ordering::Relaxed), 0);
+    names.sort();
+    assert_eq!(memory.entries(), names, "none removed");
     assert_eq!(memory.bytes(INDEX_NAME), Some(format_only()));
-    assert_eq!(disk(&reopened).bytes(), 0);
+    assert_eq!(disk(&store).bytes(), 0);
 }
 
 /// The index as every build at this format writes it for an empty store, whatever its engine

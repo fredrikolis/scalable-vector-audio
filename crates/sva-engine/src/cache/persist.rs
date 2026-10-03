@@ -19,9 +19,6 @@ fn version() -> String {
 
 pub const INDEX_NAME: &str = "index";
 
-/// Kept beside entries by an older format.
-const RETIRED: [&str; 2] = ["version", "recency"];
-
 const META: &str = "meta";
 
 /// Named bytes. A `put` is whole or absent: no reader sees half of one.
@@ -86,7 +83,8 @@ fn locked<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl<B: Backend> Store<B> {
-    /// A store of another format is emptied first.
+    /// Over another format's index, a fresh one: what that format left is neither read nor
+    /// removed, nor counted against the budget.
     pub async fn open(backend: B, max_bytes: u64) -> Result<Store<B>, String> {
         let version = version();
         let held = backend.lock().await?;
@@ -94,11 +92,6 @@ impl<B: Backend> Store<B> {
         let index = match found.and_then(|text| Index::read(&text, &version)) {
             Some(index) => index,
             None => {
-                for (name, _) in backend.list().await? {
-                    if key_of(&name).is_some() || RETIRED.contains(&name.as_str()) {
-                        backend.delete(&name).await?;
-                    }
-                }
                 let empty = Index::default();
                 backend
                     .put(INDEX_NAME, empty.text(&version).as_bytes())

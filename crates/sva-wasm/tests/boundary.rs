@@ -1619,8 +1619,8 @@ async fn workers(dir: &JsValue) {
         .unwrap_or_else(|e| unreachable!("every worker succeeds: {}", as_text(&e)));
 }
 
-/// On one directory an older format left, every open wipes or waits, every persist commits
-/// whole, and no worker fails.
+/// On one directory under an older format's index, every open starts a fresh index or reads
+/// one, every persist commits whole, and no worker fails.
 #[wasm_bindgen_test]
 async fn workers_opening_one_aged_directory_at_once_each_render_and_persist() {
     let dir = aged_directory().await;
@@ -1636,8 +1636,8 @@ async fn workers_opening_one_aged_directory_at_once_each_render_and_persist() {
     );
 }
 
-/// An entry another holder keeps open is left by the wipe and by every commit over it, and no
-/// worker fails; once it closes, the next persist writes it.
+/// An entry another holder keeps open is left by every commit over it, and no worker fails;
+/// once it closes, the next persist writes it.
 #[wasm_bindgen_test]
 async fn an_entry_open_elsewhere_fails_no_worker_and_the_next_persist_writes_it() {
     let dir = aged_directory().await;
