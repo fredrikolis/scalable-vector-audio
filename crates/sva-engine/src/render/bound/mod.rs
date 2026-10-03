@@ -60,6 +60,10 @@ struct Bounding<'a> {
     tails: &'a Tails,
     open: BTreeSet<NodeId>,
     cut: bool,
+    ordering: bool,
+    /// While a node is tried, each read it met unbounded.
+    missing: Option<Vec<NodeId>>,
+    written: HashMap<NodeId, Range>,
 }
 
 impl Tail {
@@ -78,6 +82,9 @@ impl Tail {
             tails,
             open: BTreeSet::new(),
             cut: false,
+            ordering: false,
+            missing: None,
+            written: HashMap::new(),
         };
         bounding.tail(id)
     }
@@ -91,23 +98,78 @@ impl Tail {
 }
 
 impl Bounding<'_> {
-    fn tail(&mut self, id: NodeId) -> Option<Rc<Tail>> {
+    fn key(&self, id: NodeId) -> Option<Key> {
         let grid = self.tys.grid(id);
-        let key = crate::refs::identity(self.tys, id)
+        crate::refs::identity(self.tys, id)
             .ok()
-            .map(|held| (held, grid, self.rate));
-        if let Some(held) = key.and_then(|key| self.tails.0.borrow().get(&key).cloned()) {
+            .map(|held| (held, grid, self.rate))
+    }
+
+    fn held(&self, id: NodeId) -> Option<Option<Rc<Tail>>> {
+        let key = self.key(id)?;
+        self.tails.0.borrow().get(&key).cloned()
+    }
+
+    fn tail(&mut self, id: NodeId) -> Option<Rc<Tail>> {
+        if let Some(held) = self.held(id) {
             return held;
         }
+        if let Some(missing) = &mut self.missing {
+            missing.push(id);
+            return None;
+        }
+        if !std::mem::replace(&mut self.ordering, true) {
+            self.order(id);
+            if let Some(held) = self.held(id) {
+                return held;
+            }
+        }
+        self.bounded(id)
+    }
+
+    fn bounded(&mut self, id: NodeId) -> Option<Rc<Tail>> {
+        crate::steps::step(1);
         let outer = std::mem::take(&mut self.cut);
+        let before = self.missing.as_ref().map(Vec::len);
         let found = self.fresh(id);
-        if let Some(key) = key
+        let whole = self.missing.as_ref().map(Vec::len) == before;
+        if let Some(key) = self.key(id)
             && !self.cut
+            && whole
         {
             self.tails.0.borrow_mut().insert(key, found.clone());
         }
         self.cut |= outer;
         found
+    }
+
+    /// Bounds what `root`'s bound reads, readers after what they read, so bounding `root`
+    /// recurses one read deep; a try meeting a read unbounded is retried after it.
+    fn order(&mut self, root: NodeId) {
+        let mut seen = BTreeSet::new();
+        let mut open = vec![(root, false)];
+        while let Some((id, met)) = open.pop() {
+            if self.held(id).is_some() {
+                continue;
+            }
+            match met {
+                true => {
+                    self.bounded(id);
+                }
+                false if seen.insert(id) => {
+                    let cut = self.cut;
+                    self.missing = Some(Vec::new());
+                    self.bounded(id);
+                    let missing = self.missing.take().unwrap_or_default();
+                    self.cut = cut;
+                    if !missing.is_empty() {
+                        open.push((id, true));
+                        open.extend(missing.into_iter().rev().map(|n| (n, false)));
+                    }
+                }
+                false => {}
+            }
+        }
     }
 
     fn opened(&mut self, id: NodeId) -> bool {
@@ -117,6 +179,9 @@ impl Bounding<'_> {
     }
 
     fn fresh(&mut self, id: NodeId) -> Option<Rc<Tail>> {
+        if let Some(range) = self.written.remove(&id) {
+            return self.written(id, range);
+        }
         let (tys, profile, rate) = (self.tys, self.profile, self.rate);
         // A retired term sounded before now, in what reads the note sum and in no bound here.
         if tys.retired_sum().is_some_and(|sum| tys.reads(id, sum)) {
@@ -129,7 +194,7 @@ impl Bounding<'_> {
             && let Ok(sum) = read_through(tys, |t| truncate_spectral_sum_read(&whole, band, t))
         {
             let summed = read_through(tys, |t| summed_bounds(&whole, (profile, rate), t)).ok()?;
-            let atoms = sum
+            let atoms: Vec<SpectralAtom> = sum
                 .lanes
                 .iter()
                 .flat_map(|lane| {
@@ -139,6 +204,7 @@ impl Bounding<'_> {
                     lane.atoms.iter().copied().chain(modal)
                 })
                 .collect();
+            crate::steps::step(atoms.len() + summed.len());
             return Tail::new(Form::Atoms(atoms, summed));
         }
         let body =
@@ -206,15 +272,35 @@ impl Bounding<'_> {
                 _ => return None,
             };
         let range = Range::of(&body).ok()?;
+        self.written(id, range)
+    }
+
+    /// A try keeps the form for its retry.
+    fn written(&mut self, id: NodeId, range: Range) -> Option<Rc<Tail>> {
         let mut nodes = Vec::new();
         range.nodes(&mut nodes);
         self.opened(id).then_some(())?;
-        let reads = nodes
-            .into_iter()
-            .map(|n| Some((n, self.tail(n)?)))
-            .collect::<Option<BTreeMap<_, _>>>();
+        let mut reads = BTreeMap::new();
+        let mut whole = true;
+        for n in nodes {
+            let before = self.missing.as_ref().map(Vec::len);
+            match self.tail(n) {
+                Some(tail) => {
+                    reads.insert(n, tail);
+                }
+                None if self.missing.as_ref().map(Vec::len) != before => whole = false,
+                None => {
+                    self.open.remove(&id);
+                    return None;
+                }
+            }
+        }
         self.open.remove(&id);
-        Tail::new(Form::Written(range, reads?))
+        if !whole {
+            self.written.insert(id, range);
+            return None;
+        }
+        Tail::new(Form::Written(range, reads))
     }
 }
 
@@ -369,6 +455,62 @@ fn sampled(tys: &Typing, name: &str, args: &[NodeId]) -> Option<Body> {
 #[cfg(test)]
 mod tests {
     use super::{Map, composed};
+    use crate::RenderConfig;
+
+    fn ending(files: &[(String, String)], root: &str) -> u64 {
+        let mut composition = sva_ast::Composition::new();
+        for (name, body) in files {
+            composition.insert(name.as_str(), body.as_str());
+        }
+        let g = sva_ast::load(&composition).expect("a composition");
+        let before = crate::steps::taken();
+        crate::render::ends(&g, &[root.to_string()], &RenderConfig::at(48_000)).expect("an end");
+        crate::steps::taken() - before
+    }
+
+    /// A noise series through `depth` filters, each a form of its own, under a falling window.
+    fn breath(depth: usize) -> Vec<(String, String)> {
+        let mut x = "noise(9, period=8/185, color=-3)".to_string();
+        for k in 0..depth {
+            x = format!("lowpass({x}, {}, 0.7)", 11_000 - 100 * k);
+        }
+        vec![("w".to_string(), format!("crop({x}, 0s, 0.5s, fall=0.3s)\n"))]
+    }
+
+    /// Only the form the window reads is bounded, not each filter's: no filter adds a step.
+    #[test]
+    fn a_series_through_filters_is_bounded_once_however_many_it_passes() {
+        let (one, six) = (ending(&breath(1), "w"), ending(&breath(6), "w"));
+        assert_eq!(six, one);
+    }
+
+    fn chain(depth: usize) -> Vec<(String, String)> {
+        let bodies = [
+            "0.999*@P(t)",
+            "max(@P(t), -1)",
+            "crop(lowpass(sample(@P(t)), 3000), 0s, 1s)",
+            "@P(t - 1ms)",
+            "tanh(@P(t))",
+        ];
+        let mut files = vec![(
+            "c0".to_string(),
+            "crop(sin(2*pi*220*t), 0s, 0.1s)\n".to_string(),
+        )];
+        for k in 1..=depth {
+            let body = bodies[k % bodies.len()].replace('P', &format!("c{}", k - 1));
+            files.push((format!("c{k}"), format!("{body}\n")));
+        }
+        files.push(("top".to_string(), format!("crop(@c{depth}(t), 0s, 1s)\n")));
+        files
+    }
+
+    /// Four times the refs, under twice four times the steps: a fold per node grows as the
+    /// chain does, where a walk per path would grow sixteenfold.
+    #[test]
+    fn a_chains_supports_and_bounds_take_steps_linear_in_its_refs() {
+        let (short, long) = (ending(&chain(250), "top"), ending(&chain(1000), "top"));
+        assert!(long < 8 * short, "{short} then {long}");
+    }
 
     /// Where a map reads at `t`; anywhere is `-inf`, as a bound reads it.
     fn at(map: Map, t: f64) -> f64 {

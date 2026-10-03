@@ -29,6 +29,8 @@ pub(crate) struct Supports<'a> {
     reaches: RefCell<HashMap<Reach, Option<f64>>>,
     steady: PerNode<bool>,
     priming: Cell<bool>,
+    /// While a node is probed, each support it asked unfound.
+    probing: RefCell<Option<Vec<NodeId>>>,
 }
 
 /// A node over an interval, or every one inside `STEADY`.
@@ -84,6 +86,7 @@ impl<'a> Supports<'a> {
             reaches: RefCell::default(),
             steady: PerNode::new(),
             priming: Cell::new(false),
+            probing: RefCell::default(),
         }
     }
 
@@ -117,6 +120,15 @@ impl<'a> Supports<'a> {
     }
 
     pub(crate) fn of(&self, id: NodeId) -> Extent {
+        if let Some(missing) = self.probing.borrow_mut().as_mut() {
+            return match self.found(id) {
+                Some(found) => found.support,
+                None => {
+                    missing.push(id);
+                    Extent::EVERYWHERE
+                }
+            };
+        }
         if let Some(asking) = self.asking.borrow_mut().last_mut() {
             asking.push(id);
         }
@@ -127,14 +139,51 @@ impl<'a> Supports<'a> {
             return found.support;
         }
         if !self.priming.replace(true) {
-            for read in self.tys.unfolded(id, |n| self.found(n).is_some()) {
-                if read != id && self.found(read).is_none() {
-                    self.fresh_of(read);
-                }
-            }
+            self.prime(id);
             self.priming.set(false);
         }
         self.fresh_of(id)
+    }
+
+    /// Finds what finding `root` asks for, readers after what they read, so it recurses one
+    /// ref deep; a node no support reads is never bounded.
+    fn prime(&self, root: NodeId) {
+        let mut seen = BTreeSet::new();
+        let mut open = vec![(root, false)];
+        while let Some((id, asked)) = open.pop() {
+            if self.found(id).is_some() || self.open.borrow().contains(&id) {
+                continue;
+            }
+            match asked {
+                true if id != root => {
+                    self.fresh_of(id);
+                }
+                true => {}
+                false if seen.insert(id) => {
+                    open.push((id, true));
+                    open.extend(self.asks(id).into_iter().rev().map(|n| (n, false)));
+                }
+                false => {}
+            }
+        }
+    }
+
+    /// Probed: nothing is found or bounded.
+    fn asks(&self, id: NodeId) -> Vec<NodeId> {
+        *self.probing.borrow_mut() = Some(Vec::new());
+        self.exact(id);
+        self.probing.borrow_mut().take().unwrap_or_default()
+    }
+
+    fn exact(&self, id: NodeId) -> Extent {
+        match self.looping(id) {
+            true => self.looped(id),
+            false => self.fresh(id),
+        }
+    }
+
+    fn looping(&self, id: NodeId) -> bool {
+        schedule::holds_self(self.tys, id, &mut BTreeSet::new())
     }
 
     /// Primed, none is asked: its reader asks what it was found from.
@@ -143,7 +192,7 @@ impl<'a> Supports<'a> {
             return Extent::EVERYWHERE;
         }
         self.asking.borrow_mut().push(Vec::new());
-        let (support, cut) = match schedule::holds_self(self.tys, id, &mut BTreeSet::new()) {
+        let (support, cut) = match self.looping(id) {
             true => (self.looped(id), None),
             false => self.pruned(id, self.fresh(id)),
         };
