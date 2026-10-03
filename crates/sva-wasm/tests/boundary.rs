@@ -1069,8 +1069,21 @@ fn values_in(dir: &JsValue) -> usize {
         .count()
 }
 
+/// `Composition.open` over `dir`, its store's budget `store_max_bytes` where given.
+async fn open_over(dir: &JsValue, store_max_bytes: Option<f64>) -> Composition {
+    let budget = store_max_bytes.map_or(JsValue::UNDEFINED, |bytes| {
+        let held = js_sys::Object::new();
+        js_sys::Reflect::set(&held, &"store_max_bytes".into(), &bytes.into())
+            .unwrap_or_else(|_| unreachable!("an object takes a key"));
+        held.into()
+    });
+    Composition::open(None, Some(dir.clone().into()), budget)
+        .await
+        .unwrap_or_else(|e| unreachable!("it opens: {}", as_text(&e)))
+}
+
 async fn over_store(dir: &JsValue) -> Composition {
-    let mut held = Composition::open(None, Some(dir.clone().into())).await;
+    let mut held = open_over(dir, None).await;
     held.insert("master", "sample(sin(2*pi*100*t))*0.5\n");
     held
 }
@@ -1104,6 +1117,103 @@ async fn a_render_writes_the_directory_nothing_until_the_page_persists() {
         as_text(&warm)
     );
     assert_eq!(Composition::new(None).persist().await.ok(), Some(0));
+}
+
+/// Three tones, each its own node, over the store on `dir` under `budget`.
+async fn tones(dir: &JsValue, budget: Option<f64>) -> Composition {
+    let mut held = open_over(dir, budget).await;
+    for (node, hz) in [("a", 100), ("b", 200), ("c", 300)] {
+        held.insert(node, &format!("sample(sin(2*pi*{hz}*t))*0.5\n"));
+    }
+    held
+}
+
+/// What rendering `node` computed rather than read.
+async fn computed(held: &Composition, node: &str) -> f64 {
+    let target = format!("@{node}([0, 0.1s])");
+    let stats = held
+        .render(&target, None, options(&[]))
+        .await
+        .unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)))
+        .stats()
+        .unwrap_or_else(|_| unreachable!("stats answer"));
+    field(&stats, "computed")
+        .as_f64()
+        .unwrap_or_else(|| unreachable!("a count"))
+}
+
+async fn persisted(held: &Composition) {
+    held.persist()
+        .await
+        .unwrap_or_else(|e| unreachable!("persisted: {}", as_text(&e)));
+}
+
+/// Every byte the directory's values hold.
+fn bytes_in(dir: &JsValue) -> f64 {
+    js_sys::Array::from(&field(dir, "files"))
+        .iter()
+        .map(|pair| js_sys::Array::from(&pair))
+        .filter(|pair| pair.get(0).as_string().as_deref() != Some("index"))
+        .map(|pair| field(&pair.get(1), "length").as_f64().unwrap_or(0.0))
+        .sum()
+}
+
+/// A page sets the store's budget as it opens it; each persist keeps the store within it,
+/// evicting what was used least recently: here the tone read since stays and the other goes.
+#[wasm_bindgen_test]
+async fn a_store_opened_with_a_budget_keeps_within_it_least_recently_used_out_first() {
+    let measure = fake_directory();
+    let one = tones(&measure, None).await;
+    assert!(one.store_max_bytes().is_some(), "a default budget");
+    computed(&one, "a").await;
+    persisted(&one).await;
+    let tone = one.store_bytes().unwrap_or_else(|| unreachable!("a store"));
+    assert!(tone > 0.0);
+    assert_eq!(Composition::new(None).store_max_bytes(), None);
+
+    let budget = (tone * 2.5).floor();
+    let dir = fake_directory();
+    let first = tones(&dir, Some(budget)).await;
+    assert_eq!(first.store_max_bytes(), Some(budget));
+    for node in ["a", "b"] {
+        computed(&first, node).await;
+        persisted(&first).await;
+    }
+    let second = tones(&dir, Some(budget)).await;
+    assert_eq!(computed(&second, "a").await, 0.0, "read off the disk");
+    assert!(computed(&second, "c").await > 0.0);
+    persisted(&second).await;
+    let held = second
+        .store_bytes()
+        .unwrap_or_else(|| unreachable!("a store"));
+    assert!(held <= budget, "{held} bytes held past {budget}");
+    assert!(
+        bytes_in(&dir) <= budget,
+        "{} bytes on disk past {budget}",
+        bytes_in(&dir)
+    );
+
+    let third = tones(&dir, Some(budget)).await;
+    assert_eq!(computed(&third, "a").await, 0.0, "read since, so kept");
+    assert_eq!(computed(&third, "c").await, 0.0, "just written, so kept");
+    assert!(
+        computed(&third, "b").await > 0.0,
+        "least recently used, so gone"
+    );
+}
+
+/// A budget that is no whole number is refused by name, as every option is.
+#[wasm_bindgen_test]
+async fn a_store_budget_that_is_no_whole_number_is_refused() {
+    let held = js_sys::Object::new();
+    js_sys::Reflect::set(&held, &"store_max_bytes".into(), &1.5.into())
+        .unwrap_or_else(|_| unreachable!("an object takes a key"));
+    let refused = Composition::open(None, Some(fake_directory().into()), held.into()).await;
+    let e = refused.err().unwrap_or_else(|| unreachable!("refused"));
+    assert_eq!(
+        field(&e, "name").as_string().as_deref(),
+        Some("validation_error")
+    );
 }
 
 /// A staging area whose lock no page holds, as a closed tab leaves one, goes when a store opens.
@@ -1379,7 +1489,7 @@ fn a_sampled_ref_read_measures_what_the_plain_read_refuses_and_shares_its_memory
 
 /// A pad's bell: partials under envelopes behind a ramp-in, no `sample(...)` inside.
 async fn bells(dir: &JsValue) -> Composition {
-    let mut held = Composition::open(None, Some(dir.clone().into())).await;
+    let mut held = open_over(dir, None).await;
     held.insert(
         "ramp",
         "tc = 0.006\nmin(t, tc)/tc - sin(2*pi*min(t, tc)/tc)/(2*pi)\n",
@@ -1493,7 +1603,7 @@ async fn workers(dir: &JsValue) {
         .map(|n| {
             let dir = dir.clone();
             task(async move {
-                let mut held = Composition::open(None, Some(dir.into())).await;
+                let mut held = open_over(&dir, None).await;
                 held.insert("master", "sample(sin(2*pi*100*t))*0.5\n");
                 let out = match n {
                     0 => options(&[]),

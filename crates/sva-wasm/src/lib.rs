@@ -152,6 +152,7 @@ struct Options {
     channels: Option<usize>,
     out: Out,
     signal: Option<JsValue>,
+    store_max_bytes: Option<u64>,
 }
 
 /// `keys` are the options this call reads; any other is refused by name.
@@ -181,6 +182,7 @@ fn options_of(options: &JsValue, keys: &[&str]) -> Result<Options, JsValue> {
             "bits" => held.bits = Some(whole(&key, &value)?),
             "channels" => held.channels = Some(whole(&key, &value)?),
             "flop_budget" => held.flop_budget = Some(whole(&key, &value)?),
+            "store_max_bytes" => held.store_max_bytes = Some(whole(&key, &value)?),
             "until" => held.until = Some(text(&key, &value)?),
             "live" => {
                 held.live = value
@@ -308,20 +310,26 @@ impl Composition {
     }
 
     /// Memory over the store in `dir`, an origin-private file system directory; alone where
-    /// none opens.
-    pub async fn open(name: Option<String>, dir: Option<DirectoryHandle>) -> Composition {
+    /// none opens. `options.store_max_bytes`: the store's budget, evicting the least recently
+    /// used past it at each persist.
+    pub async fn open(
+        name: Option<String>,
+        dir: Option<DirectoryHandle>,
+        options: JsValue,
+    ) -> Result<Composition, JsValue> {
+        let budget = options_of(&options, &["store_max_bytes"])?.store_max_bytes;
         let Some(dir) = dir else {
-            return Composition::new(name);
+            return Ok(Composition::new(name));
         };
         let backend = opfs::Opfs { dir };
-        let tier = match Store::open(backend, DEFAULT_STORE_BYTES).await {
+        let tier = match Store::open(backend, budget.unwrap_or(DEFAULT_STORE_BYTES)).await {
             Ok(store) => Tier::over(store, DEFAULT_CACHE_BYTES),
             Err(why) => {
                 logged(&format!("the store would not open, so none is kept: {why}"));
                 Tier::alone(DEFAULT_CACHE_BYTES)
             }
         };
-        Composition::over(name, tier)
+        Ok(Composition::over(name, tier))
     }
 
     /// The only commit to the directory `open` was handed.
@@ -452,6 +460,17 @@ impl Composition {
     #[wasm_bindgen(setter)]
     pub fn set_cache_max_bytes(&self, max_bytes: f64) {
         self.tier.set_max_bytes(max_bytes.max(0.0) as u64);
+    }
+
+    /// What the store holds by its index; undefined without one.
+    #[wasm_bindgen(getter)]
+    pub fn store_bytes(&self) -> Option<f64> {
+        self.tier.disk().map(|disk| disk.bytes() as f64)
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn store_max_bytes(&self) -> Option<f64> {
+        self.tier.disk().map(|disk| disk.max_bytes() as f64)
     }
 
     #[wasm_bindgen(getter)]
