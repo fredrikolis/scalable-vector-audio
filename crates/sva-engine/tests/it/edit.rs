@@ -345,6 +345,24 @@ fn a_constant_moved_inside_a_loop_keeps_its_tail_ringing() {
     }
 }
 
+/// The same with the loop written as the target itself: the stream's root is the stateful
+/// value, and it takes the past of the root it replaces.
+#[test]
+fn a_stateful_target_edited_in_place_keeps_its_tail_ringing() {
+    let g = composition(1.0);
+    let loop_at = |feedback: f64| format!("sample(@burst) + {feedback}*self[idx(t - 0.25s)]");
+    let stream = opened(&g, &loop_at(0.35), &Tier::default());
+    let k = 13 * BLOCK;
+    let mut heard = blocks(&stream, k / BLOCK);
+    edit(&stream, &g, &loop_at(0.5));
+    heard.extend(blocks(&stream, 12));
+    let delay = RATE as usize / 4;
+    assert!(heard[k..].iter().any(|v| *v != 0.0), "the tail rings on");
+    for n in k..heard.len() {
+        assert_eq!(heard[n], 0.5 * heard[n - delay], "sample {n}");
+    }
+}
+
 /// An hour's playing in miniature: a note every eight blocks, each gone from the expression
 /// two seconds after it starts. Past its extent a note holds nothing, so what the stream holds
 /// levels off within the first seconds and never climbs past that.

@@ -52,7 +52,11 @@ pub(crate) fn carried(
     );
     for k in (0..made.len()).rev() {
         let at = made[k];
-        let candidates = predecessors(&readers[k], values, &paired, &going);
+        let mut candidates = predecessors(&readers[k], values, &paired, &going);
+        if let Some(was) = paired[k].filter(|was| going.contains(was) && !candidates.contains(was))
+        {
+            candidates.insert(0, was);
+        }
         paired[k] = paired[k].or(candidates.first().copied());
         let went_on = match stateful(&values[at]) {
             false => false,
