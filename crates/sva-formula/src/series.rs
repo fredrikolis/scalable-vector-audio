@@ -2,7 +2,7 @@
 
 use std::f64::consts::TAU;
 
-use crate::affine::{Axis, Reading, affine_in, affine_read, axis_read, exact_constant_read};
+use crate::affine::{Axis, Reading, affine_in, affine_read, axis_read, exact_constant_at};
 use crate::closed_form::{
     Body, Bound, IndexId, Part, Series, Unary, children, map_children, read_at,
 };
@@ -520,7 +520,7 @@ fn leaves_band(place: &Body, k: IndexId, ceiling: f64, reads: &dyn Reads) -> Opt
 const MAX_TERMS: i64 = 1 << 20;
 
 fn at_index(f: &Body, k: IndexId, value: i64, reads: &dyn Reads) -> Option<C64> {
-    exact_constant_read(&substitute(f, k, value as f64), reads)
+    exact_constant_at(f, k, value as f64, reads)
 }
 
 pub fn substitute(f: &Body, k: IndexId, value: f64) -> Body {

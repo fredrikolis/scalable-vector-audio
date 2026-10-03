@@ -1,5 +1,6 @@
 // Concern: proves a series is a value, truncated once against a ceiling | Non-concern: summing its lines into a buffer (sva-samples) | IO: (a Series) -> the lines it yields
 
+use crate::allocations::counted;
 use crate::fixtures::{DUAL, Fixed, constant, cosine, part, saw_series, sine, term};
 use sva_formula::{
     Body, Bound, Code, IndexId, Series, Unary, Var, commensurate, infer, lines, noise,
@@ -227,4 +228,41 @@ fn commensurability_is_a_whole_turn_count_and_no_tolerance_widens_it() {
         !commensurate(440.01, 0.25),
         "a hundredth of a turn short is a quarter of a cent, and still not commensurate"
     );
+}
+
+/// A saw whose every line passes `depth` one-pole filters, each a factor of its term.
+fn filtered_saw(depth: usize) -> Series {
+    let saw = series_of(&saw_series(220.0));
+    let k = saw.index;
+    let pole = |j: usize| {
+        let gain = Body::Mul(vec![
+            part(constant(0.001 * (j + 1) as f64)),
+            part(Body::Index(k)),
+        ]);
+        part(Body::Div(
+            part(constant(1.0)),
+            part(Body::Add(vec![part(constant(1.0)), part(gain)])),
+        ))
+    };
+    let mut factors = vec![saw.term.clone()];
+    factors.extend((0..depth).map(pole));
+    Series {
+        term: part(Body::Mul(factors)),
+        ..saw
+    }
+}
+
+/// The allocations the lines between two ceilings add.
+fn per_lines(s: &Series) -> u64 {
+    let (_, few) = counted(|| enumerate(s, 500.0));
+    let (_, many) = counted(|| enumerate(s, 22050.0));
+    many - few
+}
+
+/// Each line is read off the term where it stands: a deeper term allocates more once, for
+/// its shape, and never more per line.
+#[test]
+fn reading_a_line_allocates_alike_however_deep_its_term() {
+    let (shallow, deep) = (per_lines(&filtered_saw(1)), per_lines(&filtered_saw(40)));
+    assert_eq!(deep, shallow);
 }

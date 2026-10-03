@@ -119,52 +119,104 @@ pub fn polynomial_in(f: &Body, reading: Reading) -> Option<Vec<Coeff>> {
 /// Ascending coefficients, or nothing above degree two. Read in the free variable, an index
 /// is an unknown real; read in an index, the free variable is not a coefficient at all.
 pub fn polynomial_read(f: &Body, reading: Reading, reads: &dyn Reads) -> Option<Vec<Coeff>> {
-    let polynomial = |g: &Body| polynomial_read(g, reading, reads);
+    read(f, reading, None, reads).map(|p| p.as_slice().to_vec())
+}
+
+/// A series term at index `k = value`: the constant it is with `value` written for `k`.
+pub fn exact_constant_at(f: &Body, k: IndexId, value: f64, reads: &dyn Reads) -> Option<C64> {
+    constant(read(f, Reading::Free, Some((k, value)), reads)?)
+}
+
+/// `at` reads one index as a number written in its place.
+fn read(f: &Body, reading: Reading, at: Option<(IndexId, f64)>, reads: &dyn Reads) -> Option<Poly> {
+    let polynomial = |g: &Body| read(g, reading, at, reads);
     match f {
-        Body::Node(id) => reads.polynomial(*id, reading),
-        Body::Const(c) => Some(vec![Coeff::Exact(*c)]),
-        Body::Index(k) => Some(match reading {
-            Reading::Index(wanted) if *k == wanted => vec![Coeff::ZERO, Coeff::ONE],
-            _ => vec![Coeff::Unknown(Axis::Real)],
+        Body::Node(id) => Poly::of(&reads.polynomial(*id, reading)?),
+        Body::Const(c) => Some(Poly::one(Coeff::Exact(*c))),
+        Body::Index(k) => Some(match (at, reading) {
+            (Some((bound, value)), _) if *k == bound => Poly::one(Coeff::Exact(C64::real(value))),
+            (_, Reading::Index(wanted)) if *k == wanted => Poly::of(&[Coeff::ZERO, Coeff::ONE])?,
+            _ => Poly::one(Coeff::Unknown(Axis::Real)),
         }),
         Body::Line => match reading {
-            Reading::Free => Some(vec![Coeff::ZERO, Coeff::ONE]),
+            Reading::Free => Poly::of(&[Coeff::ZERO, Coeff::ONE]),
             Reading::Index(_) => None,
         },
         Body::Keyed { seed, of } => {
-            match constant_read(&of.body, reading, reads)
+            match read(&of.body, reading, at, reads)
+                .and_then(constant)
                 .and_then(|at| crate::hash::draw_nearest(*seed, at.re))
             {
-                Some(drawn) => Some(vec![Coeff::Exact(C64::real(drawn))]),
-                None => Some(vec![Coeff::Unknown(Axis::Real)]),
+                Some(drawn) => Some(Poly::one(Coeff::Exact(C64::real(drawn)))),
+                None => Some(Poly::one(Coeff::Unknown(Axis::Real))),
             }
         }
-        Body::Apply(op, arg) => match polynomial(&arg.body)?[..] {
-            [c] => Some(vec![match c.exact() {
+        Body::Apply(op, arg) => match polynomial(&arg.body)?.as_slice() {
+            [c] => Some(Poly::one(match c.exact() {
                 Some(x) => Coeff::Exact(apply_scalar(*op, x)),
                 None => Coeff::Unknown(unary_axis(*op, c.axis())),
-            }]),
+            })),
             _ => None,
         },
-        Body::Add(parts) => parts.iter().try_fold(vec![Coeff::ZERO], |acc, p| {
+        Body::Add(parts) => parts.iter().try_fold(Poly::one(Coeff::ZERO), |acc, p| {
             Some(add(&acc, &polynomial(&p.body)?))
         }),
-        Body::Mul(parts) => parts
-            .iter()
-            .try_fold(vec![Coeff::ONE], |acc, p| mul(&acc, &polynomial(&p.body)?)),
+        Body::Mul(parts) => parts.iter().try_fold(Poly::one(Coeff::ONE), |acc, p| {
+            mul(&acc, &polynomial(&p.body)?)
+        }),
         Body::Div(num, den) => {
-            let n = polynomial(&num.body)?;
-            let [d] = polynomial(&den.body)?[..] else {
+            let mut n = polynomial(&num.body)?;
+            let [d] = *polynomial(&den.body)?.as_slice() else {
                 return None;
             };
-            Some(n.into_iter().map(|c| c.div(d)).collect())
+            n.c[..n.len].iter_mut().for_each(|c| *c = c.div(d));
+            Some(n)
         }
         Body::Pow(base, n) => {
             let b = polynomial(&base.body)?;
             let n = u32::try_from(*n).ok()?;
-            (0..n).try_fold(vec![Coeff::ONE], |acc, _| mul(&acc, &b))
+            (0..n).try_fold(Poly::one(Coeff::ONE), |acc, _| mul(&acc, &b))
         }
         Body::Shift { by, of } => Some(shift(&polynomial(&of.body)?, *by)),
+        _ => None,
+    }
+}
+
+/// Ascending coefficients held in place: a polynomial read here never passes degree two.
+#[derive(Clone, Copy)]
+struct Poly {
+    c: [Coeff; MAX_DEGREE + 1],
+    len: usize,
+}
+
+impl Poly {
+    fn zeros(len: usize) -> Poly {
+        Poly {
+            c: [Coeff::ZERO; MAX_DEGREE + 1],
+            len,
+        }
+    }
+
+    fn one(c: Coeff) -> Poly {
+        let mut p = Poly::zeros(1);
+        p.c[0] = c;
+        p
+    }
+
+    fn of(cs: &[Coeff]) -> Option<Poly> {
+        let mut p = Poly::zeros(cs.len());
+        p.c.get_mut(..cs.len())?.copy_from_slice(cs);
+        Some(p)
+    }
+
+    fn as_slice(&self) -> &[Coeff] {
+        &self.c[..self.len]
+    }
+}
+
+fn constant(p: Poly) -> Option<C64> {
+    match p.as_slice() {
+        [b] => b.exact(),
         _ => None,
     }
 }
@@ -197,10 +249,7 @@ fn constant_in(f: &Body, reading: Reading) -> Option<C64> {
 }
 
 fn constant_read(f: &Body, reading: Reading, reads: &dyn Reads) -> Option<C64> {
-    match polynomial_read(f, reading, reads)?[..] {
-        [b] => b.exact(),
-        _ => None,
-    }
+    constant(read(f, reading, None, reads)?)
 }
 
 pub fn affine(f: &Body) -> Option<(Coeff, Coeff)> {
@@ -349,44 +398,49 @@ pub fn axis_read(f: &Body, env: &dyn crate::env::Env, reads: &dyn Reads) -> Axis
     }
 }
 
-fn add(x: &[Coeff], y: &[Coeff]) -> Vec<Coeff> {
-    let mut out = vec![Coeff::ZERO; x.len().max(y.len())];
-    for (k, c) in x.iter().enumerate().chain(y.iter().enumerate()) {
-        out[k] = out[k].add(*c);
+fn add(x: &Poly, y: &Poly) -> Poly {
+    let mut out = Poly::zeros(x.len.max(y.len));
+    for (k, c) in x
+        .as_slice()
+        .iter()
+        .enumerate()
+        .chain(y.as_slice().iter().enumerate())
+    {
+        out.c[k] = out.c[k].add(*c);
     }
     trim(out)
 }
 
-fn mul(x: &[Coeff], y: &[Coeff]) -> Option<Vec<Coeff>> {
-    if x.len() + y.len() > MAX_DEGREE + 2 {
+fn mul(x: &Poly, y: &Poly) -> Option<Poly> {
+    if x.len + y.len > MAX_DEGREE + 2 {
         return None;
     }
-    let mut out = vec![Coeff::ZERO; x.len() + y.len() - 1];
-    for (i, a) in x.iter().enumerate() {
-        for (j, b) in y.iter().enumerate() {
-            out[i + j] = out[i + j].add(a.mul(*b));
+    let mut out = Poly::zeros(x.len + y.len - 1);
+    for (i, a) in x.as_slice().iter().enumerate() {
+        for (j, b) in y.as_slice().iter().enumerate() {
+            out.c[i + j] = out.c[i + j].add(a.mul(*b));
         }
     }
     Some(trim(out))
 }
 
 /// `x -> x - by`, by the binomial expansion of each term.
-fn shift(p: &[Coeff], by: f64) -> Vec<Coeff> {
-    let mut out = vec![Coeff::ZERO; p.len()];
-    for (n, c) in p.iter().enumerate() {
+fn shift(p: &Poly, by: f64) -> Poly {
+    let mut out = Poly::zeros(p.len);
+    for (n, c) in p.as_slice().iter().enumerate() {
         let mut binomial = 1.0f64;
         for k in (0..=n).rev() {
             let power = i32::try_from(n - k).unwrap_or(0);
-            out[k] = out[k].add(c.scale(binomial * (-by).powi(power)));
+            out.c[k] = out.c[k].add(c.scale(binomial * (-by).powi(power)));
             binomial = binomial * k as f64 / (n - k + 1) as f64;
         }
     }
     trim(out)
 }
 
-fn trim(mut p: Vec<Coeff>) -> Vec<Coeff> {
-    while p.len() > 1 && p.last().is_some_and(|c| c.is_zero()) {
-        p.pop();
+fn trim(mut p: Poly) -> Poly {
+    while p.len > 1 && p.c[p.len - 1].is_zero() {
+        p.len -= 1;
     }
     p
 }
