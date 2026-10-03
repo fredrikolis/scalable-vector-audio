@@ -191,6 +191,38 @@ fn a_tree_is_the_same_bits_shared_or_apart_whole_or_streamed() {
     assert!(rendered >= 20, "only {rendered} of 24 trees rendered");
 }
 
+/// A value held apart for its read is still named by what it computes: the apart build holds
+/// one value per read, several under one key, and only keys the shared build holds.
+#[test]
+fn a_value_held_apart_is_keyed_as_the_shared_one() {
+    let (mut checked, mut repeated) = (0, 0);
+    for seed in 1..=12u64 {
+        let mut composition = sva_ast::Composition::new();
+        for (name, body) in &tree(seed) {
+            composition.insert(name, body);
+        }
+        let g = sva_ast::load(&composition).expect("a composition");
+        let (Ok(shared), Ok(apart)) = (
+            render(&g, "root", config(), &Tier::default()),
+            render_apart(&g, "root", config()),
+        ) else {
+            continue;
+        };
+        let keys = |held: &crate::render::Render| -> Vec<_> {
+            let table = held.table.as_ref().expect("a table");
+            table.values.iter().map(|(_, v)| v.key).collect()
+        };
+        let (shared, apart) = (keys(&shared), keys(&apart));
+        let distinct: std::collections::BTreeSet<_> = apart.iter().copied().collect();
+        assert!(!apart.is_empty(), "{seed}");
+        assert!(distinct.iter().all(|k| shared.contains(k)), "{seed}");
+        repeated += usize::from(distinct.len() < apart.len());
+        checked += 1;
+    }
+    assert!(checked >= 10, "only {checked} trees rendered");
+    assert!(repeated > 0, "some tree reads one value twice, held apart");
+}
+
 fn expr(text: &str) -> sva_ast::Expr {
     sva_ast::parse_expr(text).expect("an expression")
 }

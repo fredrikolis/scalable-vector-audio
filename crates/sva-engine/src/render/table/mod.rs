@@ -186,7 +186,6 @@ impl Table {
             bounds,
             prefixes,
             apart,
-            copies: 0,
             reading: Vec::new(),
             open: Vec::new(),
             table: self,
@@ -736,8 +735,6 @@ struct Building<'a> {
     prefixes: &'a BTreeMap<NodeId, Arc<Stored>>,
     /// Every read its own value rather than one per identity.
     apart: bool,
-    /// Values made apart so far, each its own key.
-    copies: u64,
     /// The nodes whose reads are being built, apart.
     reading: Vec<NodeId>,
     open: Vec<Key>,
@@ -831,6 +828,9 @@ impl Building<'_> {
     fn source(&mut self, source: &Source, grid: Grid, name: &str) -> Result<usize, EngineError> {
         let identity = match (source, self.apart) {
             (Source::Node(id), false) => return self.node(*id),
+            (Source::Node(id), true) if let Some(passed) = refs::passes(self.tys, *id) => {
+                return self.source(&Source::Node(passed), grid, name);
+            }
             (Source::Node(id), true) => {
                 if self.reading.contains(id) {
                     return Err(refs::cyclic(self.tys, *id));
@@ -844,13 +844,7 @@ impl Building<'_> {
             Source::Formula(_) => grid,
         };
         let key = Key {
-            identity: match self.apart {
-                false => identity,
-                true => {
-                    self.copies += 1;
-                    crate::cache::mixed(identity, &[self.copies])
-                }
-            },
+            identity,
             step: step(grid),
         };
         let name = match source {
@@ -874,10 +868,10 @@ impl Building<'_> {
         grid: Grid,
         name: &str,
     ) -> Result<usize, EngineError> {
-        if let Some(at) = self.table.values.of(&key) {
+        if let Some(at) = self.table.values.of(&key).filter(|_| !self.apart) {
             return Ok(at);
         }
-        if self.open.contains(&key) {
+        if self.open.contains(&key) && !self.apart {
             let Source::Node(id) = source else {
                 unreachable!("a formula reads no node");
             };
