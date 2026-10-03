@@ -362,7 +362,7 @@ mod counts {
 #[cfg(test)]
 mod tests {
     use super::counts::{FILLS, PASSES, READS};
-    use super::renderer::{BufId, Grid, Map, NodeRenderer, Slot};
+    use super::renderer::{BufId, Grid, Index, Map, NodeRenderer, Round, Slot, WIDE};
     use super::*;
     use crate::collapse::Extent;
 
@@ -446,5 +446,64 @@ mod tests {
         );
         let far = 2 * 2 * LONG.iter().sum::<i64>() as u64;
         assert!(reads <= 2 * 2 * to as u64 + far, "{reads} reads");
+    }
+
+    /// A delay read at a moving length and a loop reading itself far back, by index.
+    fn delayed() -> NodeRenderer {
+        let now = Index::At(Map::whole(1, 0));
+        let length = NodeRenderer::Add(vec![
+            NodeRenderer::Const(0.002),
+            NodeRenderer::Mul(vec![
+                NodeRenderer::Const(0.000_2),
+                NodeRenderer::Map(
+                    super::renderer::Unary::Sin,
+                    Box::new(NodeRenderer::Mul(vec![
+                        NodeRenderer::Const(18.85),
+                        NodeRenderer::Time,
+                    ])),
+                ),
+            ]),
+        ]);
+        let back = Index::Neg(Box::new(Index::Step(Box::new(length), Round::Floor)));
+        let echo = Index::Add(vec![now.clone(), Index::At(Map::whole(0, -1489))]);
+        NodeRenderer::Add(vec![
+            NodeRenderer::Indexed {
+                slot: Slot::Read(BufId(0)),
+                index: Index::Add(vec![now, back]),
+                reach: None,
+            },
+            NodeRenderer::Mul(vec![
+                NodeRenderer::Const(0.5),
+                NodeRenderer::Indexed {
+                    slot: Slot::Own,
+                    index: echo,
+                    reach: Some((-1489, -1489)),
+                },
+            ]),
+        ])
+    }
+
+    /// Every index a sample reads, its delay's step included, is rounded in doubles or `i64`:
+    /// none in 128-bit integers.
+    #[test]
+    fn a_delay_and_an_echo_round_no_index_in_wide_integers() {
+        let to = 9_600;
+        let layout = Layout {
+            grid: Grid::of(48_000),
+            width: 1,
+            read_widths: vec![1],
+            sites: Vec::new(),
+        };
+        let spanned =
+            Spanned::new(&delayed(), &layout, (0, to), &[Extent::EVERYWHERE]).expect("a program");
+        let mut input = Tape::new(1, to as usize, 0);
+        (0..to).for_each(|n| input.push(0, (n as f64 * 0.01).sin()));
+        let mut out = Tape::new(1, to as usize, 0);
+        let mut machine = Machine::over(&spanned, 0).expect("a machine");
+        let before = WIDE.with(std::cell::Cell::get);
+        machine
+            .run_to(to, &[input.window()], &mut out)
+            .expect("samples");
+        assert_eq!(WIDE.with(std::cell::Cell::get), before);
     }
 }

@@ -92,8 +92,27 @@ impl Map {
 
     pub fn at(self, n: i64) -> i64 {
         let clamp = |k: i128| k.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
-        self.whole_at(n)
+        self.narrow_at(n)
             .unwrap_or_else(|| clamp(self.index_at(i128::from(n))))
+    }
+
+    /// `index_at` in `i64`, where every step of it fits one.
+    fn narrow_at(self, n: i64) -> Option<i64> {
+        if let Some(k) = self.whole_at(n) {
+            return Some(k);
+        }
+        let [a, b, d] = [self.a, self.b, self.d].map(|v| i64::try_from(v).ok());
+        let num = a?.checked_mul(n)?.checked_add(b?)?;
+        let d = d?;
+        let (floor, rem) = (num.div_euclid(d), num.rem_euclid(d));
+        Some(match self.between {
+            Between::Exact | Between::Floor => floor,
+            Between::Even => match rem.cmp(&(d - rem)) {
+                std::cmp::Ordering::Less => floor,
+                std::cmp::Ordering::Greater => floor + 1,
+                std::cmp::Ordering::Equal => floor + floor.rem_euclid(2),
+            },
+        })
     }
 
     fn whole_at(self, n: i64) -> Option<i64> {
@@ -181,6 +200,8 @@ impl Map {
     }
 
     fn index_at(self, n: i128) -> i128 {
+        #[cfg(test)]
+        WIDE.with(|w| w.set(w.get() + 1));
         let num = self.a.saturating_mul(n).saturating_add(self.b);
         let (floor, rem) = (num.div_euclid(self.d), num.rem_euclid(self.d));
         match self.between {
@@ -286,6 +307,15 @@ impl Grid {
     /// The step `t` falls nearest, rounded exactly from `t`'s own binary value; `None` where
     /// that is past what the integers hold.
     pub fn step_at(&self, t: f64, round: Round) -> Option<i64> {
+        match self.is_rate() {
+            true => rated(t, self.rate, round).or_else(|| self.wide(t, round)),
+            false => self.wide(t, round),
+        }
+    }
+
+    fn wide(&self, t: f64, round: Round) -> Option<i64> {
+        #[cfg(test)]
+        WIDE.with(|w| w.set(w.get() + 1));
         if !t.is_finite() {
             return None;
         }
@@ -320,6 +350,46 @@ impl Grid {
         };
         i64::try_from(k).ok()
     }
+}
+
+/// `t*rate` rounded from the double nearest it and its exact error: halves of `t` times `rate`
+/// exactly, summed exactly; the error decides only a sum on a whole or half step. `None` where
+/// `wide` may refuse or a product could round.
+fn rated(t: f64, rate: u32, round: Round) -> Option<i64> {
+    let held = t == 0.0 || (2f64.powi(-74)..2f64.powi(51)).contains(&t.abs());
+    if !held || rate >= 1 << 26 {
+        return None;
+    }
+    let r = f64::from(rate);
+    let split = 134_217_729.0 * t;
+    let hi = split - (split - t);
+    let (x, y) = (hi * r, (t - hi) * r);
+    let p = x + y;
+    let back = p - x;
+    let e = (x - (p - back)) + (y - back);
+    if p.abs() >= 2f64.powi(51) {
+        return None;
+    }
+    let f = p.floor();
+    let k = match round {
+        Round::Floor if p == f && e < 0.0 => f - 1.0,
+        Round::Floor => f,
+        Round::Ceil if p == p.ceil() && e > 0.0 => p + 1.0,
+        Round::Ceil => p.ceil(),
+        Round::Even => match (p - f).total_cmp(&0.5) {
+            std::cmp::Ordering::Less => f,
+            std::cmp::Ordering::Greater => f + 1.0,
+            std::cmp::Ordering::Equal if e > 0.0 => f + 1.0,
+            std::cmp::Ordering::Equal if e < 0.0 => f,
+            std::cmp::Ordering::Equal => f + f.rem_euclid(2.0),
+        },
+    };
+    Some(k as i64)
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static WIDE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// `scale*t + shift + gain*((inner_scale*t + inner_shift) mod period)` at sample `n`'s
@@ -455,7 +525,7 @@ impl<T> Index<T> {
     pub fn at(&self, n: i64, grid: Grid, time: &impl Fn(&T) -> f64) -> Option<i64> {
         match self {
             Index::At(map) => map
-                .whole_at(n)
+                .narrow_at(n)
                 .or_else(|| i64::try_from(map.index_at(i128::from(n))).ok()),
             Index::Step(t, round) => grid.step_at(time(t), *round),
             Index::Add(parts) => parts
@@ -722,6 +792,67 @@ impl Binary {
             Binary::Max => a.max(b),
             Binary::Min => a.min(b),
             Binary::Mod => a.rem_euclid(b),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Grid, Map, Round, rated};
+
+    /// Doubles at, near and far from whole and half steps.
+    fn instants(rate: u32) -> Vec<f64> {
+        let r = f64::from(rate);
+        let mut out = vec![0.0, -0.0, 1e-300, -1e-300, 1e300, f64::MIN_POSITIVE];
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        for k in -2_000i64..2_000 {
+            for half in [0.0, 0.5] {
+                let at = (k as f64 + half) / r;
+                let mut near = at;
+                for _ in 0..3 {
+                    near = near.next_up();
+                    out.push(near);
+                }
+                near = at;
+                for _ in 0..3 {
+                    near = near.next_down();
+                    out.push(near);
+                }
+                out.push(at);
+                out.push(at * 1e9);
+            }
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            out.push(f64::from_bits(seed >> 2) * if seed & 1 == 0 { 1.0 } else { -1.0 });
+        }
+        out
+    }
+
+    #[test]
+    fn a_step_rounds_alike_in_doubles_and_in_wide_integers() {
+        for rate in [1, 8_000, 44_100, 48_000, 88_200, 96_000, 192_000] {
+            let grid = Grid::of(rate);
+            for t in instants(rate) {
+                for round in [Round::Floor, Round::Ceil, Round::Even] {
+                    if let Some(k) = rated(t, rate, round) {
+                        assert_eq!(Some(k), grid.wide(t, round), "{t:e} at {rate} {round:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_rounded_map_reads_alike_narrow_and_wide() {
+        for (a, b, d) in [(1, 0, 2), (3, -7, 4), (-5, 11, 6), (2, 1, 4), (7, 3, 2)] {
+            for between in [super::Between::Floor, super::Between::Even] {
+                let Some(map) = Map::rounded(a, b, d, between) else {
+                    continue;
+                };
+                for n in -50..50 {
+                    let wide = i64::try_from(map.index_at(i128::from(n))).ok();
+                    assert_eq!(map.narrow_at(n), wide, "{map:?} at {n}");
+                }
+            }
         }
     }
 }
