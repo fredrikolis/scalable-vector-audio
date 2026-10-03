@@ -227,7 +227,8 @@ fn expr(text: &str) -> sva_ast::Expr {
     sva_ast::parse_expr(text).expect("an expression")
 }
 
-/// One random change: an add, a replace or a remove of a term, or an edit of the target.
+/// One random change: an add, a replace or a remove of a term, an edit of the target, or one
+/// of a file it plays.
 fn changed(
     (stream, tier): (&RefCell<Stream>, &Tier),
     g: &sva_ast::Graph,
@@ -257,6 +258,14 @@ fn changed(
             placed,
         ),
         (2, n) if n > 0 => Change::Remove(held.remove(draw.below(n as u64) as usize)),
+        (3, _) => {
+            let (mut edited, path) = (g.clone(), draw.pick(&reads).to_string());
+            let body = g.expr(&path).expect("a node").clone();
+            let half = sva_ast::Expr::Lit(sva_ast::Literal::Num(0.5));
+            let scaled = sva_ast::Expr::Bin(sva_ast::BinOp::Mul, Box::new(half), Box::new(body));
+            edited.set(&path, Some(edited.defining(scaled)));
+            Change::Target(edited, expr("@notes + @root"))
+        }
         _ => Change::Add(g.clone(), expr(&term), placed),
     };
     let mut edit = Some(edit);

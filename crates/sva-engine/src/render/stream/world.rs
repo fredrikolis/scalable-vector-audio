@@ -143,8 +143,12 @@ impl World {
         }
         let (named, rescanned) = self.instances.changing();
         let rescanned = rescanned.map(|(n, before)| (n.to_string(), before.to_vec()));
-        let (named, rescanned): (Vec<String>, Vec<(String, Vec<String>)>) =
+        let (mut named, rescanned): (Vec<String>, Vec<(String, Vec<String>)>) =
             (named.to_vec(), rescanned.collect());
+        if let Some(old) = &self.replaced {
+            let held = |path: &String| old.resolution(path) == self.instances.resolution(path);
+            named.retain(|path| !held(path));
+        }
         let region = self.region(&named, &rescanned);
         self.typing.lower(&self.instances, &region.groups)?;
         wanted.terms.name(&mut self.typing);

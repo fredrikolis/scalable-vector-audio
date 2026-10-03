@@ -13,6 +13,11 @@ const RATE: u32 = 8_000;
 const MASTER: &str = "@room(t, x=@notes) + 0.5*@mix";
 
 fn composition(branches: usize) -> Graph {
+    tuned(branches, 55)
+}
+
+/// The composition with its first branch's saw at `first` Hz.
+fn tuned(branches: usize, first: usize) -> Graph {
     let mix: Vec<String> = (0..branches).map(|k| format!("0.01*@b{k}")).collect();
     let mut files = vec![
         (
@@ -35,7 +40,7 @@ fn composition(branches: usize) -> Graph {
             format!("b{k}"),
             format!(
                 "lowpass(sample(0.1*saw({}*t)), cutoff=900, q=0.7)\n",
-                55 + k
+                if k == 0 { first } else { 55 + k }
             ),
         ));
     }
@@ -205,6 +210,31 @@ fn an_edit_of_one_parameter_builds_only_the_target() {
             ..Built::default()
         }
     );
+}
+
+/// An edit of one file the stream plays names, types and looks up that file and what reads it,
+/// and no other; the retuned branch's filter carries on its state.
+#[test]
+fn an_edit_of_one_file_types_only_it_and_its_readers() {
+    let mut seen = Vec::new();
+    for (branches, terms) in [(2, 3), (60, 200)] {
+        let (_, stream) = holding(branches, terms);
+        let retuned = tuned(branches, 200);
+        let done = edited(&stream, &retuned, &expr(MASTER), &Tier::default()).now();
+        done.unwrap_or_else(|e| panic!("{e}"));
+        seen.push(built(&stream));
+    }
+    assert_eq!(seen[0], seen[1], "independent of the master and the terms");
+    let branch = Built {
+        parsed: 1,
+        instances: 1,
+        visited: 3,
+        typed: 3,
+        values: seen[0].values,
+        copied: 1,
+        lookups: 2,
+    };
+    assert_eq!(seen[0], branch);
 }
 
 /// Reads ask nothing of the note sum until a term's support can have ended.
