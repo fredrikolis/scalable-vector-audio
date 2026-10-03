@@ -166,13 +166,17 @@ pub fn occurs_free(e: &Expr, name: &str) -> bool {
 }
 
 /// A single-line file whose content is neither a plain number nor a bare token is parsed as
-/// a full expression; anything with a tab or more than one non-trivial line is a TSV grid.
+/// a full expression; anything with a tab or more than one non-blank line is a TSV grid,
+/// whose blank rows are rests; a one-row grid writes its trailing rests as tabs.
 fn parse_body(base_name: &str, content: &str) -> Result<Parsed, Diag> {
     if let Some(why) = not_node_marker(content) {
         return Err(not_node_diag(why));
     }
     let (_, span) = parse_filename(base_name);
-    let rows = crate::tsv::code_rows(content);
+    let rows: Vec<(usize, &str)> = crate::tsv::code_rows(content)
+        .into_iter()
+        .filter(|(_, line)| !blank(line))
+        .collect();
     let is_tsv = rows.iter().any(|(_, line)| line.contains('\t')) || rows.len() > 1;
 
     if is_tsv {
@@ -195,6 +199,11 @@ fn parse_body(base_name: &str, content: &str) -> Result<Parsed, Diag> {
         grid: None,
         defaults: Vec::new(),
     })
+}
+
+/// A row of tabs is a grid row of rests.
+fn blank(line: &str) -> bool {
+    line.chars().all(|c| c.is_whitespace() && c != '\t')
 }
 
 /// Classified from the comment-stripped row, never the raw text, so a `; ...` header cannot
@@ -373,6 +382,36 @@ mod tests {
 
         let secs = parse_file("pattern-2s", "@kick\n@kick\n").unwrap();
         assert_eq!(secs.grid.unwrap().bar_span, None);
+    }
+
+    #[test]
+    fn blank_lines_around_an_expression_leave_it_one_expression() {
+        let plain = parse_file("tone", "sin(2*pi*220*t)\n").unwrap();
+        for padded in [
+            "sin(2*pi*220*t)\n\n",
+            "sin(2*pi*220*t)\n\n\n",
+            "\nsin(2*pi*220*t)\n",
+        ] {
+            let p = parse_file("tone", padded).unwrap();
+            assert!(p.grid.is_none(), "{padded:?} is not a grid");
+            assert_eq!(p.expr, plain.expr, "{padded:?}");
+        }
+        let defaulted = parse_file("tone", "f = 220\n\nsin(2*pi*f*t)\n").unwrap();
+        assert_eq!(
+            defaulted.expr,
+            parse_file("tone", "f = 220\nsin(2*pi*f*t)\n").unwrap().expr
+        );
+        assert_eq!(
+            parse_file("bpm", "120\n\n").unwrap().expr,
+            Expr::Lit(Literal::Num(120.0))
+        );
+    }
+
+    #[test]
+    fn a_row_of_tabs_is_a_grid_row_of_rests_never_a_blank_line() {
+        let rests = parse_file("bar-2b", "\t\n\t\n").unwrap();
+        assert!(rests.grid.is_some(), "rows of tabs are a grid");
+        assert!(parse_file("bar-2b", "\t").unwrap().grid.is_some());
     }
 
     #[test]
