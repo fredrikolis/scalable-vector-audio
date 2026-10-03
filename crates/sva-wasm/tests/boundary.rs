@@ -873,9 +873,10 @@ fn a_stream_counts_what_it_did_and_lists_only_its_latest_lookups() {
     ];
     assert_eq!(
         names.map(built),
-        [1.0, 2.0, 4.0, 4.0, 5.0, 0.0, 1.0].map(Some),
-        "the last of 300 adds took in its text, named its blip and its term, and walked and \
-         built them, the sum and the target: {}",
+        [1.0, 2.0, 4.0, 4.0, 4.0, 0.0, 1.0].map(Some),
+        "the last of 300 adds took in its text, named its blip and its term, walked, typed and \
+         built them, the sum and the target, the target being the sum's own value since it \
+         reads the sum as it is: {}",
         as_text(&counts)
     );
     let stats = stream
