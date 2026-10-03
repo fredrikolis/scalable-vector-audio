@@ -7,6 +7,7 @@ pub mod envelope;
 pub mod formants;
 pub mod ledger;
 pub mod loudness;
+pub mod onsets;
 pub mod pitch;
 pub mod spectrum;
 pub mod stereo;

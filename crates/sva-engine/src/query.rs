@@ -3,7 +3,7 @@
 use sva_formula::{Line, SpectralSum};
 use sva_samples::{
     Alias, Bands, Buffer, Consumes, Crest, EnvelopeFrame, FormantFrame, LedgerEntry, Loudness,
-    PitchFrame, Source, Spectrum, StereoImage,
+    Onsets, PitchFrame, Source, Spectrum, StereoImage,
 };
 
 use crate::arguments::Arguments;
@@ -42,6 +42,7 @@ pub enum Representation {
     Bands,
     Crest,
     Loudness,
+    Onsets,
     Alias {
         oversample: u32,
     },
@@ -71,6 +72,7 @@ pub enum Output {
     Bands(Box<Bands>),
     Crest(Box<Crest>),
     Loudness(Box<Loudness>),
+    Onsets(Box<Onsets>),
     Alias(Box<Alias>),
     Ledger(Vec<LedgerEntry>),
     Bindings(Vec<Binding>),
@@ -125,6 +127,7 @@ impl Representation {
             Representation::Bands => "bands",
             Representation::Crest => "crest",
             Representation::Loudness => "loudness",
+            Representation::Onsets => "onsets",
             Representation::Alias { .. } => "alias",
             Representation::Bindings => "bindings",
             Representation::Arguments => "arguments",
@@ -188,6 +191,7 @@ impl Representation {
             "bands" => Representation::Bands,
             "crest" => Representation::Crest,
             "loudness" => Representation::Loudness,
+            "onsets" => Representation::Onsets,
             "alias" => Representation::Alias { oversample: 4 },
             "bindings" => Representation::Bindings,
             "arguments" => Representation::Arguments,

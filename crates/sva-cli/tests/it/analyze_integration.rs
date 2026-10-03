@@ -116,16 +116,6 @@ fn analyze_takes_only_the_readings_a_buffer_answers_and_needs_a_wav() {
             "`{name}` is one a buffer answers"
         );
     }
-    for name in sva_analysis::ANALYSES {
-        assert!(
-            parse_args(&argv(&["analyze", "/tmp/a.wav", "--representation", name])).is_ok(),
-            "`{name}` is one `sva-analysis` answers off a buffer"
-        );
-        assert!(
-            parse_args(&argv(&["render", "@master", "--representation", name])).is_err(),
-            "`{name}` reads a rendered buffer back, and `render` has none to hand it"
-        );
-    }
     for name in ["ledger", "alias", "bindings", "lines", "atoms"] {
         assert!(
             parse_args(&argv(&["analyze", "/tmp/a.wav", "--representation", name])).is_err(),
@@ -259,11 +249,14 @@ fn onsets_of_a_grid_land_within_one_millisecond() {
             "{heard} is more than a millisecond from {wanted}"
         );
     }
+    let resolution: f64 = json
+        .split("\"resolution_secs\": ")
+        .nth(1)
+        .and_then(|tail| tail.split([',', ' ', '}']).next())
+        .and_then(|n| n.parse().ok())
+        .expect("a resolution");
     assert!(
-        json.contains(&format!(
-            "\"resolution_secs\": {}",
-            sva_analysis::stable::onsets::HOP_SECS
-        )),
+        resolution == 0.0115,
         "a detector states the hop its flux was read at, not the sample period: {json}"
     );
     assert!(
@@ -439,8 +432,7 @@ fn a_strike_is_an_onset_after_a_swell_before_its_crest_and_at_the_end() {
     }
 }
 
-/// A file that is not there is the caller's typo; `internal_error` would tell an agent the
-/// tool broke instead, and the standard reserves exit 24 for exactly this.
+/// A missing file is the caller's typo, exit 24, never `internal_error`.
 #[test]
 fn a_missing_wav_is_not_found() {
     let absent = scratch("absent-wav").join("never-written.wav");

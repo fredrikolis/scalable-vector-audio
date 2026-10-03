@@ -1,4 +1,4 @@
-// Concern: the JSON scalar, array and envelope-meta spellings every emitter agrees on | Non-concern: what any one object holds (output.rs, sva-analysis's json.rs) | IO: (a value) -> a fragment
+// Concern: the JSON scalar, array and envelope-meta spellings every emitter agrees on | Non-concern: what any one object holds (output.rs, answer.rs) | IO: (a value) -> a fragment
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};

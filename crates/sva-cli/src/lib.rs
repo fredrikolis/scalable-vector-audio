@@ -20,11 +20,10 @@ mod variables;
 mod wav;
 
 pub use args::{
-    ANALYZE_REPRESENTATIONS, Analysis, AnalyzeArgs, CacheAt, Command, Format, RenderArgs, USAGE,
-    parse_args,
+    ANALYZE_REPRESENTATIONS, AnalyzeArgs, CacheAt, Command, Format, RenderArgs, USAGE, parse_args,
 };
 pub use composition::{composition, located};
-pub use destination::{Framing, refuse_inside, write as write_destination, write_analysis};
+pub use destination::{Framing, refuse_inside, write as write_destination};
 pub use help::help_text;
 pub use lint::{Finding, LintReport, lint};
 pub use new::{FILES, NEXT, Scaffolded, scaffold};

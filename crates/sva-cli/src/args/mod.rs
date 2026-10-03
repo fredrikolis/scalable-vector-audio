@@ -22,8 +22,7 @@ pub const USAGE: &str = "usage: sva-cli render '<expression>' --representation <
      `@/abs/path` one anywhere, and its own ref may read an interval: `@piano([0, 2b], f0=C4)`\n\
      representations: lines atoms spectrum(peaks, frame) envelope(frame) derivative samples \
      ledger(depth, brief, skim) pitch(peaks, frame) formants(peaks, frame) stereo(frame) bands \
-     crest loudness alias(oversample) bindings(node) arguments flops\n\
-     analyses (`analyze` only): onsets trajectory masking(against) gain-reduction\n\
+     crest loudness onsets alias(oversample) bindings(node) arguments flops\n\
      destinations: a `.wav` path takes `samples` as audio; any other path takes JSON; none \
      puts the reading under `data.representations`\n\
      verb aliases: `validate`=lint, `list`=builtins, `create`=new, `show`=trace. `render` \
@@ -31,7 +30,7 @@ pub const USAGE: &str = "usage: sva-cli render '<expression>' --representation <
      keep their own names.";
 
 /// Only the readings that are a pure function of a buffer; the rest need the graph behind it.
-pub const ANALYZE_REPRESENTATIONS: [&str; 10] = [
+pub const ANALYZE_REPRESENTATIONS: [&str; 11] = [
     "samples",
     "spectrum",
     "envelope",
@@ -42,6 +41,7 @@ pub const ANALYZE_REPRESENTATIONS: [&str; 10] = [
     "loudness",
     "crest",
     "stereo",
+    "onsets",
 ];
 
 #[derive(Debug, PartialEq)]
@@ -69,20 +69,10 @@ pub enum CacheAt {
     Off,
 }
 
-/// One reading `sva-analysis` answers, which no `Representation` names.
-#[derive(Debug, PartialEq)]
-pub struct Analysis {
-    pub name: String,
-    pub dest: Option<PathBuf>,
-    /// `masking(against=b.wav)`: the second signal it reads against.
-    pub against: Option<PathBuf>,
-}
-
 #[derive(Debug, PartialEq)]
 pub struct AnalyzeArgs {
     pub path: PathBuf,
     pub asked: Vec<Asked>,
-    pub analyses: Vec<Analysis>,
     /// The caller said a destination that already holds a file may be replaced.
     pub confirm: bool,
 }

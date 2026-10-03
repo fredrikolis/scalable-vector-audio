@@ -16,6 +16,7 @@ mod measure_envelope;
 mod measure_formants;
 mod measure_ledger;
 mod measure_loudness;
+mod measure_onsets;
 mod measure_pitch;
 mod measure_spectrum;
 mod measure_stereo;

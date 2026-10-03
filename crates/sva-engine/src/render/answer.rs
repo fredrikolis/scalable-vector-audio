@@ -4,8 +4,8 @@ use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
 use sva_formula::{Line, SpectralSum, Var, d_dt, envelope_read, line_atoms_read};
 use sva_samples::{
     AliasScore, Buffer, Consumes, Extent, Peak, PitchFrame, Profile, Source, measure::bands,
-    measure::crest, measure::envelope, measure::formants, measure::loudness, measure::pitch,
-    measure::spectrum, measure::stereo, measure_alias,
+    measure::crest, measure::envelope, measure::formants, measure::loudness, measure::onsets,
+    measure::pitch, measure::spectrum, measure::stereo, measure_alias,
 };
 
 use crate::error::{Diagnostic, EngineError, Located};
@@ -472,6 +472,7 @@ pub fn off_buffer(buffer: &Buffer, representation: Representation) -> Result<Out
         }
         Representation::Bands => Output::Bands(Box::new(bands::analyze(plane, sr, start))),
         Representation::Crest => Output::Crest(Box::new(crest::analyze(plane, sr))),
+        Representation::Onsets => Output::Onsets(Box::new(onsets::detect(plane, sr, start))),
         Representation::Loudness => {
             let planes: Vec<&[f64]> = (0..buffer.width).map(|c| buffer.plane(c)).collect();
             Output::Loudness(Box::new(loudness::analyze(&planes, sr, start)))

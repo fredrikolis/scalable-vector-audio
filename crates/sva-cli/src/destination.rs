@@ -69,37 +69,6 @@ pub(crate) fn refuse_replacing(dest: &Path, replace: bool) -> Result<(), CliErro
     }
 }
 
-/// A reading no `Representation` names: its value is already JSON, so only the envelope.
-pub fn write_analysis(
-    name: &str,
-    value: &str,
-    dest: &Path,
-    framing: &Framing,
-) -> Result<(), CliError> {
-    if is_wav(dest) {
-        return Err(not_audio(name));
-    }
-    refuse_replacing(dest, framing.replace)?;
-    let analyses = [(name.to_string(), value.to_string())];
-    let json = success_envelope(
-        &query_data(&Report {
-            target: &framing.target,
-            rate: framing.rate,
-            bits: None,
-            interval: framing.interval,
-            profile: framing.profile,
-            label: None,
-            written: &[],
-            answers: &[],
-            analyses: &analyses,
-            limit: None,
-        }),
-        &[],
-    );
-    std::fs::write(dest, json + "\n")
-        .map_err(|e| CliError::Io(format!("could not write {}: {e}", dest.display())))
-}
-
 /// Argv refuses this pair at parse time; a library caller passed none, so it is refused here.
 fn not_audio(name: &str) -> CliError {
     CliError::Usage(format!(
@@ -135,7 +104,6 @@ pub fn write(printed: &Printed, dest: &Path, framing: &Framing) -> Result<(), Cl
             label: None,
             written: &[],
             answers: std::slice::from_ref(printed),
-            analyses: &[],
             limit: None,
         }),
         &[],

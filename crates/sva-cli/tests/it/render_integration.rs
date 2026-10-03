@@ -569,7 +569,6 @@ fn two_readings_at_one_destination_refuse_before_anything_is_rendered() {
         "`./one.json` and `one.json` are one file"
     );
 
-    // `analyze` builds its destinations from two lists: the representations and the analyses.
     let mixed = sva_cli::parse_args(&argv(&[
         "analyze",
         "in.wav",
@@ -577,7 +576,7 @@ fn two_readings_at_one_destination_refuse_before_anything_is_rendered() {
         "spectrum=/tmp/both.json,onsets=/tmp/both.json",
     ]));
     let Err(refused) = mixed else {
-        panic!("a reading and an analysis cannot share a path either");
+        panic!("two readings of a file cannot share a path either");
     };
     assert!(refused.message().contains("/tmp/both.json"), "{refused}");
 }

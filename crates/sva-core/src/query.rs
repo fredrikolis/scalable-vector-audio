@@ -6,7 +6,7 @@ use sva_engine::{DEFAULT_FRAME_SECS, Representation};
 
 use crate::cli_error::CliError;
 
-pub const REPRESENTATIONS: [&str; 16] = [
+pub const REPRESENTATIONS: [&str; 17] = [
     "lines",
     "atoms",
     "spectrum",
@@ -20,6 +20,7 @@ pub const REPRESENTATIONS: [&str; 16] = [
     "bands",
     "crest",
     "loudness",
+    "onsets",
     "alias",
     "bindings",
     "arguments",

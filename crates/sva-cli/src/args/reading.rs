@@ -5,9 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use sva_core::{Asked, Call, CliError, asked, calls, is_wav, wav_path};
 use sva_engine::{DEFAULT_SAMPLE_RATE, MAX_PINNED_FRAME, Representation, pinned_frame};
 
-use super::{
-    ANALYZE_REPRESENTATIONS, Analysis, AnalyzeArgs, CacheAt, Command, RenderArgs, USAGE, value,
-};
+use super::{ANALYZE_REPRESENTATIONS, AnalyzeArgs, CacheAt, Command, RenderArgs, USAGE, value};
 
 /// What `render` and `analyze` both read: the calls asked for, and `--confirm`.
 #[derive(Default)]
@@ -36,51 +34,10 @@ impl Flags {
         Ok(true)
     }
 
-    /// The asks `sva-analysis` answers, lifted out before a `Representation` is looked for:
-    /// those four name no representation and never reach `sva-core`'s table.
-    fn analyses(&self) -> Result<Vec<Analysis>, CliError> {
-        let mut out = Vec::new();
-        for call in &self.calls {
-            if !sva_analysis::ANALYSES.contains(&call.name.as_str()) {
-                continue;
-            }
-            let mut against = None;
-            for (key, raw) in &call.args {
-                match (call.name.as_str(), key.as_str()) {
-                    ("masking", "against") => against = Some(wav_path(raw).map_err(usage)?),
-                    (name, key) => {
-                        return Err(CliError::Usage(format!(
-                            "`{name}` takes no argument `{key}`{}\n{USAGE}",
-                            match name {
-                                "masking" => "; it takes `against`",
-                                _ => "",
-                            }
-                        )));
-                    }
-                }
-            }
-            out.push(Analysis {
-                name: call.name.clone(),
-                dest: call.dest.clone(),
-                against,
-            });
-        }
-        Ok(out)
-    }
-
     fn resolved(&self, allowed: Option<&[&str]>) -> Result<Vec<Asked>, CliError> {
         let mut out = Vec::with_capacity(self.calls.len());
         for call in &self.calls {
             let name = call.name.as_str();
-            if sva_analysis::ANALYSES.contains(&name) {
-                if allowed.is_none() {
-                    return Err(CliError::Usage(format!(
-                        "`{name}` reads a rendered buffer back; write the render to a `.wav` \
-                         and `analyze` it\n{USAGE}"
-                    )));
-                }
-                continue;
-            }
             let one = asked(call).map_err(usage)?;
             if allowed.is_some_and(|set| !set.contains(&name)) {
                 return Err(CliError::Usage(format!(
@@ -180,14 +137,8 @@ pub(super) fn analyze_args(rest: &[String]) -> Result<Command, CliError> {
         )));
     }
     let asked = flags.resolved(Some(&ANALYZE_REPRESENTATIONS))?;
-    let analyses = flags.analyses()?;
-    refuse_shared_destination(
-        asked
-            .iter()
-            .filter_map(|a| a.dest.as_deref())
-            .chain(analyses.iter().filter_map(|a| a.dest.as_deref())),
-    )?;
-    if asked.is_empty() && analyses.is_empty() {
+    refuse_shared_destination(asked.iter().filter_map(|a| a.dest.as_deref()))?;
+    if asked.is_empty() {
         return Err(CliError::Usage(format!(
             "`analyze` needs at least one `--representation <r>`\n{USAGE}"
         )));
@@ -195,7 +146,6 @@ pub(super) fn analyze_args(rest: &[String]) -> Result<Command, CliError> {
     Ok(Command::Analyze(Box::new(AnalyzeArgs {
         path,
         asked,
-        analyses,
         confirm: flags.confirm,
     })))
 }

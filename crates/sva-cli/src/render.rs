@@ -6,12 +6,10 @@ use sva_core::{
     Answer, Asked, CliError, Diagnostic, Job, Output, Printed, Report, SAMPLE_LIMIT, Session, Tier,
     cwd, execute_over, query_data,
 };
-use sva_engine::{
-    Buffer, DEFAULT_FRAME_SECS, PSYCHOACOUSTIC_V1, Representation, answer_buffer, cache_log,
-};
+use sva_engine::{Buffer, PSYCHOACOUSTIC_V1, answer_buffer, cache_log};
 
 use crate::args::{AnalyzeArgs, RenderArgs};
-use crate::destination::{Framing, refuse_inside, refuse_replacing, write, write_analysis};
+use crate::destination::{Framing, refuse_inside, refuse_replacing, write};
 use crate::directory::Directory;
 use crate::store::wait;
 use crate::wav::{SampleEncoding, read_channels};
@@ -99,7 +97,6 @@ fn answered(
         label: rendered.label(),
         written: &written,
         answers: &answers,
-        analyses: &[],
         limit: Some(SAMPLE_LIMIT),
     }))
 }
@@ -154,15 +151,7 @@ fn briefed(answer: Answer) -> Answer {
 pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
     let dir = cwd()?;
     let composition = is_composition(&dir);
-    let destinations = args
-        .asked
-        .iter()
-        .map(|a| a.dest.as_deref())
-        .chain(args.analyses.iter().map(|a| a.dest.as_deref()));
-    for dest in destinations {
-        let Some(dest) = dest else {
-            continue;
-        };
+    for dest in args.asked.iter().filter_map(|a| a.dest.as_deref()) {
         if composition {
             refuse_inside(&dir, dest)?;
         }
@@ -202,18 +191,7 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
             .map_err(CliError::Engine)?,
         );
     }
-    let heard = analysed(args, &buffer)?;
-    let (answers, mut written) = routed(&args.asked, taken, &framing)?;
-    let mut analyses = Vec::new();
-    for (analysis, value) in args.analyses.iter().zip(heard) {
-        match analysis.dest.as_deref() {
-            None => analyses.push((analysis.name.clone(), value)),
-            Some(dest) => {
-                write_analysis(&analysis.name, &value, dest, &framing)?;
-                written.push((analysis.name.clone(), dest));
-            }
-        }
-    }
+    let (answers, written) = routed(&args.asked, taken, &framing)?;
     Ok(success_envelope(
         &query_data(&Report {
             target: &target,
@@ -224,62 +202,10 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
             label: None,
             written: &written,
             answers: &answers,
-            analyses: &analyses,
             limit: Some(SAMPLE_LIMIT),
         }),
         &[],
     ))
-}
-
-/// The readings `sva-analysis` answers off a buffer alone. Every field its `Request` names is
-/// taken from this one file: a `.wav` carries no tempo and no node behind it.
-fn analysed(args: &AnalyzeArgs, buffer: &Buffer) -> Result<Vec<String>, CliError> {
-    if args.analyses.is_empty() {
-        return Ok(Vec::new());
-    }
-    let rate = f64::from(buffer.rate);
-    let mono: Vec<f32> = buffer.plane(0).iter().map(|s| *s as f32).collect();
-    let against = match args.analyses.iter().find_map(|a| a.against.as_deref()) {
-        Some(path) => {
-            let (planes, _) = read_channels(path)?;
-            Some(planes.first().cloned().unwrap_or_default())
-        }
-        None => None,
-    };
-    let name = args.path.display().to_string();
-    let read = |representation| {
-        answer_buffer(&name, buffer, representation, PSYCHOACOUSTIC_V1.name).map(|a| a.value)
-    };
-    let envelope = match read(Representation::Envelope { frame_secs: None }) {
-        Ok(Output::Envelope(frames)) => frames,
-        _ => Vec::new(),
-    };
-    let image = match read(Representation::Stereo {
-        frame_secs: DEFAULT_FRAME_SECS,
-    }) {
-        Ok(Output::Stereo(found)) => Some(*found),
-        _ => None,
-    };
-    let request = sva_analysis::Request {
-        samples: &mono,
-        sample_rate: rate,
-        start_secs: 0.0,
-        frame_secs: DEFAULT_FRAME_SECS,
-        tempo: None,
-        envelope: &envelope,
-        stereo: image.as_ref(),
-        against: against.as_deref(),
-        gated: false,
-        input_envelope: None,
-    };
-    let mut out = Vec::with_capacity(args.analyses.len());
-    for analysis in &args.analyses {
-        out.push(
-            sva_analysis::run(&analysis.name, &request)
-                .map_err(|sva_analysis::AnalysisError(why)| CliError::Usage(why))?,
-        );
-    }
-    Ok(out)
 }
 
 /// Whether the next parse would walk this directory, not whether it parses cleanly today.

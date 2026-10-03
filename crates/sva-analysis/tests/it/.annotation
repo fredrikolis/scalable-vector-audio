@@ -1,1 +1,0 @@
-Concern: this crate's one integration-test binary, a module per suite | Non-concern: unit tests beside the source | IO: (the crate's public API) -> pass or fail

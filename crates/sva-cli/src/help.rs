@@ -149,8 +149,7 @@ ANALYZE:
 
   Runs the same readings over a whole external `.wav` at its own rate, never
   resampled. Only the readings a buffer answers alone apply; the rest need the
-  graph behind it. `masking(against=<file.wav>)` names the second signal
-  masking reads against.
+  graph behind it.
 
 LINT:
   sva-cli lint ['<expression>'] [--format <json|text>]

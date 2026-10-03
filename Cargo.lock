@@ -284,14 +284,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
-name = "sva-analysis"
-version = "0.7.15"
-dependencies = [
- "sva-core",
- "sva-samples",
-]
-
-[[package]]
 name = "sva-ast"
 version = "0.7.15"
 
@@ -301,7 +293,6 @@ version = "0.7.15"
 dependencies = [
  "hound",
  "signal-hook",
- "sva-analysis",
  "sva-ast",
  "sva-core",
  "sva-engine",

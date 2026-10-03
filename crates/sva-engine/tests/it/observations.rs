@@ -41,7 +41,7 @@ fn every_representation_reports_source_and_profile() {
     );
     let id = sampled.id("node").expect("the root");
     for name in [
-        "samples", "spectrum", "envelope", "bands", "crest", "loudness",
+        "samples", "spectrum", "envelope", "bands", "crest", "loudness", "onsets",
     ] {
         let representation = Representation::from_name(name).expect("a known reading");
         let found = answer(&sampled, id, representation).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -529,6 +529,7 @@ fn one_table_says_what_every_named_reading_consumes() {
         "bands",
         "crest",
         "loudness",
+        "onsets",
         "alias",
         "bindings",
         "flops",

@@ -491,7 +491,6 @@ fn answered(rendered: &Rendered, asked: &[Asked]) -> Result<JsValue, JsValue> {
         label: rendered.label(),
         written: &[],
         answers: &answers,
-        analyses: &[],
         limit: Some(SAMPLE_LIMIT),
     }))
 }

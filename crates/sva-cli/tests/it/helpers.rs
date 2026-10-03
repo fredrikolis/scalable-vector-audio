@@ -96,7 +96,6 @@ pub fn json_of(r: &Rendered, name: &str, representation: Representation) -> Stri
             label: r.label(),
             written: &[],
             answers: &answers,
-            analyses: &[],
             limit: Some(SAMPLE_LIMIT),
         }),
         &[],

@@ -5,7 +5,7 @@ use std::path::Path;
 use sva_engine::{
     Alias, AliasBand, Answer, Arguments, BandCrest, BandTrack, Bands, Binding, Buffer, CacheStats,
     Cost, Counters, Crest, Detail, EnvelopeFrame, FormantFrame, Label, LedgerEntry, Loudness,
-    LoudnessFrame, Outcome, Output, PayloadKind, Pruned, Source, SpectralSum, Spectrum,
+    LoudnessFrame, Onsets, Outcome, Output, PayloadKind, Pruned, Source, SpectralSum, Spectrum,
     StereoFrame, StereoImage, Work,
 };
 
@@ -207,6 +207,24 @@ fn crest_json(c: &Crest) -> String {
     )
 }
 
+fn onsets_json(o: &Onsets) -> String {
+    format!(
+        "{{ \"onsets\": {}, \"resolution_secs\": {}, \"ioi_histogram\": {} }}",
+        list(&o.onsets, |t| format!(
+            "{{ \"t_secs\": {}, \"strength\": {} }}",
+            num(t.t_secs),
+            num(t.strength)
+        )),
+        num(o.resolution_secs),
+        list(&o.ioi_histogram, |b| format!(
+            "{{ \"lo_secs\": {}, \"hi_secs\": {}, \"count\": {} }}",
+            num(b.lo_secs),
+            num(b.hi_secs),
+            b.count
+        )),
+    )
+}
+
 fn alias_json(a: &Alias) -> String {
     let band = |b: &AliasBand| {
         format!(
@@ -352,6 +370,7 @@ pub fn value_json(output: &Output, limit: Option<usize>, skim: bool) -> String {
         Output::Bands(b) => bands_json(b, limit),
         Output::Loudness(l) => loudness_json(l, limit),
         Output::Crest(c) => crest_json(c),
+        Output::Onsets(o) => onsets_json(o),
         Output::Alias(a) => alias_json(a),
         Output::Bindings(b) => list(b, binding_json),
         Output::Arguments(a) => list(a, arguments_json),
@@ -602,9 +621,6 @@ pub struct Report<'a> {
     pub label: Option<&'a Label>,
     pub written: &'a [(String, &'a Path)],
     pub answers: &'a [Printed],
-    /// Readings a crate outside this pipeline answered, each already a JSON value: this
-    /// envelope only says which reading ran, under which profile, and at what rate.
-    pub analyses: &'a [(String, String)],
     pub limit: Option<usize>,
 }
 
@@ -631,15 +647,6 @@ pub fn query_data(report: &Report) -> String {
                 answer_json(&printed.answer, report.limit, printed.skim)
             )
         })
-        .chain(report.analyses.iter().map(|(name, value)| {
-            format!(
-                "\"{}\": {{ \"source\": \"measured\", \"profile\": \"{}\", \"rate\": {}, \
-                 \"value\": {value} }}",
-                escape(name),
-                escape(report.profile),
-                report.rate
-            )
-        }))
         .collect::<Vec<_>>()
         .join(",\n    ");
     let interval = report.interval.map_or(NONE.to_string(), |(start, end)| {
