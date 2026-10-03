@@ -55,7 +55,8 @@ const BLIP: (&str, &str) = (
 );
 
 /// A held pad and notes that retire: each value keeps one segment per unbroken run, as many
-/// after half a minute as after four seconds.
+/// after half a minute as after four seconds; a note's arrival steps the pad on from where it
+/// stands, never again from its start.
 #[test]
 fn a_long_session_keeps_one_segment_per_unbroken_run_and_no_retired_term() {
     let graph = graph_of(
@@ -85,7 +86,8 @@ fn a_long_session_keeps_one_segment_per_unbroken_run_and_no_retired_term() {
         }
         played(&stream, 4 * RATE as usize / BLOCK);
         let held = stream.borrow();
-        let segments = ["notes", "room", "streamed", pad.as_str()].map(|n| held.evaluated(n).len());
+        let segments =
+            ["notes", "room", "streamed", pad.as_str(), "pad"].map(|n| held.evaluated(n).len());
         seen.push((second, segments, held.counts().terms, held.held_bytes()));
     }
     let (first, last) = (seen[0], seen[seen.len() - 1]);

@@ -62,6 +62,37 @@ pub(crate) fn demand(values: &Values, asked: &[(usize, Extent)]) -> Vec<Need> {
     needs
 }
 
+/// Readers first, what each value would be asked were every value reading it made anew and
+/// holding nothing: a stateful value keeps that much of its past, so a change that remakes a
+/// reader reads it back rather than stepping it again from its start.
+pub(crate) fn reach(values: &Values, asked: &[(usize, Extent)]) -> Vec<Segments> {
+    let mut reach = vec![Segments::default(); values.span()];
+    for (v, window) in asked {
+        reach[*v].add(*window);
+    }
+    for v in values.ordered().rev() {
+        let value = &values[v];
+        let held = reach[v].intersect(value.support());
+        match &value.kind {
+            Kind::Program(program) => {
+                for segment in held.iter() {
+                    for (slot, image) in images(program, segment).into_iter().enumerate() {
+                        reach[value.reads[slot]].union(&image);
+                    }
+                }
+            }
+            Kind::Resident { .. } => {
+                for read in &value.reads {
+                    reach[*read].union(&held);
+                }
+            }
+            _ => {}
+        }
+        reach[v] = held;
+    }
+    reach
+}
+
 fn stateful(value: &Value, program: &Program, hold: &Segments) -> (Segments, bool) {
     if hold.is_empty() {
         return (Segments::default(), false);

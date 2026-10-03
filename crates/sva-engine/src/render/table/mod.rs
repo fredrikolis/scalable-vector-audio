@@ -33,6 +33,7 @@ use crate::refs;
 use crate::time::Lattice;
 use crate::typing::{Typing, Value as Typed};
 use program::Source;
+use segments::Segments;
 use support::{Memo, Supports};
 use value::Program;
 
@@ -342,11 +343,11 @@ impl Table {
             pulled.most_bytes = pulled.most_bytes.max(done.most_bytes);
             let mut later = within(Extent::new(to, i64::MAX));
             later.extend(self.asked(window));
-            self.released(
+            let asked = (
                 demand::demand(&self.values, &later),
-                Extent::NOWHERE,
-                Some(window.start),
+                demand::reach(&self.values, &later),
             );
+            self.released(asked, Extent::NOWHERE, Some(window.start));
             from = to;
         }
         Ok(pulled)
@@ -452,16 +453,27 @@ impl Table {
     /// Drops what no later window reads: `future` is the rest of the root's range, `keep` more
     /// the root holds besides, and `since` where the output is read from, if it is.
     pub(crate) fn release(&mut self, future: Option<Extent>, keep: Extent, since: Option<i64>) {
-        let needs = match future {
-            Some(window) => self.demand(window),
-            None => vec![Need::default(); self.values.span()],
+        let asked = match future {
+            Some(window) => {
+                let asked = self.asked(window);
+                (self.demand(window), demand::reach(&self.values, &asked))
+            }
+            None => (
+                vec![Need::default(); self.values.span()],
+                vec![Segments::default(); self.values.span()],
+            ),
         };
-        self.released(needs, keep, since);
+        self.released(asked, keep, since);
     }
 
     /// A wanted value keeps everything, as a wanted reader's rerun reads it from its start;
     /// the target's own value, which no wanted value reads, keeps only the output's samples.
-    fn released(&mut self, mut needs: Vec<Need>, keep: Extent, since: Option<i64>) {
+    fn released(
+        &mut self,
+        (mut needs, reach): (Vec<Need>, Vec<Segments>),
+        keep: Extent,
+        since: Option<i64>,
+    ) {
         let (mut root, mut by) = (self.root, 0);
         while let Some((read, shift)) = self.values[root].alias() {
             (root, by) = (read, by + shift);
@@ -488,6 +500,7 @@ impl Table {
             let value = &mut self.values[at];
             if let (Kind::Program(program), Some(end)) = (&value.kind, value.end()) {
                 kept.add(Extent::new(end.saturating_sub(program.own), end));
+                kept.union(&reach[at].intersect(Extent::new(i64::MIN, end)));
             }
             value.retain(&kept);
         }
