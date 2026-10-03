@@ -1,6 +1,6 @@
 // Concern: where each node can be nonzero or is pruned, in whole samples of its own clock | Non-concern: where a reader asks for it, deriving a bound | IO: (NodeId) -> Extent, a state's start, cuts
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use sva_formula::{Body, C64, Fold, NodeId, Unary, exp_zero_at};
@@ -28,6 +28,7 @@ pub(crate) struct Supports<'a> {
     tails: Tails,
     reaches: RefCell<HashMap<Reach, Option<f64>>>,
     steady: PerNode<bool>,
+    priming: Cell<bool>,
 }
 
 /// A node over an interval, or every one inside `STEADY`.
@@ -82,6 +83,7 @@ impl<'a> Supports<'a> {
             tails: Tails::default(),
             reaches: RefCell::default(),
             steady: PerNode::new(),
+            priming: Cell::new(false),
         }
     }
 
@@ -119,9 +121,24 @@ impl<'a> Supports<'a> {
             asking.push(id);
         }
         if let Some(found) = self.found(id) {
-            self.ask(id);
+            if !self.priming.get() {
+                self.ask(id);
+            }
             return found.support;
         }
+        if !self.priming.replace(true) {
+            for read in self.tys.unfolded(id, |n| self.found(n).is_some()) {
+                if read != id && self.found(read).is_none() {
+                    self.fresh_of(read);
+                }
+            }
+            self.priming.set(false);
+        }
+        self.fresh_of(id)
+    }
+
+    /// Primed, none is asked: its reader asks what it was found from.
+    fn fresh_of(&self, id: NodeId) -> Extent {
         if !self.open.borrow_mut().insert(id) {
             return Extent::EVERYWHERE;
         }
@@ -133,7 +150,9 @@ impl<'a> Supports<'a> {
         let support = self.retired(id).fold(support, Extent::hull);
         let from = self.asking.borrow_mut().pop().expect("its own asks");
         self.open.borrow_mut().remove(&id);
-        self.asked.borrow_mut().insert(id);
+        if !self.priming.get() {
+            self.asked.borrow_mut().insert(id);
+        }
         let found = Found { support, cut, from };
         self.held.borrow_mut().insert(id, found);
         support

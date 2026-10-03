@@ -28,6 +28,12 @@ pub fn symbolic_hash(typing: &Typing, node: NodeId, want: Var) -> Result<Hash, E
 /// What one node is, whatever it holds: its definition and the identities of what it reads,
 /// never where a reader places it.
 pub fn identity(typing: &Typing, node: NodeId) -> Result<Hash, EngineError> {
+    let folds = typing.folds();
+    for read in typing.unfolded(node, |id| folds.identity(id).is_some()) {
+        if read != node {
+            let _ = identity_of(typing, read, &mut Vec::new());
+        }
+    }
     identity_of(typing, node, &mut Vec::new())
 }
 

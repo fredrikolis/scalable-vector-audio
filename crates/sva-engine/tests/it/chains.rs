@@ -136,3 +136,42 @@ fn an_exponential_over_a_tone_read_twice_a_level_forty_levels_down_ends() {
     let one = underflowing(1, read, "crop(exp(-20*t)*@c1(t), 0s, inf)");
     assert!(shallow < deep && deep < one, "{shallow}, {deep}, {one}");
 }
+
+/// A thousand refs, each reading the next as a gain, a max, a filter, a shift or a curve does,
+/// on a 1 MB stack, the most a page's wasm may count on: building the table, finding supports,
+/// identities, sums and bounds each walk the chain readers after what they read.
+#[test]
+fn a_chain_a_thousand_refs_deep_renders_on_a_small_stack() {
+    let bodies = [
+        "0.999*@P(t)",
+        "max(@P(t), -1)",
+        "crop(lowpass(sample(@P(t)), 3000), 0s, 1s)",
+        "@P(t - 1ms)",
+        "tanh(@P(t))",
+    ];
+    let mut files = vec![(
+        "c0".to_string(),
+        "crop(sin(2*pi*220*t), 0s, 0.1s)\n".to_string(),
+    )];
+    for k in 1..=1000 {
+        let body = bodies[k % bodies.len()].replace('P', &format!("c{}", k - 1));
+        files.push((format!("c{k}"), format!("{body}\n")));
+    }
+    files.push(("top".to_string(), "crop(@c1000(t), 0s, 1s)\n".to_string()));
+    let worker = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(move || {
+            let held: Vec<(&str, &str)> = files
+                .iter()
+                .map(|(n, b)| (n.as_str(), b.as_str()))
+                .collect();
+            let g = graph_of("thousand", &held);
+            let render = render(&g, "top", RenderConfig::at(RATE), &Tier::default())
+                .unwrap_or_else(|e| panic!("the chain renders: {e}"));
+            let id = render.id("top").expect("the root");
+            let out = render.output(id).expect("a buffer").plane(0).to_vec();
+            out.iter().any(|v| *v != 0.0)
+        });
+    let sounds = worker.expect("a worker").join().expect("no overflow");
+    assert!(sounds, "the chain sounds");
+}

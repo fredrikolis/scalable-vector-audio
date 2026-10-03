@@ -214,18 +214,60 @@ impl Bounding<'_> {
 
 impl Tail {
     /// Bounds `|x(s)|` for every `s >= t`, its rounding included; infinite where none holds.
-    pub(crate) fn from(&self, t: f64) -> f64 {
-        if let Some((at, bound)) = self.last.get()
-            && at == t.to_bits()
+    /// Each tail it reads is bounded first, at each instant it asks, so a chain of reads costs
+    /// heap, never call depth.
+    pub(crate) fn from<'a>(&'a self, t: f64) -> f64 {
+        if let Some((held, bound)) = self.last.get()
+            && held == t.to_bits()
         {
             return bound;
         }
-        let bound = self.bound_from(t);
-        self.last.set(Some((t.to_bits(), bound)));
-        bound
+        let mut found: HashMap<(*const Tail, u64), f64> = HashMap::new();
+        let mut open: Vec<(&'a Tail, f64)> = vec![(self, t)];
+        while let Some(&(tail, at)) = open.last() {
+            let key = (std::ptr::from_ref(tail), at.to_bits());
+            if found.contains_key(&key) {
+                open.pop();
+                continue;
+            }
+            if let Some((held, bound)) = tail.last.get()
+                && held == at.to_bits()
+            {
+                found.insert(key, bound);
+                open.pop();
+                continue;
+            }
+            let missing: RefCell<Vec<(&'a Tail, f64)>> = RefCell::default();
+            let read = |read: &'a Rc<Tail>, at: f64| -> f64 {
+                let read: &'a Tail = read;
+                if let Some((held, bound)) = read.last.get()
+                    && held == at.to_bits()
+                {
+                    return bound;
+                }
+                match found.get(&(std::ptr::from_ref(read), at.to_bits())) {
+                    Some(bound) => *bound,
+                    None => {
+                        missing.borrow_mut().push((read, at));
+                        f64::INFINITY
+                    }
+                }
+            };
+            let bound = tail.bound_from(at, &read);
+            let missing = missing.into_inner();
+            if missing.is_empty() {
+                tail.last.set(Some((at.to_bits(), bound)));
+                found.insert(key, bound);
+                open.pop();
+            } else {
+                open.extend(missing.into_iter().rev());
+            }
+        }
+        found[&(std::ptr::from_ref(self), t.to_bits())]
     }
 
-    fn bound_from(&self, t: f64) -> f64 {
+    /// Its bound from `t`, each tail it reads bounded by `read`.
+    fn bound_from<'a>(&'a self, t: f64, read: &dyn Fn(&'a Rc<Tail>, f64) -> f64) -> f64 {
         match &self.form {
             Form::Atoms(atoms, summed) => {
                 let rounded = 1.0 + OP * (atoms.len() as f64 + TRANSFORM_OPS);
@@ -243,14 +285,14 @@ impl Tail {
                 direct.map_or(f64::INFINITY, |direct| sum * rounded + direct)
             }
             Form::Written(range, reads) => range
-                .from(t, &|n, t| reads[&n].from(t))
+                .from(t, &|n, t| read(&reads[&n], t))
                 .map_or(f64::INFINITY, |s| s.reach() + s.err),
             Form::Filter(ringing, grid) => {
                 ringing.from(grid.count(t).floor().clamp(-9e18, 9e18) as i64)
             }
             Form::Within(m) => *m,
-            Form::Read(source, Some((k, c, step))) if *k >= 0.0 => source.from(k * t + c - step),
-            Form::Read(source, _) => source.from(f64::NEG_INFINITY),
+            Form::Read(source, Some((k, c, step))) if *k >= 0.0 => read(source, k * t + c - step),
+            Form::Read(source, _) => read(source, f64::NEG_INFINITY),
         }
     }
 }

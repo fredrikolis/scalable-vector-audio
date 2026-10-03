@@ -741,27 +741,120 @@ struct Building<'a> {
     table: &'a mut Table,
 }
 
+/// A step of a build, run off a stack so that a chain of reads costs heap, never call depth;
+/// each step resolving a value leaves its slot on the resolved stack.
+enum Step {
+    Node(NodeId),
+    /// Names a node passing another's value the value just resolved.
+    Pass(NodeId),
+    /// Names a node the value just built for it.
+    Own(NodeId),
+    Source(Source, Grid, String),
+    /// Ends reading a node apart.
+    Read,
+    Value(Key, Source, Grid, String),
+    /// Makes a value once each value it reads is resolved.
+    Finish(Box<Open>),
+}
+
+struct Open {
+    value: Value,
+    then: Then,
+    reads: usize,
+}
+
+/// What completes a value once its reads are resolved.
+enum Then {
+    Done,
+    /// A short-time transform, refused where its input never ends.
+    Frames,
+    Program(NodeId, Box<program::Program>),
+}
+
 impl Building<'_> {
+    /// `id`'s value, each value it reads built before it.
     fn node(&mut self, id: NodeId) -> Result<usize, EngineError> {
+        let mut steps = vec![Step::Node(id)];
+        let mut resolved: Vec<usize> = Vec::new();
+        while let Some(next) = steps.pop() {
+            match next {
+                Step::Node(id) => self.noded(id, &mut steps, &mut resolved)?,
+                Step::Pass(id) => {
+                    let at = *resolved.last().expect("the passed value");
+                    self.table.name(id, at);
+                }
+                Step::Own(id) => {
+                    let mut at = resolved.pop().expect("the node's value");
+                    if let Some(stored) = self.prefixes.get(&id) {
+                        at = self.prefix(at, stored);
+                    }
+                    self.table.name(id, at);
+                    resolved.push(at);
+                }
+                Step::Source(source, grid, name) => {
+                    steps.extend(self.source(source, grid, name)?);
+                }
+                Step::Read => {
+                    self.reading.pop();
+                }
+                Step::Value(key, source, grid, name) => {
+                    if let Some(at) = self.table.values.of(&key).filter(|_| !self.apart) {
+                        resolved.push(at);
+                        continue;
+                    }
+                    if self.open.contains(&key) && !self.apart {
+                        let Source::Node(id) = source else {
+                            unreachable!("a formula reads no node");
+                        };
+                        return Err(refs::cyclic(self.tys, id));
+                    }
+                    self.open.push(key);
+                    self.table.built += 1;
+                    let (value, then, reads) = self.building(key, &source, grid, &name)?;
+                    let open = Open {
+                        value,
+                        then,
+                        reads: reads.len(),
+                    };
+                    steps.push(Step::Finish(Box::new(open)));
+                    steps.extend(reads.into_iter().rev());
+                }
+                Step::Finish(open) => {
+                    let reads = resolved.split_off(resolved.len() - open.reads);
+                    let value = self.finished(*open, reads)?;
+                    self.open.pop();
+                    resolved.push(self.table.make(value));
+                }
+            }
+        }
+        Ok(resolved.pop().expect("the node's value"))
+    }
+
+    fn noded(
+        &mut self,
+        id: NodeId,
+        steps: &mut Vec<Step>,
+        resolved: &mut Vec<usize>,
+    ) -> Result<(), EngineError> {
         if let Some(at) = self.table.nodes.get(&id) {
-            return Ok(*at);
+            resolved.push(*at);
+            return Ok(());
         }
         if let Some(source) = refs::passes(self.tys, id) {
-            let at = self.node(source)?;
-            self.table.name(id, at);
-            return Ok(at);
+            steps.extend([Step::Pass(id), Step::Node(source)]);
+            return Ok(());
         }
         let grid = self.grid(id);
         let key = Key {
             identity: refs::identity(self.tys, id)?,
             step: step(grid),
         };
-        let mut at = self.value(key, Source::Node(id), grid, self.tys.name(id))?;
-        if let Some(stored) = self.prefixes.get(&id) {
-            at = self.prefix(at, stored);
-        }
-        self.table.name(id, at);
-        Ok(at)
+        let name = self.tys.name(id).to_string();
+        steps.extend([
+            Step::Own(id),
+            Step::Value(key, Source::Node(id), grid, name),
+        ]);
+        Ok(())
     }
 
     /// The stored samples of `live`'s node, reading `live` for all they miss; none where they
@@ -825,11 +918,17 @@ impl Building<'_> {
         }
     }
 
-    fn source(&mut self, source: &Source, grid: Grid, name: &str) -> Result<usize, EngineError> {
-        let identity = match (source, self.apart) {
-            (Source::Node(id), false) => return self.node(*id),
+    /// The steps resolving a read, last first: apart, a value of its own for this read.
+    fn source(
+        &mut self,
+        source: Source,
+        grid: Grid,
+        name: String,
+    ) -> Result<Vec<Step>, EngineError> {
+        let identity = match (&source, self.apart) {
+            (Source::Node(id), false) => return Ok(vec![Step::Node(*id)]),
             (Source::Node(id), true) if let Some(passed) = refs::passes(self.tys, *id) => {
-                return self.source(&Source::Node(passed), grid, name);
+                return Ok(vec![Step::Source(Source::Node(passed), grid, name)]);
             }
             (Source::Node(id), true) => {
                 if self.reading.contains(id) {
@@ -839,58 +938,31 @@ impl Building<'_> {
             }
             (Source::Formula(form), _) => refs::subterm_identity(self.tys, form)?,
         };
-        let grid = match source {
-            Source::Node(id) => self.grid(*id),
-            Source::Formula(_) => grid,
+        let Source::Node(id) = source else {
+            let key = Key {
+                identity,
+                step: step(grid),
+            };
+            return Ok(vec![Step::Value(key, source, grid, name)]);
         };
+        let grid = self.grid(id);
         let key = Key {
             identity,
             step: step(grid),
         };
-        let name = match source {
-            Source::Node(id) => self.tys.name(*id),
-            Source::Formula(_) => name,
-        };
-        if let Source::Node(id) = source {
-            self.reading.push(*id);
-        }
-        let at = self.value(key, source.clone(), grid, name);
-        if let Source::Node(_) = source {
-            self.reading.pop();
-        }
-        at
+        self.reading.push(id);
+        let name = self.tys.name(id).to_string();
+        Ok(vec![Step::Read, Step::Value(key, source, grid, name)])
     }
 
-    fn value(
-        &mut self,
-        key: Key,
-        source: Source,
-        grid: Grid,
-        name: &str,
-    ) -> Result<usize, EngineError> {
-        if let Some(at) = self.table.values.of(&key).filter(|_| !self.apart) {
-            return Ok(at);
-        }
-        if self.open.contains(&key) && !self.apart {
-            let Source::Node(id) = source else {
-                unreachable!("a formula reads no node");
-            };
-            return Err(refs::cyclic(self.tys, id));
-        }
-        self.open.push(key);
-        self.table.built += 1;
-        let built = self.building(key, &source, grid, name);
-        self.open.pop();
-        Ok(self.table.make(built?))
-    }
-
+    /// A value before its reads are resolved, what completes it, and the steps resolving them.
     fn building(
         &mut self,
         key: Key,
         source: &Source,
         grid: Grid,
         name: &str,
-    ) -> Result<Value, EngineError> {
+    ) -> Result<(Value, Then, Vec<Step>), EngineError> {
         let tys = self.tys;
         let (node, support, width) = match source {
             Source::Node(id) => (
@@ -918,7 +990,7 @@ impl Building<'_> {
             moved: 0.0,
             pure: true,
         };
-        let none = Ok;
+        let none = |value| Ok((value, Then::Done, Vec::new()));
         let Source::Node(id) = source else {
             let Source::Formula(form) = source else {
                 unreachable!("a node or a formula");
@@ -944,17 +1016,12 @@ impl Building<'_> {
                     window: *window,
                     hop: *hop,
                 };
-                value.reads = vec![self.node(*of)?];
                 value.held = Held::Frames(None);
                 value.whole = self.support(*of);
-                match value.support().is_bounded() {
-                    true => Ok(value),
-                    false => Err(unbounded(&value.name)),
-                }
+                Ok((value, Then::Frames, vec![Step::Node(*of)]))
             }
             (_, Typed::Cast(Cast::Istft, frames)) => {
-                value.reads = vec![self.node(*frames)?];
-                Ok(value)
+                Ok((value, Then::Done, vec![Step::Node(*frames)]))
             }
             (_, Typed::ClosedForm(form)) if form.var == Var::F => none(self.spectrum(value, id)?),
             (_, Typed::Op { name, .. }) if tys.var(id) == Var::F => {
@@ -1050,7 +1117,11 @@ impl Building<'_> {
     }
 
     /// A closed form's program point-samples it; any other program is a reading of samples.
-    fn program(&mut self, mut value: Value, id: NodeId) -> Result<Value, EngineError> {
+    fn program(
+        &mut self,
+        mut value: Value,
+        id: NodeId,
+    ) -> Result<(Value, Then, Vec<Step>), EngineError> {
         if self.tys.ty(id).is_closed_form() {
             value.label = Some(Label::new(
                 sva_samples::Source::Measured,
@@ -1069,11 +1140,41 @@ impl Building<'_> {
             (self.profile, self.bounds),
         )?;
         value.moved = built.moved;
-        let grid = value.grid;
-        let mut reads = Vec::with_capacity(built.reads.len());
-        for source in &built.reads {
-            reads.push(self.source(source, grid, &value.name)?);
+        let reads = built
+            .reads
+            .iter()
+            .map(|source| Step::Source(source.clone(), value.grid, value.name.clone()))
+            .collect();
+        Ok((value, Then::Program(id, Box::new(built)), reads))
+    }
+
+    fn finished(&mut self, open: Open, reads: Vec<usize>) -> Result<Value, EngineError> {
+        let Open {
+            mut value, then, ..
+        } = open;
+        match then {
+            Then::Done => {
+                value.reads = reads;
+                Ok(value)
+            }
+            Then::Frames => {
+                value.reads = reads;
+                match value.support().is_bounded() {
+                    true => Ok(value),
+                    false => Err(unbounded(&value.name)),
+                }
+            }
+            Then::Program(id, built) => self.programmed(value, id, *built, reads),
         }
+    }
+
+    fn programmed(
+        &mut self,
+        mut value: Value,
+        id: NodeId,
+        built: program::Program,
+        reads: Vec<usize>,
+    ) -> Result<Value, EngineError> {
         let endless = |slot: Slot| match slot {
             Slot::Own => true,
             Slot::Read(at) => !self.table.values[reads[at.0 as usize]]

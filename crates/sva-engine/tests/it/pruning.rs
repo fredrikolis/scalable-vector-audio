@@ -258,3 +258,60 @@ fn a_ramp_and_a_decay_end_where_they_are_exactly_zero() {
     assert!(end - last < i64::from(RATE), "{last} {end}");
     assert!((end..end + i64::from(RATE)).all(|n| at(n).is_zero()));
 }
+
+/// Where the render's own label says `node` was cut.
+fn cut(r: &Render, node: &str) -> Option<i64> {
+    let pruned = r.labels[&r.root].pruned.clone().expect("a stated level");
+    pruned
+        .cuts
+        .iter()
+        .find(|(n, _)| n == node)
+        .map(|(_, at)| *at)
+}
+
+/// Twenty levels, each reading the one below 10 ms late, under a window of the top: each
+/// level is computed exactly over the window moved back by its depth, from where it starts to
+/// where it or a reader above it is cut, and not one sample outside.
+#[test]
+fn a_chain_under_a_window_computes_each_level_only_where_the_window_and_its_cuts_ask() {
+    let depth = 20;
+    let mut files = vec![(
+        "c0".to_string(),
+        "sample(crop(sin(2*pi*440*t)*exp(-t/0.1), 0s, 10s))\n".to_string(),
+    )];
+    for k in 1..=depth {
+        files.push((format!("c{k}"), format!("0.9*@c{}(t - 10ms)\n", k - 1)));
+    }
+    let held: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(n, b)| (n.as_str(), b.as_str()))
+        .collect();
+    let g = graph_of("pruning-window", &held);
+    let (start, end) = (i64::from(RATE / 2), i64::from(RATE) * 2);
+    let config = RenderConfig {
+        range: Range {
+            start: Some(start),
+            end: Some(end),
+        },
+        ..RenderConfig::at(RATE)
+    };
+    let top = format!("c{depth}");
+    let r = render(&g, &top, config, &Tier::default()).unwrap_or_else(|e| panic!("{e}"));
+    let late = i64::from(RATE / 100);
+    let back = |k: usize| (depth - k) as i64 * late;
+    let mut to = end;
+    for k in (0..=depth).rev() {
+        let name = format!("c{k}");
+        let cut = cut(&r, &name).expect("each level decays under the level");
+        to = to.min(cut + back(k));
+        let asked = Extent::new((start - back(k)).max(k as i64 * late), to - back(k));
+        let computed = r.evaluated(r.id(&name).expect("a level"));
+        match k {
+            0 => assert!(
+                computed.iter().all(|e| e.intersect(asked) == *e),
+                "{name} computed {computed:?} outside {asked:?}"
+            ),
+            _ => assert_eq!(computed, vec![asked], "{name}"),
+        }
+    }
+}

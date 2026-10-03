@@ -234,6 +234,49 @@ impl Typing {
         false
     }
 
+    /// `root` and each node under it that `held` lacks, readers after what they read: a fold
+    /// asked in this order recurses one ref deep.
+    pub(crate) fn unfolded(&self, root: NodeId, held: impl Fn(NodeId) -> bool) -> Vec<NodeId> {
+        self.unfolded_over(root, |id| self.edges(id), held)
+    }
+
+    pub(crate) fn unfolded_over(
+        &self,
+        root: NodeId,
+        reads: impl Fn(NodeId) -> Vec<NodeId>,
+        held: impl Fn(NodeId) -> bool,
+    ) -> Vec<NodeId> {
+        let mut order = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut open = vec![(root, false)];
+        while let Some((at, read)) = open.pop() {
+            if read {
+                order.push(at);
+                continue;
+            }
+            if held(at) || !seen.insert(at) {
+                continue;
+            }
+            open.push((at, true));
+            open.extend(reads(at).into_iter().rev().map(|n| (n, false)));
+        }
+        order
+    }
+
+    /// Its operands, the times it reads at and the note sum's terms.
+    fn edges(&self, id: NodeId) -> Vec<NodeId> {
+        let mut out = self.operands(id);
+        if let Value::Read { at, .. } | Value::SelfAt { at, .. } = self.value(id) {
+            out.extend(at.moving());
+        }
+        let slots = self.sum_slots(id).unwrap_or_default().iter();
+        out.extend(slots.filter_map(|slot| match slot {
+            SumSlot::Node(read) if *read != id => Some(*read),
+            _ => None,
+        }));
+        out
+    }
+
     pub(crate) fn sum_slots(&self, node: NodeId) -> Option<&[SumSlot]> {
         self.summed()
             .filter(|(held, _)| *held == node)

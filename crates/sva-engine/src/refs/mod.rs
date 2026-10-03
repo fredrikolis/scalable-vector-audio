@@ -32,7 +32,26 @@ pub fn spectral_sum_of(
     node: NodeId,
     want: Var,
 ) -> Result<SpectralSum, EngineError> {
+    let held = |id: NodeId| {
+        let var = typing.var(id);
+        let key = identity(typing, id).ok();
+        typing.folds().refused((id, var)).is_some()
+            || key.is_some_and(|key| typing.folds().composed((key, var)).is_some())
+    };
+    for read in typing.unfolded_over(node, |id| composes(typing, id), held) {
+        if read != node {
+            let _ = composed(typing, read, typing.var(read), &mut Open::default());
+        }
+    }
     composed(typing, node, want, &mut Open::default())
+}
+
+fn composes(typing: &Typing, id: NodeId) -> Vec<NodeId> {
+    match typing.value(id) {
+        Value::ClosedForm(form) => nodes_in(&form.body),
+        Value::Cast(Cast::Fourier | Cast::IFourier, source) => vec![*source],
+        _ => Vec::new(),
+    }
 }
 
 /// Whether a composition met a ref still being composed: that refusal depends on where the

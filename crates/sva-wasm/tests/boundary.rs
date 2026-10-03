@@ -1847,3 +1847,22 @@ async fn a_stream_freed_with_an_edit_in_flight_rejects_it_and_its_handles_name_n
     );
     assert_eq!(now(new.remove(kept)).ok(), Some(false));
 }
+
+/// A thousand refs, each reading the next as a gain, a max or a filter does, render on the
+/// stack a page's wasm runs on.
+#[wasm_bindgen_test]
+fn a_chain_a_thousand_refs_deep_renders() {
+    let mut held = Composition::new(None);
+    held.insert("c0", "sample(crop(sin(2*pi*220*t), 0s, 0.1s))\n");
+    for k in 1..=1000 {
+        let read = format!("@c{}(t)", k - 1);
+        let body = match k % 3 {
+            0 => format!("0.999*{read}"),
+            1 => format!("max({read}, -1)"),
+            _ => format!("crop(lowpass({read}, 3000), 0s, 1s)"),
+        };
+        held.insert(&format!("c{k}"), &format!("{body}\n"));
+    }
+    let drawn = plane(&render(&held, "c1000"));
+    assert!(drawn.iter().any(|v| *v != 0.0), "the chain sounds");
+}
