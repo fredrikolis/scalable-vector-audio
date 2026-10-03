@@ -11,17 +11,13 @@ use super::segments::Segments;
 use super::value::{Held, Kind, Value};
 use crate::cache::{Expected, Offered, Outcome, Payload, PayloadKind, Recording, Run, frames_key};
 
-/// Where a value sits in memory: its key, and what a policy weighs of it.
+/// Where a value sits in memory: its key, and the slot a volatile parameter gives it.
 #[derive(Clone, Debug)]
 pub(crate) struct Place {
     pub(crate) key: Hash,
     /// A run cut where its switches turn, each segment under the value's identity before the
     /// next switch, the last under its own; the first starts where its run does.
     pub(crate) segments: Vec<(i64, Hash)>,
-    pub(crate) fork: bool,
-    pub(crate) target: bool,
-    /// Offered to memory as a node, so kept whatever its policy.
-    pub(crate) offered: bool,
     pub(crate) slot: Option<Hash>,
     /// Its own reads its samples have not yet run.
     pub(crate) unread: Vec<Unread>,
@@ -78,7 +74,6 @@ pub(crate) fn load(value: &mut Value, place: &mut Place, recording: &Recording) 
     }
     let kind = Place::kind(value);
     let (rate, width) = (value.grid.rate, value.width);
-    let stamp = recording.stamp(place.slot, place.fork, kind);
     if kind == PayloadKind::Run {
         return resumed(value, place, recording);
     }
@@ -86,7 +81,7 @@ pub(crate) fn load(value: &mut Value, place: &mut Place, recording: &Recording) 
         PayloadKind::Frames => Expected::Frames,
         _ => Expected::Segments { rate, width },
     };
-    let Some(entry) = recording.load(place.keyed(value), expected, stamp) else {
+    let Some(entry) = recording.load(place.keyed(value), expected) else {
         return false;
     };
     if entry.label.is_some() {
@@ -121,13 +116,12 @@ fn resumed(value: &mut Value, place: &mut Place, recording: &Recording) -> bool 
         rate: value.grid.rate,
         width: value.width,
     };
-    let stamp = recording.stamp(place.slot, place.fork, PayloadKind::Run);
     let mut planes = vec![Vec::new(); value.width];
     let (mut base, mut pos, mut reached) = (None, i64::MIN, 0);
     let mut marks: BTreeMap<i64, MachineState> = BTreeMap::new();
     for k in 0..place.segments.len() {
         let Some(run) = recording
-            .load(place.segments[k].1, expected, stamp)
+            .load(place.segments[k].1, expected)
             .and_then(|entry| entry.payload.run())
         else {
             break;
@@ -252,11 +246,10 @@ pub(crate) fn stored(
 ) {
     let kind = Place::kind(value);
     let stored = matches!(value.kind, Kind::Resident { .. });
-    let keeps = recording.keeps(place.fork, place.target, place.offered);
-    if computed.is_empty() || stored || !value.pure || !keeps {
+    if computed.is_empty() || stored || !value.pure || !recording.keeps() {
         return;
     }
-    let stamp = recording.stamp(place.slot, place.fork, kind);
+    let stamp = recording.stamp(place.slot, kind);
     let key = place.keyed(value);
     let label = value.label.clone();
     let payload = match &mut value.held {
@@ -333,7 +326,7 @@ fn taped(tape: &Tape, rate: u32, e: Extent) -> Option<Buffer> {
 
 impl Table {
     /// Where memory finds the samples value `at` holds, `by` samples on, through each value it
-    /// only moves; what computes them it keeps from now on. None where they repeat a period.
+    /// only moves. None where they repeat a period.
     pub(crate) fn offered(&mut self, mut at: usize) -> Option<Offered> {
         let mut by = 0;
         while let Some((read, shift)) = self.values[at].alias() {
@@ -343,7 +336,6 @@ impl Table {
         if value.period.is_some() {
             return None;
         }
-        place.offered = true;
         let keys = match &value.held {
             Held::Run(_) => place.segments.clone(),
             _ => vec![(i64::MIN, place.keyed(value))],

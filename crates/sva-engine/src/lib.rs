@@ -26,9 +26,9 @@ pub use arguments::{Argument, Arguments, Called, Chosen};
 pub use bindings::Binding;
 pub use cache::log::cache_log;
 pub use cache::{
-    BYTES_PER_FLOP, Backend, CachePolicy, CacheStats, Counters, DEFAULT_CACHE_BYTES,
-    DEFAULT_MARK_EVERY, DEFAULT_STORE_BYTES, FETCH_READS, Hash, INDEX_NAME, Lookup, Nothing,
-    Outcome, PayloadKind, Persisted, PrunePolicy, STORE_FORMAT, Store, Stored, Tier,
+    BYTES_PER_FLOP, Backend, CacheStats, Counters, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY,
+    DEFAULT_STORE_BYTES, FETCH_READS, Hash, INDEX_NAME, Lookup, Nothing, Outcome, PayloadKind,
+    Persisted, STORE_FORMAT, Store, Stored, Tier,
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};

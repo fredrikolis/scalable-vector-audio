@@ -18,65 +18,6 @@ pub const DEFAULT_CACHE_BYTES: u64 = 2 << 30;
 /// Samples between two states a run keeps, so a reader resumes from one at most this far back.
 pub const DEFAULT_MARK_EVERY: usize = 16_384;
 
-/// Which computed values memory keeps besides those a render offers as nodes; the rest are
-/// computed again when asked.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CachePolicy {
-    #[default]
-    All,
-    /// The values two or more nodes read, and the render target.
-    Forks,
-    Target,
-}
-
-impl CachePolicy {
-    pub const ALL: [CachePolicy; 3] = [CachePolicy::All, CachePolicy::Forks, CachePolicy::Target];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            CachePolicy::All => "all",
-            CachePolicy::Forks => "forks",
-            CachePolicy::Target => "target",
-        }
-    }
-
-    pub fn named(name: &str) -> Option<CachePolicy> {
-        CachePolicy::ALL.into_iter().find(|p| p.name() == name)
-    }
-
-    fn keeps(self, fork: bool, target: bool) -> bool {
-        match self {
-            CachePolicy::All => true,
-            CachePolicy::Forks => fork || target,
-            CachePolicy::Target => target,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PrunePolicy {
-    /// Every entry the newest render neither stored nor read.
-    #[default]
-    Oldest,
-    /// Every entry whose node fewer than two nodes read.
-    Forks,
-}
-
-impl PrunePolicy {
-    pub const ALL: [PrunePolicy; 2] = [PrunePolicy::Oldest, PrunePolicy::Forks];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            PrunePolicy::Oldest => "oldest",
-            PrunePolicy::Forks => "forks",
-        }
-    }
-
-    pub fn named(name: &str) -> Option<PrunePolicy> {
-        PrunePolicy::ALL.into_iter().find(|p| p.name() == name)
-    }
-}
-
 /// What passed between memory and the disk beneath it, and what memory let go.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counters {
@@ -129,8 +70,6 @@ const PROTECTED: (u64, u64) = (3, 4);
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Stamp {
-    pub tree: u64,
-    pub fork: bool,
     /// A volatile node's value replaces the last one stored under the same slot.
     pub slot: Option<Hash>,
 }
@@ -214,20 +153,16 @@ struct Held {
     since: u64,
     hit_round: u64,
     protected: bool,
-    tree: u64,
-    fork: bool,
 }
 
 impl Held {
-    fn admitted(item: Item, at: u64, tree: u64, fork: bool) -> Held {
+    fn admitted(item: Item, at: u64) -> Held {
         Held {
             item,
             read: at,
             since: at,
             hit_round: 0,
             protected: false,
-            tree,
-            fork,
         }
     }
 }
@@ -268,9 +203,7 @@ struct State {
     pending: Vec<Writeback>,
     bytes: u64,
     max_bytes: u64,
-    policy: CachePolicy,
     clock: u64,
-    tree: u64,
     round: u64,
     mark_every: usize,
     counters: Counters,
@@ -667,24 +600,6 @@ impl State {
         }
     }
 
-    fn prune(&mut self, policy: PrunePolicy) {
-        let newest = self.tree;
-        let mut named: Vec<(u64, Hash)> = self
-            .entries
-            .iter()
-            .filter(|(_, held)| match policy {
-                PrunePolicy::Oldest => held.tree != newest,
-                PrunePolicy::Forks => !held.fork,
-            })
-            .map(|(key, held)| (held.read, *key))
-            .collect();
-        named.sort_unstable();
-        for (_, key) in named {
-            self.evict(key);
-        }
-        self.bounded();
-    }
-
     /// A hit on `key` and on every entry whose samples it answers with: each moves to the
     /// protected segment, whose least recent move back to probation past its share.
     fn hit(&mut self, key: Hash, round: Option<u64>) {
@@ -865,31 +780,6 @@ impl Memory {
         state.bounded();
     }
 
-    pub(crate) fn policy(&self) -> CachePolicy {
-        self.locked().policy
-    }
-
-    pub(crate) fn set_policy(&self, policy: CachePolicy) {
-        self.locked().policy = policy;
-    }
-
-    pub(crate) fn prune(&self, policy: PrunePolicy) {
-        self.locked().prune(policy);
-    }
-
-    /// Everything gone, each node not yet on the disk sent there first.
-    pub(crate) fn clear(&self) {
-        let mut state = self.locked();
-        let keys: Vec<Hash> = state.entries.keys().copied().collect();
-        for key in &keys {
-            state.flush(*key);
-        }
-        for key in keys {
-            state.discard(key);
-        }
-        state.misses.clear();
-    }
-
     pub(crate) fn bytes(&self) -> u64 {
         self.locked().bytes
     }
@@ -918,18 +808,9 @@ impl Memory {
         self.locked().mark_every = samples.max(1);
     }
 
-    /// Whether memory takes a value computed: as its policy says, and one offered as a node
-    /// whatever it says while a disk lies beneath, to write it there; a memory of no bytes
-    /// takes none.
-    pub(crate) fn keeps(&self, fork: bool, target: bool, offered: bool) -> bool {
-        let state = self.locked();
-        state.max_bytes > 0 && ((offered && state.disk) || state.policy.keeps(fork, target))
-    }
-
-    pub(crate) fn begin_tree(&self) -> u64 {
-        let mut state = self.locked();
-        state.tree += 1;
-        state.tree
+    /// Whether memory takes a value computed: a memory of no bytes takes none.
+    pub(crate) fn keeps(&self) -> bool {
+        self.locked().max_bytes > 0
     }
 
     /// A new round of lookups: what any earlier round missed is asked again.
@@ -981,7 +862,7 @@ impl Memory {
     /// A header the disk answered, resident from now on, unless memory took the node meanwhile.
     pub(crate) fn promote(&self, head: Header) {
         let mut state = self.locked();
-        let (key, read, tree) = (head.stored().key, state.tick(), state.tree);
+        let (key, read) = (head.stored().key, state.tick());
         if state.entries.contains_key(&key) {
             return;
         }
@@ -997,7 +878,7 @@ impl Memory {
             settled: true,
             bound: true,
         };
-        state.admit(key, Held::admitted(item, read, tree, false));
+        state.admit(key, Held::admitted(item, read));
     }
 
     pub(crate) fn promote_samples(&self, key: Hash, read: Vec<Buffer>) -> Vec<Arc<Buffer>> {
@@ -1055,7 +936,7 @@ impl Memory {
         let Facts { slot, settled, .. } = facts;
         let bound = state.disk && writes(&stored, facts);
         let key = stored.key;
-        let (read, tree) = (state.tick(), state.tree);
+        let read = state.tick();
         let earned = state.entries.get(&key);
         let (since, protected) = earned.map_or((read, false), |held| (held.since, held.protected));
         state.discard(key);
@@ -1073,7 +954,7 @@ impl Memory {
         let held = Held {
             since,
             protected,
-            ..Held::admitted(item, read, tree, false)
+            ..Held::admitted(item, read)
         };
         state.bytes += held.bytes();
         state.admit(key, held);
@@ -1157,7 +1038,7 @@ impl Memory {
     }
 
     /// What `key` holds, shared, never copied: a hit.
-    pub(crate) fn load(&self, key: Hash, expected: Expected, stamp: Stamp) -> Option<Entry> {
+    pub(crate) fn load(&self, key: Hash, expected: Expected) -> Option<Entry> {
         let mut state = self.locked();
         let held = state.entries.get_mut(&key)?;
         let Item::Value { payload, label, .. } = &held.item else {
@@ -1171,8 +1052,6 @@ impl Memory {
             payload: payload.clone(),
             label: label.clone(),
         };
-        held.tree = stamp.tree;
-        held.fork = stamp.fork;
         state.hit(key, None);
         Some(entry)
     }
@@ -1215,8 +1094,6 @@ impl Memory {
                 match payload {
                     None => {
                         held.read = tick;
-                        held.tree = stamp.tree;
-                        held.fork = stamp.fork;
                         let after = held.bytes();
                         Ok((before, after))
                     }
@@ -1262,7 +1139,7 @@ impl Memory {
             label: label.cloned(),
             slot: stamp.slot,
         };
-        let held = Held::admitted(item, read, stamp.tree, stamp.fork);
+        let held = Held::admitted(item, read);
         if let Some(old) = state.admit(key, held) {
             state.bytes -= old.bytes();
         }
@@ -1297,16 +1174,12 @@ mod tests {
     fn an_entry_that_does_not_answer_what_was_asked_is_a_miss_and_goes() {
         let memory = Memory::default();
         let key = Hash(7, 11);
-        let stamp = Stamp {
-            tree: memory.begin_tree(),
-            fork: false,
-            slot: None,
-        };
+        let stamp = Stamp { slot: None };
         let four = Payload::Segments(vec![Arc::new(Buffer::mono(8_000, vec![0.25; 4]))]);
         for (rate, width) in [(48_000, 1), (8_000, 2)] {
             memory.store(key, four.clone(), None, stamp);
             let asked = Expected::Segments { rate, width };
-            assert!(memory.load(key, asked, stamp).is_none());
+            assert!(memory.load(key, asked).is_none());
             assert!(!memory.holds(key));
             assert_eq!(memory.bytes(), 0);
         }
@@ -1316,11 +1189,7 @@ mod tests {
     fn a_load_shares_the_samples_it_holds() {
         let memory = Memory::default();
         let key = Hash(3, 5);
-        let stamp = Stamp {
-            tree: memory.begin_tree(),
-            fork: false,
-            slot: None,
-        };
+        let stamp = Stamp { slot: None };
         let part = Arc::new(Buffer::mono(8_000, vec![0.5; 64]));
         memory.store(key, Payload::Segments(vec![Arc::clone(&part)]), None, stamp);
         let asked = Expected::Segments {
@@ -1328,7 +1197,7 @@ mod tests {
             width: 1,
         };
         for _ in 0..2 {
-            let loaded = memory.load(key, asked, stamp).expect("a hit");
+            let loaded = memory.load(key, asked).expect("a hit");
             let Payload::Segments(parts) = loaded.payload else {
                 panic!("segments were stored");
             };

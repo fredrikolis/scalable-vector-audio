@@ -89,7 +89,6 @@ impl CacheStats {
 
 pub(crate) struct Recording {
     memory: Memory,
-    tree: u64,
     since: Counters,
     failures: u64,
     lookups: Recent<Lookup>,
@@ -100,7 +99,6 @@ impl Recording {
     pub(crate) fn over(memory: &Memory) -> Recording {
         Recording {
             memory: memory.clone(),
-            tree: memory.begin_tree(),
             since: memory.counters(),
             failures: memory.failures().0,
             lookups: Recent::keeping(usize::MAX),
@@ -154,19 +152,17 @@ impl Recording {
         self.memory.counters().since(self.since)
     }
 
-    pub(crate) fn keeps(&self, fork: bool, target: bool, offered: bool) -> bool {
-        self.memory.keeps(fork, target, offered)
+    pub(crate) fn keeps(&self) -> bool {
+        self.memory.keeps()
     }
 
     pub(crate) fn mark_every(&self) -> usize {
         self.memory.mark_every()
     }
 
-    /// `slot` where a volatile parameter reaches it, `fork` where two values read it.
-    pub(crate) fn stamp(&self, slot: Option<Hash>, fork: bool, kind: PayloadKind) -> Stamp {
+    /// `slot` where a volatile parameter reaches it.
+    pub(crate) fn stamp(&self, slot: Option<Hash>, kind: PayloadKind) -> Stamp {
         Stamp {
-            tree: self.tree,
-            fork,
             slot: slot.map(|slot| super::mixed(slot, &[kind as u64, 0x73_6c_6f_74])),
         }
     }
@@ -188,8 +184,8 @@ impl Recording {
     }
 
     /// Read unnoted; its value notes one lookup.
-    pub(crate) fn load(&self, key: Hash, expected: Expected, stamp: Stamp) -> Option<Entry> {
-        self.memory.load(key, expected, stamp)
+    pub(crate) fn load(&self, key: Hash, expected: Expected) -> Option<Entry> {
+        self.memory.load(key, expected)
     }
 
     /// What a value computed, merged into what memory holds of it.

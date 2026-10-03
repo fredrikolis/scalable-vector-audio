@@ -5,7 +5,7 @@ use std::sync::Arc;
 use sva_formula::Hash;
 use sva_samples::{Buffer, Extent};
 
-use super::memory::{CachePolicy, Counters, DEFAULT_CACHE_BYTES, Known, Memory, PrunePolicy};
+use super::memory::{Counters, DEFAULT_CACHE_BYTES, Known, Memory};
 use super::persist::{Backend, Persisted, Store};
 
 /// No disk: memory over nothing never waits.
@@ -235,23 +235,6 @@ impl<B: Backend> Tier<B> {
 
     pub fn holds(&self, key: Hash) -> bool {
         self.memory.holds(key)
-    }
-
-    pub fn policy(&self) -> CachePolicy {
-        self.memory.policy()
-    }
-
-    pub fn set_policy(&self, policy: CachePolicy) {
-        self.memory.set_policy(policy);
-    }
-
-    /// Evicts every entry `policy` names.
-    pub fn prune(&self, policy: PrunePolicy) {
-        self.memory.prune(policy);
-    }
-
-    pub fn clear(&self) {
-        self.memory.clear();
     }
 
     pub fn mark_every(&self) -> usize {

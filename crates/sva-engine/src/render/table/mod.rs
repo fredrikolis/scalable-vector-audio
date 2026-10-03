@@ -206,12 +206,6 @@ impl Table {
         for at in std::iter::once(root).chain(wanted.iter().copied()) {
             self.values.hold(at);
         }
-        if had {
-            let target = aliased(&self.values, old);
-            self.values.place_mut(target).target = false;
-        }
-        let target = aliased(&self.values, root);
-        self.values.place_mut(target).target = true;
         (self.root, self.wanted) = (root, wanted);
         if had {
             let dropped: Vec<usize> = std::iter::once(old).chain(before).collect();
@@ -459,9 +453,7 @@ impl Table {
                 .skip(1)
                 .map(|(start, _)| *start)
                 .collect(),
-            every: recording
-                .keeps(place.fork, place.target, place.offered)
-                .then(|| recording.mark_every()),
+            every: recording.keeps().then(|| recording.mark_every()),
         };
         let done = eval::compute(value, need, (&self.values, &marks), &self.profile)?;
         let computed: Vec<Extent> = need.compute.iter().collect();
@@ -664,12 +656,6 @@ impl Table {
         let old = self.rooted.then_some(self.root);
         dropped.extend(old);
         self.values.hold(root);
-        if let Some(old) = old {
-            let target = aliased(&self.values, old);
-            self.values.place_mut(target).target = false;
-        }
-        let target = aliased(&self.values, root);
-        self.values.place_mut(target).target = true;
         (self.root, self.rooted) = (root, true);
         let going = self.unheld(dropped);
         let made: Vec<usize> = draft
@@ -1283,9 +1269,6 @@ fn place(values: &Values, value: &Value, profile: &Profile) -> store::Place {
     store::Place {
         key: key(value.key.identity),
         segments: segments(&value.switches, key(value.key.identity), key),
-        fork: false,
-        target: false,
-        offered: false,
         slot: None,
         unread: leaf_reads(values, value),
         reached: 0,

@@ -43,8 +43,8 @@ pub use sva_engine::{Handle, Out, Placed, Session, Stream, Until};
 
 pub use sva_engine::{Answer, Extent, Label, Output, Representation};
 pub use sva_engine::{
-    Backend, CachePolicy, CacheStats, Counters, DEFAULT_CACHE_BYTES, DEFAULT_STORE_BYTES,
-    FETCH_READS, Nothing, Persisted, PrunePolicy, Store, Tier,
+    Backend, CacheStats, Counters, DEFAULT_CACHE_BYTES, DEFAULT_STORE_BYTES, FETCH_READS, Nothing,
+    Persisted, Store, Tier,
 };
 
 pub const ROOT: &str = "master";

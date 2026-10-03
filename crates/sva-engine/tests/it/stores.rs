@@ -1,13 +1,13 @@
-// Concern: proves memory never passes its cap and evicts what each prune policy names | Non-concern: what a key stands for (cache.rs) | IO: (a composition, a tier) -> what it holds
+// Concern: proves memory never passes its cap and evicts its least recent entries first | Non-concern: what a key stands for (cache.rs) | IO: (a composition, a tier) -> what it holds
 
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{CacheStats, Hash, PrunePolicy, RenderConfig, Tier, render};
+use sva_engine::{CacheStats, Hash, RenderConfig, Tier, render};
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
 
-/// Two sampled voices `a` and `b` each read, so each voice is a fork and nothing else is.
+/// Two sampled voices `a` and `b` each read.
 fn forked(f: u32) -> Graph {
     graph_of(
         "forked",
@@ -28,22 +28,6 @@ fn stats(graph: &Graph, cache: &Tier) -> CacheStats {
         .expect("a render handed a store reports on it")
 }
 
-fn keys_of(stats: &CacheStats, node: &str) -> Vec<Hash> {
-    let keys: Vec<Hash> = stats
-        .lookups
-        .iter()
-        .filter(|l| l.node == node)
-        .map(|l| l.key)
-        .collect();
-    assert!(!keys.is_empty(), "`{node}` was looked up: {stats:?}");
-    keys
-}
-
-/// The node's own value: every subterm it holds is looked up before it, dependencies first.
-fn own_key(stats: &CacheStats, node: &str) -> Hash {
-    *keys_of(stats, node).last().expect("looked up")
-}
-
 fn held(cache: &Tier, keys: &[Hash]) -> bool {
     keys.iter().all(|k| cache.holds(*k))
 }
@@ -62,7 +46,7 @@ fn within(cache: &Tier) {
 }
 
 #[test]
-fn the_cap_holds_after_every_render_and_every_prune() {
+fn the_cap_holds_after_every_render_and_a_lowered_cap() {
     let cache = Tier::new(20_000);
     let mut evicted = 0;
     for f in (1..=8).map(|k| 100 * k) {
@@ -74,44 +58,8 @@ fn the_cap_holds_after_every_render_and_every_prune() {
     }
     assert!(evicted > 0, "eight renders overflow the cap");
     assert_eq!(evicted, cache.evictions(), "every eviction is reported");
-    for prune in PrunePolicy::ALL {
-        cache.prune(prune);
-        within(&cache);
-    }
     cache.set_max_bytes(4_000);
     within(&cache);
-}
-
-#[test]
-fn a_prune_by_oldest_keeps_only_what_the_newest_render_touched() {
-    let cache = Tier::default();
-    let first = stats(&forked(110), &cache);
-    let second = stats(&forked(220), &cache);
-    cache.prune(PrunePolicy::Oldest);
-    for node in ["x", "y", "a", "b", "master"] {
-        assert!(
-            gone(&cache, &keys_of(&first, node)),
-            "`{node}` of the first"
-        );
-        assert!(
-            held(&cache, &keys_of(&second, node)),
-            "`{node}` of the second"
-        );
-    }
-}
-
-#[test]
-fn a_prune_by_forks_keeps_only_the_values_two_nodes_read() {
-    let cache = Tier::default();
-    let rendered = stats(&forked(110), &cache);
-    cache.prune(PrunePolicy::Forks);
-    for node in ["a", "b", "master"] {
-        assert!(gone(&cache, &keys_of(&rendered, node)), "`{node}` went");
-    }
-    assert!(held(
-        &cache,
-        &[own_key(&rendered, "x"), own_key(&rendered, "y")]
-    ));
 }
 
 /// The node keys a render's walk found in memory.

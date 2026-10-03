@@ -6,7 +6,7 @@
 //! whole surface. Run it with `wasm-pack test --node crates/sva-wasm`.
 
 use std::task::{Context, Poll, Waker};
-use sva_wasm::{Composition, Rendering, Stream, builtins, outline};
+use sva_wasm::{Composition, Rendering, Stream};
 
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -113,11 +113,6 @@ fn every_export_survives_the_boundary() {
     let held = page();
 
     let one = render(&held, "partials/one");
-    assert_eq!(
-        one.target(),
-        "@partials/one([0, 1s])",
-        "the target as written"
-    );
     assert_eq!(one.sample_rate(), 8000);
     assert_eq!(one.channels(), 1);
     assert_eq!(one.duration_secs(), 1.0);
@@ -130,7 +125,6 @@ fn every_export_survives_the_boundary() {
     let part = held
         .rendered("@partials/one([0.25s, 0.5s])", None, options(&[]))
         .unwrap_or_else(|_| unreachable!("an interval renders"));
-    assert_eq!(part.start_secs(), 0.25);
     assert_eq!(plane(&part).len(), 2000, "an interval narrows the array");
     let read = field(&readings(&part), "representations");
     let component = items(&field(&field(&read, "samples"), "value"), "components").get(0);
@@ -270,9 +264,13 @@ fn a_cache_held_across_renders_locks_and_answers_what_the_first_render_did() {
     let after = plane(&render(&held, "partials/one"));
     assert_ne!(after, cold, "the replaced node is not answered from before");
 
-    held.clear_cache();
-    assert_eq!(held.cache_bytes(), 0.0);
-    assert_eq!(plane(&render(&held, "partials/one")), after);
+    let mut fresh = page();
+    fresh.insert("partials/one", "sin(2*pi*200*t)\n");
+    assert_eq!(
+        after,
+        plane(&render(&fresh, "partials/one")),
+        "and is the cold render"
+    );
 }
 
 /// A render's cache stats, with the second of two identical renders answered wholly from the composition's own store.
@@ -326,30 +324,35 @@ fn a_repeated_render_is_all_hits() {
     );
 }
 
-/// A note released after a held render reads the held run up to its release, resuming from
-/// the last state it marked, and its lookup crosses as `prefix`; its samples are the cold
-/// render's.
-#[wasm_bindgen_test]
-fn a_release_after_a_held_render_reads_it_as_a_prefix() {
+/// A held string, and the same string released at 2.5 s.
+fn released() -> Composition {
     let mut held = Composition::new(None);
     held.insert(
         "string",
         "release = inf\nchaigne_askenfelt(440, damper_r=0.1*crop(1, release, inf))\n",
     );
     held.insert("released", "@string(t, release=2.5)\n");
-    let over = |node: &str| {
+    held
+}
+
+/// A note released after a held render reads the held run up to its release, resuming from
+/// the last state it marked, and its lookup crosses as `prefix`; its samples are the cold
+/// render's.
+#[wasm_bindgen_test]
+fn a_release_after_a_held_render_reads_it_as_a_prefix() {
+    let held = released();
+    let over = |held: &Composition, node: &str| {
         held.rendered(&format!("@{node}([0, 3s])"), None, options(&[]))
             .unwrap_or_else(|_| unreachable!("`{node}` renders"))
     };
-    over("string");
-    let warm = over("released");
+    over(&held, "string");
+    let warm = over(&held, "released");
     let outcomes: Vec<String> = items(&warm.stats().unwrap_or_else(|_| unreachable!()), "lookups")
         .iter()
         .filter_map(|l| field(&l, "outcome").as_string())
         .collect();
     assert!(outcomes.iter().any(|o| o == "prefix"), "{outcomes:?}");
-    held.clear_cache();
-    assert_eq!(plane(&warm), plane(&over("released")));
+    assert_eq!(plane(&warm), plane(&over(&released(), "released")));
 }
 
 fn knobbed() -> Composition {
@@ -429,61 +432,12 @@ fn a_volatile_knob_crosses_in_the_config_and_keeps_one_value_per_node() {
 }
 
 #[wasm_bindgen_test]
-fn the_cache_budget_is_the_pages_own_and_survives_a_clear() {
+fn the_cache_budget_is_the_pages_own() {
     let held = page();
     render(&held, "master");
     held.set_cache_max_bytes(1_024.0);
     assert_eq!(held.cache_max_bytes(), 1_024.0);
     assert!(held.cache_bytes() <= 1_024.0, "a lower cap prunes at once");
-    held.clear_cache();
-    assert_eq!(held.cache_max_bytes(), 1_024.0, "the ceiling is kept");
-    assert_eq!((held.cache_bytes(), held.cache_entries()), (0.0, 0));
-}
-
-/// A cache policy crosses by name, the composition's own: no render names one, and memory
-/// cannot be switched off.
-#[wasm_bindgen_test]
-fn a_cache_policy_crosses_by_name_and_no_render_names_its_own() {
-    let held = page();
-    assert_eq!(held.cache_policy(), "all");
-    let none = held.set_cache_policy("none").err();
-    let none = none.unwrap_or_else(|| unreachable!("memory stays on"));
-    let diagnostic = items(&field(&field(&none, "refusal"), "data"), "diagnostics").get(0);
-    let help = field(&diagnostic, "help").as_string().unwrap_or_default();
-    let offered: Vec<&str> = help.split('"').skip(1).step_by(2).collect();
-    assert_eq!(offered, ["all", "forks", "target"], "{help}");
-    for name in offered {
-        assert!(held.set_cache_policy(name).is_ok(), "{name} is offered");
-    }
-    assert!(held.set_cache_policy("some").is_err());
-    held.set_cache_policy("target")
-        .unwrap_or_else(|_| unreachable!("target is a policy"));
-    assert_eq!(held.cache_policy(), "target");
-    let target = render(&held, "master");
-    let stored = field(&stats_of(&target), "stored").as_f64();
-    assert_eq!(stored, Some(1.0), "the target alone was stored");
-    let named = held.rendered(
-        "@master([0, 1s])",
-        None,
-        options(&[("cache", JsValue::from_str("target"))]),
-    );
-    refused_as(named.err(), "wasm.bad_argument");
-}
-
-/// A prune policy crosses by name: the one a page passes to prune by now.
-#[wasm_bindgen_test]
-fn a_prune_policy_crosses_by_name() {
-    let held = page();
-    render(&held, "wide");
-    render(&held, "master");
-    let before = held.cache_evictions();
-    held.prune("oldest")
-        .unwrap_or_else(|_| unreachable!("oldest is a policy"));
-    assert!(
-        held.cache_evictions() > before,
-        "the first render's values went"
-    );
-    assert!(held.prune("everything").is_err());
 }
 
 /// A located refusal is the contract everywhere else in this engine, so it has to cross as one:
@@ -591,54 +545,6 @@ fn a_ledger_is_summed_over_the_interval_asked_for() {
         (rms - 0.5 / 2f64.sqrt()).abs() < 1e-3,
         "a sine at 0.5 over whole periods: {spelled}"
     );
-}
-
-#[wasm_bindgen_test]
-fn an_outline_crosses_as_the_object_the_cli_puts_under_data() {
-    let text = "0.5*lowpass(@note, cutoff=700)";
-    let answered = outline(text).unwrap_or_else(|_| unreachable!("it parses"));
-    let tree = field(&answered, "outline");
-    assert_eq!(field(&tree, "op").as_string().as_deref(), Some("*"));
-    let call = field(&tree, "right");
-    assert_eq!(field(&call, "name").as_string().as_deref(), Some("lowpass"));
-    let named = js_sys::Array::from(&field(&field(&call, "args"), "items")).get(1);
-    assert_eq!(field(&named, "name").as_string().as_deref(), Some("cutoff"));
-    let at = field(&field(&named, "value"), "span");
-    let (start, end) = (
-        field(&at, "start").as_f64().unwrap_or(0.0) as usize,
-        field(&at, "end").as_f64().unwrap_or(0.0) as usize,
-    );
-    assert_eq!(
-        &text[start..end],
-        "700",
-        "a span indexes the text it came from"
-    );
-
-    let Err(refused) = outline("sin(") else {
-        unreachable!("an unclosed call refuses")
-    };
-    assert_eq!(
-        field(&refused, "name").as_string().as_deref(),
-        Some("validation_error")
-    );
-}
-
-#[wasm_bindgen_test]
-fn builtins_cross_with_what_each_named_argument_means() {
-    let answered = builtins().unwrap_or_else(|_| unreachable!("the vocabulary assembles"));
-    let callables = items(&answered, "callables");
-    let solver = callables
-        .iter()
-        .find(|c| field(c, "name").as_string().as_deref() == Some("chaigne_askenfelt"))
-        .unwrap_or_else(|| unreachable!("the solver is a builtin"));
-    let b = items(&solver, "arguments").get(0);
-    assert_eq!(field(&b, "name").as_string().as_deref(), Some("b"));
-    assert_eq!(
-        field(&b, "meaning").as_string().as_deref(),
-        Some("string stiffness (inharmonicity)")
-    );
-    assert_eq!(field(&b, "unit").as_string().as_deref(), Some("none"));
-    assert_eq!(field(&b, "part").as_string().as_deref(), Some("string"));
 }
 
 /// An open render ends where its root's support does. A held sine's never does, so its render

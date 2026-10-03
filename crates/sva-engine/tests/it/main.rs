@@ -25,7 +25,6 @@ mod operators;
 mod persist;
 mod placement;
 mod pointwise;
-mod policies;
 mod pruning;
 mod rebuild;
 mod refs;

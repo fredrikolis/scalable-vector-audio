@@ -20,7 +20,6 @@ struct Slot {
     value: Option<Value>,
     place: Place,
     held: u32,
-    readers: u32,
 }
 
 impl Values {
@@ -34,16 +33,8 @@ impl Values {
 
     /// `value` in a slot of its own, holding what it reads, held by nothing yet.
     pub(crate) fn push(&mut self, value: Value, place: Place) -> usize {
-        let mut read = value.reads.clone();
-        for at in &read {
-            self.slot_mut(*at).held += 1;
-        }
-        read.sort_unstable();
-        read.dedup();
-        for at in read {
-            let slot = self.slot_mut(at);
-            slot.readers += 1;
-            slot.place.fork = slot.readers >= 2;
+        for at in value.reads.clone() {
+            self.slot_mut(at).held += 1;
         }
         let seq = self.next;
         self.next += 1;
@@ -53,7 +44,6 @@ impl Values {
             value: Some(value),
             place,
             held: 0,
-            readers: 0,
         });
         let at = match self.free.pop() {
             Some(at) => {
@@ -78,14 +68,6 @@ impl Values {
         let value = slot.value.expect("a value in its slot");
         if self.index.get(&value.key) == Some(&at) {
             self.index.remove(&value.key);
-        }
-        let mut read = value.reads.clone();
-        read.sort_unstable();
-        read.dedup();
-        for at in read {
-            let slot = self.slot_mut(at);
-            slot.readers -= 1;
-            slot.place.fork = slot.readers >= 2;
         }
         value
     }

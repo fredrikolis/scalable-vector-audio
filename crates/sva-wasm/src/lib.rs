@@ -16,9 +16,7 @@ use sva_core::{
     counters_json, error_envelope, execute_over, query_data, stats_json, stream_stats_json,
     work_json,
 };
-use sva_engine::{
-    CachePolicy, CacheStats, DEFAULT_STORE_BYTES, Handle, Placed, PrunePolicy, Session, Store, Tier,
-};
+use sva_engine::{CacheStats, DEFAULT_STORE_BYTES, Handle, Placed, Session, Store, Tier};
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -71,8 +69,7 @@ fn thrown(refusal: &CliError) -> JsValue {
     crossed(refusal.code(), &refusal.message(), &refusal.diagnostics())
 }
 
-/// A page has no argv and no shell, so a refusal raised here carries its own repair rather
-/// than the CLI's "run `sva-cli --help`".
+/// A refusal raised here carries its own repair: a page has no `--help`.
 fn refuse(message: String, help: &str) -> JsValue {
     let diagnostic = Diagnostic::new("wasm.bad_argument", message.clone()).helped(help);
     crossed("validation_error", &message, &[diagnostic])
@@ -182,8 +179,7 @@ fn text(key: &str, value: &JsValue) -> Result<String, JsValue> {
     })
 }
 
-/// Each entry one call, as `sva-cli`'s `--representation` writes it: `spectrum(peaks=8)`.
-/// A page holds no file to write one to.
+/// Each entry one call, as `--representation` writes it: `spectrum(peaks=8)`.
 fn representations_of(names: &[String]) -> Result<Vec<Asked>, JsValue> {
     names
         .iter()
@@ -202,17 +198,6 @@ fn representations_of(names: &[String]) -> Result<Vec<Asked>, JsValue> {
 
 /// Nothing in a browser pushes back when memory grows inside the tab's own address space.
 const DEFAULT_CACHE_BYTES: u64 = 256 << 20;
-
-#[wasm_bindgen]
-pub fn builtins() -> Result<JsValue, JsValue> {
-    parse(&sva_core::builtins_data(&sva_core::builtins()))
-}
-
-/// `sva-cli outline`'s `data`.
-#[wasm_bindgen]
-pub fn outline(text: &str) -> Result<JsValue, JsValue> {
-    parse(&sva_core::outline_data(text).map_err(|e| thrown(&e))?)
-}
 
 #[wasm_bindgen]
 pub struct Composition {
@@ -387,27 +372,6 @@ impl Composition {
     pub fn cache_evictions(&self) -> f64 {
         self.tier.counters().evictions() as f64
     }
-
-    #[wasm_bindgen(getter)]
-    pub fn cache_policy(&self) -> String {
-        self.tier.policy().name().to_string()
-    }
-
-    pub fn set_cache_policy(&self, policy: &str) -> Result<(), JsValue> {
-        self.tier.set_policy(cache_policy(policy)?);
-        Ok(())
-    }
-
-    /// `"oldest"` evicts what the latest render neither stored nor read, `"forks"` every value
-    /// fewer than two nodes read.
-    pub fn prune(&self, policy: &str) -> Result<(), JsValue> {
-        self.tier.prune(prune_policy(policy)?);
-        Ok(())
-    }
-
-    pub fn clear_cache(&self) {
-        self.tier.clear();
-    }
 }
 
 fn placement(options: Option<JsValue>) -> Result<Placed, JsValue> {
@@ -426,29 +390,6 @@ fn placed(name: &str) -> Result<Placed, JsValue> {
     }
 }
 
-fn cache_policy(name: &str) -> Result<CachePolicy, JsValue> {
-    CachePolicy::named(name).ok_or_else(|| {
-        let names: Vec<String> = CachePolicy::ALL
-            .iter()
-            .map(|p| format!("\"{}\"", p.name()))
-            .collect();
-        let (last, rest) = names.split_last().expect("a policy");
-        refuse(
-            format!("`{name}` names no cache policy"),
-            &format!("pass {} or {last}", rest.join(", ")),
-        )
-    })
-}
-
-fn prune_policy(name: &str) -> Result<PrunePolicy, JsValue> {
-    PrunePolicy::named(name).ok_or_else(|| {
-        refuse(
-            format!("`{name}` names no prune policy"),
-            "pass \"oldest\" or \"forks\"",
-        )
-    })
-}
-
 #[wasm_bindgen]
 pub struct Rendering {
     inner: Rendered,
@@ -458,19 +399,8 @@ pub struct Rendering {
 #[wasm_bindgen]
 impl Rendering {
     #[wasm_bindgen(getter)]
-    pub fn target(&self) -> String {
-        self.inner.expression.clone()
-    }
-
-    #[wasm_bindgen(getter)]
     pub fn sample_rate(&self) -> u32 {
         self.inner.config.rate
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn start_secs(&self) -> f64 {
-        let rate = self.inner.config.rate;
-        self.inner.render.range.map_or(0.0, |r| r.start_secs(rate))
     }
 
     #[wasm_bindgen(getter)]
