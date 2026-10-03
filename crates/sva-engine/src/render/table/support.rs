@@ -229,12 +229,12 @@ impl<'a> Supports<'a> {
             let found = self.found(n).is_some() || !self.open.borrow().contains(&n);
             (self.of(n), found)
         };
-        let Some(tail) = Tail::of(self.tys, (self.profile, grid.rate), id, &ends, &self.tails)
-        else {
+        let level = self.profile.prune_level();
+        let tail = Tail::of(self.tys, (self.profile, grid.rate), id, &ends, &self.tails);
+        let Some(tail) = tail.filter(|tail| tail.floor < level) else {
             return (exact, None);
         };
-        let level = self.profile.prune_level();
-        let under = |n: i64| tail.from(grid.instant(n)) < level;
+        let under = |n: i64| tail.from(grid.instant(n), (self.tys, self.profile)) < level;
         let last = exact.end.saturating_sub(1);
         let from = exact.start.max(0).min(last);
         let probe = |k: i32| from.saturating_add(grid.count(2f64.powi(k)).ceil() as i64);

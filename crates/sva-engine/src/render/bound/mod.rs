@@ -3,17 +3,17 @@
 mod filter;
 mod range;
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use sva_formula::spectral_sum::atom::SpectralAtom;
-use sva_formula::spectral_sum::sup::sup_from;
-use sva_formula::{Body, C64, Edge, Fold, Hash, NodeId, Part, Through, Unary, Var};
+use sva_formula::spectral_sum::sup::{Fate, fate, sup_from};
+use sva_formula::{Body, C64, Edge, Fold, Hash, NodeId, Part, SpectralSum, Through, Unary, Var};
 use sva_samples::collapse::plan::summed_bounds;
 use sva_samples::{
     Audible, CollapseError, Extent, Grid, Profile, truncate_spectral_sum_read,
-    truncate_written_with,
+    truncate_steady_read, truncate_written_with,
 };
 
 use crate::cast::Cast;
@@ -25,13 +25,23 @@ use range::{OP, Range, TRANSFORM_OPS};
 
 pub(crate) struct Tail {
     form: Form,
+    /// A magnitude its bound never falls under, from any instant.
+    pub(crate) floor: f64,
     /// A reader reading one node at several places asks it at one instant each time.
     last: Cell<Option<(u64, f64)>>,
 }
 
+/// What a bound is read under.
+pub(crate) type Cx<'a> = (&'a Typing, &'a Profile);
+
+type Summed = Vec<(Option<SpectralAtom>, f64)>;
+
 enum Form {
     /// Each direct sum over the atoms' lines as its rounding bound and the factor it is under.
-    Atoms(Vec<SpectralAtom>, Vec<(Option<SpectralAtom>, f64)>),
+    Atoms(Vec<SpectralAtom>, Summed),
+    /// A sum whose truncation keeps a steady atom, listed only once a bound is read: its
+    /// floor alone may already decide its prune.
+    Listed(Box<Listed>),
     /// Each node the formula reads, bounded by its own form.
     Written(Range, BTreeMap<NodeId, Rc<Tail>>),
     /// A fixed filter on its grid's samples.
@@ -90,8 +100,20 @@ impl Tail {
     }
 
     fn new(form: Form) -> Option<Rc<Tail>> {
+        let floor = match &form {
+            Form::Atoms(atoms, _) => steady(atoms),
+            Form::Written(range, reads) => range.floor(&|n| reads[&n].floor).unwrap_or(0.0),
+            Form::Within(m) => *m,
+            Form::Read(source, _) => source.floor,
+            Form::Filter(..) | Form::Listed(_) => 0.0,
+        };
+        Tail::floored(form, floor)
+    }
+
+    fn floored(form: Form, floor: f64) -> Option<Rc<Tail>> {
         Some(Rc::new(Tail {
             form,
+            floor,
             last: Cell::new(None),
         }))
     }
@@ -189,27 +211,27 @@ impl Bounding<'_> {
         }
         let band = Audible::of(profile, rate);
         // A series no line reaches falls to the written form, as the collapse does.
-        if tys.ty(id).is_closed_form()
-            && let Ok(whole) = crate::refs::spectral_sum_of(tys, id, Var::T)
-            && let Ok(sum) = read_through(tys, |t| truncate_spectral_sum_read(&whole, band, t))
-        {
-            let summed = read_through(tys, |t| summed_bounds(&whole, (profile, rate), t)).ok()?;
-            let atoms: Vec<SpectralAtom> = sum
-                .lanes
-                .iter()
-                .flat_map(|lane| {
-                    let modal = lane.modal.iter().flat_map(|bank| {
-                        sva_formula::modal::atoms(bank, sva_formula::Origin::UNKNOWN)
-                    });
-                    lane.atoms.iter().copied().chain(modal)
-                })
-                .collect();
-            crate::steps::step(atoms.len() + summed.len());
-            return Tail::new(Form::Atoms(atoms, summed));
+        let whole = match tys.ty(id).is_closed_form() {
+            true => crate::refs::spectral_sum_of(tys, id, Var::T).ok(),
+            false => None,
+        };
+        if let Some(whole) = whole {
+            if let Some(floor) = read_through(tys, |t| truncate_steady_read(&whole, band, t)) {
+                let listed = Listed {
+                    whole,
+                    rate,
+                    atoms: OnceCell::new(),
+                };
+                return Tail::floored(Form::Listed(Box::new(listed)), floor);
+            }
+            if let Ok(sum) = read_through(tys, |t| truncate_spectral_sum_read(&whole, band, t)) {
+                let summed = read_through(tys, |t| summed_bounds(&whole, (profile, rate), t));
+                return Tail::new(Form::Atoms(atoms_of(&sum), summed.ok()?));
+            }
         }
-        let body =
-            match tys.value(id) {
-                Value::ClosedForm(form) if form.var == Var::T => read_through(tys, |t| {
+        let body = match tys.value(id) {
+            Value::ClosedForm(form) if form.var == Var::T => {
+                read_through(tys, |t| {
                     truncate_written_with(&form.body, band, t, &mut |id, _| match Through::stands(
                         id,
                     ) {
@@ -219,58 +241,59 @@ impl Bounding<'_> {
                         false => Ok(id),
                     })
                 })
-                .ok()?,
-                Value::Cast(Cast::Sample, source) => return self.tail(*source),
-                Value::Noise(_) => return Tail::new(Form::Within(1.0)),
-                Value::Op { name, args } => sampled(tys, name, args)?,
-                Value::Read { .. } if let Some(source) = crate::refs::passes(tys, id) => {
-                    return self.tail(source);
-                }
-                Value::Read { source, at, .. } => {
-                    let read = match at {
-                        When::At(map) => {
-                            let step = 1.0 / tys.grid(*source).sr();
-                            Some((map.scale.to_f64(), map.shift.to_f64(), step))
-                        }
-                        _ => None,
-                    };
-                    self.opened(id).then_some(())?;
-                    let inner = self.tail(*source);
-                    self.open.remove(&id);
-                    let inner = inner?;
-                    return Tail::new(match &inner.form {
-                        Form::Read(foot, under) if let Some(map) = composed(read, *under) => {
-                            Form::Read(Rc::clone(foot), map)
-                        }
-                        _ => Form::Read(inner, read),
-                    });
-                }
-                Value::Filter {
-                    shape,
-                    x,
-                    cutoff,
-                    q,
-                    gain,
-                } => {
-                    let [cutoff, q, gain] = [cutoff, q, gain].map(|p| number_of(tys, *p));
-                    let grid = tys.grid(id);
-                    if tys.grid(*x) != grid {
-                        return None;
+                .ok()?
+            }
+            Value::Cast(Cast::Sample, source) => return self.tail(*source),
+            Value::Noise(_) => return Tail::new(Form::Within(1.0)),
+            Value::Op { name, args } => sampled(tys, name, args)?,
+            Value::Read { .. } if let Some(source) = crate::refs::passes(tys, id) => {
+                return self.tail(source);
+            }
+            Value::Read { source, at, .. } => {
+                let read = match at {
+                    When::At(map) => {
+                        let step = 1.0 / tys.grid(*source).sr();
+                        Some((map.scale.to_f64(), map.shift.to_f64(), step))
                     }
-                    let (coeffs, _) =
-                        sva_samples::filters::coefficients(*shape, cutoff?, q?, gain?, grid.sr());
-                    let input = self.tail(*x)?;
-                    let (span, found) = (self.ends)(*x);
-                    self.cut |= !found;
-                    let first = match span.start {
-                        i64::MIN => f64::NEG_INFINITY,
-                        start => grid.instant(start),
-                    };
-                    let ringing = Ringing::of(&coeffs, input.from(first), span.end)?;
-                    return Tail::new(Form::Filter(ringing, grid));
+                    _ => None,
+                };
+                self.opened(id).then_some(())?;
+                let inner = self.tail(*source);
+                self.open.remove(&id);
+                let inner = inner?;
+                return Tail::new(match &inner.form {
+                    Form::Read(foot, under) if let Some(map) = composed(read, *under) => {
+                        Form::Read(Rc::clone(foot), map)
+                    }
+                    _ => Form::Read(inner, read),
+                });
+            }
+            Value::Filter {
+                shape,
+                x,
+                cutoff,
+                q,
+                gain,
+            } => {
+                let [cutoff, q, gain] = [cutoff, q, gain].map(|p| number_of(tys, *p));
+                let grid = tys.grid(id);
+                if tys.grid(*x) != grid {
+                    return None;
                 }
-                _ => return None,
-            };
+                let (coeffs, _) =
+                    sva_samples::filters::coefficients(*shape, cutoff?, q?, gain?, grid.sr());
+                let input = self.tail(*x)?;
+                let (span, found) = (self.ends)(*x);
+                self.cut |= !found;
+                let first = match span.start {
+                    i64::MIN => f64::NEG_INFINITY,
+                    start => grid.instant(start),
+                };
+                let ringing = Ringing::of(&coeffs, input.from(first, (tys, profile)), span.end)?;
+                return Tail::new(Form::Filter(ringing, grid));
+            }
+            _ => return None,
+        };
         let range = Range::of(&body).ok()?;
         self.written(id, range)
     }
@@ -308,7 +331,7 @@ impl Tail {
     /// Bounds `|x(s)|` for every `s >= t`, its rounding included; infinite where none holds.
     /// Each tail it reads is bounded first, at each instant it asks, so a chain of reads costs
     /// heap, never call depth.
-    pub(crate) fn from<'a>(&'a self, t: f64) -> f64 {
+    pub(crate) fn from<'a>(&'a self, t: f64, cx: Cx) -> f64 {
         if let Some((held, bound)) = self.last.get()
             && held == t.to_bits()
         {
@@ -346,7 +369,7 @@ impl Tail {
                 }
             };
             crate::steps::step(1);
-            let bound = tail.bound_from(at, &read);
+            let bound = tail.bound_from(at, &read, cx);
             let missing = missing.into_inner();
             if missing.is_empty() {
                 tail.last.set(Some((at.to_bits(), bound)));
@@ -360,23 +383,13 @@ impl Tail {
     }
 
     /// Its bound from `t`, each tail it reads bounded by `read`.
-    fn bound_from<'a>(&'a self, t: f64, read: &dyn Fn(&'a Rc<Tail>, f64) -> f64) -> f64 {
+    fn bound_from<'a>(&'a self, t: f64, read: &dyn Fn(&'a Rc<Tail>, f64) -> f64, cx: Cx) -> f64 {
         match &self.form {
-            Form::Atoms(atoms, summed) => {
-                let rounded = 1.0 + OP * (atoms.len() as f64 + TRANSFORM_OPS);
-                let mut sum = 0.0;
-                for atom in atoms {
-                    match sup_from(atom, t) {
-                        Some(sup) => sum += sup,
-                        None => return f64::INFINITY,
-                    }
-                }
-                let direct = summed.iter().try_fold(0.0, |held, (factor, err)| {
-                    let under = factor.as_ref().map_or(Some(1.0), |f| sup_from(f, t))?;
-                    Some(held + err * under)
-                });
-                direct.map_or(f64::INFINITY, |direct| sum * rounded + direct)
-            }
+            Form::Listed(listed) => match listed.atoms(cx) {
+                Some((atoms, summed)) => atoms_from(atoms, summed, t),
+                None => f64::INFINITY,
+            },
+            Form::Atoms(atoms, summed) => atoms_from(atoms, summed, t),
             Form::Written(range, reads) => range
                 .from(t, &|n, t| read(&reads[&n], t))
                 .map_or(f64::INFINITY, |s| s.reach() + s.err),
@@ -391,6 +404,64 @@ impl Tail {
 }
 
 type Map = Option<(f64, f64, f64)>;
+
+fn atoms_from(atoms: &[SpectralAtom], summed: &Summed, t: f64) -> f64 {
+    let rounded = 1.0 + OP * (atoms.len() as f64 + TRANSFORM_OPS);
+    let mut sum = 0.0;
+    for atom in atoms {
+        match sup_from(atom, t) {
+            Some(sup) => sum += sup,
+            None => return f64::INFINITY,
+        }
+    }
+    let direct = summed.iter().try_fold(0.0, |held, (factor, err)| {
+        let under = factor.as_ref().map_or(Some(1.0), |f| sup_from(f, t))?;
+        Some(held + err * under)
+    });
+    direct.map_or(f64::INFINITY, |direct| sum * rounded + direct)
+}
+
+struct Listed {
+    whole: SpectralSum,
+    rate: u32,
+    atoms: OnceCell<Option<(Vec<SpectralAtom>, Summed)>>,
+}
+
+impl Listed {
+    fn atoms(&self, (tys, profile): Cx) -> Option<&(Vec<SpectralAtom>, Summed)> {
+        let listed = self.atoms.get_or_init(|| {
+            let band = Audible::of(profile, self.rate);
+            let truncated = |t: &Through| truncate_spectral_sum_read(&self.whole, band, t);
+            let sum = read_through(tys, truncated).ok()?;
+            let summed = |t: &Through| summed_bounds(&self.whole, (profile, self.rate), t);
+            Some((atoms_of(&sum), read_through(tys, summed).ok()?))
+        });
+        listed.as_ref()
+    }
+}
+
+/// Each atom a truncated sum holds, its modal banks' included.
+fn atoms_of(sum: &SpectralSum) -> Vec<SpectralAtom> {
+    let atoms: Vec<SpectralAtom> = sum
+        .lanes
+        .iter()
+        .flat_map(|lane| {
+            let modal = lane
+                .modal
+                .iter()
+                .flat_map(|bank| sva_formula::modal::atoms(bank, sva_formula::Origin::UNKNOWN));
+            lane.atoms.iter().copied().chain(modal)
+        })
+        .collect();
+    crate::steps::step(atoms.len());
+    atoms
+}
+
+/// The loudest atom steady from every instant: an atom bound sums it whole.
+fn steady(atoms: &[SpectralAtom]) -> f64 {
+    let steady = atoms.iter().filter(|a| fate(a) == Fate::Steady);
+    steady.map(|a| a.c.abs()).fold(0.0, f64::max)
+}
 
 /// A read of a read as one read of what the inner one reads, so a chain of them bounds in one
 /// step; `None` where the two do not compose. A map reading anywhere, or backwards, is `None`.
@@ -510,6 +581,23 @@ mod tests {
     fn a_chains_supports_and_bounds_take_steps_linear_in_its_refs() {
         let (short, long) = (ending(&chain(250), "top"), ending(&chain(1000), "top"));
         assert!(long < 8 * short, "{short} then {long}");
+    }
+
+    /// A held saw of `count` lines, and a sampled reader scaling it.
+    fn held(count: usize) -> Vec<(String, String)> {
+        let saw = format!("sum(k, 1, {count}, sin(2*pi*k*40*t)/k)\n");
+        let gain = "0.5*sample(@saw(t))\n".to_string();
+        vec![("saw".to_string(), saw), ("gain".to_string(), gain)]
+    }
+
+    /// A steady line louder than the prune level keeps every bound over it above the level, so
+    /// neither the saw nor what scales it lists a line: four times the lines, the same steps.
+    #[test]
+    fn a_loud_held_tone_is_never_bounded_line_by_line() {
+        for root in ["saw", "gain"] {
+            let (few, many) = (ending(&held(100), root), ending(&held(400), root));
+            assert_eq!(few, many, "{root}");
+        }
     }
 
     /// Where a map reads at `t`; anywhere is `-inf`, as a bound reads it.

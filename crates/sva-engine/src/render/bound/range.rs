@@ -135,6 +135,48 @@ impl Range {
         }
     }
 
+    /// Where its span is `[-m, m]` at every instant: a magnitude `m` never falls under, each
+    /// node's own read by `node`. Scaling repeats the span's own roundings, which are monotone.
+    pub(super) fn floor(&self, node: &dyn Fn(NodeId) -> f64) -> Option<f64> {
+        let most = |parts: &[Range]| parts.iter().map(|p| p.floor(node)).try_fold(0.0, max);
+        match self {
+            Range::Node(id) => Some(node(*id)),
+            Range::Atoms(atoms) => Some(super::steady(atoms)),
+            Range::Run(..) => Some(0.0),
+            Range::Add(parts) => most(parts),
+            Range::Wide(parts) => Some(
+                parts
+                    .iter()
+                    .filter_map(|p| p.floor(node))
+                    .fold(0.0, f64::max),
+            ),
+            Range::Crop(of, _, r) if *r == f64::INFINITY => of.floor(node),
+            Range::Crop(..) => Some(0.0),
+            Range::Shift(of, _) => of.floor(node),
+            Range::Div(num, den) => match **den {
+                Range::Real(c) if c != 0.0 && c.is_finite() => {
+                    Some(num.floor(node)? * (1.0 / c).abs())
+                }
+                _ => None,
+            },
+            Range::Mul(parts) => {
+                let (mut constant, mut floor) = (1.0f64, None);
+                for part in parts {
+                    match (part, floor) {
+                        (Range::Real(c), None) => constant *= c,
+                        (Range::Real(c), Some(f)) => floor = Some(f * c.abs()),
+                        (other, None) if constant != 0.0 && constant.is_finite() => {
+                            floor = Some(other.floor(node)? * constant.abs());
+                        }
+                        _ => return None,
+                    }
+                }
+                floor
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn nodes(&self, out: &mut Vec<NodeId>) {
         match self {
             Range::Node(id) => out.push(*id),
@@ -341,6 +383,10 @@ fn inverse(x: Span) -> Option<Span> {
 /// magnitude would lose it.
 fn polynomial(a: &SpectralAtom) -> bool {
     a.c.im == 0.0 && a.exp.is_none() && a.gauss.is_none() && a.ind.is_none() && a.pole.is_none()
+}
+
+fn max(held: f64, floor: Option<f64>) -> Option<f64> {
+    Some(held.max(floor?))
 }
 
 fn real(f: &Body) -> bool {

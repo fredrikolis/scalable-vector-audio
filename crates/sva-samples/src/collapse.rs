@@ -30,8 +30,8 @@ pub(crate) use point::Shared;
 pub use point::{Refs, crop_gain, lane_of, shoulders, unary};
 pub use truncate::{
     Audible, dropped_db, spectral_sum as truncate_spectral_sum,
-    spectral_sum_read as truncate_spectral_sum_read, written as truncate_written,
-    written_with as truncate_written_with,
+    spectral_sum_read as truncate_spectral_sum_read, steady_read as truncate_steady_read,
+    written as truncate_written, written_with as truncate_written_with,
 };
 
 /// One closed form's value at one instant, for a caller that already holds the spectral sum.

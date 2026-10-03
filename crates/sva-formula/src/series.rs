@@ -280,10 +280,21 @@ pub fn lines(s: &Series, ceiling: f64, floor_db: f64, precision: f64) -> Option<
     lines_read(s, (ceiling, floor_db, precision), &Opaque)
 }
 
-pub fn lines_read(
+pub fn lines_read(s: &Series, band: (f64, f64, f64), reads: &dyn Reads) -> Option<Lines> {
+    walk(s, band, reads, false)
+}
+
+/// The lines `lines_read` takes at the first index; `None` for none, or a walk that may not end.
+pub fn leading_read(s: &Series, band: (f64, f64, f64), reads: &dyn Reads) -> Option<Vec<Line>> {
+    let first = walk(s, band, reads, true)?.taken;
+    (!first.is_empty()).then_some(first)
+}
+
+fn walk(
     s: &Series,
     (ceiling, floor_db, precision): (f64, f64, f64),
     reads: &dyn Reads,
+    leading: bool,
 ) -> Option<Lines> {
     let shape = read_with(&s.term.body, reads)?;
     let voices = places(&shape);
@@ -310,6 +321,9 @@ pub fn lines_read(
         .map(|(_, weight)| decay(weight, s.index))
         .collect();
     let truncates = band.is_none() && s.hi == Bound::Infinite;
+    if leading && truncates {
+        return None;
+    }
     let unread = |f: &Body| at_index(f, s.index, s.lo, reads).is_none();
     if truncates
         && voices
@@ -335,7 +349,8 @@ pub fn lines_read(
     let mut dropped = Vec::new();
     let mut peak = 0.0f64;
     let mut left = None;
-    for k in s.lo..=hi {
+    let last = if leading { hi.min(s.lo) } else { hi };
+    for k in s.lo..=last {
         let mut here = Vec::new();
         for ((place, weight), ladder) in voices.iter().zip(&ladders) {
             let (Some(hz), Some(amp)) = (
