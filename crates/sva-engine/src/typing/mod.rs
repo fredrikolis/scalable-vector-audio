@@ -132,6 +132,8 @@ pub struct Typing {
     indices: u32,
     sum: Option<(NodeId, Vec<SumSlot>)>,
     folds: folds::Folds,
+    /// Each node every held node reads, mapped to those reading it.
+    readers: BTreeMap<NodeId, BTreeSet<NodeId>>,
     /// Every node the latest draft lowered, in order.
     lowered: Vec<String>,
     units: BTreeMap<String, Units>,
@@ -150,7 +152,44 @@ impl Typing {
     /// `node` named by its terms in place.
     pub(crate) fn name_sum(&mut self, node: NodeId, slots: Vec<SumSlot>) {
         self.draft.sum = Some(Some((node, slots)));
-        self.folds.clear();
+        self.forget([node]);
+    }
+
+    /// The folds of each of `changed` and of every node reading one, however far up, let go.
+    pub(crate) fn forget(&mut self, changed: impl IntoIterator<Item = NodeId>) {
+        let mut gone: BTreeSet<NodeId> = changed.into_iter().collect();
+        if gone.is_empty() {
+            return;
+        }
+        let mut open: Vec<NodeId> = gone.iter().copied().collect();
+        while let Some(at) = open.pop() {
+            for reader in self.readers.get(&at).into_iter().flatten() {
+                if gone.insert(*reader) {
+                    open.push(*reader);
+                }
+            }
+        }
+        self.folds.forget(&gone);
+    }
+
+    /// `node` held at `id` in place of what was, each edge it reads recorded.
+    pub(super) fn place(&mut self, id: NodeId, node: Option<Node>) {
+        if self.nodes[id.0 as usize].is_some() {
+            for read in self.operands(id) {
+                if let Some(held) = self.readers.get_mut(&read)
+                    && held.remove(&id)
+                    && held.is_empty()
+                {
+                    self.readers.remove(&read);
+                }
+            }
+        }
+        self.nodes[id.0 as usize] = node;
+        if self.nodes[id.0 as usize].is_some() {
+            for read in self.operands(id) {
+                self.readers.entry(read).or_default().insert(id);
+            }
+        }
     }
 
     fn summed(&self) -> Option<&(NodeId, Vec<SumSlot>)> {
@@ -416,9 +455,9 @@ impl Typing {
 
     /// Settles a seed this draft made.
     pub(crate) fn settle(&mut self, id: NodeId, node: Node) {
-        self.nodes[id.0 as usize] = Some(node);
+        self.place(id, Some(node));
         self.pending.remove(&id);
-        self.folds.clear();
+        self.forget([id]);
     }
 
     pub(crate) fn folds(&self) -> &folds::Folds {
@@ -432,15 +471,13 @@ impl Typing {
 
     pub(crate) fn push(&mut self, node: Node, path: Option<&str>) -> NodeId {
         let id = match self.free.pop() {
-            Some(at) => {
-                self.nodes[at as usize] = Some(node);
-                NodeId(at)
-            }
+            Some(at) => NodeId(at),
             None => {
-                self.nodes.push(Some(node));
+                self.nodes.push(None);
                 NodeId((self.nodes.len() - 1) as u32)
             }
         };
+        self.place(id, Some(node));
         let unit = self.unit();
         self.draft.journal.push(Entry::Node(id, unit));
         if let Some(path) = path {
@@ -531,17 +568,20 @@ impl Typing {
     /// Each node `stored` names stands as the samples memory answered it with: what it
     /// computes is what it was, so its readers read it as they would have.
     pub(crate) fn stand(&mut self, stored: &BTreeMap<String, Arc<Stored>>) {
+        let mut stood = Vec::new();
         for (path, held) in stored {
             let Some(id) = self.id(path) else {
                 continue;
             };
             let grid = self.grid(id);
-            self.nodes[id.0 as usize] = Some(Node {
+            let node = Node {
                 grid,
                 ..standing(path, held)
-            });
+            };
+            self.place(id, Some(node));
+            stood.push(id);
         }
-        self.folds.clear();
+        self.forget(stood);
     }
 }
 

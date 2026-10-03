@@ -631,6 +631,38 @@ mod tests {
         assert_eq!(composings(&tys), 9);
     }
 
+    /// Lowering one node and its reader anew lets go of what they folded to, and only that:
+    /// a node beside them composes from what it kept.
+    #[test]
+    fn an_edit_lets_go_of_the_folds_of_what_it_changed_alone() {
+        let dir = std::env::temp_dir().join(format!("sva-refs-narrow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory");
+        let files = [
+            ("a", "sin(2*pi*220*t)*0.5\n"),
+            ("b", "sin(2*pi*330*t)*0.5\n"),
+            ("mix", "@a(t) + @b(t)\n"),
+        ];
+        for (file, body) in files {
+            std::fs::write(dir.join(file), body).expect("a node file");
+        }
+        let graph = sva_ast::parse_composition(&dir).expect("a composition");
+        let held = crate::render::prepared(&graph, "mix", 8_000).expect("typed");
+        let (inst, mut tys) = (held.instances, held.tys);
+        let a = tys.id("a").expect("a");
+        spectral_sum_of(&tys, a, Var::T).expect("a sum");
+        let before = composings(&tys);
+        let changed = [vec!["b".to_string()], vec!["mix".to_string()]];
+        tys.lower(&inst, &changed).expect("lowered anew");
+        tys.commit(&inst);
+        spectral_sum_of(&tys, a, Var::T).expect("a sum");
+        assert_eq!(composings(&tys), before, "`a` composes from what it kept");
+        let mix = tys.id("mix").expect("mix");
+        spectral_sum_of(&tys, mix, Var::T).expect("a sum");
+        assert!(composings(&tys) > before, "what changed composes anew");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Two differently named nodes holding one body are one identity, so one composition.
     #[test]
     fn two_names_for_one_body_compose_once() {

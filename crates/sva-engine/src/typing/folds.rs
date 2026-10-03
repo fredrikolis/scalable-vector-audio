@@ -1,11 +1,10 @@
-// Concern: holds what the node graph folds to, per node or identity, until a node changes | Non-concern: computing any fold (refs/), when nodes change | IO: (node or identity) -> a held fold or none
+// Concern: holds what the node graph folds to, per node or identity, until it or what it reads changes | Non-concern: computing a fold (refs/), when nodes change | IO: (node or identity) -> a held fold
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use sva_formula::{C64, Hash, Kept, NodeId, SpectralSum, Var};
 
-/// Derived from the nodes alone, so any change to a node evicts them all.
 #[derive(Debug, Default)]
 pub(crate) struct Folds {
     numbers: RefCell<BTreeMap<NodeId, Option<C64>>>,
@@ -24,12 +23,17 @@ impl PartialEq for Folds {
 }
 
 impl Folds {
-    pub(crate) fn clear(&mut self) {
-        self.numbers.get_mut().clear();
-        self.identities.get_mut().clear();
-        self.composed.get_mut().clear();
-        self.inlinable.get_mut().clear();
-        self.written.clear();
+    /// Every fold of a node in `gone`, and each sum no held identity names, let go.
+    pub(crate) fn forget(&mut self, gone: &BTreeSet<NodeId>) {
+        let out = |id: NodeId| gone.contains(&id);
+        self.numbers.get_mut().retain(|id, _| !out(*id));
+        self.identities.get_mut().retain(|id, _| !out(*id));
+        self.inlinable.get_mut().retain(|(id, _), _| !out(*id));
+        self.written.forget(&out);
+        let named: HashSet<Hash> = self.identities.get_mut().values().copied().collect();
+        self.composed
+            .get_mut()
+            .retain(|(held, _), _| named.contains(held));
     }
 
     pub(crate) fn number(&self, id: NodeId) -> Option<Option<C64>> {

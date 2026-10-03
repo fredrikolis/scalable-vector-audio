@@ -66,12 +66,14 @@ impl Typing {
 
     /// Undoes what the draft did since `mark`.
     pub(crate) fn rollback(&mut self, mark: Mark) {
+        let mut undone = Vec::new();
         while self.draft.journal.len() > mark.journal {
             match self.draft.journal.pop().expect("an entry past the mark") {
                 Entry::Node(id, _) => {
-                    self.nodes[id.0 as usize] = None;
+                    self.place(id, None);
                     self.free.push(id.0);
                     self.pending.remove(&id);
+                    undone.push(id);
                 }
                 Entry::Origin(token, _) => self.free_origin(token),
                 Entry::Path(path, old) => restore(&mut self.draft.by_path, path, old),
@@ -83,7 +85,7 @@ impl Typing {
             }
         }
         self.lowered.truncate(mark.lowered);
-        self.folds.clear();
+        self.forget(undone);
     }
 
     /// Lets the draft go: every node it made is freed, and those ids answered.
@@ -97,7 +99,9 @@ impl Typing {
             journal: 0,
             lowered: 0,
         });
+        let renamed = self.draft.sum.take().flatten().map(|(sum, _)| sum);
         self.draft = Draft::default();
+        self.forget(renamed);
         freed
     }
 
@@ -111,7 +115,7 @@ impl Typing {
             if let Some(units) = self.units.remove(path) {
                 for (_, unit) in units.grids {
                     for id in unit.nodes {
-                        self.nodes[id.0 as usize] = None;
+                        self.place(id, None);
                         self.free.push(id.0);
                         freed.push(id);
                     }
@@ -160,7 +164,7 @@ impl Typing {
         for file in touched {
             self.name_file(inst, &file);
         }
-        self.folds.clear();
+        self.forget(freed.iter().copied());
         freed
     }
 

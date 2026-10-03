@@ -133,8 +133,18 @@ enum View {
 }
 
 impl Kept {
-    pub fn clear(&mut self) {
-        *self = Kept::default();
+    /// Every answer about a node `gone` names let go; the rest kept.
+    pub fn forget(&mut self, gone: &dyn Fn(NodeId) -> bool) {
+        self.lowered.get_mut().retain(|(id, _), _| !gone(*id));
+        self.polynomials.get_mut().retain(|(id, _), _| !gone(*id));
+        self.timeless.get_mut().retain(|id, _| !gone(*id));
+        self.key_moves.get_mut().retain(|id, _| !gone(*id));
+        self.mentions_line.get_mut().retain(|id, _| !gone(*id));
+        self.axes.get_mut().retain(|id, _| !gone(*id));
+        self.lines.get_mut().retain(|id, _| !gone(*id));
+        self.kinks.get_mut().retain(|id, _| !gone(*id));
+        self.views.get_mut().retain(|(id, _), _| !gone(*id));
+        self.growths.get_mut().retain(|(id, _, _), _| !gone(*id));
     }
 }
 
