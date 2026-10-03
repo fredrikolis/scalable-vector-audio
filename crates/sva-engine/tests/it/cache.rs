@@ -465,3 +465,36 @@ fn a_series_keys_alike_whatever_was_lowered_before_it() {
     };
     assert_eq!(key("song"), key("b"));
 }
+
+/// A profile's floor decides how many terms a series keeps, so a render under another floor
+/// computes its own value rather than answering with the first profile's.
+#[test]
+fn a_render_under_another_floor_is_not_answered_by_the_first() {
+    let dir = dir_of(
+        "floors",
+        &[("node", "sum(k, 1, inf, cos(2*pi*440*t)/(k*k))\n")],
+    );
+    let graph = sva_ast::parse_composition(&dir).expect("a composition that parses");
+    let under = |floor_db: f64, cache: &Tier| {
+        let config = RenderConfig {
+            profile: sva_engine::Profile {
+                floor_db,
+                floor_db_above_5k: floor_db,
+                ..sva_engine::PSYCHOACOUSTIC_V1
+            },
+            ..RenderConfig::seconds(RATE, SECONDS)
+        };
+        samples(&render(&graph, "node", config, cache).expect("a render"))
+    };
+    let cold = under(-60.0, &store_all());
+    assert!(
+        cold != under(-20.0, &store_all()),
+        "the floor moves the samples"
+    );
+    let cache = store_all();
+    under(-20.0, &cache);
+    assert!(
+        under(-60.0, &cache) == cold,
+        "a warm render under another floor is the cold one"
+    );
+}

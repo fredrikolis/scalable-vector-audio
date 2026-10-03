@@ -129,14 +129,9 @@ impl Header {
 
 /// Keyed by its source's identity, the rate and the profile.
 pub(crate) fn node_key(identity: Hash, rate: u32, profile: &sva_samples::Profile) -> Hash {
+    let tag = [0x6e_6f_64_65_00_00_00_01];
     super::mixed(
         identity,
-        &[
-            u64::from(rate),
-            profile.precision_bits as u64,
-            profile.ceiling_hz.to_bits(),
-            profile.prune_db.to_bits(),
-            0x6e_6f_64_65_00_00_00_01,
-        ],
+        &[&[u64::from(rate)][..], &profile.deciding(), &tag].concat(),
     )
 }

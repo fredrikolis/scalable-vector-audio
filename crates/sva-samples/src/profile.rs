@@ -35,6 +35,30 @@ impl Profile {
         10f64.powf(self.prune_db / 20.0)
     }
 
+    /// Every setting a value or its label depends on.
+    pub fn deciding(&self) -> [u64; 6] {
+        let Profile {
+            name,
+            floor_db,
+            floor_db_above_5k,
+            ceiling_hz,
+            flop_budget: _,
+            precision_bits,
+            prune_db,
+        } = *self;
+        let named = name.bytes().fold(0xcbf2_9ce4_8422_2325u64, |held, b| {
+            (held ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        [
+            named,
+            floor_db.to_bits(),
+            floor_db_above_5k.to_bits(),
+            ceiling_hz.to_bits(),
+            precision_bits as u64,
+            prune_db.to_bits(),
+        ]
+    }
+
     pub fn floor(&self, hz: f64) -> f64 {
         if hz > 5_000.0 {
             self.floor_db_above_5k

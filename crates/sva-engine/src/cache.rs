@@ -141,19 +141,9 @@ pub fn value_key(
     width: usize,
     profile: &sva_samples::Profile,
 ) -> Hash {
-    mixed(
-        identity,
-        &[
-            step.0 as u64,
-            step.1 as u64,
-            u64::from(rate),
-            width as u64,
-            profile.precision_bits as u64,
-            profile.ceiling_hz.to_bits(),
-            profile.prune_db.to_bits(),
-            0x76_61_6c_75_65_00_00_01,
-        ],
-    )
+    let placed = [step.0 as u64, step.1 as u64, u64::from(rate), width as u64];
+    let tag = [0x76_61_6c_75_65_00_00_01];
+    mixed(identity, &[&placed[..], &profile.deciding(), &tag].concat())
 }
 
 const ADDRESS_ROTATE: u32 = 17;
