@@ -56,3 +56,16 @@ fn a_node_moved_through_any_number_of_links_is_held() {
     };
     assert_eq!(held.extents(), [Extent::new(200, 300)]);
 }
+
+/// Each link is walked once while its chain holds, never once per link above it.
+#[test]
+fn each_link_of_a_chain_is_walked_once_however_often_it_is_asked() {
+    let memory = Memory::holding(1 << 30);
+    chain(&memory, 200);
+    let round = memory.begin();
+    for i in 0..=200 {
+        assert!(matches!(memory.answer(Hash(i, 0), round), Known::Hit(_)));
+    }
+    let walked = memory.locked().walked.get();
+    assert!(walked <= 2 * 200, "{walked} links walked");
+}

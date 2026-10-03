@@ -1,6 +1,6 @@
 // Concern: which values a render offers memory as nodes, with their meta, and when | Non-concern: whether memory keeps or writes them | IO: (Render, keys, frontier) -> offers; (Table, Memory) -> offered
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use sva_formula::{Hash, Held as Representation, NodeId};
@@ -74,8 +74,9 @@ impl Offers {
         }
         let keys: BTreeMap<usize, Hash> = pending.iter().map(|o| (o.at, o.stored.key)).collect();
         if let Some(table) = &mut held.table {
+            let feet = moves(table);
             for offer in &mut pending {
-                if moved(table, offer.at, &keys).is_none() {
+                if moved(table, (offer.at, &feet), &keys).is_none() {
                     offer.own = table.offered(offer.at).map_or(Own::Copies, Own::Shares);
                 }
                 if let Own::Shares(source) = &offer.own {
@@ -119,11 +120,13 @@ impl Offers {
     }
 
     fn offer(&mut self, offers: Vec<Offer>, table: &Table, memory: &Memory) {
+        let moving = offers.iter().any(|offer| matches!(offer.own, Own::Moves));
+        let feet = if moving { moves(table) } else { HashMap::new() };
         for mut offer in offers {
             offer.stored.label = table.label(offer.at);
             let source = match offer.own {
                 Own::Shares(source) => source,
-                Own::Moves => match moved(table, offer.at, &self.keys) {
+                Own::Moves => match moved(table, (offer.at, &feet), &self.keys) {
                     Some(source) => source,
                     None => continue,
                 },
@@ -179,8 +182,12 @@ pub(crate) fn readable(tys: &Typing, id: NodeId) -> bool {
     tys.ty(id).held == Representation::Sampled && !schedule::anywhere(tys, id)
 }
 
-fn moved(table: &Table, at: usize, offered: &BTreeMap<usize, Hash>) -> Option<Offered> {
-    let (moved, by) = moves(table, at)?;
+fn moved(
+    table: &Table,
+    (at, feet): (usize, &HashMap<usize, (usize, i64)>),
+    offered: &BTreeMap<usize, Hash>,
+) -> Option<Offered> {
+    let (moved, by) = *feet.get(&at)?;
     let resident = match &table.values[moved].kind {
         table::Kind::Resident(stored) => Some(stored.key),
         _ => None,
@@ -189,12 +196,19 @@ fn moved(table: &Table, at: usize, offered: &BTreeMap<usize, Hash>) -> Option<Of
     Some(Offered::Moves { of, by })
 }
 
-fn moves(table: &Table, at: usize) -> Option<(usize, i64)> {
-    let (mut read, mut by) = table.values[at].moves()?;
-    while let Some((next, shift)) = table.values[read].moves() {
-        (read, by) = (next, by + shift);
+/// Each value that only moves another, mapped to the value at the end of what it moves and
+/// the shift to it: found in the table's order, readers after what they read, each once.
+fn moves(table: &Table) -> HashMap<usize, (usize, i64)> {
+    let mut feet: HashMap<usize, (usize, i64)> = HashMap::new();
+    for at in table.values.ordered() {
+        if let Some((read, by)) = table.values[at].moves() {
+            let foot = feet
+                .get(&read)
+                .map_or((read, by), |(foot, more)| (*foot, by + more));
+            feet.insert(at, foot);
+        }
     }
-    Some((read, by))
+    feet
 }
 
 /// What a value and every value under it cost over the range, and the most any moved a read.

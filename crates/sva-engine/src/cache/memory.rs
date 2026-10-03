@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod chains;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -276,6 +277,48 @@ struct State {
     disk: bool,
     /// Writes that failed, and why the latest did: none is tried again until a persist.
     failed: (u64, Option<String>),
+    links: RefCell<Links>,
+    #[cfg(test)]
+    walked: std::cell::Cell<u64>,
+}
+
+/// Where a chain of moved nodes ends and the shift there; a chain that loops ends nowhere.
+#[derive(Clone, Copy)]
+struct Link {
+    end: Hash,
+    by: i64,
+    unbound: bool,
+    looped: bool,
+}
+
+/// Each moved node's link, a cache every change to `entries` evicts what it found through.
+#[derive(Default)]
+struct Links {
+    /// Each link, with the key it was found through.
+    found: HashMap<Hash, (Link, Hash)>,
+    through: HashMap<Hash, HashSet<Hash>>,
+}
+
+impl Links {
+    fn keep(&mut self, at: Hash, next: Hash, link: Link) {
+        self.found.insert(at, (link, next));
+        self.through.entry(next).or_default().insert(at);
+    }
+
+    fn evict(&mut self, key: Hash) {
+        let mut open = vec![key];
+        while let Some(at) = open.pop() {
+            if let Some((_, next)) = self.found.remove(&at)
+                && let Some(readers) = self.through.get_mut(&next)
+            {
+                readers.remove(&at);
+                if readers.is_empty() {
+                    self.through.remove(&next);
+                }
+            }
+            open.extend(self.through.remove(&at).into_iter().flatten());
+        }
+    }
 }
 
 impl State {
@@ -352,6 +395,7 @@ impl State {
         let Some(gone) = self.entries.remove(&key) else {
             return;
         };
+        self.links.get_mut().evict(key);
         self.bytes -= gone.bytes();
         let value = matches!(gone.item, Item::Value { .. });
         if let Some(slot) = gone.slot().filter(|_| value)
@@ -415,76 +459,89 @@ impl State {
         })
     }
 
-    /// `key` and each node the one before moves, with the shift to each; a loop ends unrepeated.
-    fn chain(&self, key: Hash) -> Vec<(Hash, i64)> {
-        let mut out = vec![(key, 0)];
-        let mut seen = HashSet::from([key]);
-        while let Some(&(at, by)) = out.last()
-            && let Some(Item::Node {
+    fn moving(&self, key: Hash) -> Option<(Hash, i64, bool)> {
+        match &self.entries.get(&key)?.item {
+            Item::Node {
                 source:
                     Source::Offered {
-                        offered: Offered::Moves { of, by: more },
+                        offered: Offered::Moves { of, by },
                         ..
                     },
+                bound,
                 ..
-            }) = self.entries.get(&at).map(|held| &held.item)
-            && seen.insert(*of)
-        {
-            out.push((*of, by + more));
+            } => Some((*of, *by, *bound)),
+            _ => None,
         }
-        out
+    }
+
+    /// Walked from `key` to the first link already found, each link walked kept.
+    fn link(&self, key: Hash) -> Link {
+        let (mut walked, mut seen, mut at) = (Vec::new(), HashSet::new(), key);
+        let mut link = loop {
+            if let Some((held, _)) = self.links.borrow().found.get(&at) {
+                break *held;
+            }
+            let looped = !seen.insert(at);
+            match self.moving(at) {
+                Some((of, by, bound)) if !looped => {
+                    #[cfg(test)]
+                    self.walked.set(self.walked.get() + 1);
+                    walked.push((at, of, by, !bound));
+                    at = of;
+                }
+                moving => {
+                    break Link {
+                        end: at,
+                        by: 0,
+                        unbound: false,
+                        looped: moving.is_some(),
+                    };
+                }
+            }
+        };
+        for (at, of, by, unbound) in walked.into_iter().rev() {
+            link.by += by;
+            link.unbound |= unbound;
+            if !link.looped {
+                self.links.borrow_mut().keep(at, of, link);
+            }
+        }
+        link
+    }
+
+    fn admit(&mut self, key: Hash, held: Held) -> Option<Held> {
+        self.links.get_mut().evict(key);
+        self.entries.insert(key, held)
     }
 
     fn foot(&self, key: Hash) -> Option<(Hash, i64)> {
-        let (foot, by) = *self.chain(key).last()?;
-        let moves = matches!(
-            self.entries.get(&foot).map(|held| &held.item),
-            Some(Item::Node {
-                source: Source::Offered {
-                    offered: Offered::Moves { .. },
-                    ..
-                },
-                ..
-            })
-        );
-        (!moves).then_some((foot, by))
+        let link = self.link(key);
+        (!link.looped).then_some((link.end, link.by))
     }
 
     fn unbound(&self, key: Hash) -> bool {
-        self.chain(key).iter().any(|(at, _)| {
-            matches!(
-                self.entries.get(at).map(|held| &held.item),
-                Some(Item::Node { bound: false, .. })
-            )
-        })
+        let link = self.link(key);
+        let end = self.entries.get(&link.end).map(|held| &held.item);
+        link.unbound || matches!(end, Some(Item::Node { bound: false, .. }))
     }
 
     fn referred(&self, of: Hash, by: i64) -> Option<(Hash, i64)> {
-        for (at, more) in self.chain(of) {
-            match &self.entries.get(&at)?.item {
-                Item::Node {
-                    source: Source::Disk { head, .. },
-                    ..
-                } => {
-                    return match head.samples() {
-                        Samples::Entry { file, shift, .. } => Some((*file, by + more - shift)),
-                        _ => None,
-                    };
-                }
-                Item::Node { bound: false, .. } => return None,
-                Item::Node {
-                    source:
-                        Source::Offered {
-                            offered: Offered::Moves { .. },
-                            ..
-                        },
-                    ..
-                } => {}
-                Item::Node { .. } => return Some((at, by + more)),
-                Item::Value { .. } => return None,
-            }
+        let link = self.link(of);
+        if link.looped || link.unbound {
+            return None;
         }
-        None
+        let more = link.by;
+        match &self.entries.get(&link.end)?.item {
+            Item::Node {
+                source: Source::Disk { head, .. },
+                ..
+            } => match head.samples() {
+                Samples::Entry { file, shift, .. } => Some((*file, by + more - shift)),
+                _ => None,
+            },
+            Item::Node { bound: false, .. } | Item::Value { .. } => None,
+            Item::Node { .. } => Some((link.end, by + more)),
+        }
     }
 
     /// Each part the values under `keys` hold, with the stretch of it that is the node's.
@@ -790,6 +847,7 @@ impl Memory {
         self.state.lock().unwrap_or_else(|poisoned| {
             let mut state = poisoned.into_inner();
             state.entries.clear();
+            *state.links.get_mut() = Links::default();
             state.slots.clear();
             state.bytes = 0;
             self.state.clear_poison();
@@ -939,9 +997,7 @@ impl Memory {
             settled: true,
             bound: true,
         };
-        state
-            .entries
-            .insert(key, Held::admitted(item, read, tree, false));
+        state.admit(key, Held::admitted(item, read, tree, false));
     }
 
     pub(crate) fn promote_samples(&self, key: Hash, read: Vec<Buffer>) -> Vec<Arc<Buffer>> {
@@ -1020,7 +1076,7 @@ impl Memory {
             ..Held::admitted(item, read, tree, false)
         };
         state.bytes += held.bytes();
-        state.entries.insert(key, held);
+        state.admit(key, held);
         state.misses.remove(&key);
         let covered = state.coverage(key).is_some_and(|held| !held.is_empty());
         if settled && !covered && !bound {
@@ -1207,7 +1263,7 @@ impl Memory {
             slot: stamp.slot,
         };
         let held = Held::admitted(item, read, stamp.tree, stamp.fork);
-        if let Some(old) = state.entries.insert(key, held) {
+        if let Some(old) = state.admit(key, held) {
             state.bytes -= old.bytes();
         }
         state.bytes += bytes;

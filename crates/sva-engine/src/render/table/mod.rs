@@ -506,9 +506,10 @@ impl Table {
             .wanted
             .iter()
             .any(|w| *w != root && self.values[*w].reads.contains(&root));
+        let wholes = self.wholes();
         for at in self.values.ordered().collect::<Vec<_>>() {
             let need = std::mem::take(&mut needs[at]);
-            let whole = self.whole(at) && !(output && at == root);
+            let whole = wholes.contains(&at) && !(output && at == root);
             let value = &self.values[at];
             let stored = matches!(value.kind, Kind::Resident { .. }) && value.reads.is_empty();
             if value.alias().is_some() || whole || stored {
@@ -517,7 +518,7 @@ impl Table {
             let mut kept = need.hold;
             if at == root {
                 kept.add(keep.shifted(by));
-                if let Some(since) = since.filter(|_| self.whole(at)) {
+                if let Some(since) = since.filter(|_| wholes.contains(&at)) {
                     kept.add(Extent::new(since, i64::MAX).shifted(by));
                 }
             }
@@ -530,20 +531,18 @@ impl Table {
         }
     }
 
-    /// A wanted value, or one a wanted value only moves: held over the whole range.
-    fn whole(&self, at: usize) -> bool {
-        self.wanted.iter().any(|w| {
+    /// Each wanted value, and each one a wanted value only moves: held over the whole range.
+    fn wholes(&self) -> BTreeSet<usize> {
+        let mut out = BTreeSet::new();
+        for w in &self.wanted {
             let mut v = *w;
-            loop {
-                if v == at {
-                    return true;
-                }
-                match self.values[v].alias() {
-                    Some((read, _)) => v = read,
-                    None => return false,
-                }
+            while out.insert(v)
+                && let Some((read, _)) = self.values[v].alias()
+            {
+                v = read;
             }
-        })
+        }
+        out
     }
 
     pub(crate) fn bytes(&self) -> usize {
