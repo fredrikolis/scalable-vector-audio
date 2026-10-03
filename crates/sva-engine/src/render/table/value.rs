@@ -192,12 +192,11 @@ impl Value {
         held + state
     }
 
-    /// One held segment where one meets `over`, else those it meets laid into one.
+    /// `over` on its own index, laid from what it holds there.
     pub(crate) fn window(&self, over: Extent) -> std::borrow::Cow<'_, Buffer> {
-        let over = match self.period {
-            Some(n) => Extent::new(0, n),
-            None => over,
-        };
+        if self.period.is_some() && matches!(self.held, Held::Segments(_)) {
+            return std::borrow::Cow::Owned(self.samples(over));
+        }
         match &self.held {
             Held::Run(tape) => std::borrow::Cow::Owned(tape.clone().into_buffer(self.grid.rate)),
             Held::Segments(parts) => {

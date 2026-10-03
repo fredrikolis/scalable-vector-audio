@@ -140,6 +140,36 @@ fn a_periodic_value_over_three_minutes_computes_one_period() {
     );
 }
 
+/// A noise whose lines repeat only after 882,000,000 samples, read a sample early: the read
+/// folds to both ends of the period, and lays only the samples it reads, never the period.
+#[test]
+fn a_read_folded_to_both_ends_of_a_long_period_lays_only_what_it_reads() {
+    let g = graph_of(
+        "long-period",
+        &[
+            (
+                "nz",
+                "bandpass(noise(9, period=8/184.9972, color=-3), 6500, 0.5)\n",
+            ),
+            ("top", "crop(sample(@nz(t - 1sp)), 0s, 0.05s)\n"),
+        ],
+    );
+    let (rendered, bytes) = crate::allocations::largest(|| {
+        render(&g, "top", RenderConfig::at(RATE), &Tier::default())
+            .unwrap_or_else(|e| panic!("{e}"))
+    });
+    let nz = rendered.id("nz").expect("the noise");
+    let computed = rendered.evaluated(nz);
+    let folded = [Extent::new(0, 2_204), Extent::new(881_999_999, 882_000_000)];
+    assert!(
+        computed
+            .iter()
+            .all(|e| folded.iter().any(|f| e.intersect(*f) == *e)),
+        "{computed:?}"
+    );
+    assert!(bytes < 1 << 26, "one allocation asked {bytes} bytes");
+}
+
 /// 384 beats at 128 bpm, 22,050 Hz: the last as close as the first.
 #[test]
 fn every_onset_lands_within_half_a_sample_and_the_tempo_never_drifts() {

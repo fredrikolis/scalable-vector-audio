@@ -101,9 +101,7 @@ impl<'a> View<'a> {
     fn window(&self) -> Window<'_> {
         match self {
             View::Run(tape, value, by) => tape.within(value.support()).shifted(*by),
-            View::Held(buffer, value, by) => Window::of(buffer, value.support())
-                .folded(value.period)
-                .shifted(*by),
+            View::Held(buffer, value, by) => Window::of(buffer, value.support()).shifted(*by),
         }
     }
 }
