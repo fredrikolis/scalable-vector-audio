@@ -203,3 +203,44 @@ fn a_knob_its_stand_in_cannot_type_renders_and_says_why_it_keeps_each_value() {
     let stats = held.cache_stats.expect("stats");
     assert!(stats.unslotted.is_some(), "{stats:?}");
 }
+
+/// Two instances apart only by a knob keep a value each: moving one never evicts the other,
+/// and the two read in the other order are both answered.
+#[test]
+fn two_instances_apart_only_by_a_knob_each_keep_their_value() {
+    let graph = |a: u32, b: u32| {
+        graph_of(
+            "siblings",
+            &[
+                ("note", "sample(sin(2*pi*220*t))*0.5\n"),
+                ("tone", "lowpass(x, cutoff=cutoff, q=0.7)\n"),
+                (
+                    "master",
+                    &format!("@tone(t, x=@note, cutoff={a}) + 0.5*@tone(t, x=@note, cutoff={b})\n"),
+                ),
+            ],
+        )
+    };
+    let store = Tier::default();
+    let played = |a: u32, b: u32| {
+        run(&graph(a, b), &["cutoff"], &store)
+            .expect("a render")
+            .cache_stats
+            .expect("stats")
+    };
+    played(200, 800);
+    let entries = store.entries();
+    let tones = |stats: &CacheStats, at: &str| -> Vec<Outcome> {
+        let tone = stats.lookups.iter().filter(|l| l.node.starts_with(at));
+        tone.map(|l| l.outcome).collect()
+    };
+    for a in [300, 400, 500] {
+        let moved = played(a, 800);
+        let kept = tones(&moved, "tone(cutoff=800");
+        assert!(all(&kept, Outcome::Hit), "at {a}: {moved:?}");
+        assert_eq!(store.entries(), entries, "at {a}");
+    }
+    let swapped = played(800, 500);
+    assert!(all(&tones(&swapped, FX), Outcome::Hit), "{swapped:?}");
+    assert_eq!(store.entries(), entries);
+}

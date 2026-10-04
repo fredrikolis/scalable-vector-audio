@@ -28,8 +28,8 @@ impl Volatile {
 }
 
 /// A node is volatile when its instance reads a volatile parameter, directly or through what a
-/// caller bound, or anything it is built from is. Its slot is what it computes with every
-/// volatile parameter at one stand-in, however far a knob moves.
+/// caller bound, or anything it is built from is. Its slot, where memory keeps its one value and
+/// never its key, is what it computes with each knob at a stand-in, and which node of those.
 pub(super) fn mark(
     (graph, inst): (&Graph, &Instances),
     held: &Render,
@@ -56,13 +56,19 @@ pub(super) fn mark(
         }
     };
     let (mut marked, mut slots, mut unslotted) = (HashMap::new(), BTreeMap::new(), None);
+    let mut places: HashMap<NodeId, u64> = HashMap::new();
     for (id, at) in pair((tys, held.root), (paired, at)) {
         if !volatile(tys, id, &instances, &mut marked) {
             continue;
         }
+        let place = places.entry(at).or_default();
+        let (width, nth) = (
+            u64::from(tys.ty(id).width),
+            std::mem::replace(place, *place + 1),
+        );
         match crate::refs::identity(paired, at) {
             Ok(identity) => {
-                let words = [u64::from(config.rate), u64::from(tys.ty(id).width)];
+                let words = [u64::from(config.rate), width, nth];
                 slots.insert(id, crate::cache::mixed(identity, &words));
             }
             Err(refused) => {
