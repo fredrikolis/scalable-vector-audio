@@ -7,7 +7,7 @@ use std::rc::Rc;
 use sva_formula::NodeId;
 use sva_samples::{Extent, Grid, Profile};
 
-use crate::render::table::support::Supports;
+use crate::render::value_graph::support::Supports;
 use crate::typing::Typing;
 use bound::{Tail, Tails};
 

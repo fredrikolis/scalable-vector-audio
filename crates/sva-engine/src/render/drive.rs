@@ -1,17 +1,17 @@
-// Concern: pulls or skips a table block by block within the grid's blocks until its range ends or `until` holds | Non-concern: what a value computes | IO: (Table, range) -> blocks
+// Concern: pulls or skips a value graph block by block within the grid's blocks until its range ends or `until` holds | Non-concern: what a value computes | IO: (ValueGraph, range) -> blocks
 
 use sva_samples::{Buffer, Extent, block_end};
 
 use super::RenderConfig;
-use super::table::{Pulled, Table};
 use super::until::{Known, Until};
+use super::value_graph::{Pulled, ValueGraph};
 use crate::cache::{Memory, Recording};
 use crate::error::EngineError;
 use crate::flops::Work;
 use crate::query::{DEFAULT_FRAME_SECS, Representation};
 
 pub(super) struct Driver {
-    pub(super) table: Table,
+    pub(super) value_graph: ValueGraph,
     pub(super) start: i64,
     pub(super) at: i64,
     last: i64,
@@ -47,7 +47,7 @@ pub(super) fn frame(config: &RenderConfig, rate: u32) -> usize {
 
 impl Driver {
     pub(super) fn new(
-        table: Table,
+        value_graph: ValueGraph,
         range: Extent,
         block: usize,
         config: &RenderConfig,
@@ -55,7 +55,7 @@ impl Driver {
     ) -> Driver {
         let frame = frame(config, config.rate);
         Driver {
-            table,
+            value_graph,
             start: range.start,
             at: range.start,
             heard: range.start,
@@ -120,7 +120,8 @@ impl Driver {
 
     fn played(&self, from: i64) -> Buffer {
         let end = self.end.map_or(self.at, |end| end.clamp(from, self.at));
-        self.table.samples(self.table.root, Extent::new(from, end))
+        self.value_graph
+            .samples(self.value_graph.root, Extent::new(from, end))
     }
 
     /// Stands at `to`, computing nothing before it; the stateful values it started silent,
@@ -130,11 +131,12 @@ impl Driver {
             return Ok(Vec::new());
         }
         let to = to.min(self.last);
-        let silenced = self.table.skipped(Extent::new(to, self.last))?;
+        let silenced = self.value_graph.skipped(Extent::new(to, self.last))?;
         self.recording.reach(to);
         (self.at, self.heard) = (to, to);
         let future = (to < self.last).then(|| Extent::new(to, self.last));
-        self.table.release(future, Extent::NOWHERE, self.since());
+        self.value_graph
+            .release(future, Extent::NOWHERE, self.since());
         if self.last <= to {
             self.end = Some(to);
         }
@@ -155,7 +157,7 @@ impl Driver {
         self.recording.reach(from);
         let window = Extent::new(from, to);
         if from == self.start {
-            let history = self.table.history(
+            let history = self.value_graph.history(
                 window,
                 self.block as i64,
                 (&self.memory, &mut self.recording),
@@ -163,7 +165,7 @@ impl Driver {
             self.priced(&history);
         }
         let pulled = self
-            .table
+            .value_graph
             .pull(window, (&self.memory, &mut self.recording))?;
         self.priced(&pulled);
         self.work.samples += (to - from) as u64;
@@ -171,7 +173,7 @@ impl Driver {
         self.settle(from, to);
         let future = (to < self.last).then(|| Extent::new(to, self.last));
         let keep = Extent::new(from.min(to.saturating_sub(self.keep)), to);
-        self.table.release(future, keep, self.since());
+        self.value_graph.release(future, keep, self.since());
         Ok(true)
     }
 
@@ -204,9 +206,11 @@ impl Driver {
         let frame = self.frame as i64;
         let open = self.start + (from - 1 - self.start).div_euclid(frame) * frame;
         let base = open.max(self.heard);
-        let heard = self.table.samples(self.table.root, Extent::new(base, to));
+        let heard = self
+            .value_graph
+            .samples(self.value_graph.root, Extent::new(base, to));
         let planes: Vec<&[f64]> = heard.planes.iter().map(Vec::as_slice).collect();
-        let rate = self.table.values[self.table.root].grid.rate;
+        let rate = self.value_graph.values[self.value_graph.root].grid.rate;
         let known = Known::new(planes, base, self.start, self.frame, rate, to == self.last);
         if let Some(at) = until.first(&known, base, to) {
             self.stop = Some(at);

@@ -1,1 +1,1 @@
-Concern: the collapse table: which row a closed form takes, and the row itself | Non-concern: holding the result (buffer.rs), running a sampled node (machine/) | IO: (&ClosedForm, rate) -> Rows
+Concern: the collapse rows: which row a closed form takes, and the row itself | Non-concern: holding the result (buffer.rs), running a sampled node (machine/) | IO: (&ClosedForm, rate) -> Rows

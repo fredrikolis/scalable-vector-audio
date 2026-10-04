@@ -7,7 +7,7 @@ use std::sync::Arc;
 use sva_ast::Graph;
 use sva_formula::NodeId;
 
-use super::table;
+use super::value_graph;
 use super::world::{Reach, Reached, Walking, World};
 use super::{Render, RenderConfig, closed, driving, dropped, drove, ended, planned_over};
 use crate::cache::{Backend, Recording, Stored, Tier};
@@ -90,27 +90,27 @@ pub async fn render_in<B: Backend>(
     )?;
     let mut retyped = lowered;
     retyped.append(&mut held.stand_in_typed);
-    if let (Some(table), Some(range)) = (&mut held.table, held.range) {
+    if let (Some(value_graph), Some(range)) = (&mut held.value_graph, held.range) {
         loop {
-            let mut needs = table.needs(range);
+            let mut needs = value_graph.needs(range);
             while !needs.is_empty() {
                 let fetched = tier.fetch(&needs).await;
                 for (key, parts) in fetched.handed {
-                    table.took(key, &parts);
+                    value_graph.took(key, &parts);
                 }
                 needs = fetched.left;
             }
-            let short = table.short((table.root, range, table::Past::Held));
+            let short = value_graph.short((value_graph.root, range, value_graph::Past::Held));
             if short.is_empty() {
                 break;
             }
             for at in short {
-                table.read_on(&held.tys, at)?;
+                value_graph.read_on(&held.tys, at)?;
             }
-            table.settled(table.root, &[], (range.start, false));
-            table.plan(range)?;
+            value_graph.settled(value_graph.root, &[], (range.start, false));
+            value_graph.plan(range)?;
         }
-        table.offers(&held.tys, range);
+        value_graph.offers(&held.tys, range);
     }
     let walked = recording.stats(memory);
     match driving(&mut held, (memory, recording))? {
@@ -122,18 +122,19 @@ pub async fn render_in<B: Backend>(
                 if !driver.pull()? {
                     break;
                 }
-                let needs = driver.table.needs(driver.next());
+                let needs = driver.value_graph.needs(driver.next());
                 for (key, parts) in tier.fetch(&needs).await.handed {
-                    driver.table.took(key, &parts);
+                    driver.value_graph.took(key, &parts);
                 }
             }
             drove(&mut held, driver);
         }
         None => held.cache_stats = Some(walked),
     }
-    let computed = held.table.as_ref().map_or(Vec::new(), |table| {
-        let computed = table.values.iter();
-        let computed = computed.filter(|(_, v)| !matches!(v.kind, table::Kind::Resident { .. }));
+    let computed = held.value_graph.as_ref().map_or(Vec::new(), |value_graph| {
+        let computed = value_graph.values.iter();
+        let computed =
+            computed.filter(|(_, v)| !matches!(v.kind, value_graph::Kind::Resident { .. }));
         computed.map(|(_, v)| v.name.clone()).collect()
     });
     if let Some(stats) = &mut held.cache_stats {

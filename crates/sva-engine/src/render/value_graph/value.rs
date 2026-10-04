@@ -1,4 +1,4 @@
-// Concern: one value of the table and the samples it holds, merged, cut and viewed on its own clock | Non-concern: computing them (eval.rs), what is asked (demand.rs) | IO: (segment) -> samples
+// Concern: one value of the value graph and the samples it holds, merged, cut and viewed on its own clock | Non-concern: computing them (eval.rs), what is asked (demand.rs) | IO: (segment) -> samples
 
 use sva_formula::{Hash, NodeId};
 use sva_samples::machine::ops::Layout;

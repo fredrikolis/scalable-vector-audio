@@ -6,7 +6,7 @@ use sva_samples::{
     block_end,
 };
 
-use sva_formula::{Hash, TABLE_VERSION};
+use sva_formula::{FOURIER_DUAL_RULES_VERSION, Hash};
 
 use super::Stored;
 use super::stored::{Header, Laid, Samples};
@@ -14,13 +14,13 @@ use super::stored::{Header, Laid, Samples};
 /// Bumped by, and only by, a change to a stored value's bytes or to the key it is stored under.
 pub const STORE_FORMAT: u32 = 43;
 
-/// Every entry opens with its format and dual table, so one another format or table wrote is
+/// Every entry opens with its format and Fourier dual rules version, so one another wrote is
 /// never read as a value.
 fn entry_tag() -> Vec<u8> {
     [
         &b"SVAh"[..],
         &STORE_FORMAT.to_le_bytes(),
-        &TABLE_VERSION.to_le_bytes(),
+        &FOURIER_DUAL_RULES_VERSION.to_le_bytes(),
     ]
     .concat()
 }

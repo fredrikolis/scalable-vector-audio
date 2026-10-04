@@ -7,7 +7,7 @@ use sva_engine::{
     recognized_named, shape_name,
 };
 use sva_formula::filter::{ALL_SHAPES, Shape};
-use sva_formula::{FAMILIES, TABLE_VERSION};
+use sva_formula::{FAMILIES, FOURIER_DUAL_RULES_VERSION};
 
 use crate::json::{NONE, escape, list, pair_list, strings};
 
@@ -121,7 +121,7 @@ pub struct Crossing {
 pub struct Builtins {
     pub callables: Vec<Callable>,
     pub casts: Vec<Crossing>,
-    pub table_version: u64,
+    pub fourier_dual_rules_version: u64,
     pub families: &'static [(&'static str, &'static str)],
     pub refusals: &'static [(&'static str, &'static str)],
     pub unit_suffixes: &'static [(&'static str, &'static str)],
@@ -222,7 +222,7 @@ pub fn builtins() -> Builtins {
     Builtins {
         callables,
         casts: crossings(),
-        table_version: TABLE_VERSION,
+        fourier_dual_rules_version: FOURIER_DUAL_RULES_VERSION,
         families: &FAMILIES,
         refusals: &REGISTRY,
         unit_suffixes: &UNIT_SUFFIXES,
@@ -264,7 +264,7 @@ pub fn builtins_data(b: &Builtins) -> String {
          \"refusals\": {},\n  \"unit_suffixes\": {},\n  \"note_names\": \"{}\",\n  \
          \"reserved\": {},\n  \"special_forms\": {},\n  \
          \"not_supported\": {}\n}}",
-        b.table_version,
+        b.fourier_dual_rules_version,
         pair_list(b.families, "name", "duals"),
         pair_list(b.refusals, "code", "when"),
         pair_list(b.unit_suffixes, "suffix", "meaning"),

@@ -5,10 +5,10 @@ use crate::alg::{Alg, exponent_growth};
 use crate::closed_form::{Body, Bound, ClosedForm, Part, Rational, Series, Unary, Var};
 use crate::complex::C64;
 use crate::env::Env;
+use crate::fourier_dual::class::{AtomClass, Factors, Growth};
 use crate::origin::Origin;
 use crate::refusal::{Code, Refusal};
 use crate::series::summable;
-use crate::table::class::{AtomClass, Factors, Growth};
 use crate::ty::{Codomain, Held, MAX_WIDTH, Ty};
 
 #[derive(Clone, Debug)]

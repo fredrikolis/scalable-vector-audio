@@ -9,10 +9,10 @@ use crate::closed_form::{
 use crate::complex::{C64, canonical};
 use crate::content_hash::{ContentHasher, HashDomain};
 use crate::env::NodeId;
+use crate::fourier_dual::FOURIER_DUAL_RULES_VERSION;
 use crate::run::Mirror;
 use crate::spectral_sum::Lane;
 use crate::spectral_sum::atom::{Singular, SpectralAtom};
-use crate::table::TABLE_VERSION;
 
 /// Serving one closed form's samples for another is silent corruption, so the width is set
 /// against birthday collisions rather than speed.
@@ -65,7 +65,7 @@ pub fn hash_time(at: &Body) -> Hash {
         free: true,
         merkle: false,
     };
-    s.u64(TABLE_VERSION);
+    s.u64(FOURIER_DUAL_RULES_VERSION);
     s.formula(at);
     s.finish()
 }

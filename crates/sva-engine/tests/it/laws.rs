@@ -151,7 +151,7 @@ fn bandpass_db(hz: f64, cutoff: f64, q: f64) -> f64 {
     20.0 * (numerator.abs() / (re * re + im * im).sqrt()).log10()
 }
 
-/// FORMAT 14.2: a reading in both tables runs against whichever the node holds, and a pair
+/// FORMAT 14.2: a reading in both representations runs against whichever the node holds, and a pair
 /// holds every partial exactly. An estimator reading 110 Hz as 109.17 is answering a
 /// question about a buffer that this node never had to become.
 #[test]

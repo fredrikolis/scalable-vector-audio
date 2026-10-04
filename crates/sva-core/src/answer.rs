@@ -433,7 +433,7 @@ pub fn answer_json(answer: &Answer, limit: Option<usize>, skim: bool) -> String 
     )
 }
 
-/// What one row of the collapse table states beyond its name, as JSON fields.
+/// What one collapse row states beyond its name, as JSON fields.
 fn detail_json(detail: &Detail) -> String {
     match detail {
         Detail::Lines {

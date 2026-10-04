@@ -1,13 +1,13 @@
-// Concern: differentiates, Hilbert-transforms and envelopes a SpectralSum, and bounds a slope | Non-concern: the transform itself (table/) | IO: (&SpectralSum) -> SpectralSum or Left; (&Body) -> f64
+// Concern: differentiates, Hilbert-transforms and envelopes a SpectralSum, and bounds a slope | Non-concern: the transform (fourier_dual/) | IO: (&SpectralSum) -> SpectralSum or Left; (&Body) -> f64
 
 use crate::closed_form::{Body, Edge, Part};
 use crate::complex::C64;
+use crate::fourier_dual::{dual_read, reflect_read};
 use crate::refusal::{AtomSketch, Factor, Left, LeftReason};
 use crate::spectral_sum::atom::{Exp, Factors, Gauss, Indicator, Pole, Singular, SpectralAtom};
 use crate::spectral_sum::merge::simplify;
 use crate::spectral_sum::product::times;
 use crate::spectral_sum::{Lane, SpectralSum};
-use crate::table::{dual_read, reflect_read};
 use crate::through::Reads;
 
 /// The square of the analytic signal's modulus, which is in A; the root is the observation's
@@ -18,7 +18,7 @@ pub struct Envelope {
 }
 
 /// A is closed under `d/dx` up to an order or degree past `u16`, which refuses. A series
-/// differentiates termwise, lazily where its term is not one of the shapes the table reads.
+/// differentiates termwise, lazily where its term is not one of the shapes the Fourier dual rules read.
 pub fn d_dt(n: &SpectralSum) -> Result<SpectralSum, Left> {
     let mut lanes = Vec::with_capacity(n.lanes.len());
     for lane in &n.lanes {

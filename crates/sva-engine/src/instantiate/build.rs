@@ -16,7 +16,7 @@ pub fn instantiate(graph: &Graph, root: &str, rate: u32) -> Result<Instances, En
     Ok(from_roots(graph, &[root.to_string()], rate)?.0)
 }
 
-/// One table over several roots, so a node two roots reach is one instance and one buffer.
+/// Instances over several roots: a node two roots reach is one instance and one buffer.
 pub fn from_roots(
     graph: &Graph,
     roots: &[String],
@@ -28,7 +28,7 @@ pub fn from_roots(
     Ok((out, named))
 }
 
-/// What a change named and scanned again since the table last settled, which `abort` undoes:
+/// What a change named and scanned again since the last settle, which `abort` undoes:
 /// each instance named, each scanned again beside its old body and reads, and each read it
 /// let go of.
 #[derive(Debug, Default)]
@@ -41,7 +41,7 @@ pub(crate) struct Journal {
 
 impl Instances {
     /// Holds each of `roots` as a root, naming and scanning all they reach, until `commit` or
-    /// `abort`; on a refusal the table is as it was.
+    /// `abort`; a refusal leaves them as they were.
     pub(crate) fn hold(
         &mut self,
         graph: &Graph,
@@ -69,8 +69,7 @@ impl Instances {
     }
 
     /// Scans again each instance of each of `files`, each a node with no parameter that the
-    /// graph now defines otherwise, until `commit` or `abort`; on a refusal the table is as it
-    /// was.
+    /// graph now defines otherwise, until `commit` or `abort`; a refusal leaves them as they were.
     pub(crate) fn rewrite(&mut self, graph: &Graph, files: &[String]) -> Result<(), EngineError> {
         let mut b = Builder::new(graph, self);
         for file in files {
@@ -114,7 +113,7 @@ impl Instances {
         self.collect(open)
     }
 
-    /// The table as it was before the latest change.
+    /// The instances as they were before the latest change.
     pub(crate) fn abort(&mut self) {
         let journal = std::mem::take(&mut self.journal);
         for (root, name) in journal.held {
@@ -286,7 +285,7 @@ impl<'a> In<'a> {
     }
 }
 
-/// One change to the table, journaled in it: what it names and scans again.
+/// One change to the instances, journaled: what it names and scans again.
 struct Builder<'b> {
     graph: &'b Graph,
     out: &'b mut Instances,

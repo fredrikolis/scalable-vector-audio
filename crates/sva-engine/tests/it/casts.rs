@@ -145,7 +145,7 @@ fn fourier_types_form_t_to_form_f() {
     assert_eq!((back.held, back.dual), (Held::Form(Var::T), true));
 }
 
-/// A form in `f` is its dual on the grid, so one the table cannot dual refuses on every asker.
+/// A form in `f` is its dual on the grid, so one the Fourier dual rules cannot dual refuses on every asker.
 #[test]
 fn a_form_in_f_with_no_dual_refuses_on_every_asker() {
     let g = graph_of(

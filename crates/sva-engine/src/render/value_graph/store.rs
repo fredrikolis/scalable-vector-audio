@@ -7,7 +7,7 @@ use std::sync::Arc;
 use sva_formula::{Hash, Held as Representation, NodeId};
 use sva_samples::{Buffer, Extent, Machine, MachineState, NodeRenderer};
 
-use super::Table;
+use super::ValueGraph;
 use super::eval::Marks;
 use super::segments::Segments;
 use super::value::{Held, Kind, Value};
@@ -37,7 +37,7 @@ pub(crate) struct Place {
     pub(crate) landed: i64,
 }
 
-/// The node a value's samples answer, as the table named it.
+/// The node a value's samples answer, as the value graph named it.
 #[derive(Clone, Debug)]
 pub(crate) struct Offer {
     stored: Stored,
@@ -331,7 +331,7 @@ fn over(buffer: &Arc<Buffer>, e: Extent) -> Option<Arc<Buffer>> {
     })
 }
 
-impl Table {
+impl ValueGraph {
     /// What `at` computed, kept with the node its samples answer.
     pub(crate) fn kept(
         &mut self,
@@ -553,16 +553,16 @@ struct Under {
 }
 
 impl Under {
-    fn of(table: &Table) -> Under {
-        let span = table.values.span();
+    fn of(value_graph: &ValueGraph) -> Under {
+        let span = value_graph.values.span();
         let mut readers = vec![0u32; span];
         let distinct = |at: usize| {
-            let mut reads = table.values[at].reads.clone();
+            let mut reads = value_graph.values[at].reads.clone();
             reads.sort_unstable();
             reads.dedup();
             reads
         };
-        for at in table.values.ordered() {
+        for at in value_graph.values.ordered() {
             for read in distinct(at) {
                 readers[read] += 1;
             }
@@ -572,8 +572,8 @@ impl Under {
             apart: vec![Rc::default(); span],
             moved: vec![0.0; span],
         };
-        for at in table.values.ordered() {
-            let (mut own, mut moved) = (table.planned[at], table.values[at].moved);
+        for at in value_graph.values.ordered() {
+            let (mut own, mut moved) = (value_graph.planned[at], value_graph.values[at].moved);
             let mut sets: Vec<Rc<BTreeSet<usize>>> = Vec::new();
             let mut more = Vec::new();
             for read in distinct(at) {

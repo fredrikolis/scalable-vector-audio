@@ -130,7 +130,7 @@ fn infer_agrees_with_normalize_and_dual_on_every_fixture() {
     }
 }
 
-/// Inference reads the table's preconditions, never its version, so a row nothing reaches
+/// Inference reads the Fourier dual rules' preconditions, never their version, so a rule nothing reaches
 /// retypes nothing.
 #[test]
 fn adding_a_dead_rule_retypes_nothing() {

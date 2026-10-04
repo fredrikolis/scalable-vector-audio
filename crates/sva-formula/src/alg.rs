@@ -2,7 +2,7 @@
 
 use crate::affine::{Axis, Coeff};
 use crate::closed_form::Unary;
-use crate::table::class::{AtomClass, Factors, Growth, dual_class};
+use crate::fourier_dual::class::{AtomClass, Factors, Growth, dual_class};
 
 /// The atom classes `normalize` would reach, abstracted from their parameters, each held once.
 #[derive(Clone, Debug)]

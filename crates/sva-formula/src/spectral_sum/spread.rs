@@ -4,9 +4,9 @@ use std::f64::consts::TAU;
 
 use crate::closed_form::{Body, Part, Series, Unary};
 use crate::complex::C64;
+use crate::fourier_dual::series::{Shape, SymDelta, SymLine, read_with, write};
 use crate::refusal::{AtomSketch, Factor, Left, LeftReason};
 use crate::spectral_sum::atom::{Indicator, Singular, SpectralAtom};
-use crate::table::series::{Shape, SymDelta, SymLine, read_with, write};
 use crate::through::Reads;
 
 /// A finite line sum times a line series is one series per factor, each moved by that

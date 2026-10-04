@@ -1,4 +1,4 @@
-// Concern: states that memory answers a node through any length of moved nodes | Non-concern: when a value keeps them (render/table/store.rs) | IO: (keeps) -> Known
+// Concern: states that memory answers a node through any length of moved nodes | Non-concern: when a value keeps them (render/value_graph/store.rs) | IO: (keeps) -> Known
 
 use std::sync::Arc;
 

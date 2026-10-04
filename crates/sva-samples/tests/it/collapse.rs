@@ -1,4 +1,4 @@
-// Concern: states which row of the collapse table each closed form shape takes, and what its label says | Non-concern: the spectral sum under it (sva-formula) | IO: (a ClosedForm) -> Buffer and Label
+// Concern: states which collapse row each closed form shape takes, and what its label says | Non-concern: the spectral sum under it (sva-formula) | IO: (a ClosedForm) -> Buffer and Label
 
 use crate::helpers::{part, render, whole_second};
 use std::f64::consts::{PI, TAU};

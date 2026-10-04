@@ -1,11 +1,11 @@
-// Concern: states where a changed stream's typing and table differ from a build of all it plays that carries nothing over | Non-concern: the samples either plays | IO: (Stream) -> differences
+// Concern: states where a changed stream's typing and value graph differ from a build of all it plays that carries nothing over | Non-concern: the samples either plays | IO: (Stream) -> differences
 
 use std::collections::BTreeMap;
 
 use super::Stream;
 use crate::refs;
-use crate::render::table::{Kind, Table, Value};
 use crate::render::terms::{NOTES, is_term};
+use crate::render::value_graph::{Kind, Value, ValueGraph};
 use crate::render::world::{Root, STREAMED, Walked, Wanted, World};
 use crate::typing::Typing;
 
@@ -40,14 +40,16 @@ impl Stream {
         }
         let theirs = &mut fresh.typing;
         let id = theirs.id(STREAMED).expect("the root");
-        let mut table = Table::new(&self.config.render.profile);
-        let root = table.grow(theirs, id, &BTreeMap::new()).expect("a table");
+        let mut value_graph = ValueGraph::new(&self.config.render.profile);
+        let root = value_graph
+            .grow(theirs, id, &BTreeMap::new())
+            .expect("a value graph");
         let mut out = Vec::new();
         typings(mine, theirs, &mut out);
-        let at = self.driver.table.root;
-        tables(
-            (&self.driver.table, at, mine),
-            (&table, root, theirs),
+        let at = self.driver.value_graph.root;
+        value_graphs(
+            (&self.driver.value_graph, at, mine),
+            (&value_graph, root, theirs),
             &mut out,
         );
         Some(out)
@@ -73,18 +75,22 @@ fn typings(mine: &Typing, theirs: &Typing, out: &mut Vec<String>) {
 }
 
 /// Each value the two roots reach, by key: what each holds, and the keys it reads.
-fn tables(
-    (a, a_root, a_tys): (&Table, usize, &Typing),
-    (b, b_root, b_tys): (&Table, usize, &Typing),
+fn value_graphs(
+    (a, a_root, a_tys): (&ValueGraph, usize, &Typing),
+    (b, b_root, b_tys): (&ValueGraph, usize, &Typing),
     out: &mut Vec<String>,
 ) {
     let (mine, theirs) = (reached(a, a_root), reached(b, b_root));
-    let shape = |table: &Table, held: &BTreeMap<_, usize>, root: usize| {
-        (held.len(), table.moved(), table.values[root].key)
+    let shape = |value_graph: &ValueGraph, held: &BTreeMap<_, usize>, root: usize| {
+        (
+            held.len(),
+            value_graph.moved(),
+            value_graph.values[root].key,
+        )
     };
     let (x, y) = (shape(a, &mine, a_root), shape(b, &theirs, b_root));
     if x != y {
-        out.push(format!("a table of {x:?}, not {y:?}"));
+        out.push(format!("a value graph of {x:?}, not {y:?}"));
         return;
     }
     for (key, y) in &theirs {
@@ -93,8 +99,8 @@ fn tables(
             continue;
         };
         let (x, y) = (&a.values[*x], &b.values[*y]);
-        let keys = |table: &Table, v: &Value| -> Vec<_> {
-            v.reads.iter().map(|r| table.values[*r].key).collect()
+        let keys = |value_graph: &ValueGraph, v: &Value| -> Vec<_> {
+            v.reads.iter().map(|r| value_graph.values[*r].key).collect()
         };
         let named = |tys: &Typing, v: &Value| v.node.map(|id| tys.name(id).to_string());
         let same = (
@@ -123,10 +129,13 @@ fn tables(
 }
 
 /// Each value `root` reaches, by key.
-fn reached(table: &Table, root: usize) -> BTreeMap<crate::render::table::Key, usize> {
+fn reached(
+    value_graph: &ValueGraph,
+    root: usize,
+) -> BTreeMap<crate::render::value_graph::Key, usize> {
     let (mut held, mut open) = (BTreeMap::new(), vec![root]);
     while let Some(at) = open.pop() {
-        let value = &table.values[at];
+        let value = &value_graph.values[at];
         if held.insert(value.key, at).is_none() {
             open.extend(value.reads.iter().copied());
         }

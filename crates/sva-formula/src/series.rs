@@ -8,8 +8,8 @@ use crate::closed_form::{
 };
 use crate::complex::C64;
 use crate::env::Env;
+use crate::fourier_dual::series::{Shape, read_with};
 use crate::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom};
-use crate::table::series::{Shape, read_with};
 use crate::through::{Opaque, Reads};
 
 /// A tempered limit needs the coefficient polynomially bounded: `1/k` is, `2^k` is not.

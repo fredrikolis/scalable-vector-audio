@@ -1,4 +1,4 @@
-// Concern: what an index expression denotes: an integer, and the rounded line plus count it sums to | Non-concern: reading a value there (render/table/program.rs) | IO: (&Expr, Cx) -> bool, Index
+// Concern: what an index expression denotes: an integer, and the rounded line plus count it sums to | Non-concern: reading a value there (render/value_graph/program.rs) | IO: (&Expr, Cx) -> bool, Index
 
 use sva_ast::{Arg, BinOp, CEIL, Expr, FLOOR, INDEX, Literal};
 pub use sva_samples::Round;

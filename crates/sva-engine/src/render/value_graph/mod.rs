@@ -1,4 +1,4 @@
-// Concern: the one table of values, keyed by identity and step, that renders, streams, prices and logs read | Non-concern: typing, readings off samples | IO: (Typing, roots) -> Table, samples
+// Concern: the one graph of values, keyed by identity and step, that renders, streams, prices and logs read | Non-concern: typing, readings off samples | IO: (Typing, roots) -> ValueGraph, samples
 
 mod demand;
 pub(crate) mod edit;
@@ -38,7 +38,7 @@ use value::Program;
 
 /// Every value the root and each wanted node read, once per identity and step, each in its
 /// slot while a reader, a node or the root holds it.
-pub(crate) struct Table {
+pub(crate) struct ValueGraph {
     pub(crate) values: Values,
     nodes: BTreeMap<NodeId, usize>,
     pub(crate) root: usize,
@@ -50,7 +50,7 @@ pub(crate) struct Table {
     pub(crate) built: usize,
     pub(crate) supports: Memo,
     rooted: bool,
-    /// Each value started silent since the table last settled.
+    /// Each value started silent since the value graph last settled.
     silenced: Vec<usize>,
     /// What a build made and named, until settled or let go.
     draft: Draft,
@@ -67,9 +67,9 @@ struct Draft {
 /// samples alone is a value of its own, and the nodes memory answers.
 type Bounds<'b> = (i128, bool, &'b BTreeMap<NodeId, Arc<Stored>>);
 
-impl Table {
-    pub(crate) fn new(profile: &Profile) -> Table {
-        Table {
+impl ValueGraph {
+    pub(crate) fn new(profile: &Profile) -> ValueGraph {
+        ValueGraph {
             values: Values::default(),
             nodes: BTreeMap::new(),
             root: 0,
@@ -92,9 +92,9 @@ impl Table {
         root: NodeId,
         wanted: &[NodeId],
         profile: &Profile,
-    ) -> Result<Table, EngineError> {
+    ) -> Result<ValueGraph, EngineError> {
         let none = (1, false, &BTreeMap::new());
-        Table::new(profile).built(tys, (root, wanted), none, false)
+        ValueGraph::new(profile).built(tys, (root, wanted), none, false)
     }
 
     /// The same, each node a reader may take as its samples alone a value of its own wherever
@@ -104,10 +104,10 @@ impl Table {
         (root, wanted): (NodeId, &[NodeId]),
         profile: &Profile,
         (found, hits): (Memo, &BTreeMap<NodeId, Arc<Stored>>),
-    ) -> Result<Table, EngineError> {
-        let mut table = Table::new(profile);
-        table.supports = found;
-        table.built(tys, (root, wanted), (1, true, hits), false)
+    ) -> Result<ValueGraph, EngineError> {
+        let mut value_graph = ValueGraph::new(profile);
+        value_graph.supports = found;
+        value_graph.built(tys, (root, wanted), (1, true, hits), false)
     }
 
     /// Every read its own value, as if each were written out where it is read.
@@ -117,9 +117,9 @@ impl Table {
         root: NodeId,
         wanted: &[NodeId],
         profile: &Profile,
-    ) -> Result<Table, EngineError> {
+    ) -> Result<ValueGraph, EngineError> {
         let none = (1, false, &BTreeMap::new());
-        Table::new(profile).built(tys, (root, wanted), none, true)
+        ValueGraph::new(profile).built(tys, (root, wanted), none, true)
     }
 
     /// Every value `fine` times finer than its own step: a closed form's reference.
@@ -129,9 +129,9 @@ impl Table {
         wanted: &[NodeId],
         profile: &Profile,
         fine: i128,
-    ) -> Result<Table, EngineError> {
+    ) -> Result<ValueGraph, EngineError> {
         let finer = (fine, false, &BTreeMap::new());
-        Table::new(profile).built(tys, (root, wanted), finer, false)
+        ValueGraph::new(profile).built(tys, (root, wanted), finer, false)
     }
 
     fn built(
@@ -140,7 +140,7 @@ impl Table {
         (root, wanted): (NodeId, &[NodeId]),
         bounds: Bounds<'_>,
         apart: bool,
-    ) -> Result<Table, EngineError> {
+    ) -> Result<ValueGraph, EngineError> {
         let mut held = Vec::with_capacity(wanted.len() + 1);
         for id in std::iter::once(&root).chain(wanted) {
             held.push(self.grown(tys, Start::Node(*id), (bounds, apart))?);
@@ -150,7 +150,7 @@ impl Table {
         Ok(self)
     }
 
-    /// The value for `id` and each it reads the table lacks, built as `bounded` builds them,
+    /// The value for `id` and each it reads the value graph lacks, built as `bounded` builds them,
     /// each node in `hits` standing on the samples memory answered it with.
     pub(crate) fn grow(
         &mut self,
@@ -225,7 +225,7 @@ impl Table {
             apart,
             reading: Vec::new(),
             open: Vec::new(),
-            table: self,
+            value_graph: self,
         };
         let built = building.node(start);
         let more = supports.into_memo();
@@ -725,7 +725,7 @@ impl Table {
 pub(crate) struct Pulled {
     pub(crate) priced: u128,
     pub(crate) waves: u128,
-    /// The most bytes the table held once a block was computed.
+    /// The most bytes the value graph held once a block was computed.
     pub(crate) most_bytes: usize,
 }
 
@@ -741,7 +741,7 @@ struct Building<'a> {
     /// The nodes whose reads are being built, apart.
     reading: Vec<NodeId>,
     open: Vec<Key>,
-    table: &'a mut Table,
+    value_graph: &'a mut ValueGraph,
 }
 
 /// A step of a build, run off a stack so that a chain of reads costs heap, never call depth;
@@ -805,11 +805,11 @@ impl Building<'_> {
                 Step::Node(id) => self.noded(id, &mut steps, &mut resolved)?,
                 Step::Pass(id) => {
                     let at = *resolved.last().expect("the passed value");
-                    self.table.name(id, at);
+                    self.value_graph.name(id, at);
                 }
                 Step::Own(id) => {
                     let at = *resolved.last().expect("the node's value");
-                    self.table.name(id, at);
+                    self.value_graph.name(id, at);
                 }
                 Step::Source(source, grid, name) => {
                     steps.extend(self.source(source, grid, name)?);
@@ -818,7 +818,7 @@ impl Building<'_> {
                     self.reading.pop();
                 }
                 Step::Value(key, source, grid, name) => {
-                    if let Some(at) = self.table.values.of(&key).filter(|_| !self.apart) {
+                    if let Some(at) = self.value_graph.values.of(&key).filter(|_| !self.apart) {
                         resolved.push(at);
                         continue;
                     }
@@ -829,7 +829,7 @@ impl Building<'_> {
                         return Err(refs::cyclic(self.tys, id));
                     }
                     self.open.push(key);
-                    self.table.built += 1;
+                    self.value_graph.built += 1;
                     let (value, then, reads) = self.building(key, &source, grid, &name)?;
                     let open = Open {
                         value,
@@ -843,7 +843,7 @@ impl Building<'_> {
                     let reads = resolved.split_off(resolved.len() - open.reads);
                     let value = self.finished(*open, reads)?;
                     self.open.pop();
-                    resolved.push(self.table.make(value));
+                    resolved.push(self.value_graph.make(value));
                 }
             }
         }
@@ -856,7 +856,7 @@ impl Building<'_> {
         steps: &mut Vec<Step>,
         resolved: &mut Vec<usize>,
     ) -> Result<(), EngineError> {
-        if let Some(at) = self.table.nodes.get(&id) {
+        if let Some(at) = self.value_graph.nodes.get(&id) {
             resolved.push(*at);
             return Ok(());
         }
@@ -866,7 +866,7 @@ impl Building<'_> {
         });
         if let Some(stored) = hit {
             let at = self.resident(id, self.own(id)?, stored);
-            self.table.name(id, at);
+            self.value_graph.name(id, at);
             resolved.push(at);
             return Ok(());
         }
@@ -903,7 +903,7 @@ impl Building<'_> {
             identity: crate::cache::mixed(key.identity, &[PREFIX]),
             step: key.step,
         };
-        if let Some(at) = self.table.values.of(&key) {
+        if let Some(at) = self.value_graph.values.of(&key) {
             return at;
         }
         let value = Value {
@@ -924,7 +924,7 @@ impl Building<'_> {
             moved: stored.moved,
             pure: true,
         };
-        self.table.make(value)
+        self.value_graph.make(value)
     }
 
     fn grid(&self, id: NodeId) -> Grid {
@@ -1082,7 +1082,7 @@ impl Building<'_> {
     }
 
     /// A form in `f` is, on the grid, the form in `t` its dual is; one with no dual refuses as
-    /// the table refuses its dual.
+    /// the Fourier dual rules refuse its dual.
     fn spectrum(&mut self, value: Value, id: NodeId) -> Result<Value, EngineError> {
         let sum = refs::spectral_sum_of(self.tys, id, Var::T)?;
         self.formula(value, Some(sum), None)
@@ -1197,7 +1197,7 @@ impl Building<'_> {
     ) -> Result<Value, EngineError> {
         let endless = |slot: Slot| match slot {
             Slot::Own => true,
-            Slot::Read(at) => !self.table.values[reads[at.0 as usize]]
+            Slot::Read(at) => !self.value_graph.values[reads[at.0 as usize]]
                 .support()
                 .is_bounded(),
         };
@@ -1228,7 +1228,7 @@ impl Building<'_> {
         sites: Vec<sva_samples::Site>,
         start: Option<i64>,
     ) -> Result<Value, EngineError> {
-        let values = &self.table.values;
+        let values = &self.value_graph.values;
         let widths = reads.iter().map(|at| values[*at].width).collect();
         let live: Vec<Extent> = reads.iter().map(|at| values[*at].support()).collect();
         let layout = sva_samples::machine::ops::Layout {

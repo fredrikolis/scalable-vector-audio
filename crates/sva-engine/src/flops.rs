@@ -1,9 +1,9 @@
-// Concern: counts what a render costs in operations, per value, off the table's own plan | Non-concern: running any of it (render/) | IO: (&Render) -> Tree, Work
+// Concern: counts what a render costs in operations, per value, off the value graph's own plan | Non-concern: running any of it (render/) | IO: (&Render) -> Tree, Work
 
 use std::collections::BTreeSet;
 
 use crate::render::Render;
-use crate::render::table::{Kind, Table};
+use crate::render::value_graph::{Kind, ValueGraph};
 
 /// `subtree` is what the holder pays for this value; `shared` marks one an earlier row already
 /// paid for, read again at no cost.
@@ -51,9 +51,9 @@ const PASS_THROUGH_PERCENT: u128 = 99;
 /// Every value once, however many read it.
 pub fn total(render: &Render) -> u128 {
     render
-        .table
+        .value_graph
         .as_ref()
-        .map_or(0, |table| table.planned.iter().sum())
+        .map_or(0, |value_graph| value_graph.planned.iter().sum())
 }
 
 pub fn tree(render: &Render) -> Tree {
@@ -61,10 +61,10 @@ pub fn tree(render: &Render) -> Tree {
 }
 
 pub fn tree_at(render: &Render, node: sva_formula::NodeId) -> Tree {
-    let Some((table, at)) = render
-        .table
+    let Some((value_graph, at)) = render
+        .value_graph
         .as_ref()
-        .and_then(|table| Some((table, table.of(node)?)))
+        .and_then(|value_graph| Some((value_graph, value_graph.of(node)?)))
     else {
         return Tree {
             total: 0,
@@ -72,10 +72,10 @@ pub fn tree_at(render: &Render, node: sva_formula::NodeId) -> Tree {
             rows: Vec::new(),
         };
     };
-    let root = grow(table, at, &mut BTreeSet::new());
+    let root = grow(value_graph, at, &mut BTreeSet::new());
     let total = root.subtree;
     let mut rows = Vec::new();
-    emit(&root, table, 0, total, &mut rows);
+    emit(&root, value_graph, 0, total, &mut rows);
     Tree {
         total,
         budget: render.config.budget(),
@@ -93,10 +93,10 @@ pub fn dominating(tree: &Tree) -> Option<&Row> {
         .or(Some(root))
 }
 
-fn grow(table: &Table, at: usize, walked: &mut BTreeSet<usize>) -> Node {
+fn grow(value_graph: &ValueGraph, at: usize, walked: &mut BTreeSet<usize>) -> Node {
     walked.insert(at);
-    let own = table.planned[at];
-    let mut reads = table.values[at].reads.clone();
+    let own = value_graph.planned[at];
+    let mut reads = value_graph.values[at].reads.clone();
     reads.dedup();
     let children: Vec<Node> = reads
         .into_iter()
@@ -108,7 +108,7 @@ fn grow(table: &Table, at: usize, walked: &mut BTreeSet<usize>) -> Node {
                 shared: true,
                 children: Vec::new(),
             },
-            false => grow(table, read, walked),
+            false => grow(value_graph, read, walked),
         })
         .collect();
     Node {
@@ -121,9 +121,12 @@ fn grow(table: &Table, at: usize, walked: &mut BTreeSet<usize>) -> Node {
 }
 
 /// The rule its label names, or a program's own where it has none.
-fn route(table: &Table, at: usize) -> &'static str {
-    let named = table.values[at].label.as_ref().map(|l| l.rule().as_str());
-    match &table.values[at].kind {
+fn route(value_graph: &ValueGraph, at: usize) -> &'static str {
+    let named = value_graph.values[at]
+        .label
+        .as_ref()
+        .map(|l| l.rule().as_str());
+    match &value_graph.values[at].kind {
         Kind::Rows(_) | Kind::Program(_) if named.is_some() => named.expect("a label"),
         Kind::Rows(_) => "rows",
         Kind::Program(_) => "sampled program",
@@ -133,20 +136,20 @@ fn route(table: &Table, at: usize) -> &'static str {
     }
 }
 
-fn emit(node: &Node, table: &Table, depth: usize, total: u128, rows: &mut Vec<Row>) {
+fn emit(node: &Node, value_graph: &ValueGraph, depth: usize, total: u128, rows: &mut Vec<Row>) {
     rows.push(Row {
         depth,
-        node: table.values[node.at].name.clone(),
+        node: value_graph.values[node.at].name.clone(),
         own: node.own,
         subtree: node.subtree,
         percent: percent(node.subtree, total),
-        route: route(table, node.at),
+        route: route(value_graph, node.at),
         shared: node.shared,
     });
-    children(node, table, depth + 1, total, rows);
+    children(node, value_graph, depth + 1, total, rows);
 }
 
-fn children(node: &Node, table: &Table, depth: usize, total: u128, rows: &mut Vec<Row>) {
+fn children(node: &Node, value_graph: &ValueGraph, depth: usize, total: u128, rows: &mut Vec<Row>) {
     let mut held: Vec<&Node> = node.children.iter().collect();
     held.sort_by_key(|c| std::cmp::Reverse(c.subtree));
     let (shown, folded): (Vec<&Node>, Vec<&Node>) = held
@@ -156,8 +159,8 @@ fn children(node: &Node, table: &Table, depth: usize, total: u128, rows: &mut Ve
         let restates = child.subtree * 100 >= node.subtree * PASS_THROUGH_PERCENT
             && child.own * 100 < total * FOLD_PERCENT;
         match restates && !child.children.is_empty() {
-            true => children(child, table, depth, total, rows),
-            false => emit(child, table, depth, total, rows),
+            true => children(child, value_graph, depth, total, rows),
+            false => emit(child, value_graph, depth, total, rows),
         }
     }
     if !folded.is_empty() {

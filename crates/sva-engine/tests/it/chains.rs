@@ -138,7 +138,7 @@ fn an_exponential_over_a_tone_read_twice_a_level_forty_levels_down_ends() {
 }
 
 /// A thousand refs, each reading the next as a gain, a max, a filter, a shift or a curve does,
-/// on a 1 MB stack, the most a page's wasm may count on: building the table, finding supports,
+/// on a 1 MB stack, the most a page's wasm may count on: building the value graph, finding supports,
 /// identities, sums and bounds each walk the chain readers after what they read.
 #[test]
 fn a_chain_a_thousand_refs_deep_renders_on_a_small_stack() {

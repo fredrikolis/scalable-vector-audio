@@ -60,7 +60,7 @@ fn a_render_over_a_memory_keeping_nothing_reports_its_own_reuse() {
     assert_eq!(pad.len(), 1, "one read of the pad: {stats:?}");
 }
 
-/// The walk asks a node's key and the table asks the same key of its value: one lookup.
+/// The walk asks a node's key and the value graph asks the same key of its value: one lookup.
 #[test]
 fn a_render_looks_each_key_up_once() {
     let stats = stats(&demo("once"), "b", &Tier::default());

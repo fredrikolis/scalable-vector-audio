@@ -1,4 +1,4 @@
-// Concern: the version a render or stream plays, advanced per edit, and its walk to what memory answers | Non-concern: the table, the blocks | IO: (an edit) -> a version; (a root) -> hits; commit, abort
+// Concern: the version a render or stream plays, advanced per edit, and its walk to what memory answers | Non-concern: the value graph | IO: (an edit) -> a version; (a root) -> hits; commit, abort
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -269,7 +269,7 @@ impl World {
     fn keyed(&self, path: &str, known: &Known, config: &RenderConfig) -> Option<Hash> {
         let id = self.typing.id(path)?;
         let identity = known.identity?;
-        Some(super::table::node_key(
+        Some(super::value_graph::node_key(
             &self.typing,
             id,
             identity,

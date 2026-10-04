@@ -17,7 +17,7 @@ fn round_trip(f: &Body, var: Var) {
 }
 
 /// Same atoms, in the same order, with parameters that agree: the transcendental families
-/// cannot land on the same bits, and shape is what the table actually promises.
+/// cannot land on the same bits, and shape is what the Fourier dual rules actually promise.
 fn reflects(x: &SpectralSum, name: &str) {
     let there = dual(x).expect("the fixture has a dual in A");
     let back = dual(&there).expect("the dual has a dual in A");
@@ -317,7 +317,8 @@ fn a_lowpass_on_a_negative_frequency_line_is_finite() {
         Singular::Regular,
         Origin::UNKNOWN,
     );
-    let held = sva_formula::table::dual_atom(&modulated).expect("a pole row with a reference");
+    let held =
+        sva_formula::fourier_dual::dual_atom(&modulated).expect("a pole row with a reference");
     assert!(!held.is_empty());
     for a in &held {
         for at in [-1.0, -1.001, -1.5, -2.0, 0.0] {

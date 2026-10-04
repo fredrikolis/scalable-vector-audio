@@ -213,7 +213,7 @@ impl LeftReason {
                 "the Hilbert transform of a polynomial has no tempered value"
             }
             LeftReason::NotInTable => {
-                "no row of this table version holds this atom; a later version may"
+                "no rule of this Fourier dual rules version holds this atom; a later version may"
             }
             LeftReason::NoValue => {
                 "a division or a remainder by zero names no number, and no atom holds one"

@@ -1,8 +1,8 @@
-// Concern: the abstract atom class and the image table's preconditions | Non-concern: transforming a concrete atom (the sibling families) | IO: (AtomClass) -> AtomClass or LeftReason
+// Concern: the abstract atom class and the Fourier dual rules' preconditions | Non-concern: transforming a concrete atom (the sibling families) | IO: (AtomClass) -> AtomClass or LeftReason
 
 use crate::refusal::{Factor, LeftReason};
 
-/// The rule table's preconditions read this alone, with no parameter values.
+/// The Fourier dual rules' preconditions read this alone, with no parameter values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Factors {
     pub poly: bool,
@@ -67,7 +67,7 @@ impl AtomClass {
     }
 }
 
-/// The pairs no row of the table covers, each beside the reason it names.
+/// The pairs no Fourier dual rule covers, each beside the reason it names.
 pub fn blocked_pair(f: Factors) -> Option<(Factor, Factor, LeftReason)> {
     match () {
         () if f.gauss && f.ind => Some((
@@ -89,7 +89,7 @@ pub fn blocked_pair(f: Factors) -> Option<(Factor, Factor, LeftReason)> {
     }
 }
 
-/// The order past which no row of the table names a residue.
+/// The order past which no Fourier dual rule names a residue.
 pub fn over_pole_order(order: u16) -> Option<LeftReason> {
     (order > MAX_POLE_ORDER).then_some(LeftReason::PoleOrder(order))
 }

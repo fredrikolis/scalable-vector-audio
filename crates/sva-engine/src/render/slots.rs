@@ -1,11 +1,11 @@
-// Concern: what each value a node's program reads contributed to it | Non-concern: building the program (table/), sharing a target's energy out (sva-samples) | IO: (NodeId) -> a ref and its addend
+// Concern: what each value a node's program reads contributed to it | Non-concern: building the program (value_graph/), sharing a target's energy out (sva-samples) | IO: (NodeId) -> a ref and its addend
 
 use sva_formula::NodeId;
 use sva_samples::{BufId, Buffer, NodeRenderer, Slot};
 
 use crate::error::EngineError;
 use crate::render::Render;
-use crate::render::table::{Kind, Table};
+use crate::render::value_graph::{Kind, ValueGraph};
 
 /// Every ref a node's program reads, one row per name however many slots carry it.
 pub(super) fn refs_read(
@@ -16,12 +16,12 @@ pub(super) fn refs_read(
     if let Some(only) = crate::refs::passes(&render.tys, node) {
         return Ok(holds(only).then_some(only).into_iter().collect());
     }
-    let Some((table, at)) = program(render, node) else {
+    let Some((value_graph, at)) = program(render, node) else {
         return Ok(Vec::new());
     };
     let here = render.tys.name(node);
     let mut out: Vec<NodeId> = Vec::new();
-    for source in sources(&table.values[at]) {
+    for source in sources(&value_graph.values[at]) {
         let Some(source) = source else {
             continue;
         };
@@ -37,22 +37,25 @@ pub(super) fn refs_read(
 }
 
 /// The node each slot of a program was built for.
-fn sources(value: &crate::render::table::Value) -> Vec<Option<NodeId>> {
+fn sources(value: &crate::render::value_graph::Value) -> Vec<Option<NodeId>> {
     match &value.kind {
         Kind::Program(program) => program.sources.to_vec(),
         _ => Vec::new(),
     }
 }
 
-/// The table's program for `node`, where it computes one.
-fn program(render: &Render, node: NodeId) -> Option<(&Table, usize)> {
-    let table = render.table.as_ref()?;
-    let at = table.of(node)?;
-    matches!(table.values[at].kind, Kind::Program(_)).then_some((table, at))
+/// The value graph's program for `node`, where it computes one.
+fn program(render: &Render, node: NodeId) -> Option<(&ValueGraph, usize)> {
+    let value_graph = render.value_graph.as_ref()?;
+    let at = value_graph.of(node)?;
+    matches!(value_graph.values[at].kind, Kind::Program(_)).then_some((value_graph, at))
 }
 
 pub(super) fn reads_held(render: &Render, node: NodeId) -> Result<bool, EngineError> {
-    Ok(render.table.as_ref().is_some_and(|t| t.of(node).is_some()))
+    Ok(render
+        .value_graph
+        .as_ref()
+        .is_some_and(|t| t.of(node).is_some()))
 }
 
 /// The ref one slot stands for: its source, or — where that source is a subterm written here,
@@ -95,10 +98,10 @@ pub(super) fn contributed(
     let Some((renderer, kept)) = isolated(render, parent, child, &holds)? else {
         return Ok(None);
     };
-    let (table, at) = program(render, parent).expect("an isolated edge is a program's");
+    let (value_graph, at) = program(render, parent).expect("an isolated edge is a program's");
     let range = render.range.expect("a ledger reads a decided range");
     let held = |id: BufId| kept.contains(&id);
-    table
+    value_graph
         .rerun(at, &silenced(&renderer, &held), range)
         .map(Some)
 }
@@ -109,10 +112,10 @@ pub(super) fn isolated(
     child: NodeId,
     holds: &dyn Fn(NodeId) -> bool,
 ) -> Result<Option<(NodeRenderer, Vec<BufId>)>, EngineError> {
-    let Some((table, at)) = program(render, parent) else {
+    let Some((value_graph, at)) = program(render, parent) else {
         return Ok(None);
     };
-    let Kind::Program(program) = &table.values[at].kind else {
+    let Kind::Program(program) = &value_graph.values[at].kind else {
         return Ok(None);
     };
     let (here, name) = (render.tys.name(parent), render.tys.name(child));

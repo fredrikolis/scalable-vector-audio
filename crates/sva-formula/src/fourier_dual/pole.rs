@@ -3,11 +3,11 @@
 use std::f64::consts::{PI, TAU};
 
 use crate::complex::C64;
+use crate::fourier_dual::exponential::line_row;
+use crate::fourier_dual::indicator::signum;
 use crate::origin::Origin;
 use crate::refusal::{AtomSketch, Factor, Left, LeftReason};
 use crate::spectral_sum::atom::{Exp, Factors, Poly, Singular, SpectralAtom};
-use crate::table::exponential::line_row;
-use crate::table::indicator::signum;
 
 /// The polynomial is first rewritten in powers of `u-p`, leaving pure poles beside one.
 pub(crate) fn row(a: &SpectralAtom) -> Result<Vec<SpectralAtom>, Left> {

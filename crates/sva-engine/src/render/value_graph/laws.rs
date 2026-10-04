@@ -209,8 +209,8 @@ fn a_value_held_apart_is_keyed_as_the_shared_one() {
             continue;
         };
         let keys = |held: &crate::render::Render| -> Vec<_> {
-            let table = held.table.as_ref().expect("a table");
-            table.values.iter().map(|(_, v)| v.key).collect()
+            let value_graph = held.value_graph.as_ref().expect("a value graph");
+            value_graph.values.iter().map(|(_, v)| v.key).collect()
         };
         let (shared, apart) = (keys(&shared), keys(&apart));
         let distinct: std::collections::BTreeSet<_> = apart.iter().copied().collect();
@@ -275,7 +275,7 @@ fn changed(
     }
 }
 
-/// However its terms and target changed, a stream holds the typing and table a build of all it
+/// However its terms and target changed, a stream holds the typing and value graph a build of all it
 /// plays, carrying nothing over, would: what a change carries over is what it would build. A
 /// memory keeping nothing leaves both answered by no store.
 #[test]

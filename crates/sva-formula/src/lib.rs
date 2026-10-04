@@ -9,6 +9,7 @@ pub mod complex;
 mod content_hash;
 pub mod env;
 pub mod filter;
+pub mod fourier_dual;
 pub mod hash;
 pub mod infer;
 pub mod modal;
@@ -20,7 +21,6 @@ pub mod refusal;
 pub mod run;
 pub mod series;
 pub mod spectral_sum;
-pub mod table;
 pub mod through;
 pub mod ty;
 pub mod underflow;
@@ -35,6 +35,9 @@ pub use complex::C64;
 pub use content_hash::{ContentHasher, HashDomain};
 pub use env::{Env, NodeId, ParamId};
 pub use filter::{ALL_SHAPES, Shape, design};
+pub use fourier_dual::{
+    FAMILIES, FOURIER_DUAL_RULES_VERSION, dual, dual_read, inverse, inverse_read, reflect,
+};
 pub use hash::{Hash, draw, draw_nearest, either_order, hash_written_with};
 pub use infer::infer;
 pub use modal::damping::Damping;
@@ -50,7 +53,6 @@ pub use spectral_sum::atom::{Exp, Factors, Gauss, Indicator, Pole, Singular, Spe
 pub use spectral_sum::build::{normalize, normalize_closed_form, normalize_read};
 pub use spectral_sum::image::crop_peeled;
 pub use spectral_sum::{Lane, SpectralSum};
-pub use table::{FAMILIES, TABLE_VERSION, dual, dual_read, inverse, inverse_read, reflect};
 pub use through::{Kept, Opaque, Reads, Through};
 pub use ty::{Codomain, Held, MAX_WIDTH, Mismatch, Ty};
 pub use underflow::exp_zero_at;

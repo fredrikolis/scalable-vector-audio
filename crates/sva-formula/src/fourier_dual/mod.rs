@@ -1,4 +1,4 @@
-// Concern: dispatches one atom to its family and versions the whole table | Non-concern: any family's own image (the sibling files) | IO: (&SpectralSum) -> SpectralSum or Left
+// Concern: dispatches one atom to its family and versions the whole rule set | Non-concern: any family's own image (the sibling files) | IO: (&SpectralSum) -> SpectralSum or Left
 
 pub(crate) mod class;
 pub mod exponential;
@@ -20,9 +20,9 @@ use class::{blocked_pair, over_pole_order};
 
 /// A persistent store's version names it, so a bump retires each entry written before it. 4: a
 /// polynomial keeps the instant it is read from, and a sample is read at its exact instant.
-pub const TABLE_VERSION: u64 = 4;
+pub const FOURIER_DUAL_RULES_VERSION: u64 = 4;
 
-/// The families this table duals.
+/// The families these rules dual.
 pub const FAMILIES: [(&str, &str); 5] = [
     (
         "exponential",

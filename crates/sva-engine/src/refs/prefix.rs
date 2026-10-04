@@ -10,7 +10,7 @@ use super::identity::{identity, solver};
 use super::{PerNode, read_through, reads_through};
 use crate::error::EngineError;
 use crate::lower::field;
-use crate::render::table::support::window;
+use crate::render::value_graph::support::window;
 use crate::typing::{Typing, Value};
 
 /// Each switch a solver's arguments make, and the solver's identity before it: a note released

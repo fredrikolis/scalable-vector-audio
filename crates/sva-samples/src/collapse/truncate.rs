@@ -6,11 +6,11 @@ use std::f64::consts::TAU;
 
 use sva_formula::affine::{Axis, axis_read, exact_constant_at, exact_constant_read};
 use sva_formula::closed_form::{Bound, Series, children, map_children};
+use sva_formula::fourier_dual::series::{Shape, read_with};
 use sva_formula::series::{falls, mentions, mentions_line_read, ratio, substitute};
 use sva_formula::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom};
 use sva_formula::spectral_sum::merge::simplify;
 use sva_formula::spectral_sum::sup::sup_from;
-use sva_formula::table::series::{Shape, read_with};
 use sva_formula::through::{Read, looked};
 use sva_formula::{
     Banded, Body, C64, Codomain, Env, IndexId, Lane, NodeId, Opaque, ParamId, Part, Reads, Run,

@@ -1,4 +1,4 @@
-// Concern: holds one instance per argument tuple and resolves a name inside one | Non-concern: building the table (build.rs), writing a resolved walk out (resolved.rs) | IO: (path) -> a body, a Node
+// Concern: holds one instance per argument tuple and resolves a name inside one | Non-concern: building the instances (build.rs), writing a resolved walk out (resolved.rs) | IO: (path) -> a body, a Node
 
 mod build;
 mod edges;

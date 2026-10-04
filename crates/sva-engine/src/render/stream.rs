@@ -10,9 +10,9 @@ use sva_samples::{Buffer, Extent};
 
 use super::drive::Driver;
 use super::end::{Ending, Fading, Heard, under};
-use super::table::support::Supports;
-use super::table::{Past, Table};
 use super::terms::{Handle, NOTES, Terms, cut, placed};
+use super::value_graph::support::Supports;
+use super::value_graph::{Past, ValueGraph};
 use super::world::{Plan, Root, STREAMED, Walked, Wanted, World};
 use super::{Ends, RenderConfig, range_over};
 use crate::cache::{Backend, CacheStats, Counters, Memory, Recording, Stored, Tier};
@@ -34,7 +34,7 @@ pub struct StreamConfig {
     pub render: RenderConfig,
 }
 
-/// A target rendered block by block off one table, reading `@notes`, the sum of the terms
+/// A target rendered block by block off one value graph, reading `@notes`, the sum of the terms
 /// added. A change builds only what it changed or newly reads; the rest stays as it stood.
 pub struct Stream {
     config: StreamConfig,
@@ -104,9 +104,9 @@ impl Stream {
         let world = World::over(graph, render.rate, !graph.defines(NOTES));
         let memory = tier.memory().clone();
         let recording = Recording::over(&memory).latest(LATEST);
-        let table = Table::new(&render.profile);
+        let value_graph = ValueGraph::new(&render.profile);
         let memo = (memory, recording);
-        let driver = Driver::new(table, Extent::new(0, 0), config.block, &render, memo);
+        let driver = Driver::new(value_graph, Extent::new(0, 0), config.block, &render, memo);
         let mut stream = Stream {
             world,
             driver,
@@ -150,7 +150,7 @@ impl Stream {
         while !needs.is_empty() {
             let fetched = tier.fetch(&needs).await;
             for (key, parts) in fetched.handed {
-                stream.driver.table.took(key, &parts);
+                stream.driver.value_graph.took(key, &parts);
             }
             needs = fetched.left;
         }
@@ -257,31 +257,31 @@ impl Stream {
             Ok(held) => held,
             Err(e) => {
                 let freed = self.world.abort();
-                self.driver.table.abort(&freed);
+                self.driver.value_graph.abort(&freed);
                 return Err(e);
             }
         };
         let from = self.driver.at.max(range.start);
         let future = Extent::new(from, self.last(range.end).max(from));
-        let table = &mut self.driver.table;
-        let short = table.short((root, future, Past::Stored));
+        let value_graph = &mut self.driver.value_graph;
+        let short = value_graph.short((root, future, Past::Stored));
         let opened = short
             .into_iter()
-            .try_for_each(|at| table.read_on(&self.world.typing, at));
+            .try_for_each(|at| value_graph.read_on(&self.world.typing, at));
         if let Err(e) = opened {
             let freed = self.world.abort();
-            self.driver.table.abort(&freed);
+            self.driver.value_graph.abort(&freed);
             return Err(e);
         }
         let window = ahead(from, self.config.render.rate);
-        let wants = self.driver.table.needs_made(root, window);
+        let wants = self.driver.value_graph.needs_made(root, window);
         let wants: Vec<(Hash, Extent)> = wants
             .into_iter()
             .filter(|(key, over)| !local.holds(*key, *over))
             .collect();
         if !wants.is_empty() {
             let freed = self.world.abort();
-            self.driver.table.abort(&freed);
+            self.driver.value_graph.abort(&freed);
             return Ok(Attempt::Reads(wants));
         }
         self.cut = cut;
@@ -303,9 +303,9 @@ impl Stream {
             .iter()
             .filter_map(|(path, stored)| Some((typing.id(path)?, Arc::clone(stored))))
             .collect();
-        let table = &mut self.driver.table;
-        let root = table.grow(typing, id, &hits)?;
-        let plays = table.values[root].width;
+        let value_graph = &mut self.driver.value_graph;
+        let root = value_graph.grow(typing, id, &hits)?;
+        let plays = value_graph.values[root].width;
         let mut render = self.config.render.clone();
         match self.width {
             0 if self.config.channels == Some(0) => {
@@ -317,7 +317,7 @@ impl Stream {
                 render.range.start = Some(self.driver.start);
             }
         }
-        let supports = Supports::over(typing, Some(&table.supports));
+        let supports = Supports::over(typing, Some(&value_graph.supports));
         let ending = Ending::new(typing, &render.profile, &supports);
         let end = match (render.range.end, self.live) {
             (None, false) => ending.of(id),
@@ -336,20 +336,23 @@ impl Stream {
     ) -> Changed {
         let freed = self.world.commit(std::mem::take(&mut plan.found));
         let now = self.driver.at;
-        let made = self.driver.table.made().to_vec();
-        let carried = self.driver.table.settled(root, &freed, (now, self.live));
-        self.driver.table.priced(range, &made);
-        self.driver.table.offers(&self.world.typing, range);
+        let made = self.driver.value_graph.made().to_vec();
+        let carried = self
+            .driver
+            .value_graph
+            .settled(root, &freed, (now, self.live));
+        self.driver.value_graph.priced(range, &made);
+        self.driver.value_graph.offers(&self.world.typing, range);
         for (key, parts) in &local.fetched {
-            self.driver.table.took(*key, parts);
+            self.driver.value_graph.took(*key, parts);
         }
         for at in &carried.silent {
             self.dropped
-                .push(self.driver.table.values[*at].name.clone());
+                .push(self.driver.value_graph.values[*at].name.clone());
         }
         match self.width {
             0 => {
-                let plays = self.driver.table.values[root].width;
+                let plays = self.driver.value_graph.values[root].width;
                 self.width = self.config.channels.unwrap_or(plays);
                 (self.driver.start, self.driver.at) = (range.start, range.start);
             }
@@ -368,7 +371,7 @@ impl Stream {
             instances: plan.named,
             visited: plan.visited,
             typed: self.world.typing.lowered().len(),
-            values: self.driver.table.built,
+            values: self.driver.value_graph.built,
             copied: carried.taken,
             lookups: local.lookups,
         };
@@ -381,7 +384,7 @@ impl Stream {
     /// again only where the key of what it is a function of moved.
     fn hear(&mut self) {
         let typing = &self.world.typing;
-        let supports = Supports::over(typing, Some(&self.driver.table.supports));
+        let supports = Supports::over(typing, Some(&self.driver.value_graph.supports));
         let ending = Ending::new(typing, &self.config.render.profile, &supports);
         let ends = typing.id(STREAMED).zip(typing.id(NOTES));
         let key = ends.and_then(|(root, notes)| ending.gain_key(root, notes));
@@ -405,7 +408,7 @@ impl Stream {
 
     fn needs(&self) -> Vec<(Hash, Extent)> {
         let next = ahead(self.driver.at, self.config.render.rate);
-        self.driver.table.needs(next)
+        self.driver.value_graph.needs(next)
     }
 
     /// `n` samples from `at`, `None` past the end. An `at` behind is refused; one ahead skips
@@ -430,7 +433,7 @@ impl Stream {
             true if at > now => {
                 for silenced in self.driver.skip(at)? {
                     self.dropped
-                        .push(self.driver.table.values[silenced].name.clone());
+                        .push(self.driver.value_graph.values[silenced].name.clone());
                 }
             }
             _ => {
@@ -458,20 +461,20 @@ impl Stream {
         let at = self.driver.at;
         let range = Extent::new(self.driver.start, self.driver.last());
         let window = Extent::new(at, at.saturating_add(n as i64).min(range.end).max(at));
-        let table = &mut self.driver.table;
+        let value_graph = &mut self.driver.value_graph;
         if window.is_empty() {
             return Ok(());
         }
-        for short in table.short((table.root, window, Past::Held)) {
-            table.read_on(&self.world.typing, short)?;
-            let made = table.made().to_vec();
-            let landed = table.landed(short);
-            let carried = table.settled(table.root, &[], (landed, self.live));
+        for short in value_graph.short((value_graph.root, window, Past::Held)) {
+            value_graph.read_on(&self.world.typing, short)?;
+            let made = value_graph.made().to_vec();
+            let landed = value_graph.landed(short);
+            let carried = value_graph.settled(value_graph.root, &[], (landed, self.live));
             for silent in carried.silent {
-                self.dropped.push(table.values[silent].name.clone());
+                self.dropped.push(value_graph.values[silent].name.clone());
             }
-            table.priced(range, &made);
-            table.offers(&self.world.typing, range);
+            value_graph.priced(range, &made);
+            value_graph.offers(&self.world.typing, range);
         }
         Ok(())
     }
@@ -518,12 +521,12 @@ impl Stream {
         if ending.is_none_or(|end| end > now) {
             return;
         }
-        let (table, tys) = (&self.driver.table, &self.world.typing);
+        let (value_graph, tys) = (&self.driver.value_graph, &self.world.typing);
         let last = self.driver.last();
-        let asked = match tys.id(NOTES).and_then(|notes| table.of(notes)) {
+        let asked = match tys.id(NOTES).and_then(|notes| value_graph.of(notes)) {
             Some(notes) if now < last => {
                 self.demands += 1;
-                let needs = table.demand(Extent::new(now, last));
+                let needs = value_graph.demand(Extent::new(now, last));
                 needs[notes].hold.iter().next().map(|asked| asked.start)
             }
             Some(_) => None,
@@ -582,12 +585,12 @@ impl Stream {
 
     /// Every segment of its own clock the stream computed of `node`'s value, in order.
     pub fn evaluated(&self, node: &str) -> Vec<sva_samples::Extent> {
-        let table = &self.driver.table;
+        let value_graph = &self.driver.value_graph;
         self.world
             .typing
             .id(node)
-            .and_then(|id| table.of(id))
-            .map_or(Vec::new(), |at| table.values[at].evaluated.clone())
+            .and_then(|id| value_graph.of(id))
+            .map_or(Vec::new(), |at| value_graph.values[at].evaluated.clone())
     }
 
     pub fn pruned(&self) -> sva_samples::Pruned {
@@ -619,7 +622,7 @@ impl Stream {
 
     /// The bytes its values hold, samples and state.
     pub fn held_bytes(&self) -> usize {
-        self.driver.table.bytes()
+        self.driver.value_graph.bytes()
     }
 
     pub fn end(&self) -> Option<i64> {
@@ -775,7 +778,7 @@ pub async fn fetch<B: Backend>(stream: &RefCell<Stream>, tier: &Tier<B>) {
     let fetched = tier.fetch(&needs).await;
     let mut stream = stream.borrow_mut();
     for (key, parts) in fetched.handed {
-        stream.driver.table.took(key, &parts);
+        stream.driver.value_graph.took(key, &parts);
     }
 }
 

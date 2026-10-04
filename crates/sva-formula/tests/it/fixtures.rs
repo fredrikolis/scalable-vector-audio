@@ -142,7 +142,7 @@ pub fn bank() -> Body {
 }
 
 /// Every written shape the invariants sweep. A fixture earns its place by reaching a row of
-/// the rule table no other one reaches.
+/// the Fourier dual rules no other one reaches.
 pub fn terms() -> Vec<(&'static str, ClosedForm)> {
     vec![
         ("a constant", term(Var::T, constant(0.5))),

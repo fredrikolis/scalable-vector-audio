@@ -1,4 +1,4 @@
-// Concern: holds a composition's decided types, the buffers a reading needed and each label | Non-concern: computing a value (table/), what a reading asks (schedule.rs) | IO: (&Graph, target) -> Render
+// Concern: holds a composition's decided types, the buffers a reading needed and each label | Non-concern: computing a value (value_graph/), what a reading asks | IO: (&Graph, target) -> Render
 
 mod answer;
 mod drive;
@@ -6,9 +6,9 @@ mod end;
 mod run;
 mod slots;
 mod stream;
-pub(crate) mod table;
 mod terms;
 pub mod until;
+pub(crate) mod value_graph;
 mod volatile;
 mod world;
 
@@ -28,8 +28,8 @@ use crate::refs;
 use crate::schedule::{self, Schedule};
 use crate::typing::{self, Typing};
 use end::Ending;
-use table::Table;
-use table::support::Supports;
+use value_graph::ValueGraph;
+use value_graph::support::Supports;
 
 /// Where a target is read, in samples from t = 0. Unstated, the root's own support.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -119,13 +119,13 @@ pub struct Render {
     pub schedule: Schedule,
     pub bindings: BTreeMap<NodeId, Vec<Binding>>,
     pub cache_stats: Option<CacheStats>,
-    /// The most bytes the table held at once, samples and state.
+    /// The most bytes the value graph held at once, samples and state.
     pub held_bytes: usize,
     /// The samples the root was read over; `None` where no reading needed any.
     pub range: Option<Extent>,
     pub(crate) unranged: Option<EngineError>,
     /// Every value the render read, each over the segments it computed.
-    pub(crate) table: Option<Table>,
+    pub(crate) value_graph: Option<ValueGraph>,
     /// The price of what its pulls computed.
     computed: u128,
     pub(crate) unslotted: Option<String>,
@@ -157,7 +157,7 @@ impl Render {
             held_bytes: 0,
             range: None,
             unranged: None,
-            table: None,
+            value_graph: None,
             computed: 0,
             unslotted: None,
             stand_in_typed: Vec::new(),
@@ -199,12 +199,12 @@ impl Render {
     /// Each segment the render computed of `node`'s value, in order: a sample in two was
     /// computed twice.
     pub fn evaluated(&self, node: NodeId) -> Vec<Extent> {
-        let Some(table) = &self.table else {
+        let Some(value_graph) = &self.value_graph else {
             return Vec::new();
         };
-        table
+        value_graph
             .of(node)
-            .map_or(Vec::new(), |at| table.values[at].evaluated.clone())
+            .map_or(Vec::new(), |at| value_graph.values[at].evaluated.clone())
     }
 
     /// The multiple a reading asks this node's score against, where one asks for a score at all.
@@ -291,8 +291,8 @@ fn planned_over(
     held.bindings = bindings;
     ranged(&mut held, (decided, hits))?;
     let volatile = volatile::mark((graph, instances), &held, (target, stand_in))?;
-    if let Some(table) = &mut held.table {
-        table.slots(volatile.slots());
+    if let Some(value_graph) = &mut held.value_graph {
+        value_graph.slots(volatile.slots());
     }
     held.unslotted = volatile.unslotted.clone();
     held.stand_in_typed = volatile.typed;
@@ -386,9 +386,10 @@ fn ranged(
     let found = supports.into_memo();
     let wanted: Vec<NodeId> = held.schedule.wanted.clone();
     let root = (held.root, wanted.as_slice());
-    let mut table = Table::bounded(&held.tys, root, &held.config.profile, (found, hits))?;
-    table.plan(held.range.expect("a range was decided"))?;
-    held.table = Some(table);
+    let mut value_graph =
+        ValueGraph::bounded(&held.tys, root, &held.config.profile, (found, hits))?;
+    value_graph.plan(held.range.expect("a range was decided"))?;
+    held.value_graph = Some(value_graph);
     Ok(())
 }
 
@@ -480,21 +481,21 @@ fn pulled(held: &mut Render, memo: (&Memory, Recording)) -> Result<(), EngineErr
     Ok(())
 }
 
-/// What pulls a render's table, where it materializes one at all.
+/// What pulls a render's value graph, where it materializes one at all.
 fn driving(
     held: &mut Render,
     (memory, recording): (&Memory, Recording),
 ) -> Result<Option<drive::Driver>, EngineError> {
     affordable(held)?;
-    let (Some(table), Some(range)) = (held.table.take(), held.range) else {
+    let (Some(value_graph), Some(range)) = (held.value_graph.take(), held.range) else {
         return Ok(None);
     };
     if !materializes(held) {
-        held.table = Some(table);
+        held.value_graph = Some(value_graph);
         return Ok(None);
     }
     Ok(Some(drive::Driver::new(
-        table,
+        value_graph,
         range,
         sva_samples::BLOCK as usize,
         &held.config,
@@ -516,23 +517,23 @@ fn drove(held: &mut Render, driver: drive::Driver) {
         held.range = Some(Extent::new(range.start, stop));
     }
     let range = held.range.expect("a pulled render has a range");
-    let table = driver.table;
+    let value_graph = driver.value_graph;
     let wanted = held.schedule.wanted.iter().filter(|_| keep);
-    for (id, at) in wanted.map(|id| (*id, table.of(*id))) {
+    for (id, at) in wanted.map(|id| (*id, value_graph.of(*id))) {
         let Some(at) = at else {
             continue;
         };
-        match &table.values[at].held {
-            table::Held::Frames(Some(frames)) => {
+        match &value_graph.values[at].held {
+            value_graph::Held::Frames(Some(frames)) => {
                 held.frames.insert(id, (**frames).clone());
             }
             _ => {
-                held.buffers.insert(id, table.samples(at, range));
-                held.labels.insert(id, table.label(at));
+                held.buffers.insert(id, value_graph.samples(at, range));
+                held.labels.insert(id, value_graph.label(at));
             }
         }
     }
-    held.table = Some(table);
+    held.value_graph = Some(value_graph);
 }
 
 /// A closed form's value `fine` times finer than the render's step: what an alias score
@@ -544,11 +545,11 @@ pub(crate) fn finer(
     over: Extent,
 ) -> Result<Buffer, EngineError> {
     let profile = &render.config.profile;
-    let mut table = Table::finer(&render.tys, node, &[node], profile, i128::from(fine))?;
-    let at = table.root;
+    let mut value_graph = ValueGraph::finer(&render.tys, node, &[node], profile, i128::from(fine))?;
+    let at = value_graph.root;
     let memory = &render.memory;
-    table.pull(over, (memory, &mut Recording::over(memory)))?;
-    let mut held = table.samples(at, over);
+    value_graph.pull(over, (memory, &mut Recording::over(memory)))?;
+    let mut held = value_graph.samples(at, over);
     held.rate = render.config.rate * fine;
     Ok(held)
 }
@@ -594,11 +595,12 @@ pub(crate) fn render_apart(
         prepared(graph, target, config.rate)?,
         (config, Memory::holding(0)),
     )?;
-    if let (Some(range), Some(_)) = (held.range, &held.table) {
+    if let (Some(range), Some(_)) = (held.range, &held.value_graph) {
         let wanted = held.schedule.wanted.clone();
-        let mut table = Table::apart(&held.tys, held.root, &wanted, &held.config.profile)?;
-        table.plan(range)?;
-        held.table = Some(table);
+        let mut value_graph =
+            ValueGraph::apart(&held.tys, held.root, &wanted, &held.config.profile)?;
+        value_graph.plan(range)?;
+        held.value_graph = Some(value_graph);
     }
     let memory = held.memory.clone();
     pulled(&mut held, (&memory, Recording::over(&memory)))?;
@@ -606,11 +608,11 @@ pub(crate) fn render_apart(
 }
 
 pub(crate) fn sampled(render: &Render, node: NodeId, over: Extent) -> Result<Buffer, EngineError> {
-    let mut table = Table::build(&render.tys, node, &[node], &render.config.profile)?;
-    let at = table.root;
+    let mut value_graph = ValueGraph::build(&render.tys, node, &[node], &render.config.profile)?;
+    let at = value_graph.root;
     let memory = &render.memory;
-    table.pull(over, (memory, &mut Recording::over(memory)))?;
-    Ok(table.samples(at, over))
+    value_graph.pull(over, (memory, &mut Recording::over(memory)))?;
+    Ok(value_graph.samples(at, over))
 }
 
 /// FORMAT 9.3: the render's own label says what it cost and what it was allowed.
@@ -627,7 +629,7 @@ fn stamp(held: &mut Render) {
     };
     let label = sva_samples::Label {
         rate: held.config.rate,
-        moved: held.table.as_ref().map(Table::moved),
+        moved: held.value_graph.as_ref().map(ValueGraph::moved),
         pruned: Some(pruned),
         ..label.costing(counted, held.config.budget())
     };
