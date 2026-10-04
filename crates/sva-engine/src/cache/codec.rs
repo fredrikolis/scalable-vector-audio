@@ -30,11 +30,12 @@ const STAGED_RUN: &[u8; 4] = b"SVAc";
 /// A run's chunks are its samples within each block of the grid: what one checksum covers,
 /// and the least a read loads. Samples stay f64, as the render computes them: a stored value
 /// is read by others, and f32 would change the bits of every value that reads it.
-fn chunks(start: i64, len: usize) -> usize {
-    match len {
-        0 => 0,
-        _ => ((start + len as i64 - 1).div_euclid(BLOCK) - start.div_euclid(BLOCK) + 1) as usize,
+fn chunks(start: i64, len: usize) -> Option<usize> {
+    if len == 0 {
+        return Some(0);
     }
+    let last = start.checked_add(i64::try_from(len).ok()? - 1)?;
+    usize::try_from(last.div_euclid(BLOCK) - start.div_euclid(BLOCK) + 1).ok()
 }
 
 /// How many of a run's samples come before its chunk `k`.
@@ -186,7 +187,7 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Header, u64)> {
         let rate = u32::try_from(r.word()?).ok()?;
         let start = r.word()? as i64;
         let (width, len) = (r.word()? as usize, r.word()? as usize);
-        let count = chunks(start, len);
+        let count = chunks(start, len)?;
         let sums = (0..count.min(r.0.len()))
             .map(|_| r.word())
             .collect::<Option<Vec<u64>>>()?;
@@ -282,7 +283,7 @@ pub(crate) fn read_runs(bytes: &[u8], key: Hash) -> Option<Vec<Buffer>> {
         return Some(Vec::new());
     };
     let read = |run: &Laid| {
-        let n = chunks(run.start, run.len);
+        let n = chunks(run.start, run.len)?;
         let (at, len) = span_of(run, 0, n);
         let span = bytes.get(at as usize..(at + len) as usize)?;
         read_chunks(span, run, 0, n)

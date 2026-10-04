@@ -10,6 +10,11 @@ use crate::grid::Grid;
 
 pub(super) const BLOCK: usize = 128;
 
+const _: () = assert!(
+    crate::grid::BLOCK % BLOCK as i64 == 0,
+    "a grid block holds whole machine blocks"
+);
+
 /// Every slot's samples over one block, component after component within each sample, and
 /// each sample's instant.
 pub(super) struct Block {
