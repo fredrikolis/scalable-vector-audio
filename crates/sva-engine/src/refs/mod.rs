@@ -229,18 +229,23 @@ fn no_closed_form(typing: &Typing, node: NodeId) -> EngineError {
 /// either axis and under every construct, so it folds where no form would substitute.
 pub(crate) fn fold_constants<'a>(typing: &Typing, f: &'a Body) -> Cow<'a, Body> {
     let fold = &mut Folding::default();
-    match names_number(typing, f, fold) {
-        true => Cow::Owned(folded(typing, f, fold)),
+    folded_by(f, &mut |id| number(typing, id, fold))
+}
+
+/// `f` with every ref `number` answers replaced by its number.
+fn folded_by<'a>(f: &'a Body, number: &mut dyn FnMut(NodeId) -> Option<C64>) -> Cow<'a, Body> {
+    match names_number(f, number) {
+        true => Cow::Owned(folded(f, number)),
         false => Cow::Borrowed(f),
     }
 }
 
-fn names_number(typing: &Typing, f: &Body, fold: &mut Folding) -> bool {
+fn names_number(f: &Body, number: &mut dyn FnMut(NodeId) -> Option<C64>) -> bool {
     match f {
-        Body::Node(id) => number(typing, *id, fold).is_some(),
+        Body::Node(id) => number(*id).is_some(),
         _ => children(f)
             .into_iter()
-            .any(|p| names_number(typing, &p.body, fold)),
+            .any(|p| names_number(&p.body, number)),
     }
 }
 
@@ -252,19 +257,23 @@ struct Folding {
     cut: bool,
 }
 
-fn folded(typing: &Typing, f: &Body, fold: &mut Folding) -> Body {
+fn folded(f: &Body, number: &mut dyn FnMut(NodeId) -> Option<C64>) -> Body {
     let Body::Node(id) = f else {
         return sva_formula::closed_form::map_children(f, |p| {
-            Part::new(p.origin, folded(typing, &p.body, fold))
+            Part::new(p.origin, folded(&p.body, number))
         });
     };
-    match number(typing, *id, fold) {
+    match number(*id) {
         Some(c) => Body::Const(c),
         None => f.clone(),
     }
 }
 
 /// The one number a node holds, or `None` where it holds a form, samples or a ref loop.
+fn number_of(typing: &Typing, node: NodeId) -> Option<C64> {
+    number(typing, node, &mut Folding::default())
+}
+
 fn number(typing: &Typing, node: NodeId, fold: &mut Folding) -> Option<C64> {
     if let Some(held) = typing.folds().number(node) {
         return held;
@@ -281,19 +290,23 @@ fn number(typing: &Typing, node: NodeId, fold: &mut Folding) -> Option<C64> {
     }
     let outer = std::mem::take(&mut fold.cut);
     fold.open.push(node);
-    let folded = names_number(typing, &form.body, fold).then(|| ClosedForm {
-        body: folded(typing, &form.body, fold),
-        ..*form
-    });
+    let number = match folded_by(&form.body, &mut |id| number(typing, id, fold)) {
+        Cow::Owned(body) => sole_number(&ClosedForm { body, ..*form }),
+        Cow::Borrowed(_) => sole_number(form),
+    };
     fold.open.pop();
-    let number = normalize_closed_form(folded.as_ref().unwrap_or(form))
-        .ok()
-        .and_then(|sum| sole_constant(&sum));
     if !fold.cut {
         typing.folds().keep_number(node, number);
     }
     fold.cut |= outer;
     number
+}
+
+/// The one number a form with no ref left in it holds.
+fn sole_number(form: &ClosedForm) -> Option<C64> {
+    normalize_closed_form(form)
+        .ok()
+        .and_then(|sum| sole_constant(&sum))
 }
 
 /// A node reference is not a `Body`, so a term holding one is normalized by composing

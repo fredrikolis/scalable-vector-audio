@@ -1,6 +1,6 @@
 // Concern: content-addresses one node, whatever representation it holds | Non-concern: composing a closed form across a ref (mod.rs) | IO: (NodeId) -> Hash
 
-use sva_formula::{Body, ClosedForm, Hash, NodeId, hash_written_with};
+use sva_formula::{Body, ClosedForm, Hash, NodeId, Var, hash_written_with};
 
 use sva_samples::Params;
 
@@ -46,14 +46,21 @@ fn identity_of(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<
     Ok(found)
 }
 
-/// `named` over every node `with` reads, its first refusal answered in place of the hash.
-fn naming(
-    named: &mut dyn FnMut(NodeId) -> Result<Hash, EngineError>,
-    with: impl FnOnce(&mut dyn FnMut(NodeId) -> Hash) -> Hash,
+/// A form named as the same form written as a node is, each ref by `named` with the variable
+/// it holds: a ref to a form of the other variable reads across its transform.
+pub(super) fn written(
+    form: &ClosedForm,
+    named: &mut dyn FnMut(NodeId) -> Result<(Hash, Var), EngineError>,
 ) -> Result<Hash, EngineError> {
     let mut refused = None;
-    let hash = with(&mut |id| match named(id) {
-        Ok(held) => held,
+    let hash = hash_written_with(form, &mut |id| match named(id) {
+        Ok((held, var)) if var == form.var => held,
+        Ok((held, _)) => {
+            let mut sink = Sink::new();
+            sink.text("across");
+            sink.hash(held);
+            sink.finish()
+        }
         Err(e) => {
             refused.get_or_insert(e);
             Hash(0, 0)
@@ -62,24 +69,9 @@ fn naming(
     refused.map_or(Ok(hash), Err)
 }
 
-/// A subterm named as the same form written as a node is: as written, which decides its
-/// samples, bound and support alike.
+/// A subterm named as written, which decides its samples, bound and support alike.
 pub(crate) fn subterm_identity(typing: &Typing, form: &ClosedForm) -> Result<Hash, EngineError> {
-    let mut read = |id: NodeId| identity(typing, id).map(|held| across(typing, form, id, held));
-    naming(&mut read, |read| hash_written_with(form, read))
-}
-
-/// A ref to a form of the other variable reads across its transform.
-fn across(typing: &Typing, form: &ClosedForm, read: NodeId, held: Hash) -> Hash {
-    match typing.var(read) == form.var {
-        true => held,
-        false => {
-            let mut sink = Sink::new();
-            sink.text("across");
-            sink.hash(held);
-            sink.finish()
-        }
-    }
+    written(form, &mut |id| Ok((identity(typing, id)?, typing.var(id))))
 }
 
 /// A solver, its varying fields named by their nodes: one name, held or read to a switch.
@@ -113,10 +105,9 @@ fn shape(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, 
     let mut sink = Sink::new();
     match typing.value(node) {
         Value::ClosedForm(form) => {
-            let mut read = |id: NodeId| {
-                identity_of(typing, id, open).map(|held| across(typing, form, id, held))
-            };
-            return naming(&mut read, |read| hash_written_with(form, read));
+            return written(form, &mut |id| {
+                Ok((identity_of(typing, id, open)?, typing.var(id)))
+            });
         }
         Value::Read { .. } if let Some(source) = passes(typing, node) => {
             return identity_of(typing, source, open);

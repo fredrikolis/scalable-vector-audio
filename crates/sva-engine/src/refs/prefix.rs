@@ -3,10 +3,7 @@
 use std::collections::BTreeSet;
 
 use sva_formula::closed_form::{children, map_children};
-use sva_formula::{
-    Body, C64, ClosedForm, Edge, Hash, NodeId, Part, Through, Var, hash_written_with,
-    normalize_read,
-};
+use sva_formula::{Body, C64, ClosedForm, Edge, Hash, NodeId, Part, Through, Var};
 use sva_samples::Grid;
 
 use super::identity::{identity, solver};
@@ -73,9 +70,7 @@ fn argument_before(
         let written = Written {
             typing,
             through,
-            constant: PerNode::new(),
-            series: PerNode::new(),
-            summed: PerNode::new(),
+            numbers: PerNode::new(),
             named: PerNode::new(),
         };
         Ok(match written.constant_value(&body, form.var) {
@@ -187,104 +182,52 @@ impl Before<'_, '_> {
     }
 }
 
-/// What a rewritten form comes to: the number it holds, or what names it.
+/// What a rewritten form comes to, as the typing takes the same form written as a solver's
+/// argument: the number it holds, refs naming numbers folded in, or what names it.
 struct Written<'a, 'w> {
     typing: &'a Typing,
     through: &'a Through<'w>,
-    constant: PerNode<bool>,
-    series: PerNode<bool>,
-    summed: PerNode<Option<NodeId>>,
+    numbers: PerNode<Option<C64>>,
     named: PerNode<Hash>,
 }
 
 impl Written<'_, '_> {
-    /// One bare atom is a number, an empty lane the zero it folded to; a finite series in it,
-    /// or in a ref it reads, is summed term by term first, each ref still read as its form.
     fn constant_value(&self, body: &Body, var: Var) -> Option<f64> {
-        if !self.is_constant(body) {
-            return None;
-        }
-        let summed = match self.holds_series(body) {
-            true => Some(self.terms(body)?),
-            false => None,
-        };
-        let sum = normalize_read(summed.as_ref().unwrap_or(body), var, self.through).ok()?;
-        crate::lower::constant_of(&sum)
+        let folded = super::folded_by(body, &mut |id| self.number(id, var));
+        crate::lower::constant_value(&folded, var)
     }
 
-    /// `f` with each finite series written out term by term, and each ref holding one standing
-    /// in for its own form so written, once per node.
-    fn terms(&self, f: &Body) -> Option<Body> {
-        let summed = |id: NodeId| {
-            self.summed.of(id, || {
-                let read = self.through.read(id, |form| self.terms(form));
-                read.flatten().map(|body| self.through.stand(body))
-            })
-        };
-        match f {
-            Body::Node(id) if self.holds_series(f) => summed(*id).map(Body::Node),
-            Body::Node(_) => Some(f.clone()),
-            Body::Series(_) => {
-                sva_formula::series::written_out(f).and_then(|written| self.terms(&written))
-            }
-            other => {
-                let mut whole = true;
-                let out = map_children(other, |p| match self.terms(&p.body) {
-                    Some(body) => Part::new(p.origin, body),
-                    None => {
-                        whole = false;
-                        p.clone()
-                    }
-                });
-                whole.then_some(out)
-            }
-        }
-    }
-
-    fn is_constant(&self, f: &Body) -> bool {
-        let node = |id: NodeId| {
-            self.constant.of(id, || {
-                let read = self.through.read(id, |form| self.is_constant(form));
-                read.unwrap_or(false)
-            })
-        };
-        crate::lower::constant_with(f, &node)
-    }
-
-    fn holds_series(&self, f: &Body) -> bool {
-        match f {
-            Body::Series(_) => true,
-            Body::Node(id) => self.series.of(*id, || {
-                let read = self.through.read(*id, |form| self.holds_series(form));
-                read.unwrap_or(false)
-            }),
-            other => children(other).iter().any(|p| self.holds_series(&p.body)),
-        }
-    }
-
-    /// As the same form written as a node is named, each stand-in by the form it stands for.
-    fn written(&self, form: &ClosedForm) -> Result<Hash, EngineError> {
-        let mut refused = None;
-        let hash = hash_written_with(form, &mut |id| match self.named(id, form.var) {
-            Ok(held) => held,
-            Err(e) => {
-                refused.get_or_insert(e);
-                Hash(0, 0)
-            }
-        });
-        refused.map_or(Ok(hash), Err)
-    }
-
-    fn named(&self, id: NodeId, var: Var) -> Result<Hash, EngineError> {
-        self.named.try_of(id, || match Through::stands(id) {
-            false => identity(self.typing, id),
-            true => {
-                let body = self.through.read(id, Body::clone);
-                self.written(&ClosedForm {
+    /// A stand-in holds a number as the node it stands for would.
+    fn number(&self, id: NodeId, var: Var) -> Option<C64> {
+        match Through::stands(id) {
+            false => super::number_of(self.typing, id),
+            true => self.numbers.of(id, || {
+                let body = self.through.read(id, Body::clone)?;
+                let folded = super::folded_by(&body, &mut |id| self.number(id, var));
+                super::sole_number(&ClosedForm {
                     var,
-                    body: body.expect("a stand-in's form"),
+                    body: folded.into_owned(),
                     origin: sva_formula::Origin::UNKNOWN,
                 })
+            }),
+        }
+    }
+
+    /// Each stand-in named by the form it stands for, on the variable of the form it rewrote.
+    fn written(&self, form: &ClosedForm) -> Result<Hash, EngineError> {
+        let var = form.var;
+        super::identity::written(form, &mut |id| match Through::stands(id) {
+            false => Ok((identity(self.typing, id)?, self.typing.var(id))),
+            true => {
+                let held = self.named.try_of(id, || {
+                    let body = self.through.read(id, Body::clone);
+                    self.written(&ClosedForm {
+                        var,
+                        body: body.expect("a stand-in's form"),
+                        origin: sva_formula::Origin::UNKNOWN,
+                    })
+                })?;
+                Ok((held, var))
             }
         })
     }
