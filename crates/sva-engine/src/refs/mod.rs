@@ -22,7 +22,7 @@ mod identity;
 mod prefix;
 
 pub use identity::identity;
-pub(crate) use identity::{passes, subterm_identity};
+pub(crate) use identity::{passes, shape, subterm_identity};
 pub(crate) use prefix::switches;
 
 /// The spectral sum of one node read on `want`'s axis, with every ref it holds already

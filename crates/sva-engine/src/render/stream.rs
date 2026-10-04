@@ -45,7 +45,7 @@ pub struct Stream {
     width: usize,
     /// Each sounding term as heard at the root, through `gain` from the note sum.
     heard: BTreeMap<Handle, Heard>,
-    gain: Option<f64>,
+    gain: Gained,
     /// Each term retired before its support ended.
     fading: Vec<Fading>,
     faded: f64,
@@ -114,7 +114,7 @@ impl Stream {
             terms: Terms::default(),
             width: 0,
             heard: BTreeMap::new(),
-            gain: None,
+            gain: Gained::default(),
             fading: Vec::new(),
             faded: 0.0,
             ending: None,
@@ -377,16 +377,20 @@ impl Stream {
         prospect.answer
     }
 
-    /// A term is its own sound, judged at the root through the note sum's gain to it.
+    /// A term is its own sound, judged at the root through the note sum's gain to it, bounded
+    /// again only where the key of what it is a function of moved.
     fn hear(&mut self) {
         let typing = &self.world.typing;
         let supports = Supports::over(typing, Some(&self.driver.table.supports));
         let ending = Ending::new(typing, &self.config.render.profile, &supports);
-        let gain = match (typing.id(STREAMED), typing.id(NOTES)) {
-            (Some(root), Some(notes)) => ending.gain(root, notes),
-            _ => None,
+        let ends = typing.id(STREAMED).zip(typing.id(NOTES));
+        let key = ends.and_then(|(root, notes)| ending.gain_key(root, notes));
+        let gain = match ends {
+            _ if key.is_some() && key == self.gain.of => self.gain.gain,
+            Some((root, notes)) => ending.gain(root, notes),
+            None => None,
         };
-        let moved = gain != std::mem::replace(&mut self.gain, gain);
+        let moved = gain != std::mem::replace(&mut self.gain, Gained { gain, of: key }).gain;
         let lowered: BTreeSet<&str> = typing.lowered().iter().map(String::as_str).collect();
         for handle in self.terms.handles() {
             let node = handle.node();
@@ -526,7 +530,7 @@ impl Stream {
             None => Some(i64::MIN),
         };
         let level = self.config.render.profile.prune_level();
-        let gain = self.gain.unwrap_or(f64::INFINITY);
+        let gain = self.gain.gain.unwrap_or(f64::INFINITY);
         if let Some(from) = asked {
             // Far under the level, a bound joins one sum, so the list stays short.
             let let_go = level * 2f64.powi(-30);
@@ -629,6 +633,12 @@ impl Stream {
     pub fn config(&self) -> &StreamConfig {
         &self.config
     }
+}
+
+#[derive(Clone, Copy, Default)]
+struct Gained {
+    gain: Option<f64>,
+    of: Option<Hash>,
 }
 
 /// An edit, each with the graph that reaches it and all the stream plays.

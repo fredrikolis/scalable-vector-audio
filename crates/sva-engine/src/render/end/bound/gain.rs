@@ -1,8 +1,9 @@
 // Concern: bounds how far a unit change in one node can move a node reading it | Non-concern: either node's own magnitude | IO: (reader, read) -> a gain, or none
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{DefaultHasher, Hash as _, Hasher};
 
-use sva_formula::{NodeId, Var};
+use sva_formula::{Hash, Lanes, NodeId, Var};
 
 use crate::cast::Cast;
 use crate::lower::number_of;
@@ -17,27 +18,12 @@ use super::sampled;
 /// reading `read`; `None` through a loop, a moving parameter, a read that interpolates or a
 /// product of two changed values.
 pub(in crate::render::end) fn gain(tys: &Typing, reader: NodeId, read: NodeId) -> Option<f64> {
-    let mut path = BTreeSet::from([read]);
-    let mut open = vec![read];
-    while let Some(at) = open.pop() {
-        for up in tys.readers_of(at) {
-            if path.insert(up) {
-                open.push(up);
-            }
-        }
-    }
+    let path = path(tys, read);
     if !path.contains(&reader) {
         return Some(0.0);
     }
     let on = |n: &NodeId| path.contains(n);
-    let below = |id: NodeId| {
-        let mut out = tys.operands(id);
-        if let Value::Read { at, .. } = tys.value(id) {
-            out.extend(at.moving());
-        }
-        out.retain(on);
-        out
-    };
+    let below = |id: NodeId| below(tys, &path, id);
     let mut gains = BTreeMap::from([(read, Some(1.0))]);
     let mut looped = BTreeMap::new();
     for id in tys.unfolded_over(reader, below, |id| id == read) {
@@ -51,6 +37,61 @@ pub(in crate::render::end) fn gain(tys: &Typing, reader: NodeId, read: NodeId) -
         gains.insert(id, found);
     }
     gains.get(&reader).copied().flatten()
+}
+
+const KEY_ROTATE: u32 = 29;
+
+/// What `gain` is a function of: each node from `read` up to `reader` by its shape and grid over
+/// what it reads, each read off that path by its identity and grid, `read` by its grid alone,
+/// whatever it holds; `None` where a node refuses one.
+pub(in crate::render::end) fn key(tys: &Typing, reader: NodeId, read: NodeId) -> Option<Hash> {
+    let path = path(tys, read);
+    let gridded = |shape: Hash, id: NodeId| {
+        let mut grid = DefaultHasher::new();
+        tys.grid(id).hash(&mut grid);
+        let mut lanes = Lanes::<KEY_ROTATE>::default();
+        for word in [shape.0, shape.1, grid.finish()] {
+            lanes.word(word);
+        }
+        lanes.finish()
+    };
+    if !path.contains(&reader) {
+        return Some(gridded(Hash(0, 0), reader));
+    }
+    let mut keys = BTreeMap::from([(read, gridded(Hash(0, 0), read))]);
+    for id in tys.unfolded_over(reader, |id| below(tys, &path, id), |id| id == read) {
+        let mut named = |n: NodeId| match keys.get(&n) {
+            Some(held) => Ok(*held),
+            None => Ok(gridded(crate::refs::identity(tys, n)?, n)),
+        };
+        let shape = crate::refs::shape(tys, id, &mut named).ok()?;
+        keys.insert(id, gridded(shape, id));
+    }
+    keys.get(&reader).copied()
+}
+
+/// `read` and every node reading it.
+fn path(tys: &Typing, read: NodeId) -> BTreeSet<NodeId> {
+    let mut path = BTreeSet::from([read]);
+    let mut open = vec![read];
+    while let Some(at) = open.pop() {
+        for up in tys.readers_of(at) {
+            if path.insert(up) {
+                open.push(up);
+            }
+        }
+    }
+    path
+}
+
+/// What `id` reads on `path`, its moving times included.
+fn below(tys: &Typing, path: &BTreeSet<NodeId>, id: NodeId) -> Vec<NodeId> {
+    let mut out = tys.operands(id);
+    if let Value::Read { at, .. } = tys.value(id) {
+        out.extend(at.moving());
+    }
+    out.retain(|n| path.contains(n));
+    out
 }
 
 /// Whether `id`'s own program reads itself back, as a fold over that program.

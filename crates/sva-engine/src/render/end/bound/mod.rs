@@ -22,7 +22,7 @@ use crate::lower::number_of;
 use crate::refs::read_through;
 use crate::typing::{Typing, Value, When};
 use filter::Ringing;
-pub(super) use gain::gain;
+pub(super) use gain::{gain, key};
 use range::{OP, Range, TRANSFORM_OPS};
 
 pub(super) struct Tail {

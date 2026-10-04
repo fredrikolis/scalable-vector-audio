@@ -95,30 +95,32 @@ fn built(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, 
         return Err(cyclic(typing, node));
     }
     open.push(node);
-    let found = shape(typing, node, open);
+    let found = shape(typing, node, &mut |id| identity_of(typing, id, open));
     open.pop();
     found
 }
 
-/// Its own value's shape over the identities of what it reads.
-fn shape(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, EngineError> {
+/// Its own value's shape over what it reads, each named by `named`.
+pub(crate) fn shape(
+    typing: &Typing,
+    node: NodeId,
+    named: &mut dyn FnMut(NodeId) -> Result<Hash, EngineError>,
+) -> Result<Hash, EngineError> {
     let mut sink = Sink::new();
     match typing.value(node) {
         Value::ClosedForm(form) => {
-            return written(form, &mut |id| {
-                Ok((identity_of(typing, id, open)?, typing.var(id)))
-            });
+            return written(form, &mut |id| Ok((named(id)?, typing.var(id))));
         }
         Value::Read { .. } if let Some(source) = passes(typing, node) => {
-            return identity_of(typing, source, open);
+            return named(source);
         }
         Value::Cast(cast, source) => {
             sink.text(cast.name());
-            sink.hash(identity_of(typing, *source, open)?);
+            sink.hash(named(*source)?);
         }
         Value::Read { source, at, .. } => {
             sink.text("read");
-            sink.hash(identity_of(typing, *source, open)?);
+            sink.hash(named(*source)?);
             when(&mut sink, typing, at)?;
         }
         Value::SelfAt { at, .. } => {
@@ -132,7 +134,7 @@ fn shape(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, 
         Value::Solver { params, varying } => {
             let mut read = Vec::with_capacity(varying.len());
             for (key, arg) in varying {
-                read.push((*key, identity_of(typing, *arg, open)?));
+                read.push((*key, named(*arg)?));
             }
             return Ok(solver(params, &read));
         }
@@ -145,14 +147,14 @@ fn shape(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, 
         } => {
             sink.text(crate::vocabulary::shape_name(*shape));
             for operand in [x, cutoff, q, gain] {
-                sink.hash(identity_of(typing, *operand, open)?);
+                sink.hash(named(*operand)?);
             }
         }
         Value::Op { name, args } => {
             sink.text(name);
             let mut held = Vec::with_capacity(args.len());
             for arg in args {
-                held.push(identity_of(typing, *arg, open)?);
+                held.push(named(*arg)?);
             }
             if matches!(name.as_str(), "+" | "*") {
                 sva_formula::either_order(&mut held);

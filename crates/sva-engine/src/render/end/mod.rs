@@ -90,6 +90,11 @@ impl<'a> Ending<'a> {
         bound::gain(self.tys, reader, read)
     }
 
+    /// What `gain` of the same two is a function of.
+    pub(crate) fn gain_key(&self, reader: NodeId, read: NodeId) -> Option<sva_formula::Hash> {
+        bound::key(self.tys, reader, read)
+    }
+
     pub(crate) fn heard(&self, term: NodeId, gain: Option<f64>) -> Heard {
         let support = self.supports.of(term);
         let fading = self.fading(term);
