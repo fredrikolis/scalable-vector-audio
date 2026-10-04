@@ -52,7 +52,8 @@ RENDER:
   opens. An open interval over a root whose support never ends (a held
   sine, a physical solver) refuses as `render.no_end`. A short-time transform
   reads its input whole, and refuses one with no end as
-  `engine.unbounded_extent`.
+  `engine.unbounded_extent`; so does a form in `f` with no dual in `t` whose
+  inverse never ends, which over any window would repeat at its length.
 
   A render is a stream pulled to its end: a closed form, a short-time
   transform and what either reads are computed over their whole extent first,

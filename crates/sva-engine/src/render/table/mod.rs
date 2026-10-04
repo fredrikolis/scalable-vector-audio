@@ -1064,13 +1064,17 @@ impl Building<'_> {
     }
 
     /// A form in `f` is, on the grid, the form in `t` its dual is; one with no dual is its
-    /// inverse spectrum over what it is asked for.
+    /// inverse spectrum over its whole extent, which must end: over a window it would repeat at
+    /// the window's length, so each asker would read other samples.
     fn spectrum(&mut self, mut value: Value, id: NodeId) -> Result<Value, EngineError> {
         if let Ok(sum) = refs::spectral_sum_of(self.tys, id, Var::T) {
             return self.formula(value, Some(sum), None);
         }
         value.kind = Kind::Spectrum(Arc::new(refs::spectral_sum_of(self.tys, id, Var::F)?));
-        Ok(value)
+        match value.support().is_bounded() {
+            true => Ok(value),
+            false => Err(endless_spectrum(&value.name)),
+        }
     }
 
     /// Its rows where its step makes a whole rate, else its formula at each instant.
@@ -1398,6 +1402,21 @@ fn unbounded(name: &str) -> EngineError {
         message: format!("`{name}` reads its input over every instant, and that input never ends"),
         location: crate::error::Located::at(name, None),
         help: "crop what a short-time transform takes to a window".to_string(),
+    })
+}
+
+/// An inverse spectrum computed over a window repeats at its length.
+fn endless_spectrum(name: &str) -> EngineError {
+    EngineError::refused(crate::error::Diagnostic {
+        code: "engine.unbounded_extent".to_string(),
+        message: format!(
+            "`{name}` is a form in `f` with no dual in `t`, and its inverse never ends: computed \
+             over any window, it would repeat at that window's length"
+        ),
+        location: crate::error::Located::at(name, None),
+        help: "write it as terms the table duals one by one, as a finite sum's terms written \
+               out, or as a form in `t`"
+            .to_string(),
     })
 }
 

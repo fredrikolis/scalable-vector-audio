@@ -116,14 +116,12 @@ fn stateful(value: &Value, program: &Program, hold: &Segments) -> (Segments, boo
     }
 }
 
+/// Over its whole support, which its build refused unbounded.
 fn whole(value: &Value, hold: &Segments) -> (Segments, bool) {
-    let over = match value.support().is_bounded() {
-        true => value.support(),
-        false => hold.hull(),
-    };
+    debug_assert!(value.support().is_bounded(), "a whole value's support ends");
     match hold.is_empty() || !value.holding().is_empty() {
         true => (Segments::default(), false),
-        false => (Segments::of(over), false),
+        false => (Segments::of(value.support()), false),
     }
 }
 

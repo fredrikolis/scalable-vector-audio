@@ -339,8 +339,8 @@ fn a_render_with_no_budget_of_its_own_pays_its_profiles() {
 }
 
 /// The count a reading prints, the work a render did and the price its budget weighed are one
-/// number, whatever route each value takes: a transform pays per frame it transforms, an
-/// inverse spectrum the transforms its plan turns, never one per sample.
+/// number, whatever route each value takes: a transform pays per frame it transforms, never
+/// one per sample.
 #[test]
 fn the_count_is_what_computing_paid_on_every_route() {
     let routes = [
@@ -358,11 +358,6 @@ fn the_count_is_what_computing_paid_on_every_route() {
             "istft",
             "istft(stft(sample(crop(sin(2*pi*440*t), 0s, 0.1s)), window=256sp, hop=64sp))\n",
             "inverse short-time transform",
-        ),
-        (
-            "spectrum",
-            "sum(k, 1, 8, exp(0 - pow((f - 100*k)/10, 2)))\n",
-            "inverse spectrum",
         ),
     ];
     for (name, body, route) in routes {

@@ -151,3 +151,39 @@ fn fourier_types_form_t_to_form_f() {
         .expect("and crosses back");
     assert_eq!((back.held, back.dual), (Held::Form(Var::T), true));
 }
+
+/// An inverse spectrum that never ends would repeat at each asker's window, so both refuse it.
+#[test]
+fn an_endless_inverse_spectrum_refuses_on_every_asker() {
+    let g = graph_of(
+        "endless-spectrum",
+        &[
+            ("bank", "sum(k, 1, 8, exp(0 - pow((f - 100*k)/10, 2)))\n"),
+            ("master", "@bank\n"),
+        ],
+    );
+    let refused = render(
+        &g,
+        "master",
+        RenderConfig::seconds(8_000, 0.1),
+        &Tier::default(),
+    )
+    .err()
+    .expect("an inverse spectrum with no end");
+    assert_eq!(refused.code(), "engine.unbounded_extent", "{refused}");
+
+    let config = sva_engine::StreamConfig {
+        block: 100,
+        channels: None,
+        render: RenderConfig::seconds(8_000, 0.1),
+    };
+    let target = sva_ast::parse_expr("@master").expect("a ref");
+    let opened = crate::fixtures::Now::now(sva_engine::Stream::open(
+        &g,
+        &target,
+        config,
+        &Tier::default(),
+    ));
+    let refused = opened.err().expect("a stream refuses it too");
+    assert_eq!(refused.code(), "engine.unbounded_extent", "{refused}");
+}

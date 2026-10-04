@@ -500,7 +500,7 @@ pub static REGISTRY: [(&str, &str); 86] = [
     ),
     (
         "engine.unbounded_extent",
-        "a node read whole whose input never ends",
+        "a node read whole whose input, or whose own inverse spectrum, never ends",
     ),
     (
         "engine.unbounded_read",
