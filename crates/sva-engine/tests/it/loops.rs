@@ -413,13 +413,16 @@ fn a_closed_loop_renders_its_comb_and_reports_its_tail() {
     let id = held.id("loop").expect("the root");
     let buffer = held.output(id).expect("a rendered comb");
     assert_eq!(held.labels[&id].source, Source::Exact);
-    let Detail::Lines { terms, tail_db, .. } = &held.labels[&id].detail else {
+    let Detail::Lines {
+        summed, tail_db, ..
+    } = &held.labels[&id].detail
+    else {
         panic!(
             "a comb is a line spectrum, got {:?}",
             held.labels[&id].detail
         );
     };
-    assert_eq!(*terms, Some(1), "every term lands on the one resonance");
+    assert_eq!(*summed, 1, "every term lands on the one resonance");
     assert!(
         tail_db.is_some_and(|db| db < 0.0),
         "the truncated tail is stated: {tail_db:?}"
@@ -531,10 +534,10 @@ fn a_shifted_comb_costs_its_unshifted_route() {
         .expect("a comb");
         let id = held.id("loop").expect("the root");
         let label = held.labels[&id].clone();
-        let Detail::Lines { terms, .. } = label.detail else {
+        let Detail::Lines { summed, .. } = label.detail else {
             panic!("a comb is a line spectrum, got {:?}", label.detail);
         };
-        (label.source, label.rule(), terms)
+        (label.source, label.rule(), summed)
     };
 
     let plain = routed(&[("loop", COMB)]);

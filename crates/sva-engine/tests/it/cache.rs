@@ -289,10 +289,10 @@ fn a_warm_hit_carries_the_cold_label() {
         sva_engine::Source::Exact,
         "the cold run is exact"
     );
-    let sva_engine::Detail::Lines { placed, summed, .. } = &cold.detail else {
-        panic!("a line spectrum states what it placed: {cold:?}");
+    let sva_engine::Detail::Lines { summed, .. } = &cold.detail else {
+        panic!("a line spectrum states what it summed: {cold:?}");
     };
-    assert!(placed + summed > 0, "the lines are counted");
+    assert!(*summed > 0, "the lines are counted");
 
     let warm = label_of(&cache);
     assert_eq!(

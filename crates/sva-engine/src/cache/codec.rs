@@ -11,7 +11,7 @@ use super::Stored;
 use super::stored::{Header, Laid, Samples};
 
 /// Bumped by, and only by, a change to a stored value's bytes or to the key it is stored under.
-pub const STORE_FORMAT: u32 = 39;
+pub const STORE_FORMAT: u32 = 40;
 
 /// Every entry opens with its format and dual table, so one another format or table wrote is
 /// never read as a value.
@@ -369,16 +369,13 @@ fn detailed(out: &mut Vec<u8>, detail: &Detail) {
     match detail {
         Detail::Lines {
             rule: r,
-            placed,
             summed,
             dropped,
             dropped_more,
-            terms,
             tail_db,
         } => {
             out.push(0);
             rule(out, r);
-            word(out, *placed as u64);
             word(out, *summed as u64);
             word(out, dropped.len() as u64);
             for d in dropped {
@@ -386,7 +383,6 @@ fn detailed(out: &mut Vec<u8>, detail: &Detail) {
                 word(out, d.db.to_bits());
             }
             word(out, *dropped_more as u64);
-            maybe(out, terms.map(|t| t as u64));
             float(out, *tail_db);
         }
         Detail::Continuous { rule: r } => {
@@ -548,7 +544,7 @@ impl Reader<'_> {
         Some(match self.byte()? {
             0 => {
                 let rule = self.rule()?;
-                let (placed, summed) = (self.word()? as usize, self.word()? as usize);
+                let summed = self.word()? as usize;
                 let count = self.word()? as usize;
                 let dropped = (0..count.min(self.0.len()))
                     .map(|_| {
@@ -563,11 +559,9 @@ impl Reader<'_> {
                 }
                 Detail::Lines {
                     rule,
-                    placed,
                     summed,
                     dropped,
                     dropped_more: self.word()? as usize,
-                    terms: self.maybe()?.map(|t| t as usize),
                     tail_db: self.float()?,
                 }
             }

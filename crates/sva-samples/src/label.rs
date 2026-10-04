@@ -52,11 +52,9 @@ rules! {
 pub enum Detail {
     Lines {
         rule: Rule,
-        placed: usize,
         summed: usize,
         dropped: Vec<Dropped>,
         dropped_more: usize,
-        terms: Option<usize>,
         tail_db: Option<f64>,
     },
     Continuous {

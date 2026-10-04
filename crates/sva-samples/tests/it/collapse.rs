@@ -67,7 +67,7 @@ fn a_line_spectrum_collapse_is_exact_and_lists_dropped() {
     assert_eq!(label.source, Source::Exact);
     assert_eq!(buffer.len(), RATE as usize);
     let Detail::Lines {
-        terms,
+        summed,
         dropped,
         dropped_more,
         ..
@@ -76,8 +76,7 @@ fn a_line_spectrum_collapse_is_exact_and_lists_dropped() {
         panic!("expected a line label, got {:?}", label.detail);
     };
     assert_eq!(
-        *terms,
-        Some(2),
+        *summed, 2,
         "two kept frequencies, each a conjugate pair folded"
     );
     assert_eq!(*dropped_more, 0);
@@ -312,7 +311,10 @@ fn a_two_lane_law_reports_one_dropped_line_at_one_channels_level() {
     assert_eq!(buffer.width, 2);
     assert_eq!(buffer.plane(0), buffer.plane(1));
 
-    let Detail::Lines { terms, dropped, .. } = &label.detail else {
+    let Detail::Lines {
+        summed, dropped, ..
+    } = &label.detail
+    else {
         panic!("expected a line label, got {:?}", label.detail);
     };
     assert_eq!(dropped.len(), 1);
@@ -320,7 +322,7 @@ fn a_two_lane_law_reports_one_dropped_line_at_one_channels_level() {
         (dropped[0].db - 20.0 * 0.25f64.log10()).abs() < 1e-9,
         "{dropped:?}"
     );
-    assert_eq!(*terms, Some(1), "one kept frequency, carried by both lanes");
+    assert_eq!(*summed, 1, "one kept frequency, carried by both lanes");
 }
 
 /// A series reaching an instant is truncated once, against the profile's own precision: the

@@ -437,22 +437,19 @@ pub fn answer_json(answer: &Answer, limit: Option<usize>, skim: bool) -> String 
 fn detail_json(detail: &Detail) -> String {
     match detail {
         Detail::Lines {
-            placed,
             summed,
             dropped,
             dropped_more,
-            terms,
             tail_db,
             ..
         } => format!(
-            ", \"placed\": {placed}, \"summed\": {summed}, \"dropped\": {}, \
-             \"dropped_more\": {dropped_more}, \"terms\": {}, \"tail_db\": {}",
+            ", \"summed\": {summed}, \"dropped\": {}, \"dropped_more\": {dropped_more}, \
+             \"tail_db\": {}",
             list(dropped, |d| format!(
                 "{{ \"hz\": {}, \"db\": {} }}",
                 num(d.hz),
                 num(d.db)
             )),
-            counted(*terms),
             maybe(*tail_db)
         ),
         Detail::Cropped { tail_db, .. } => format!(", \"tail_db\": {}", maybe(*tail_db)),

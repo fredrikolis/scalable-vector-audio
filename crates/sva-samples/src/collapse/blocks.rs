@@ -211,11 +211,9 @@ fn of_sum(
         let summed = lines::distinct(&found.kept);
         let detail = Detail::Lines {
             rule: Rule::LineSpectrumSummed,
-            placed: 0,
             summed,
             dropped,
             dropped_more,
-            terms: Some(summed),
             tail_db: found.tail(),
         };
         let row = Row::Lines(found.kept.iter().map(|kept| Direct::of(kept)).collect());
