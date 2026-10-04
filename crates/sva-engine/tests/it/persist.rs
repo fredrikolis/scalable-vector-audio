@@ -996,6 +996,48 @@ fn a_node_a_stream_computed_is_answered_by_another_store_after_its_persist() {
     assert_eq!(found.planned, Vec::<String>::new(), "{found:?}");
 }
 
+/// A stream of a bare ref to a stored node plays that node's value: past what memory holds,
+/// it reads on from the node itself, the bits a cold render writes.
+#[test]
+fn a_stream_of_a_ref_to_a_stored_node_reads_it_on_past_its_samples() {
+    let graph = graph_of(
+        "passed-on",
+        &[
+            ("tone", "lowpass(sample(sin(2*pi*220*t)), cutoff=900)\n"),
+            ("warm", "@tone\n"),
+        ],
+    );
+    let over = |end: i64| RenderConfig {
+        range: Range {
+            start: Some(0),
+            end: Some(end),
+        },
+        ..RenderConfig::at(RATE)
+    };
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    now(render_over(&graph, "warm", over(2_000), &store)).expect("a render");
+    now(store.persist()).expect("persisted");
+    let cold = render(&graph, "warm", over(6_000), &Tier::default()).expect("a render");
+    let cold = cold.output(cold.root).expect("the root");
+    let cold: Vec<u64> = cold.plane(0).iter().map(|v| v.to_bits()).collect();
+    let player = opened(&memory, u64::MAX);
+    let config = StreamConfig {
+        block: 512,
+        channels: None,
+        render: over(6_000),
+    };
+    let at = sva_ast::parse_expr("@warm").expect("an expression");
+    let mut stream = now(Stream::open(&graph, &at, config, &player)).expect("a stream");
+    let mut heard = Vec::new();
+    while let Some(held) = stream.read(stream.position(), 512).expect("a block") {
+        heard.extend(held.plane(0).iter().map(|v| v.to_bits()));
+    }
+    assert!(cold.iter().any(|b| *b != 0), "silence tests nothing");
+    assert!(heard == cold, "the stored samples, then the computed ones");
+    assert!(stream.stats().tier.disk_reads > 0);
+}
+
 /// A note memory holds, read again by a later term after the stream let its first samples go,
 /// is read again off memory: the stream computes none of it, and plays a cold stream's bits.
 #[test]

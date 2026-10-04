@@ -188,7 +188,10 @@ impl Table {
     }
 
     pub(crate) fn read_on(&mut self, tys: &Typing, at: usize) -> Result<(), EngineError> {
-        let id = self.values[at].node.expect("a node memory answered");
+        let mut id = self.values[at].node.expect("a node memory answered");
+        while let Some(source) = refs::passes(tys, id) {
+            id = source;
+        }
         let none = (1, true, &BTreeMap::new());
         let live = self.grown(tys, Start::Own(id), (none, false))?;
         self.values.hold(live);
