@@ -328,7 +328,8 @@ impl Bounding<'_> {
 }
 
 impl Tail {
-    /// Bounds `|x(s)|` for every `s >= t`, its rounding included; infinite where none holds.
+    /// Bounds `|x(s)|` for every `s >= t`, its rounding included; infinite where none holds,
+    /// never NaN.
     /// Each tail it reads is bounded first, at each instant it asks, so a chain of reads costs
     /// heap, never call depth.
     pub(crate) fn from<'a>(&'a self, t: f64, cx: Cx) -> f64 {
@@ -369,7 +370,11 @@ impl Tail {
                 }
             };
             crate::steps::step(1);
-            let bound = tail.bound_from(at, &read, cx);
+            // A bound no arithmetic defines proves nothing.
+            let bound = match tail.bound_from(at, &read, cx) {
+                b if b.is_nan() => f64::INFINITY,
+                b => b,
+            };
             let missing = missing.into_inner();
             if missing.is_empty() {
                 tail.last.set(Some((at.to_bits(), bound)));

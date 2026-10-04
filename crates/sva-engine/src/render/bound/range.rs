@@ -225,7 +225,18 @@ impl Range {
         self.span(t, to, node).map(Span::absolute)
     }
 
+    /// A span `0 * inf` left undefined is unbounded, so no reader reads it as finite.
     fn span(&self, t: f64, to: f64, node: &dyn Fn(NodeId, f64) -> f64) -> Option<Span> {
+        let s = self.spanned(t, to, node)?;
+        Some(
+            match [s.lo, s.hi, s.err, s.rel].iter().any(|v| v.is_nan()) {
+                true => Span::new(f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY),
+                false => s,
+            },
+        )
+    }
+
+    fn spanned(&self, t: f64, to: f64, node: &dyn Fn(NodeId, f64) -> f64) -> Option<Span> {
         let magnitude = |m: f64| Some(Span::new(-m, m, 0.0));
         match self {
             Range::Atoms(atoms) => {
