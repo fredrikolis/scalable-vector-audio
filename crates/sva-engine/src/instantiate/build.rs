@@ -377,8 +377,14 @@ impl<'b> Builder<'b> {
                 .map_err(|e| relocate(e, &caller, at))?;
         }
         let vars = &self.out.scope(body.scope).vars;
-        if let Some((key, _)) = vars.iter().find(|(key, _)| !used.contains(key)) {
-            return Err(fault(&caller, at, BindingFault::Unused(file, key.clone())));
+        if let Some((key, bound)) = vars.iter().find(|(key, _)| !used.contains(key)) {
+            let found = match key == SIGNAL_PARAM && bound.written.is_positional() {
+                true => {
+                    BindingFault::UnusedPositional(file, sva_ast::render_expr(bound.written.expr()))
+                }
+                false => BindingFault::Unused(file, key.clone()),
+            };
+            return Err(fault(&caller, at, found));
         }
         self.work.extend(children);
         Ok(())

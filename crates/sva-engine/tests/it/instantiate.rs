@@ -108,6 +108,27 @@ fn an_unbound_variable_and_an_unused_argument_both_refuse() {
     );
 }
 
+/// A call's one positional argument passes a signal; one the callee never reads is refused
+/// by what the author wrote, never by the parameter it would have bound.
+#[test]
+fn an_unread_positional_argument_is_named_as_written() {
+    let g = graph_of(
+        "positional",
+        &[
+            ("voice", "f0 = 220\nsin(2*pi*f0*t)\n"),
+            ("master", "voice(t, f0=110)\n"),
+        ],
+    );
+    let refused = instantiate(&g, "master", DEFAULT_SAMPLE_RATE).unwrap_err();
+    let message = refused.to_string();
+    assert_eq!(
+        fault_of(refused),
+        BindingFault::UnusedPositional("voice".to_string(), "t".to_string())
+    );
+    assert!(message.contains("`t`"), "{message}");
+    assert!(!message.contains("`x"), "{message}");
+}
+
 /// Where the fix is: the caller omitted the argument, so the caller's file and the span of
 /// the invocation are what a reader needs, not the callee's body.
 #[test]

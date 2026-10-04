@@ -10,6 +10,8 @@ use sva_formula::Refusal;
 pub enum BindingFault {
     Unbound(String, String),
     Unused(String, String),
+    /// A callee that reads no signal, and what its positional argument was written as.
+    UnusedPositional(String, String),
     Reserved(String),
     Duplicate(String),
     SelfInArgument(String),
@@ -22,7 +24,9 @@ impl BindingFault {
     pub fn code(&self) -> &'static str {
         match self {
             BindingFault::Unbound(..) => "engine.unbound_variable",
-            BindingFault::Unused(..) => "engine.unused_argument",
+            BindingFault::Unused(..) | BindingFault::UnusedPositional(..) => {
+                "engine.unused_argument"
+            }
             BindingFault::Reserved(_) => "engine.reserved_parameter",
             BindingFault::Duplicate(_) => "engine.duplicate_argument",
             BindingFault::SelfInArgument(_) => "engine.self_in_argument",
@@ -44,6 +48,11 @@ impl fmt::Display for BindingFault {
             BindingFault::Unused(callee, v) => {
                 write!(f, "`{v}=` binds nothing — `{callee}` leaves no `{v}` free")
             }
+            BindingFault::UnusedPositional(callee, arg) => write!(
+                f,
+                "the positional argument `{arg}` binds nothing — `{callee}` reads no signal \
+                 passed to it; name each argument, or read it at a time as `@{callee}({arg}, ...)`"
+            ),
             BindingFault::Reserved(v) => {
                 write!(
                     f,

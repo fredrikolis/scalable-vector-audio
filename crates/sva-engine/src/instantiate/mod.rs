@@ -57,6 +57,21 @@ impl Written {
         }
         at
     }
+
+    /// Whether this is an argument a call was given by position, not by name.
+    pub(crate) fn is_positional(&self) -> bool {
+        let Some((last, upper)) = self.path[1..].split_last() else {
+            return false;
+        };
+        let parent = Written {
+            defined: Arc::clone(&self.defined),
+            path: [&self.path[..1], upper].concat().into(),
+        };
+        match parent.expr() {
+            Expr::Call { args, .. } => matches!(args.get(*last as usize), Some(Arg::Pos(_))),
+            _ => false,
+        }
+    }
 }
 
 /// A child's number on a walk down, as [`child`] reads it.
