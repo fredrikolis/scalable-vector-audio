@@ -2,7 +2,8 @@
 
 use sva_formula::Codomain;
 use sva_samples::{
-    Buffer, Cost, Detail, Dropped, Extent, Grid, Label, PSYCHOACOUSTIC_V1, Rule, Source,
+    BLOCK, Buffer, Cost, Detail, Dropped, Extent, Grid, Label, PSYCHOACOUSTIC_V1, Rule, Source,
+    block_end,
 };
 
 use sva_formula::{Hash, TABLE_VERSION};
@@ -11,7 +12,7 @@ use super::Stored;
 use super::stored::{Header, Laid, Samples};
 
 /// Bumped by, and only by, a change to a stored value's bytes or to the key it is stored under.
-pub const STORE_FORMAT: u32 = 41;
+pub const STORE_FORMAT: u32 = 42;
 
 /// Every entry opens with its format and dual table, so one another format or table wrote is
 /// never read as a value.
@@ -26,10 +27,31 @@ fn entry_tag() -> Vec<u8> {
 
 const STAGED_RUN: &[u8; 4] = b"SVAc";
 
-/// Samples per chunk of a run: what one checksum covers, and the least a read loads. Samples
-/// stay f64, as the render computes them: a stored value is read by others, and f32 would
-/// change the bits of every value that reads it.
-pub(crate) const CHUNK: usize = 4096;
+/// A run's chunks are its samples within each block of the grid: what one checksum covers,
+/// and the least a read loads. Samples stay f64, as the render computes them: a stored value
+/// is read by others, and f32 would change the bits of every value that reads it.
+fn chunks(start: i64, len: usize) -> usize {
+    match len {
+        0 => 0,
+        _ => ((start + len as i64 - 1).div_euclid(BLOCK) - start.div_euclid(BLOCK) + 1) as usize,
+    }
+}
+
+/// How many of a run's samples come before its chunk `k`.
+fn before(run: &Laid, k: usize) -> usize {
+    let edge = match k {
+        0 => run.start,
+        k => (run.start.div_euclid(BLOCK) + k as i64).saturating_mul(BLOCK),
+    };
+    (edge.min(run.start + run.len as i64) - run.start) as usize
+}
+
+/// The chunks of `run` that hold `over`, met with the run.
+pub(crate) fn chunks_over(run: &Laid, over: Extent) -> (usize, usize) {
+    let first = run.start.div_euclid(BLOCK);
+    let at = |n: i64| (n.div_euclid(BLOCK) - first) as usize;
+    (at(over.start), at(over.end - 1) + 1)
+}
 
 /// A header's length, then the header, then each run's samples chunk by chunk, every plane of
 /// a chunk together, so a stretch of a run is one read.
@@ -39,8 +61,10 @@ pub(crate) fn entry(head: &Header, runs: &[Buffer]) -> Vec<u8> {
     for run in runs {
         let mut sums = Vec::new();
         let at = body.len() as u64;
-        for from in (0..run.len()).step_by(CHUNK) {
-            let to = (from + CHUNK).min(run.len());
+        let mut from = 0;
+        while from < run.len() {
+            let to = (block_end(run.start + from as i64) - run.start).min(run.len() as i64);
+            let to = to as usize;
             let chunk = body.len();
             for plane in &run.planes {
                 for sample in &plane[from..to] {
@@ -48,6 +72,7 @@ pub(crate) fn entry(head: &Header, runs: &[Buffer]) -> Vec<u8> {
                 }
             }
             sums.push(checksum(&body[chunk..]));
+            from = to;
         }
         laid.push(Laid {
             rate: run.rate,
@@ -161,10 +186,11 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Header, u64)> {
         let rate = u32::try_from(r.word()?).ok()?;
         let start = r.word()? as i64;
         let (width, len) = (r.word()? as usize, r.word()? as usize);
-        let sums = (0..len.div_ceil(CHUNK).min(r.0.len()))
+        let count = chunks(start, len);
+        let sums = (0..count.min(r.0.len()))
             .map(|_| r.word())
             .collect::<Option<Vec<u64>>>()?;
-        if sums.len() != len.div_ceil(CHUNK) {
+        if sums.len() != count {
             return None;
         }
         runs.push(Laid {
@@ -215,21 +241,21 @@ fn runs_whole(count: usize, samples: &Samples) -> bool {
 
 /// Where in its file a run's chunks `from..to` lie, and how many bytes.
 pub(crate) fn span_of(run: &Laid, from: usize, to: usize) -> (u64, u64) {
-    let bytes = |chunks: usize| ((chunks * CHUNK).min(run.len) * run.width * 8) as u64;
+    let bytes = |k: usize| (before(run, k) * run.width * 8) as u64;
     (run.at + bytes(from), bytes(to) - bytes(from))
 }
 
 /// A run's chunks `from..to` off the bytes `span_of` names; `None` where a checksum fails.
 pub(crate) fn read_chunks(bytes: &[u8], run: &Laid, from: usize, to: usize) -> Option<Buffer> {
-    let first = from * CHUNK;
-    let len = (to * CHUNK).min(run.len).checked_sub(first)?;
+    let first = before(run, from);
+    let len = before(run, to).checked_sub(first)?;
     if bytes.len() != len * run.width * 8 {
         return None;
     }
     let mut planes = vec![Vec::with_capacity(len); run.width];
     let mut at = 0;
     for (k, sum) in run.sums[from..to].iter().enumerate() {
-        let n = (CHUNK).min(run.len - first - k * CHUNK);
+        let n = before(run, from + k + 1) - before(run, from + k);
         let chunk = &bytes[at..at + n * run.width * 8];
         if checksum(chunk) != *sum {
             return None;
@@ -256,7 +282,7 @@ pub(crate) fn read_runs(bytes: &[u8], key: Hash) -> Option<Vec<Buffer>> {
         return Some(Vec::new());
     };
     let read = |run: &Laid| {
-        let n = run.len.div_ceil(CHUNK);
+        let n = chunks(run.start, run.len);
         let (at, len) = span_of(run, 0, n);
         let span = bytes.get(at as usize..(at + len) as usize)?;
         read_chunks(span, run, 0, n)

@@ -107,9 +107,6 @@ pub use terms::{Handle, NOTES};
 pub use until::Until;
 pub use world::STREAMED;
 
-/// Samples a whole render pulls at once; any size writes the same bits.
-const BLOCK: usize = 1 << 12;
-
 pub struct Render {
     pub root: NodeId,
     pub tys: Typing,
@@ -499,7 +496,7 @@ fn driving(
     Ok(Some(drive::Driver::new(
         table,
         range,
-        BLOCK,
+        sva_samples::BLOCK as usize,
         &held.config,
         (memory.clone(), recording),
     )))

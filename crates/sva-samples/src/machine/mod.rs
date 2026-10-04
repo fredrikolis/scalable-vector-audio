@@ -207,7 +207,7 @@ impl Machine {
         let p = &self.program;
         while own.end() < to {
             let from = own.end();
-            let most = (to - from).min(BLOCK as i64) as usize;
+            let most = (to - from).min(BLOCK as i64 - from.rem_euclid(BLOCK as i64)) as usize;
             let len = p.block(from, most, &mut self.block.recurrent);
             let here = Here {
                 reads,

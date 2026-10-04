@@ -1,6 +1,6 @@
-// Concern: pulls or skips a table block by block until its range ends or `until` holds, dropping what no later block reads | Non-concern: what a value computes | IO: (Table, range) -> blocks
+// Concern: pulls or skips a table block by block within the grid's blocks until its range ends or `until` holds | Non-concern: what a value computes | IO: (Table, range) -> blocks
 
-use sva_samples::{Buffer, Extent};
+use sva_samples::{Buffer, Extent, block_end};
 
 use super::RenderConfig;
 use super::table::{Pulled, Table};
@@ -90,23 +90,37 @@ impl Driver {
     }
 
     pub(super) fn next(&self) -> Extent {
-        Extent::new(self.at, self.next_to(self.block))
+        Extent::new(self.at, self.next_to(self.block).min(block_end(self.at)))
     }
 
     fn next_to(&self, n: usize) -> i64 {
         self.last.min(self.at.saturating_add(n as i64)).max(self.at)
     }
 
-    /// `n` samples from where it stands, cut where its range ends; `None` from there on.
+    /// `n` samples from where it stands, cut where its range ends; `None` from there on. A
+    /// pull may drop the last one's samples, so each is taken first.
     pub(super) fn read(&mut self, n: usize) -> Result<Option<Buffer>, EngineError> {
-        let from = self.at;
+        let (from, to) = (self.at, self.next_to(n));
         if !self.pulled(n)? {
             return Ok(None);
         }
+        let mut out = self.played(from);
+        while self.at < to {
+            let at = self.at;
+            if !self.pulled((to - at) as usize)? {
+                break;
+            }
+            let more = self.played(at);
+            for (held, more) in out.planes.iter_mut().zip(more.planes) {
+                held.extend(more);
+            }
+        }
+        Ok(Some(out))
+    }
+
+    fn played(&self, from: i64) -> Buffer {
         let end = self.end.map_or(self.at, |end| end.clamp(from, self.at));
-        Ok(Some(
-            self.table.samples(self.table.root, Extent::new(from, end)),
-        ))
+        self.table.samples(self.table.root, Extent::new(from, end))
     }
 
     /// Stands at `to`, computing nothing before it; the stateful values it started silent,
@@ -131,13 +145,13 @@ impl Driver {
         self.pulled(self.block)
     }
 
-    /// Computes `n` samples on from where it stands; false once it ended.
+    /// Up to `n` samples on, within one block; false once it ended.
     pub(super) fn pulled(&mut self, n: usize) -> Result<bool, EngineError> {
         let from = self.at;
         if self.end.is_some_and(|end| from >= end) {
             return Ok(false);
         }
-        let to = self.next_to(n);
+        let to = self.next_to(n).min(block_end(from));
         self.recording.reach(from);
         let window = Extent::new(from, to);
         if from == self.start {

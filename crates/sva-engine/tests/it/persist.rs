@@ -243,7 +243,7 @@ fn opening_a_store_reads_its_index_alone() {
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
-const PINNED: (u32, u64) = (41, 1452354991953776992);
+const PINNED: (u32, u64) = (42, 6760081272129159824);
 
 /// A change to how a value is encoded, or to what the engine computes for any construct here,
 /// fails this until `STORE_FORMAT` is bumped and the digest pinned again: rows, a filter, a
@@ -1036,6 +1036,55 @@ fn a_stream_of_a_ref_to_a_stored_node_reads_it_on_past_its_samples() {
     assert!(cold.iter().any(|b| *b != 0), "silence tests nothing");
     assert!(heard == cold, "the stored samples, then the computed ones");
     assert!(stream.stats().tier.disk_reads > 0);
+}
+
+/// A run stored from an instant off the grid's blocks is read back off the disk by a stream
+/// in blocks of any size, crossing chunk edges anywhere: the bits a cold render writes, none
+/// of it computed.
+#[test]
+fn a_stored_run_streams_off_the_disk_in_blocks_of_any_size() {
+    let graph = graph_of(
+        "stored-blocks",
+        &[
+            (
+                "tone",
+                "lowpass(sample(crop(sin(2*pi*220*t), 0.1234s, 1.9s)), cutoff=900)\n",
+            ),
+            ("warm", "@tone\n"),
+        ],
+    );
+    let config = RenderConfig {
+        range: Range {
+            start: Some(0),
+            end: Some(16_000),
+        },
+        ..RenderConfig::at(RATE)
+    };
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    now(render_over(&graph, "warm", config.clone(), &store)).expect("a render");
+    now(store.persist()).expect("persisted");
+    let cold = render(&graph, "warm", config.clone(), &Tier::default()).expect("a render");
+    let cold = cold.output(cold.root).expect("the root");
+    let cold: Vec<u64> = cold.plane(0).iter().map(|v| v.to_bits()).collect();
+    assert!(cold.iter().any(|b| *b != 0), "silence tests nothing");
+    for block in [1, 333, 4_095, 4_096, 4_097, 9_000] {
+        let player = opened(&memory, u64::MAX);
+        let stream = StreamConfig {
+            block,
+            channels: None,
+            render: config.clone(),
+        };
+        let at = sva_ast::parse_expr("@warm").expect("an expression");
+        let mut stream = now(Stream::open(&graph, &at, stream, &player)).expect("a stream");
+        let mut heard = Vec::new();
+        while let Some(held) = stream.read(stream.position(), block).expect("a block") {
+            heard.extend(held.plane(0).iter().map(|v| v.to_bits()));
+        }
+        assert!(heard == cold, "in blocks of {block}");
+        assert!(stream.stats().tier.disk_reads > 0, "in blocks of {block}");
+        assert_eq!(stream.evaluated("tone"), Vec::new(), "in blocks of {block}");
+    }
 }
 
 /// A note memory holds, read again by a later term after the stream let its first samples go,

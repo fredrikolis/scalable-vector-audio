@@ -203,10 +203,7 @@ impl<B: Backend> Store<B> {
                     if met.is_empty() {
                         continue;
                     }
-                    let chunk = codec::CHUNK as i64;
-                    let from = ((met.start - run.start) / chunk) as usize;
-                    let to = (met.end - run.start).div_euclid(chunk) as usize;
-                    let to = to + usize::from((met.end - run.start) % chunk != 0);
+                    let (from, to) = codec::chunks_over(run, met);
                     let (at, len) = codec::span_of(run, from, to);
                     let bytes = self.backend.get_range(&name_of(*file), at, len).await;
                     let mut samples = codec::read_chunks(&bytes.ok()??, run, from, to)?;

@@ -1,6 +1,13 @@
 // Concern: the sample grid: a sample's instant, the sample an instant or edge lands on, spans of samples | Non-concern: what a sample holds | IO: (n or t) -> t or n
 
-/// Samples `[start, end)` of the one grid every node is read on, whose sample 0 is t = 0.
+/// No pull, stored chunk or machine block crosses a multiple.
+pub const BLOCK: i64 = 1 << 12;
+
+pub fn block_end(n: i64) -> i64 {
+    (n.div_euclid(BLOCK) + 1).saturating_mul(BLOCK)
+}
+
+/// Samples `[start, end)` of the grid, whose sample 0 is t = 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Extent {
     pub start: i64,

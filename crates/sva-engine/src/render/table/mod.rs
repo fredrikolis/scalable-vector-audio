@@ -343,8 +343,8 @@ impl Table {
     }
 
     /// The history each stateful value runs through before what `window` holds of it, pulled
-    /// `block` samples at a time, each block dropped once no later one reads it: the state a
-    /// late window starts from, streamed as a render from its start streams it.
+    /// up to `block` samples at a time within the grid's blocks, each dropped once no later one
+    /// reads it: the state a late window starts from, streamed as a render streams it.
     pub(crate) fn history(
         &mut self,
         window: Extent,
@@ -375,7 +375,10 @@ impl Table {
         let mut pulled = Pulled::default();
         let mut from = over.start;
         while from < over.end {
-            let to = from.saturating_add(block).min(over.end);
+            let to = from
+                .saturating_add(block)
+                .min(sva_samples::block_end(from))
+                .min(over.end);
             let done = self.pulled(&within(Extent::new(from, to)), (memory, &mut *seen))?;
             pulled.priced += done.priced;
             pulled.waves += done.waves;
