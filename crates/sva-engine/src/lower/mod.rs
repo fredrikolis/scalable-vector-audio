@@ -9,6 +9,7 @@ mod walk;
 mod waves;
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use sva_ast::{Address, Arg, ByteSpan, Expr, Literal};
 use sva_formula::{Body, ClosedForm, Held, IndexId, NodeId, Part, Ty, Var};
@@ -53,7 +54,8 @@ enum Index {
 pub struct Lowering<'a> {
     inst: &'a Instances,
     typing: &'a mut Typing,
-    node: &'a str,
+    /// The node's path, the name every node it makes shares.
+    node: Arc<str>,
     indices: Vec<(String, Index)>,
     mode: SelfMode,
     own: Vec<(crate::time::Q, NodeId)>,
@@ -110,19 +112,20 @@ fn lowered(
         .at(path)
         .ok_or_else(|| EngineError::UnknownNode(path.to_string()))?;
     typing.lowering(path);
-    typing.begin(path, grid);
-    let lowered = lowered_on(path, grid, (expr, cx), inst, typing);
+    let name = typing.begin(path, grid);
+    let lowered = lowered_on(name, grid, (expr, cx), inst, typing);
     typing.end();
     lowered
 }
 
 fn lowered_on(
-    path: &str,
+    node: Arc<str>,
     grid: Grid,
     (expr, cx): (&Expr, Cx),
     inst: &Instances,
     typing: &mut Typing,
 ) -> Result<NodeId, EngineError> {
+    let path = &*node;
     let cx = cx.on(grid);
     let var = axis_of(inst, typing, expr, cx, path)?;
     let kind = match inst.reads_self(path) {
@@ -141,7 +144,7 @@ fn lowered_on(
     let mut low = Lowering {
         inst,
         typing,
-        node: path,
+        node: Arc::clone(&node),
         indices: Vec::new(),
         mode,
         own: Vec::new(),
@@ -254,11 +257,11 @@ fn scan_axis(inst: &Instances, typing: &Typing, e: &Expr, cx: Cx, seen: &mut (bo
 
 impl Lowering<'_> {
     fn here(&self, span: Option<ByteSpan>) -> Located {
-        Located::at(self.node, span)
+        Located::at(&*self.node, span)
     }
 
     fn part(&mut self, f: Body, span: Option<ByteSpan>) -> Part {
-        let origin = self.typing.mark(self.node, span);
+        let origin = self.typing.mark(&self.node, span);
         Part::new(origin, f)
     }
 
@@ -299,9 +302,9 @@ impl Lowering<'_> {
                     .filter(|held| self.typing.pending(*held));
                 match settled {
                     Some(held) => {
-                        let site = self.typing.mark(self.node, None);
+                        let site = self.typing.mark(&self.node, None);
                         let node = Typed {
-                            name: self.node.to_string(),
+                            name: Arc::clone(&self.node),
                             ty: self.typing.ty(id),
                             var: self.typing.var(id),
                             value: Value::Read {
@@ -323,7 +326,7 @@ impl Lowering<'_> {
                 }
             }
             Piece::ClosedForm(body) => {
-                let origin = self.typing.mark(self.node, None);
+                let origin = self.typing.mark(&self.node, None);
                 // FORMAT 15.3: a ref naming one number is that number to the typing too.
                 let body = match crate::refs::fold_constants(self.typing, &body) {
                     Cow::Owned(folded) => folded,
@@ -337,7 +340,7 @@ impl Lowering<'_> {
                 let form = ClosedForm { var, body, origin };
                 let ty = self.typing.infer_closed_form(&form)?;
                 let node = Typed {
-                    name: path.unwrap_or(self.node).to_string(),
+                    name: Arc::clone(&self.node),
                     ty,
                     var,
                     value: Value::ClosedForm(form),
@@ -361,10 +364,9 @@ impl Lowering<'_> {
     }
 
     fn register(&mut self, value: Value, ty: Ty, var: Var) -> NodeId {
-        let name = self.node.to_string();
         self.typing.push(
             Typed {
-                name,
+                name: Arc::clone(&self.node),
                 ty,
                 var,
                 value,

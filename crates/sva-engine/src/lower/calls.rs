@@ -160,7 +160,7 @@ impl Lowering<'_> {
             }
         };
         if numeric(name) {
-            let origin = self.typing.mark(self.node, Some(span));
+            let origin = self.typing.mark(&self.node, Some(span));
             let two = bodies.len() == 2;
             return match arithmetic(name, bodies, named, var, origin) {
                 Some(body) => self.folded(body, var),
@@ -436,7 +436,7 @@ impl Lowering<'_> {
             at,
             arguments,
         });
-        self.typing.note(self.node, call, chosen);
+        self.typing.note(&self.node, call, chosen);
     }
 
     /// Checked in range before its grid is sized from it, then noted and registered. A
@@ -595,7 +595,7 @@ impl Lowering<'_> {
         };
         let noise = self.typing.push(
             crate::typing::Node {
-                name: self.node.to_string(),
+                name: std::sync::Arc::clone(&self.node),
                 ty,
                 var,
                 value: Value::Noise(seed),

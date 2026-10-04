@@ -683,7 +683,7 @@ impl Lowering<'_> {
     /// One read of `source`'s samples at `at`.
     pub(super) fn reading(&mut self, source: NodeId, at: When, span: ByteSpan, var: Var) -> NodeId {
         let ty = self.typing.ty(source);
-        let site = self.typing.mark(self.node, Some(span));
+        let site = self.typing.mark(&self.node, Some(span));
         let read = Ty {
             held: Held::Sampled,
             dual: false,

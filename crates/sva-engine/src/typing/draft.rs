@@ -1,6 +1,7 @@
 // Concern: what a typing lowers beside the one it holds, until committed or let go | Non-concern: lowering a node (lower/), which paths changed | IO: (paths hidden, nodes made) -> ids freed
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use sva_formula::NodeId;
 
@@ -12,8 +13,8 @@ use crate::time::Grid;
 /// What a draft did, in order, so a pass of a loop can be undone back to where it began.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Entry {
-    Node(NodeId, (String, Grid)),
-    Origin(u32, (String, Grid)),
+    Node(NodeId, (Arc<str>, Grid)),
+    Origin(u32, (Arc<str>, Grid)),
     Path(String, Option<NodeId>),
     Copy((String, Grid), Option<NodeId>),
     Pending(NodeId),
@@ -135,7 +136,7 @@ impl Typing {
                 Entry::Origin(token, at) => ((None, Some(token)), at),
                 _ => continue,
             };
-            let units = self.units.entry(path.clone()).or_insert_with(|| Units {
+            let units = self.units.entry(path.to_string()).or_insert_with(|| Units {
                 file: inst.origin(&path).unwrap_or(&path).to_string(),
                 grids: Vec::new(),
             });

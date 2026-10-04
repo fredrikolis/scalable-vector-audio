@@ -4,6 +4,7 @@ mod draft;
 mod folds;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use sva_formula::filter::Shape;
 use sva_formula::{ClosedForm, Codomain, Env, Held, NodeId, Origin, ParamId, Ty, Var, infer};
@@ -99,7 +100,7 @@ impl When {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Node {
-    pub name: String,
+    pub name: Arc<str>,
     pub ty: Ty,
     pub var: Var,
     pub value: Value,
@@ -133,7 +134,7 @@ pub struct Typing {
     /// Every node the latest draft lowered, in order.
     lowered: Vec<String>,
     units: BTreeMap<String, Units>,
-    making: Vec<(String, Grid)>,
+    making: Vec<(Arc<str>, Grid)>,
     draft: Draft,
 }
 
@@ -480,10 +481,10 @@ impl Typing {
         if let Some(id) = self.id(path) {
             return id;
         }
-        self.begin(path, grid);
+        let name = self.begin(path, grid);
         let id = self.push(
             Node {
-                name: path.to_string(),
+                name,
                 ty: Ty {
                     dual: held.is_closed_form(),
                     ..Ty::discrete(held, Codomain::Real)
@@ -541,19 +542,22 @@ impl Typing {
     }
 
     /// What is made until `end` is `path`'s, on `grid`.
-    pub(crate) fn begin(&mut self, path: &str, grid: Grid) {
-        self.making.push((path.to_string(), grid));
+    /// The name all it makes until `end` share.
+    pub(crate) fn begin(&mut self, path: &str, grid: Grid) -> Arc<str> {
+        let name: Arc<str> = path.into();
+        self.making.push((Arc::clone(&name), grid));
+        name
     }
 
     pub(crate) fn end(&mut self) {
         self.making.pop();
     }
 
-    fn unit(&self) -> (String, Grid) {
+    fn unit(&self) -> (Arc<str>, Grid) {
         self.making
             .last()
             .cloned()
-            .unwrap_or_else(|| (String::new(), Grid::of(1)))
+            .unwrap_or_else(|| (Arc::from(""), Grid::of(1)))
     }
 
     pub(crate) fn infer_closed_form(&self, form: &ClosedForm) -> Result<Ty, EngineError> {
