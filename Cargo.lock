@@ -285,11 +285,11 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "sva-ast"
-version = "0.7.17"
+version = "0.7.18"
 
 [[package]]
 name = "sva-cli"
-version = "0.7.17"
+version = "0.7.18"
 dependencies = [
  "hound",
  "signal-hook",
@@ -301,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "sva-core"
-version = "0.7.17"
+version = "0.7.18"
 dependencies = [
  "sva-ast",
  "sva-engine",
@@ -310,7 +310,7 @@ dependencies = [
 
 [[package]]
 name = "sva-engine"
-version = "0.7.17"
+version = "0.7.18"
 dependencies = [
  "sva-ast",
  "sva-formula",
@@ -319,18 +319,18 @@ dependencies = [
 
 [[package]]
 name = "sva-formula"
-version = "0.7.17"
+version = "0.7.18"
 
 [[package]]
 name = "sva-samples"
-version = "0.7.17"
+version = "0.7.18"
 dependencies = [
  "sva-formula",
 ]
 
 [[package]]
 name = "sva-wasm"
-version = "0.7.17"
+version = "0.7.18"
 dependencies = [
  "js-sys",
  "sva-ast",
