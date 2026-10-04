@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash as _, Hasher};
 
-use sva_formula::{Hash, Lanes, NodeId, Var};
+use sva_formula::{ContentHasher, Hash, HashDomain, NodeId, Var};
 
 use crate::cast::Cast;
 use crate::lower::number_of;
@@ -39,8 +39,6 @@ pub(in crate::render::end) fn gain(tys: &Typing, reader: NodeId, read: NodeId) -
     gains.get(&reader).copied().flatten()
 }
 
-const KEY_ROTATE: u32 = 29;
-
 /// What `gain` is a function of: each node from `read` up to `reader` by its shape and grid over
 /// what it reads, each read off that path by its identity and grid, `read` by its grid alone,
 /// whatever it holds; `None` where a node refuses one.
@@ -49,11 +47,10 @@ pub(in crate::render::end) fn key(tys: &Typing, reader: NodeId, read: NodeId) ->
     let gridded = |shape: Hash, id: NodeId| {
         let mut grid = DefaultHasher::new();
         tys.grid(id).hash(&mut grid);
-        let mut lanes = Lanes::<KEY_ROTATE>::default();
-        for word in [shape.0, shape.1, grid.finish()] {
-            lanes.word(word);
-        }
-        lanes.finish()
+        let mut hasher = ContentHasher::new(HashDomain::GainBoundKey);
+        hasher.hash(shape);
+        hasher.word(grid.finish());
+        hasher.finish()
     };
     if !path.contains(&reader) {
         return Some(gridded(Hash(0, 0), reader));

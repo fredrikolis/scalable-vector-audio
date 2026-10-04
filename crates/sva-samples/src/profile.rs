@@ -1,5 +1,7 @@
 // Concern: the named tolerance set every label cites, and the ceiling and floor it puts on a rate | Non-concern: what a collapse does with either (collapse/), choosing the rate | IO: none -> Profile
 
+use sva_formula::{ContentHasher, HashDomain};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Profile {
     pub name: &'static str,
@@ -36,7 +38,7 @@ impl Profile {
     }
 
     /// Every setting a value or its label depends on.
-    pub fn deciding(&self) -> [u64; 5] {
+    pub fn deciding(&self) -> [u64; 6] {
         let Profile {
             name,
             floor_db,
@@ -46,11 +48,12 @@ impl Profile {
             precision_bits,
             prune_db: _,
         } = *self;
-        let named = name.bytes().fold(0xcbf2_9ce4_8422_2325u64, |held, b| {
-            (held ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-        });
+        let mut named = ContentHasher::new(HashDomain::ProfileName);
+        named.text(name);
+        let named = named.finish();
         [
-            named,
+            named.0,
+            named.1,
             floor_db.to_bits(),
             floor_db_above_5k.to_bits(),
             ceiling_hz.to_bits(),

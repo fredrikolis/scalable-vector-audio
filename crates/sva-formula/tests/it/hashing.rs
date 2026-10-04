@@ -2,8 +2,8 @@
 
 use crate::fixtures::{line, part, sine};
 use sva_formula::{
-    Body, Bound, ClosedForm, Hash, IndexId, Lanes, NodeId, Origin, Part, Series, Var,
-    hash_written_with,
+    Body, Bound, ClosedForm, ContentHasher, Hash, HashDomain, IndexId, NodeId, Origin, Part,
+    Series, Var, hash_written_with,
 };
 
 /// A form that reads no ref, as written.
@@ -53,24 +53,31 @@ fn a_body_in_f_is_another_address_than_in_t() {
     assert_ne!(on(Var::T), on(Var::F));
 }
 
-/// One mixer, three address spaces kept apart by their rotates.
+/// The address is SipHash-1-3-128 as published, keyed by its domain: these are `siphasher`
+/// 0.3.11's `SipHasher13::finish128` outputs under the same keys.
 #[test]
-fn each_address_space_stays_its_own_under_the_shared_mixer() {
-    let word = 0x0123_4567_89ab_cdefu64;
-    let of = |mut lanes: Lanes<0>| {
-        lanes.word(word);
-        lanes.finish()
-    };
-    let plain = of(Lanes::default());
-    let mut staggered = Lanes::<17>::default();
-    staggered.word(word);
-    let mut further = Lanes::<23>::default();
-    further.word(word);
+fn an_address_is_siphash_1_3_128_keyed_by_its_domain() {
+    let mut written = ContentHasher::new(HashDomain::WrittenClosedForm);
+    written.word(0x0123_4567_89ab_cdef);
+    assert_eq!(
+        written.finish(),
+        Hash(0x67ba_2470_3361_7d39, 0xd1e5_67c7_88dc_c7e9)
+    );
+    assert_eq!(
+        ContentHasher::new(HashDomain::CacheAddress).finish(),
+        Hash(0x2d21_cb22_9972_1eed, 0x13cf_df44_f74a_5fbd)
+    );
+}
 
-    assert_ne!(plain, staggered.finish(), "17 is not 0");
-    assert_ne!(plain, further.finish(), "23 is not 0");
-    assert_ne!(staggered.finish(), further.finish(), "17 is not 23");
-    assert_eq!(plain, of(Lanes::default()), "and each is a function");
+#[test]
+fn one_input_in_two_domains_is_two_addresses() {
+    let of = |domain| {
+        let mut hasher = ContentHasher::new(domain);
+        hasher.word(0x0123_4567_89ab_cdef);
+        hasher.finish()
+    };
+    assert_ne!(of(HashDomain::NodeIdentity), of(HashDomain::CacheAddress));
+    assert_ne!(of(HashDomain::WrittenClosedForm), of(HashDomain::ReadTime));
 }
 
 /// `sum(k, 1, 3, k*t*sum(j, 1, 2, j))` with its two indices numbered as a typing drew them.

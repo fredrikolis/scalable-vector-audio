@@ -12,7 +12,7 @@ use super::Stored;
 use super::stored::{Header, Laid, Samples};
 
 /// Bumped by, and only by, a change to a stored value's bytes or to the key it is stored under.
-pub const STORE_FORMAT: u32 = 42;
+pub const STORE_FORMAT: u32 = 43;
 
 /// Every entry opens with its format and dual table, so one another format or table wrote is
 /// never read as a value.

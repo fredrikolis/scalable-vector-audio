@@ -6,11 +6,11 @@ pub mod banded;
 pub mod calculus;
 pub mod closed_form;
 pub mod complex;
+mod content_hash;
 pub mod env;
 pub mod filter;
 pub mod hash;
 pub mod infer;
-mod lanes;
 pub mod modal;
 pub mod noise;
 pub mod note;
@@ -32,11 +32,11 @@ pub use closed_form::{
     Series, Unary, Var,
 };
 pub use complex::C64;
+pub use content_hash::{ContentHasher, HashDomain};
 pub use env::{Env, NodeId, ParamId};
 pub use filter::{ALL_SHAPES, Shape, design};
 pub use hash::{Hash, draw, draw_nearest, either_order, hash_written_with};
 pub use infer::infer;
-pub use lanes::Lanes;
 pub use modal::damping::Damping;
 pub use modal::{Geometry, modes};
 pub use noise::noise;

@@ -7,15 +7,15 @@ use crate::closed_form::{
     Series, Unary, Var,
 };
 use crate::complex::{C64, canonical};
+use crate::content_hash::{ContentHasher, HashDomain};
 use crate::env::NodeId;
-use crate::lanes::Lanes;
 use crate::run::Mirror;
 use crate::spectral_sum::Lane;
 use crate::spectral_sum::atom::{Singular, SpectralAtom};
 use crate::table::TABLE_VERSION;
 
-/// Two independently primed FNV-1a lanes: serving one closed form's samples for another is silent
-/// corruption, so the width is set against birthday collisions rather than speed.
+/// Serving one closed form's samples for another is silent corruption, so the width is set
+/// against birthday collisions rather than speed.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct Hash(pub u64, pub u64);
 
@@ -38,7 +38,7 @@ pub fn either_order(operands: &mut [Hash]) {
 /// node named by its form's hash reads alike by ref or written in place.
 pub fn hash_written_with(t: &ClosedForm, node: &mut dyn FnMut(NodeId) -> Hash) -> Hash {
     let mut s = Sink {
-        lanes: Lanes::default(),
+        hasher: ContentHasher::new(HashDomain::WrittenClosedForm),
         node: Some(node),
         bound: Vec::new(),
         free: true,
@@ -48,9 +48,8 @@ pub fn hash_written_with(t: &ClosedForm, node: &mut dyn FnMut(NodeId) -> Hash) -
     match t.var {
         Var::T => held,
         Var::F => {
-            let mut f = Sink::new(0x06, 0);
-            f.u64(held.0);
-            f.u64(held.1);
+            let mut f = ContentHasher::new(HashDomain::ClosedFormInFrequency);
+            f.hash(held);
             f.finish()
         }
     }
@@ -59,8 +58,14 @@ pub fn hash_written_with(t: &ClosedForm, node: &mut dyn FnMut(NodeId) -> Hash) -
 /// A time a ref is read at, as a reading of that ref is kept under: an index it holds is one
 /// series' own, named by its number.
 pub fn hash_time(at: &Body) -> Hash {
-    let mut s = Sink::new(0x05, TABLE_VERSION);
-    s.free = true;
+    let mut s = Sink {
+        hasher: ContentHasher::new(HashDomain::ReadTime),
+        node: None,
+        bound: Vec::new(),
+        free: true,
+        merkle: false,
+    };
+    s.u64(TABLE_VERSION);
     s.formula(at);
     s.finish()
 }
@@ -80,7 +85,7 @@ pub fn draw_nearest(seed: u64, key: f64) -> Option<f64> {
 }
 
 struct Sink<'a> {
-    lanes: Lanes<0>,
+    hasher: ContentHasher,
     node: Option<&'a mut dyn FnMut(NodeId) -> Hash>,
     /// The series indices bound around the term being hashed, innermost last: an index is
     /// hashed by which binder it names, never by the number a typing drew for it.
@@ -92,27 +97,12 @@ struct Sink<'a> {
 }
 
 impl<'a> Sink<'a> {
-    fn new(tag: u8, table_version: u64) -> Sink<'a> {
-        let mut s = Sink {
-            lanes: Lanes::default(),
-            node: None,
-            bound: Vec::new(),
-            free: false,
-            merkle: false,
-        };
-        s.byte(tag);
-        s.u64(table_version);
-        s
-    }
-
     fn byte(&mut self, b: u8) {
-        self.lanes.word(u64::from(b));
+        self.hasher.word(u64::from(b));
     }
 
     fn u64(&mut self, v: u64) {
-        for b in v.to_le_bytes() {
-            self.byte(b);
-        }
+        self.hasher.word(v);
     }
 
     fn i64(&mut self, v: i64) {
@@ -293,7 +283,7 @@ impl<'a> Sink<'a> {
             return named(*n);
         }
         let mut sub = Sink {
-            lanes: Lanes::default(),
+            hasher: ContentHasher::new(HashDomain::WrittenClosedForm),
             node: self.node.take(),
             bound: std::mem::take(&mut self.bound),
             free: self.free,
@@ -476,10 +466,8 @@ impl<'a> Sink<'a> {
         }
     }
 
-    /// One avalanche past the lanes, so a short input still fills both words.
-    fn finish(&self) -> Hash {
-        let Hash(a, b) = self.lanes.finish();
-        Hash(mix(a), mix(b))
+    fn finish(self) -> Hash {
+        self.hasher.finish()
     }
 }
 

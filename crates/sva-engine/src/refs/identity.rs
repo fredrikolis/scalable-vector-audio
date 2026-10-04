@@ -1,6 +1,8 @@
 // Concern: content-addresses one node, whatever representation it holds | Non-concern: composing a closed form across a ref (mod.rs) | IO: (NodeId) -> Hash
 
-use sva_formula::{Body, ClosedForm, Hash, NodeId, Var, hash_written_with};
+use sva_formula::{
+    Body, ClosedForm, ContentHasher, Hash, HashDomain, NodeId, Var, hash_written_with,
+};
 
 use sva_samples::Params;
 
@@ -29,7 +31,7 @@ fn identity_of(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<
     }
     let found = match typing.sum_slots(node) {
         Some(slots) => {
-            let mut sink = Sink::new();
+            let mut sink = node_identity_hasher();
             sink.text("terms");
             for slot in slots {
                 sink.hash(match slot {
@@ -56,7 +58,7 @@ pub(super) fn written(
     let hash = hash_written_with(form, &mut |id| match named(id) {
         Ok((held, var)) if var == form.var => held,
         Ok((held, _)) => {
-            let mut sink = Sink::new();
+            let mut sink = node_identity_hasher();
             sink.text("across");
             sink.hash(held);
             sink.finish()
@@ -80,7 +82,7 @@ pub(super) fn solver(params: &Params, varying: &[(&str, Hash)]) -> Hash {
     for (key, _) in varying {
         *crate::lower::field(&mut held, key).expect("a varying field") = f64::NAN;
     }
-    let mut sink = Sink::new();
+    let mut sink = node_identity_hasher();
     sink.text("solver");
     held.words().into_iter().for_each(|w| sink.word(w));
     for (key, at) in varying {
@@ -106,7 +108,7 @@ pub(crate) fn shape(
     node: NodeId,
     named: &mut dyn FnMut(NodeId) -> Result<Hash, EngineError>,
 ) -> Result<Hash, EngineError> {
-    let mut sink = Sink::new();
+    let mut sink = node_identity_hasher();
     match typing.value(node) {
         Value::ClosedForm(form) => {
             return written(form, &mut |id| Ok((named(id)?, typing.var(id))));
@@ -187,7 +189,11 @@ pub(crate) fn passes(typing: &Typing, node: NodeId) -> Option<NodeId> {
 }
 
 /// A moving time is named by its closed form, which holds no ref back to the reader.
-pub(super) fn when(sink: &mut Sink, typing: &Typing, at: &When) -> Result<(), EngineError> {
+pub(super) fn when(
+    sink: &mut ContentHasher,
+    typing: &Typing,
+    at: &When,
+) -> Result<(), EngineError> {
     sink.text("at");
     match at {
         When::At(time) => {
@@ -204,7 +210,7 @@ pub(super) fn when(sink: &mut Sink, typing: &Typing, at: &When) -> Result<(), En
     Ok(())
 }
 
-fn exact(sink: &mut Sink, index: crate::index::Index) {
+fn exact(sink: &mut ContentHasher, index: crate::index::Index) {
     round(sink, "index", index.round);
     match index.time {
         Some(time) => affine(sink, time),
@@ -213,8 +219,8 @@ fn exact(sink: &mut Sink, index: crate::index::Index) {
     sink.word(index.plus as u64);
 }
 
-fn stepped(sink: &mut Sink, typing: &Typing, step: &Step) -> Result<(), EngineError> {
-    let each = |sink: &mut Sink, what: &str, parts: &[Step]| {
+fn stepped(sink: &mut ContentHasher, typing: &Typing, step: &Step) -> Result<(), EngineError> {
+    let each = |sink: &mut ContentHasher, what: &str, parts: &[Step]| {
         sink.text(what);
         sink.word(parts.len() as u64);
         parts.iter().try_for_each(|p| stepped(sink, typing, p))
@@ -235,7 +241,7 @@ fn stepped(sink: &mut Sink, typing: &Typing, step: &Step) -> Result<(), EngineEr
     Ok(())
 }
 
-fn round(sink: &mut Sink, what: &str, round: Round) {
+fn round(sink: &mut ContentHasher, what: &str, round: Round) {
     let how = match round {
         Round::Even => "",
         Round::Floor => " floor",
@@ -244,57 +250,31 @@ fn round(sink: &mut Sink, what: &str, round: Round) {
     sink.text(&format!("{what}{how}"));
 }
 
-fn affine(sink: &mut Sink, time: crate::time::Affine) {
+fn affine(sink: &mut ContentHasher, time: crate::time::Affine) {
     for q in [time.scale, time.shift] {
         rational(sink, q);
     }
 }
 
 /// Both words of each side: a denominator reaches past 64 bits.
-fn rational(sink: &mut Sink, q: crate::time::Q) {
+fn rational(sink: &mut ContentHasher, q: crate::time::Q) {
     for side in [q.num(), q.den()] {
         sink.word(side as u64);
         sink.word((side >> 64) as u64);
     }
 }
 
-const IDENTITY_ROTATE: u32 = 23;
-
-pub(super) struct Sink(sva_formula::Lanes<IDENTITY_ROTATE>);
-
-impl Sink {
-    pub(super) fn new() -> Sink {
-        Sink(sva_formula::Lanes::default())
-    }
-
-    pub(super) fn word(&mut self, part: u64) {
-        self.0.word(part);
-    }
-
-    pub(super) fn text(&mut self, what: &str) {
-        self.word(what.len() as u64);
-        for byte in what.as_bytes() {
-            self.word(u64::from(*byte));
-        }
-    }
-
-    pub(super) fn hash(&mut self, held: Hash) {
-        self.word(held.0);
-        self.word(held.1);
-    }
-
-    pub(super) fn finish(&self) -> Hash {
-        self.0.finish()
-    }
+fn node_identity_hasher() -> ContentHasher {
+    ContentHasher::new(HashDomain::NodeIdentity)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Sink, rational};
+    use super::{node_identity_hasher, rational};
     use crate::time::Q;
 
     fn named(q: Q) -> sva_formula::Hash {
-        let mut sink = Sink::new();
+        let mut sink = node_identity_hasher();
         rational(&mut sink, q);
         sink.finish()
     }

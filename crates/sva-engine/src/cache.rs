@@ -180,14 +180,13 @@ pub(crate) fn key(identity: Hash, question: &Question) -> Hash {
     )
 }
 
-const ADDRESS_ROTATE: u32 = 17;
-
 pub(crate) fn mixed(seed: Hash, parts: &[u64]) -> Hash {
-    let mut lanes = sva_formula::Lanes::<ADDRESS_ROTATE>::from(seed);
+    let mut hasher = sva_formula::ContentHasher::new(sva_formula::HashDomain::CacheAddress);
+    hasher.hash(seed);
     for part in parts {
-        lanes.word(*part);
+        hasher.word(*part);
     }
-    lanes.finish()
+    hasher.finish()
 }
 
 /// `more` laid among `parts`, each touching pair joined into one; a shared part is copied only
