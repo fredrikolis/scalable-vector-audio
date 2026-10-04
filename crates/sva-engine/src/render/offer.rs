@@ -1,4 +1,4 @@
-// Concern: which values a render offers memory as nodes, with their meta, and when | Non-concern: whether memory keeps or writes them | IO: (Render, keys, frontier) -> offers; (Table, Memory) -> offered
+// Concern: which values a render offers memory as nodes, with their meta, and when | Non-concern: whether memory keeps or writes them | IO: (Render, keys, walk) -> offers; (Table, Memory) -> offered
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
@@ -8,9 +8,9 @@ use sva_formula::{Hash, Held as Representation, NodeId};
 use sva_samples::Extent;
 
 use super::Render;
-use super::frontier::Frontier;
 use super::table::segments::Segments;
 use super::table::{self, Table};
+use super::world::Reached;
 use crate::cache::{Facts, Memory, Offered, Stored};
 use crate::schedule;
 use crate::typing::Typing;
@@ -41,7 +41,7 @@ impl Offers {
     /// Each value a missed node computes, at its own node's key, with what memory decides from.
     pub(crate) fn of(
         held: &mut Render,
-        (keys, found): (&BTreeMap<String, Hash>, &Frontier),
+        (keys, found, order): (&BTreeMap<String, Hash>, &Reached, &schedule::Order),
         memory: &Memory,
     ) -> Offers {
         let mut pending = Vec::new();
@@ -49,10 +49,10 @@ impl Offers {
         if let Some(table) = &mut held.table {
             let tys = &held.tys;
             let own = table.cuts_by_name(tys);
-            let cuts = found.beneath(&|name| own.get(name).map(Vec::as_slice));
+            let cuts = beneath(order, &|name| own.get(name).map(Vec::as_slice));
             let under = Under::of(table);
             for (path, key) in keys {
-                if found.stored.contains_key(path) || !found.visited.contains(path) {
+                if found.held.contains_key(path) || !found.visited.contains(path) {
                     continue;
                 }
                 let Some((id, at)) = tys.id(path).and_then(|id| Some((id, table.of(id)?))) else {
@@ -146,6 +146,42 @@ impl Offers {
             memory.offer(offer.stored, source, facts);
         }
     }
+}
+
+/// Each node's `own` with that of every node under it: one fold over the schedule's groups,
+/// dependencies first, a node adding nothing sharing the set it reads.
+fn beneath<'w, 'o, T: Ord + Copy + 'o>(
+    order: &'w schedule::Order,
+    own: &dyn Fn(&str) -> Option<&'o [T]>,
+) -> HashMap<&'w str, Rc<BTreeSet<T>>> {
+    let mut out: HashMap<&'w str, Rc<BTreeSet<T>>> = HashMap::new();
+    for group in &order.groups {
+        let inside = |dep: &String| group.contains(dep);
+        let mut sets: Vec<Rc<BTreeSet<T>>> = Vec::new();
+        for member in group {
+            let read = order.deps(member).iter().filter(|d| !inside(d));
+            for held in read.filter_map(|dep| out.get(dep.as_str())) {
+                if !sets.iter().any(|set| Rc::ptr_eq(set, held)) {
+                    sets.push(Rc::clone(held));
+                }
+            }
+        }
+        let mine = group.iter().filter_map(|m| own(m)).flatten();
+        let set = match (sets.len(), mine.clone().next()) {
+            (0, None) => Rc::default(),
+            (1, None) => Rc::clone(&sets[0]),
+            _ => {
+                crate::steps::step(sets.iter().map(|set| set.len()).sum());
+                let all = sets.iter().flat_map(|set| set.iter()).copied();
+                Rc::new(all.chain(mine.copied()).collect())
+            }
+        };
+        for member in group {
+            crate::steps::step(1);
+            out.insert(member.as_str(), Rc::clone(&set));
+        }
+    }
+    out
 }
 
 fn offerable(

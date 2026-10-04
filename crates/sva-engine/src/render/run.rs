@@ -9,8 +9,8 @@ use sva_formula::{Hash, NodeId};
 
 use super::offer::{Offers, readable};
 use super::table::{self, Table};
-use super::world::World;
-use super::{Render, RenderConfig, closed, driving, dropped, drove, frontier, planned_over};
+use super::world::{Reach, Reached, Walking, World};
+use super::{Render, RenderConfig, closed, driving, dropped, drove, planned_over};
 use crate::cache::{Backend, Recording, Stored, Tier};
 use crate::error::EngineError;
 use crate::schedule;
@@ -66,16 +66,16 @@ pub async fn render_in<B: Backend>(
     let order = schedule::schedule_from(instances, std::slice::from_ref(&root))?;
     let lowered = typed.lowered().to_vec();
     let keys = keys(world, &order, &config);
-    let mut found = frontier::Frontier::from((instances, &order), &keys, &root, &config);
-    found.walked(tier, round).await;
+    let mut opened = BTreeSet::new();
+    let mut found = walked(world, (&root, &config, &opened), (tier, round)).await;
     let stood = |stored: &BTreeMap<String, Arc<Stored>>| {
         let mut tys = typed.clone();
         tys.stand(stored);
         tys
     };
-    if dropped(&config) && found.stored.contains_key(&root) {
+    if dropped(&config) && found.held.contains_key(&root) {
         recording.found(std::mem::take(&mut found.lookups));
-        let tys = stood(&found.stored);
+        let tys = stood(&found.held);
         let id = tys.id(&root).ok_or(EngineError::UnknownNode(root))?;
         let schedule = schedule::plan(&tys, id, &config.asks);
         let mut held = Render::shell(tys, id, config, schedule);
@@ -86,8 +86,7 @@ pub async fn render_in<B: Backend>(
     }
     let mut retyped = lowered;
     let mut held = loop {
-        found.walked(tier, round).await;
-        let tys = stood(&found.stored);
+        let tys = stood(&found.held);
         let id = tys
             .id(&root)
             .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;
@@ -120,11 +119,10 @@ pub async fn render_in<B: Backend>(
         if short.is_empty() {
             break held;
         }
-        for path in short {
-            found.reopen(&path);
-        }
+        opened.extend(short);
+        found = walked(world, (&root, &config, &opened), (tier, round)).await;
     };
-    let mut offers = Offers::of(&mut held, (&keys, &found), tier.memory());
+    let mut offers = Offers::of(&mut held, (&keys, &found, &order), tier.memory());
     recording.found(std::mem::take(&mut found.lookups));
     let walked = recording.stats();
     match driving(&mut held, recording)? {
@@ -159,6 +157,31 @@ pub async fn render_in<B: Backend>(
     }
     closed(&mut held)?;
     Ok(held)
+}
+
+/// What memory answers from `root` down, each key it cannot answer looked up this round.
+async fn walked<B: Backend>(
+    world: &World,
+    (root, config, opened): (&str, &RenderConfig, &BTreeSet<String>),
+    (tier, round): (&Tier<B>, u64),
+) -> Reached {
+    let walking = Walking {
+        root,
+        config,
+        whole: true,
+        opened,
+    };
+    loop {
+        let memory = tier.memory();
+        match world.walk(&walking, &|key| memory.answer(key, round)) {
+            Reach::Reached(reached) => return reached,
+            Reach::Asks(keys) => {
+                for key in keys {
+                    tier.lookup(key, round).await;
+                }
+            }
+        }
+    }
 }
 
 /// Each instance's node key; an instance whose identity refuses is never looked up.

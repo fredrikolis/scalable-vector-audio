@@ -1,4 +1,4 @@
-// Concern: the version a render or stream plays, advanced per edit: graph, instances, typing, identities | Non-concern: the table, the blocks | IO: (an edit) -> a version, a walk; commit, abort
+// Concern: the version a render or stream plays, advanced per edit, and its walk to what memory answers | Non-concern: the table, the blocks | IO: (an edit) -> a version; (a root) -> hits; commit, abort
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -6,12 +6,14 @@ use std::sync::Arc;
 use sva_ast::{Expr, Graph, Held};
 use sva_formula::Hash;
 
-use super::RenderConfig;
-use super::frontier::{answers, noted};
+use sva_samples::Extent;
+
 use super::terms::{Handle, NOTES, Terms, is_term};
-use crate::cache::{Known as Answer, Lookup, Outcome, Stored};
+use super::{RenderConfig, default_end, default_start};
+use crate::cache::{Known as Answer, Lookup, Outcome, PayloadKind, Stored};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::Instances;
+use crate::query::Representation;
 use crate::schedule;
 use crate::typing::Typing;
 
@@ -240,26 +242,44 @@ impl World {
     }
 
     fn walked(&self, advance: Advance, config: &RenderConfig, found: Found) -> Walked {
-        let walk = Walk {
-            world: self,
-            found_known: advance.found,
-            changed: &advance.changed,
-            fresh: &advance.fresh,
+        let walking = Walking {
+            root: STREAMED,
             config,
-            found,
+            whole: false,
+            opened: &BTreeSet::new(),
         };
-        let (found_known, visited, hits, asks, prefixes) = walk.walked();
-        if !asks.is_empty() {
-            return Walked::Asks(asks);
-        }
+        let reached = match self.reach(&walking, Some(&advance), found) {
+            Reach::Asks(keys) => return Walked::Asks(keys),
+            Reach::Reached(reached) => reached,
+        };
+        let hits = reached.lookups.into_iter();
         Walked::Planned(Plan {
             adopted: advance.adopted,
             named: advance.named.len(),
-            visited,
-            hits,
-            prefixes,
-            found: found_known,
+            visited: reached.visited.len(),
+            hits: hits.filter(|l| l.outcome == Outcome::Hit).collect(),
+            prefixes: reached.held,
+            found: reached.known,
         })
+    }
+
+    /// A walk down from `walking`'s root to what memory answers, through every miss: a
+    /// render's whole, or a change's to each node it changed or newly reads.
+    pub(super) fn walk(&self, walking: &Walking, found: Found) -> Reach {
+        self.reach(walking, None, found)
+    }
+
+    fn reach(&self, walking: &Walking, change: Option<&Advance>, found: Found) -> Reach {
+        let walk = Walk {
+            world: self,
+            known: change.map_or_else(BTreeMap::new, |c| c.found.clone()),
+            changed: change.map(|c| &c.changed),
+            fresh: change.map(|c| &c.fresh),
+            pins: Pins::of(&self.instances, walking.config),
+            walking,
+            found,
+        };
+        walk.walked()
     }
 
     pub(super) fn key(&self, path: &str, config: &RenderConfig) -> Option<Hash> {
@@ -404,54 +424,125 @@ impl World {
     }
 }
 
+/// How a walk asks memory: from which root, at which rate and profile, for which readings.
+pub(super) struct Walking<'w> {
+    pub(super) root: &'w str,
+    pub(super) config: &'w RenderConfig,
+    /// A render's: every node from the root looked up anew, the root answering over its range.
+    pub(super) whole: bool,
+    /// Hits short of what their readers ask, walked into as misses.
+    pub(super) opened: &'w BTreeSet<String>,
+}
+
+/// What a walk reached: each node visited, each lookup in walk order, each hit's samples.
+pub(super) struct Reached {
+    pub(super) visited: BTreeSet<String>,
+    pub(super) lookups: Vec<Lookup>,
+    pub(super) held: BTreeMap<String, Arc<Stored>>,
+    known: BTreeMap<String, Known>,
+}
+
+/// What a walk reached, or the keys it has to look up before it can.
+pub(super) enum Reach {
+    Asks(Vec<Hash>),
+    Reached(Reached),
+}
+
+/// What the readings asked of a walk pin: every node under a ledger, a node a reading asks
+/// more of than samples, and every node above one a reading asks of, which a hit would hide.
+struct Pins {
+    all: bool,
+    pinned: BTreeSet<String>,
+    asked: BTreeMap<String, Vec<Representation>>,
+}
+
+impl Pins {
+    fn of(inst: &Instances, config: &RenderConfig) -> Pins {
+        let ledger =
+            |ask: &&crate::query::Ask| matches!(ask.representation, Representation::Ledger { .. });
+        let mut pins = Pins {
+            all: config.asks.iter().any(|ask| ledger(&ask)),
+            pinned: BTreeSet::new(),
+            asked: BTreeMap::new(),
+        };
+        for ask in &config.asks {
+            let Ok(path) = inst.instance_of(&ask.node) else {
+                continue;
+            };
+            if !ask.representation.off_samples(true) {
+                pins.pinned.insert(path.clone());
+            }
+            pins.asked.entry(path).or_default().push(ask.representation);
+        }
+        let mut up: Vec<&str> = pins.asked.keys().map(String::as_str).collect();
+        while let Some(at) = up.pop() {
+            for reader in inst.readers(at) {
+                if pins.pinned.insert(reader.to_string()) {
+                    up.push(reader);
+                }
+            }
+        }
+        pins
+    }
+
+    fn holds(&self, path: &str) -> bool {
+        self.all || self.pinned.contains(path)
+    }
+}
+
 struct Walk<'w> {
     world: &'w World,
-    found_known: BTreeMap<String, Known>,
-    changed: &'w BTreeSet<String>,
-    fresh: &'w BTreeMap<String, BTreeSet<String>>,
-    config: &'w RenderConfig,
+    known: BTreeMap<String, Known>,
+    changed: Option<&'w BTreeSet<String>>,
+    fresh: Option<&'w BTreeMap<String, BTreeSet<String>>>,
+    pins: Pins,
+    walking: &'w Walking<'w>,
     found: Found<'w>,
 }
 
-type WalkedOut = (
-    BTreeMap<String, Known>,
-    usize,
-    Vec<Lookup>,
-    Vec<Hash>,
-    BTreeMap<String, Arc<Stored>>,
-);
+enum Step {
+    Visit(String, bool),
+    Close(String, Hash),
+}
 
 impl Walk<'_> {
     fn known(&self, path: &str) -> Known {
-        let known = self
-            .found_known
-            .get(path)
-            .or_else(|| self.world.known.get(path));
+        let known = self.known.get(path).or_else(|| self.world.known.get(path));
         known.cloned().expect("an instance named")
     }
 
-    fn walked(mut self) -> WalkedOut {
-        let (mut visited, mut hits, mut asks) = (BTreeSet::new(), Vec::new(), Vec::new());
+    fn walked(mut self) -> Reach {
+        let (mut visited, mut lookups, mut asks) = (BTreeSet::new(), Vec::new(), Vec::new());
         let mut held: BTreeMap<String, Arc<Stored>> = BTreeMap::new();
-        let mut stack = vec![(STREAMED.to_string(), false)];
-        let key = |known: &Known| known.key(self.config).filter(|_| !known.pinned);
-        while let Some((path, anew)) = stack.pop() {
+        let (config, whole) = (self.walking.config, self.walking.whole);
+        let mut stack = vec![Step::Visit(self.walking.root.to_string(), false)];
+        while let Some(step) = stack.pop() {
+            let (path, anew) = match step {
+                Step::Close(path, key) => {
+                    lookups.push(noted(&path, key, Outcome::ComputedNotStored));
+                    continue;
+                }
+                Step::Visit(path, anew) => (path, anew),
+            };
             let mut known = self.known(&path);
+            let pinned = known.pinned || self.pins.holds(&path);
+            let key = known.key(config).filter(|_| !pinned);
             if visited.contains(&path) {
                 let asked = anew && !held.contains_key(&path);
-                if let Some(key) = key(&known).filter(|_| asked)
+                if let Some(key) = key.filter(|_| asked)
                     && matches!((self.found)(key), Answer::Unknown)
                 {
                     asks.push(key);
                 }
                 continue;
             }
-            let newly = !known.looked;
-            if !(anew || newly || self.changed.contains(&path)) {
+            let changed = self.changed.is_some_and(|c| c.contains(&path));
+            if !(whole || anew || !known.looked || changed) {
                 continue;
             }
             visited.insert(path.clone());
-            let stored = match key(&known) {
+            let looked = key.filter(|_| !self.walking.opened.contains(&path));
+            let stored = match looked {
                 None => None,
                 Some(key) => match (self.found)(key) {
                     Answer::Hit(hit) => Some((key, hit)),
@@ -462,22 +553,64 @@ impl Walk<'_> {
                     }
                 },
             };
-            let stored = stored.filter(|(_, hit)| answers(hit, false, self.config));
+            let root = whole && path == self.walking.root;
+            let read = self.pins.asked.get(&path).map_or(&[][..], Vec::as_slice);
+            let answering = |hit: &Arc<Stored>| {
+                answers(hit, root, config) && read.iter().all(|r| r.off_samples(hit.sampled))
+            };
             known.looked = true;
-            if let Some((key, stored)) = stored {
-                hits.push(noted(&path, key, Outcome::Hit));
-                held.insert(path.clone(), stored);
-            } else {
-                let fresh = self.fresh.get(&path);
-                for read in self.world.instances.deps(&path).iter().rev() {
-                    let anew = fresh.is_some_and(|f| f.contains(read));
-                    stack.push((read.clone(), anew));
+            match stored.filter(|(_, hit)| answering(hit)) {
+                Some((key, stored)) => {
+                    lookups.push(noted(&path, key, Outcome::Hit));
+                    held.insert(path.clone(), stored);
+                }
+                None => {
+                    if let Some(key) = key {
+                        stack.push(Step::Close(path.clone(), key));
+                    }
+                    let fresh = self.fresh.and_then(|f| f.get(&path));
+                    for read in self.world.instances.deps(&path).iter().rev() {
+                        let anew = fresh.is_some_and(|f| f.contains(read));
+                        stack.push(Step::Visit(read.clone(), anew));
+                    }
                 }
             }
-            self.found_known.insert(path, known);
+            self.known.insert(path, known);
         }
-        asks.sort();
-        asks.dedup();
-        (self.found_known, visited.len(), hits, asks, held)
+        if !asks.is_empty() {
+            asks.sort();
+            asks.dedup();
+            return Reach::Asks(asks);
+        }
+        Reach::Reached(Reached {
+            visited,
+            lookups,
+            held,
+            known: self.known,
+        })
     }
+}
+
+pub(super) fn noted(path: &str, key: Hash, outcome: Outcome) -> Lookup {
+    Lookup {
+        node: path.to_string(),
+        key,
+        kind: PayloadKind::Segments,
+        outcome,
+        store: Some(outcome == Outcome::Hit),
+    }
+}
+
+/// A render's root answers where it holds the samples read; any other node, or a stream's
+/// node, where a reader may take its samples.
+fn answers(hit: &Stored, root: bool, config: &RenderConfig) -> bool {
+    let support = hit.support;
+    if !root {
+        return hit.readable;
+    }
+    let start = config.range.start.unwrap_or_else(|| default_start(support));
+    let Some(end) = config.range.end.or(default_end(support)) else {
+        return false;
+    };
+    hit.holds(Extent::new(start, end.max(start)).intersect(support))
 }
