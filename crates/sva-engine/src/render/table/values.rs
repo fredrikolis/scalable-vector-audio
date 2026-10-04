@@ -114,6 +114,10 @@ impl Values {
         self.ordered().map(|at| (at, &self[at]))
     }
 
+    pub(crate) fn place(&self, at: usize) -> &Place {
+        &self.slot(at).place
+    }
+
     pub(crate) fn place_mut(&mut self, at: usize) -> &mut Place {
         &mut self.slot_mut(at).place
     }

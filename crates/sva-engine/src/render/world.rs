@@ -271,10 +271,6 @@ impl World {
         walk.walked()
     }
 
-    pub(super) fn key(&self, path: &str, config: &RenderConfig) -> Option<Hash> {
-        self.keyed(path, self.known.get(path)?, config)
-    }
-
     /// What memory holds `known`'s own value under; none where its identity refuses.
     fn keyed(&self, path: &str, known: &Known, config: &RenderConfig) -> Option<Hash> {
         let id = self.typing.id(path)?;

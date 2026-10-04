@@ -727,8 +727,8 @@ fn a_cold_render_through_a_store_writes_the_bits_a_render_without_one_does() {
     assert_eq!(bits(&cold), bits(&fresh));
 }
 
-/// What a render offers memory goes to the disk only as memory lets it go, and is committed
-/// only by persist: under a cap below what the render offers, memory writes back what it
+/// What a render keeps in memory goes to the disk only as memory lets it go, and is committed
+/// only by persist: under a cap below what the render keeps, memory writes back what it
 /// evicts, and the store is unchanged until persist moves everything into it.
 #[test]
 fn memory_writes_back_what_it_evicts_and_only_persist_commits_it() {
@@ -738,7 +738,7 @@ fn memory_writes_back_what_it_evicts_and_only_persist_commits_it() {
     rendered_over(&graph, &store, 2.0);
     assert!(
         memory.staged().is_empty(),
-        "memory holds all it was offered"
+        "memory holds all the render kept"
     );
     let held = store.bytes();
 
@@ -948,6 +948,46 @@ fn a_stream_reads_a_note_another_store_over_its_directory_persisted() {
         .filter(|l| l.store == Some(true));
     let hits: Vec<String> = hits.map(|l| l.node).collect();
     assert_eq!(hits, ["blip(f0=200)"], "{:?}", warm.borrow().stats());
+}
+
+/// A note a stream computed reaches the disk as a render's would: a store opened after the
+/// stream's persist answers it off the disk, computing nothing, bit for bit a cold render.
+#[test]
+fn a_node_a_stream_computed_is_answered_by_another_store_after_its_persist() {
+    let graph = graph_of(
+        "streamed-then-rendered",
+        &[
+            (
+                "blip",
+                "crop(lowpass(sample(sin(2*pi*f0*t)), cutoff=2000, q=0.7), 0s, 0.1s)\n",
+            ),
+            ("warm", "@blip(t, f0=200)\n"),
+        ],
+    );
+    let memory = Memory::default();
+    let player = opened(&memory, u64::MAX);
+    let stream = notes(&graph, 2_000, &player);
+    now(added(
+        &stream,
+        &graph,
+        &term("@blip(t - 512sp, f0=200)"),
+        &player,
+    ))
+    .expect("added");
+    assert!(
+        played(&stream).iter().any(|b| *b != 0),
+        "silence tests nothing"
+    );
+    now(player.persist()).expect("persisted");
+
+    let config = RenderConfig::seconds(RATE, 0.1);
+    let renderer = opened(&memory, u64::MAX);
+    let warm = now(render_over(&graph, "warm", config.clone(), &renderer)).expect("a render");
+    let cold = render(&graph, "warm", config, &Tier::default()).expect("a render");
+    assert_eq!(samples(&warm), samples(&cold));
+    let found = stats(&warm);
+    assert!(found.tier.disk_reads > 0, "{found:?}");
+    assert_eq!(found.planned, Vec::<String>::new(), "{found:?}");
 }
 
 /// A string held until `release`, never released here.
@@ -1265,7 +1305,7 @@ fn a_stream_reads_a_note_memory_holds_across_its_commit() {
     taken(&memory);
     now(added(&stream, &graph, &term(STRIKE), &player)).expect("added");
     now(added(&stream, &graph, &term(STRIKE), &player)).expect("added");
-    assert_eq!(taken(&memory), [], "memory answers the note it was offered");
+    assert_eq!(taken(&memory), [], "memory answers the note a render kept");
     now(player.persist()).expect("persisted");
     taken(&memory);
     now(added(&stream, &graph, &term(STRIKE), &player)).expect("added");

@@ -5,9 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use sva_ast::Graph;
-use sva_formula::{Hash, NodeId};
 
-use super::offer::{Offers, readable};
 use super::table::{self, Table};
 use super::world::{Reach, Reached, Walking, World};
 use super::{Render, RenderConfig, closed, driving, dropped, drove, ended, planned_over};
@@ -67,9 +65,7 @@ pub async fn render_in<B: Backend>(
         .id(&root)
         .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;
     let (config, decided) = ended(typed, id, config);
-    let order = schedule::schedule_from(instances, std::slice::from_ref(&root))?;
     let lowered = typed.lowered().to_vec();
-    let keys = keys(world, &order, &config);
     let mut opened = BTreeSet::new();
     let mut found = walked(world, (&root, &config, &opened), (tier, round)).await;
     let stood = |stored: &BTreeMap<String, Arc<Stored>>| {
@@ -94,16 +90,11 @@ pub async fn render_in<B: Backend>(
         let id = tys
             .id(&root)
             .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;
-        let bounds: BTreeSet<NodeId> = keys
-            .keys()
-            .filter_map(|path| tys.id(path))
-            .filter(|id| readable(&tys, *id))
-            .collect();
         let mut held = planned_over(
             (graph, target, instances),
             (tys, id),
             (config.clone(), &mut *stand_in),
-            (&bounds, decided),
+            decided,
         )?;
         retyped.append(&mut held.stand_in_typed);
         let short = match (&mut held.table, held.range) {
@@ -126,7 +117,9 @@ pub async fn render_in<B: Backend>(
         opened.extend(short);
         found = walked(world, (&root, &config, &opened), (tier, round)).await;
     };
-    let mut offers = Offers::of(&mut held, (&keys, &found), tier.memory());
+    if let (Some(table), Some(range)) = (&mut held.table, held.range) {
+        table.offers(&held.tys, range);
+    }
     recording.found(std::mem::take(&mut found.lookups));
     let walked = recording.stats();
     match driving(&mut held, recording)? {
@@ -138,13 +131,11 @@ pub async fn render_in<B: Backend>(
                 if !driver.pull()? {
                     break;
                 }
-                offers.whole(&driver.table, tier.memory());
                 let needs = driver.table.needs(driver.next());
                 for (key, parts) in tier.fetch(&needs).await.handed {
                     driver.table.took(key, &parts);
                 }
             }
-            offers.rest(&driver.table, tier.memory());
             drove(&mut held, driver);
         }
         None => held.cache_stats = Some(walked),
@@ -186,13 +177,6 @@ async fn walked<B: Backend>(
             }
         }
     }
-}
-
-/// Each instance's node key; an instance whose identity refuses is never looked up.
-fn keys(world: &World, order: &schedule::Order, config: &RenderConfig) -> BTreeMap<String, Hash> {
-    let paths = order.groups.iter().flatten();
-    let named = paths.filter_map(|path| Some((path.clone(), world.key(path, config)?)));
-    named.collect()
 }
 
 /// Each node memory answered whose samples miss some its readers ask over `range`.

@@ -3,7 +3,6 @@
 mod answer;
 mod drive;
 mod end;
-mod offer;
 mod run;
 mod slots;
 mod stream;
@@ -13,7 +12,7 @@ pub mod until;
 mod volatile;
 mod world;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use sva_ast::Graph;
 use sva_formula::{NodeId, SpectralSum};
@@ -267,7 +266,6 @@ fn planned(
     (graph, target): (&Graph, &str),
     prepared: Prepared,
     config: RenderConfig,
-    bounds: &BTreeSet<NodeId>,
 ) -> Result<Render, EngineError> {
     let Prepared {
         instances,
@@ -275,19 +273,14 @@ fn planned(
         root,
     } = prepared;
     let config = (config, &mut None);
-    planned_over(
-        (graph, target, &instances),
-        (tys, root),
-        config,
-        (bounds, None),
-    )
+    planned_over((graph, target, &instances), (tys, root), config, None)
 }
 
 fn planned_over(
     (graph, target, instances): (&Graph, &str, &instantiate::Instances),
     (tys, root): (Typing, NodeId),
     (config, stand_in): (RenderConfig, &mut Option<world::World>),
-    (bounds, decided): (&BTreeSet<NodeId>, Option<end::End>),
+    decided: Option<end::End>,
 ) -> Result<Render, EngineError> {
     let schedule = schedule::plan(&tys, root, &config.asks);
     let bindings = tys
@@ -296,7 +289,7 @@ fn planned_over(
         .collect();
     let mut held = Render::shell(tys, root, config, schedule);
     held.bindings = bindings;
-    ranged(&mut held, bounds, decided)?;
+    ranged(&mut held, decided)?;
     let volatile = volatile::mark((graph, instances), &held, (target, stand_in))?;
     if let Some(table) = &mut held.table {
         table.slots(|id| volatile.slot(id));
@@ -312,7 +305,6 @@ pub fn plan(graph: &Graph, target: &str, config: RenderConfig) -> Result<Render,
         (graph, target),
         prepared(graph, target, config.rate)?,
         config,
-        &BTreeSet::new(),
     )
 }
 
@@ -355,11 +347,7 @@ pub(crate) fn ended(
 
 /// A reading of samples or of their cost needs the range; lines and structure never do.
 /// `decided`: where an open render's root ends, found before it was planned.
-fn ranged(
-    held: &mut Render,
-    bounds: &BTreeSet<NodeId>,
-    decided: Option<end::End>,
-) -> Result<(), EngineError> {
+fn ranged(held: &mut Render, decided: Option<end::End>) -> Result<(), EngineError> {
     let counts = counts(&held.config.asks);
     let envelope = held.config.asks.iter().any(|ask| {
         matches!(
@@ -395,7 +383,7 @@ fn ranged(
     let found = supports.into_memo();
     let wanted: Vec<NodeId> = held.schedule.wanted.clone();
     let root = (held.root, wanted.as_slice());
-    let mut table = Table::bounded(&held.tys, root, &held.config.profile, (bounds, found))?;
+    let mut table = Table::bounded(&held.tys, root, &held.config.profile, found)?;
     table.plan(held.range.expect("a range was decided"))?;
     held.table = Some(table);
     Ok(())
@@ -598,7 +586,6 @@ pub(crate) fn render_apart(
         (graph, target),
         prepared(graph, target, config.rate)?,
         config,
-        &BTreeSet::new(),
     )?;
     if let (Some(range), Some(_)) = (held.range, &held.table) {
         let wanted = held.schedule.wanted.clone();

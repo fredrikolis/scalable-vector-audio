@@ -1,10 +1,9 @@
 // Concern: what one render asked of its values and memory, how far its output got, and what each lookup came to | Non-concern: what memory evicts (memory.rs) | IO: (loads, stores) -> CacheStats
 
 use sva_formula::Hash;
-use sva_samples::Label;
 
-use super::memory::{Counters, Kept, Memory};
-use super::{Entry, Expected, Payload, PayloadKind};
+use super::memory::{Counters, Keep, Kept, Memory};
+use super::{Entry, Expected, PayloadKind};
 use crate::recent::Recent;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,18 +180,12 @@ impl Recording {
         self.memory.load(key, expected)
     }
 
-    /// What a value computed, merged into what memory holds of it.
-    pub(crate) fn store(
-        &mut self,
-        (key, noted): (Hash, Option<usize>),
-        payload: Payload,
-        label: Option<&Label>,
-        slot: Option<Hash>,
-    ) {
-        let outcome = match self.memory.merge(key, payload, label, slot) {
-            Kept::Held => Outcome::ComputedStored,
-            Kept::Replaced => Outcome::ComputedReplaced,
-            Kept::Refused => return,
+    /// What a value computed, joined to what memory holds of it, with the node it answers.
+    pub(crate) fn keep(&mut self, (key, noted): (Hash, Option<usize>), keep: Keep) {
+        let outcome = match self.memory.keep(key, keep) {
+            Some(Kept::Held) => Outcome::ComputedStored,
+            Some(Kept::Replaced) => Outcome::ComputedReplaced,
+            Some(Kept::Refused) | None => return,
         };
         let Some(lookup) = noted.and_then(|at| self.lookups.get_mut(at)) else {
             return;

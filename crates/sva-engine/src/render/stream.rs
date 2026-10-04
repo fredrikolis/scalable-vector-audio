@@ -321,7 +321,10 @@ impl Stream {
     ) -> Changed {
         let freed = self.world.commit(std::mem::take(&mut plan.found));
         let now = self.driver.at;
+        let made = self.driver.table.made().to_vec();
         let carried = self.driver.table.settled(root, &freed, (now, self.live));
+        self.driver.table.priced(range, &made);
+        self.driver.table.offers(&self.world.typing, range);
         for (key, parts) in &local.fetched {
             self.driver.table.took(*key, parts);
         }

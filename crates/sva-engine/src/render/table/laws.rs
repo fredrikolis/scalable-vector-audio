@@ -276,7 +276,8 @@ fn changed(
 }
 
 /// However its terms and target changed, a stream holds the typing and table a build of all it
-/// plays, carrying nothing over, would: what a change carries over is what it would build.
+/// plays, carrying nothing over, would: what a change carries over is what it would build. A
+/// memory keeping nothing leaves both answered by no store.
 #[test]
 fn a_changed_stream_holds_what_a_build_of_all_it_plays_would() {
     let mut checked = 0;
@@ -291,7 +292,7 @@ fn a_changed_stream_holds_what_a_build_of_all_it_plays_would() {
             channels: None,
             render: RenderConfig::at(RATE),
         };
-        let tier = Tier::default();
+        let tier = Tier::new(0);
         let Ok(stream) = now(Stream::open(&g, &expr("@notes + @root"), config, &tier)) else {
             continue;
         };

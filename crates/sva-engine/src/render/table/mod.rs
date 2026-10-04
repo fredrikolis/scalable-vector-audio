@@ -63,13 +63,9 @@ struct Draft {
     noded: Vec<(NodeId, Option<usize>)>,
 }
 
-/// How much finer than its own step each value is, the nodes standing as values of their own,
-/// and the samples the store holds of each.
-type Bounds<'b> = (
-    i128,
-    &'b BTreeSet<NodeId>,
-    &'b BTreeMap<NodeId, Arc<Stored>>,
-);
+/// How much finer than its own step each value is, whether a node a reader may take as its
+/// samples alone is a value of its own, and the samples the store holds of each.
+type Bounds<'b> = (i128, bool, &'b BTreeMap<NodeId, Arc<Stored>>);
 
 impl Table {
     pub(crate) fn new(profile: &Profile) -> Table {
@@ -96,21 +92,21 @@ impl Table {
         wanted: &[NodeId],
         profile: &Profile,
     ) -> Result<Table, EngineError> {
-        let none = (&BTreeSet::new(), Memo::default());
-        Table::bounded(tys, (root, wanted), profile, none)
+        let none = (1, false, &BTreeMap::new());
+        Table::new(profile).built(tys, (root, wanted), none, false)
     }
 
-    /// The same, each of `bounds` a value of its own wherever it is read, never inlined, over
-    /// the supports `found` for its range.
+    /// The same, each node a reader may take as its samples alone a value of its own wherever
+    /// it is read, never inlined, over the supports `found` for its range.
     pub(crate) fn bounded(
         tys: &Typing,
         (root, wanted): (NodeId, &[NodeId]),
         profile: &Profile,
-        (bounds, found): (&BTreeSet<NodeId>, Memo),
+        found: Memo,
     ) -> Result<Table, EngineError> {
         let mut table = Table::new(profile);
         table.supports = found;
-        table.built(tys, (root, wanted), (1, bounds, &BTreeMap::new()), false)
+        table.built(tys, (root, wanted), (1, true, &BTreeMap::new()), false)
     }
 
     /// Every read its own value, as if each were written out where it is read.
@@ -121,7 +117,7 @@ impl Table {
         wanted: &[NodeId],
         profile: &Profile,
     ) -> Result<Table, EngineError> {
-        let none = (1, &BTreeSet::new(), &BTreeMap::new());
+        let none = (1, false, &BTreeMap::new());
         Table::new(profile).built(tys, (root, wanted), none, true)
     }
 
@@ -133,7 +129,7 @@ impl Table {
         profile: &Profile,
         fine: i128,
     ) -> Result<Table, EngineError> {
-        let finer = (fine, &BTreeSet::new(), &BTreeMap::new());
+        let finer = (fine, false, &BTreeMap::new());
         Table::new(profile).built(tys, (root, wanted), finer, false)
     }
 
@@ -153,8 +149,8 @@ impl Table {
         Ok(self)
     }
 
-    /// The value for `id` and each it reads the table lacks, built; a node `prefixes` names
-    /// stands on the store's samples, its live value continuing past.
+    /// The value for `id` and each it reads the table lacks, built as `bounded` builds them; a
+    /// node `prefixes` names stands on the store's samples, its live value continuing past.
     pub(crate) fn grow(
         &mut self,
         tys: &Typing,
@@ -162,7 +158,7 @@ impl Table {
         prefixes: &BTreeMap<NodeId, Arc<Stored>>,
     ) -> Result<usize, EngineError> {
         self.built = 0;
-        let bounds = (1, &BTreeSet::new(), prefixes);
+        let bounds = (1, true, prefixes);
         self.grown(tys, id, (bounds, false))
     }
 
@@ -170,7 +166,7 @@ impl Table {
         &mut self,
         tys: &Typing,
         id: NodeId,
-        ((fine, bounds, prefixes), apart): (Bounds<'_>, bool),
+        ((fine, alone, prefixes), apart): (Bounds<'_>, bool),
     ) -> Result<usize, EngineError> {
         let memo = std::mem::take(&mut self.supports);
         let profile = self.profile;
@@ -180,7 +176,7 @@ impl Table {
             supports: &supports,
             profile: &profile,
             fine,
-            bounds,
+            alone,
             prefixes,
             apart,
             reading: Vec::new(),
@@ -222,12 +218,33 @@ impl Table {
     pub(crate) fn plan(&mut self, range: Extent) -> Result<(), EngineError> {
         let needs = self.bounded_demand(range)?;
         self.planned = self.price(&needs)?;
-        for (at, value) in self.values.iter() {
-            if let Kind::Resident(stored) = &value.kind {
+        self.stored_prices(self.values.ordered().collect());
+        Ok(())
+    }
+
+    /// `plan`'s prices for `made`; one asked without end costs nothing.
+    pub(crate) fn priced(&mut self, range: Extent, made: &[usize]) {
+        let needs = self.demand(range);
+        let made: Vec<usize> = made
+            .iter()
+            .copied()
+            .filter(|at| self.values.holds(*at))
+            .collect();
+        for at in &made {
+            let (value, compute) = (&self.values[*at], &needs[*at].compute);
+            let bounded = compute.is_empty() || compute.hull().is_bounded();
+            let price = bounded.then(|| eval::price(value, compute, &self.values, &self.profile));
+            self.planned[*at] = price.and_then(Result::ok).unwrap_or(0);
+        }
+        self.stored_prices(made);
+    }
+
+    fn stored_prices(&mut self, ats: Vec<usize>) {
+        for at in ats {
+            if let Kind::Resident(stored) = &self.values[at].kind {
                 self.planned[at] += stored.priced;
             }
         }
-        Ok(())
     }
 
     /// The most seconds any read was moved to a whole sample.
@@ -384,12 +401,15 @@ impl Table {
                 continue;
             }
             if self.values[at].alias().is_some() {
+                self.kept(at, &[], recording);
                 continue;
             }
             let mut lifted = self.values.lift(at);
             let computed = self.computed(at, &mut lifted, need, recording);
             self.values.put(at, lifted);
             let (priced, waves) = computed?;
+            let computed: Vec<Extent> = need.compute.iter().collect();
+            self.kept(at, &computed, recording);
             pulled.priced += priced;
             pulled.waves += waves;
         }
@@ -416,9 +436,7 @@ impl Table {
             every: recording.keeps().then(|| recording.mark_every()),
         };
         let done = eval::compute(value, need, (&self.values, &marks), &self.profile)?;
-        let computed: Vec<Extent> = need.compute.iter().collect();
         let place = self.values.place_mut(at);
-        store::stored(value, place, &computed, recording);
         for (read, count) in store::reached(value, place, &need.compute) {
             let (read, place) = self.values.placed(read);
             store::reread(read, place, count, recording);
@@ -673,7 +691,7 @@ struct Building<'a> {
     supports: &'a Supports<'a>,
     profile: &'a Profile,
     fine: i128,
-    bounds: &'a BTreeSet<NodeId>,
+    alone: bool,
     prefixes: &'a BTreeMap<NodeId, Arc<Stored>>,
     /// Every read its own value rather than one per identity.
     apart: bool,
@@ -1091,7 +1109,7 @@ impl Building<'_> {
             self.tys,
             self.supports,
             (id, value.grid),
-            (self.profile, self.bounds),
+            (self.profile, self.alone),
         )?;
         if self.tys.ty(id).is_closed_form() {
             value.label = Some(Label::new(
@@ -1227,6 +1245,11 @@ fn width(tys: &Typing, id: NodeId) -> usize {
     usize::from(tys.ty(id).width).max(1)
 }
 
+/// Samples, and nothing reads it between them.
+pub(crate) fn readable(tys: &Typing, id: NodeId) -> bool {
+    tys.ty(id).held == Representation::Sampled && !crate::schedule::anywhere(tys, id)
+}
+
 /// What memory holds node `id`'s own value under, its identity `identity`.
 pub(crate) fn node_key(tys: &Typing, id: NodeId, identity: Hash, profile: &Profile) -> Hash {
     let question = Question {
@@ -1260,6 +1283,8 @@ fn place(values: &Values, value: &Value, profile: &Profile) -> store::Place {
         looked: false,
         prefixed: false,
         noted: None,
+        offer: None,
+        told: false,
     }
 }
 

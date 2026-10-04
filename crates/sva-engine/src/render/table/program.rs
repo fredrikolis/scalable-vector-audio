@@ -40,13 +40,13 @@ pub(crate) fn of(
     tys: &Typing,
     supports: &Supports,
     (id, grid): (NodeId, Grid),
-    (profile, bounds): (&sva_samples::Profile, &std::collections::BTreeSet<NodeId>),
+    (profile, alone): (&sva_samples::Profile, bool),
 ) -> Result<Program, EngineError> {
     let mut build = Build {
         tys,
         supports,
         profile,
-        bounds,
+        alone,
         owner: id,
         fine: grid != tys.grid(id),
         grid,
@@ -67,8 +67,9 @@ struct Build<'a> {
     tys: &'a Typing,
     supports: &'a Supports<'a>,
     profile: &'a sva_samples::Profile,
-    /// Nodes read as values of their own, never inlined into a reader's program.
-    bounds: &'a std::collections::BTreeSet<NodeId>,
+    /// Whether a node another may read as its samples alone is read as a value of its own,
+    /// never inlined into a reader's program.
+    alone: bool,
     owner: NodeId,
     /// Evaluated finer than its own typing's step, as an alias score's reference is: only a
     /// closed form is.
@@ -88,7 +89,7 @@ impl Build<'_> {
     }
 
     fn of(&mut self, id: NodeId) -> Result<NodeRenderer, EngineError> {
-        if id != self.owner && self.bounds.contains(&id) {
+        if id != self.owner && self.apart(id) {
             return Ok(self.slot(Source::Node(id), Map::shift(0)));
         }
         match self.tys.value(id).clone() {
@@ -440,6 +441,14 @@ impl Build<'_> {
             .unwrap_or(i64::MIN)
     }
 
+    /// An instance's own node a reader may take as its samples alone, where nodes are read so.
+    fn apart(&self, id: NodeId) -> bool {
+        self.alone
+            && self.tys.id(self.tys.name(id)) == Some(id)
+            && super::readable(self.tys, id)
+            && crate::refs::identity(self.tys, id).is_ok()
+    }
+
     fn site(&mut self, site: Site) -> SiteId {
         self.sites.push(site);
         SiteId((self.sites.len() - 1) as u32)
@@ -452,7 +461,7 @@ impl Build<'_> {
         args: &[NodeId],
     ) -> Result<NodeRenderer, EngineError> {
         let args = match name {
-            "+" => addends(self.tys, args, self.bounds),
+            "+" => addends(self.tys, args, &|id| self.apart(id)),
             _ => args.to_vec(),
         };
         let mut lowered = Vec::with_capacity(args.len());
@@ -569,15 +578,11 @@ fn one_value(tys: &Typing, body: &Body) -> bool {
 
 /// `a + b + c` nests to the left; as one sum, the same fold from `+0` in the same order, a
 /// span prunes a dead addend outright rather than leaving the sum around it.
-fn addends(
-    tys: &Typing,
-    args: &[NodeId],
-    bounds: &std::collections::BTreeSet<NodeId>,
-) -> Vec<NodeId> {
+fn addends(tys: &Typing, args: &[NodeId], apart: &dyn Fn(NodeId) -> bool) -> Vec<NodeId> {
     let (mut head, mut tails) = (args, Vec::new());
     while let Value::Op { name, args: inner } = tys.value(head[0])
         && name == "+"
-        && !bounds.contains(&head[0])
+        && !apart(head[0])
     {
         tails.push(&head[1..]);
         head = inner;

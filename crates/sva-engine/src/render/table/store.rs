@@ -1,15 +1,19 @@
-// Concern: what memory answers a value with before it computes, what it keeps after, and the nodes it stands on | Non-concern: memory's cap and evictions | IO: (value, Recording) -> samples, needs
+// Concern: what memory answers a value with before it computes, and what it keeps after, with its node | Non-concern: memory's cap and evictions | IO: (value) -> samples, needs; (value) -> kept
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 use std::sync::Arc;
 
-use sva_formula::Hash;
+use sva_formula::{Hash, Held as Representation, NodeId};
 use sva_samples::{Buffer, Extent, Machine, MachineState, NodeRenderer, Tape};
 
 use super::Table;
 use super::segments::Segments;
 use super::value::{Held, Kind, Value};
-use crate::cache::{Expected, Offered, Outcome, Payload, PayloadKind, Recording, Run};
+use crate::cache::{
+    Expected, Facts, Keep, Offered, Outcome, Payload, PayloadKind, Recording, Run, Stored,
+};
+use crate::typing::Typing;
 
 /// Where a value sits in memory: its key, and the slot a volatile parameter gives it.
 #[derive(Clone, Debug)]
@@ -28,6 +32,20 @@ pub(crate) struct Place {
     pub(crate) prefixed: bool,
     /// The lookup its first ask made, once made.
     pub(crate) noted: Option<usize>,
+    /// The node its samples answer, where it is an instance's own.
+    pub(crate) offer: Option<Offer>,
+    /// Whether memory was told of that node.
+    pub(crate) told: bool,
+}
+
+/// The node a value's samples answer, as the table named it.
+#[derive(Clone, Debug)]
+pub(crate) struct Offer {
+    stored: Stored,
+    /// Where its samples are; `None` where it copies them out of a period, over `over`.
+    offered: Option<Offered>,
+    over: Extent,
+    facts: Facts,
 }
 
 /// `count` leaves reading value `read`; no leaf is a read run with the reader's first samples.
@@ -229,21 +247,13 @@ pub(crate) fn reached(
     out
 }
 
-/// What a value computed, kept where memory takes it: a run segment by segment, each with the
-/// states it marked.
-pub(crate) fn stored(
-    value: &mut Value,
-    place: &Place,
-    computed: &[Extent],
-    recording: &mut Recording,
-) {
+/// What a value computed, as memory takes it: a run segment by segment, each with the states
+/// it marked, the rest under its own key.
+fn samples(value: &mut Value, place: &Place, computed: &[Extent]) -> Vec<(Hash, Payload)> {
     let stored = matches!(value.kind, Kind::Resident { .. });
-    if computed.is_empty() || stored || !value.pure || !recording.keeps() {
-        return;
+    if computed.is_empty() || stored || !value.pure {
+        return Vec::new();
     }
-    let slot = place.slot;
-    let key = place.key;
-    let label = value.label.clone();
     let payload = match &mut value.held {
         Held::Segments(parts) => Payload::Segments(
             computed
@@ -252,16 +262,17 @@ pub(crate) fn stored(
                 .collect(),
         ),
         Held::Frames(Some(frames)) => Payload::Frames(Arc::clone(frames)),
-        Held::Frames(None) => return,
+        Held::Frames(None) => return Vec::new(),
         Held::Run(tape) => {
             let (Some(from), Kind::Program(program)) = (computed.first(), &mut value.kind) else {
-                return;
+                return Vec::new();
             };
             let Some(machine) = &program.machine else {
-                return;
+                return Vec::new();
             };
             program.marks.insert(tape.end(), machine.state());
             let marks = std::mem::take(&mut program.marks);
+            let mut out = Vec::new();
             for (k, (start, segment)) in place.segments.iter().enumerate() {
                 let (lo, hi) = (from.start.max(*start), tape.end().min(place.end(k)));
                 if lo >= hi {
@@ -279,17 +290,12 @@ pub(crate) fn stored(
                         .collect(),
                     parent: place.parent(k),
                 };
-                recording.store(
-                    (*segment, place.noted),
-                    Payload::Run(Arc::new(run)),
-                    None,
-                    slot,
-                );
+                out.push((*segment, Payload::Run(Arc::new(run))));
             }
-            return;
+            return out;
         }
     };
-    recording.store((key, place.noted), payload, label.as_ref(), slot);
+    vec![(place.key, payload)]
 }
 
 fn over(buffer: &Arc<Buffer>, e: Extent) -> Option<Arc<Buffer>> {
@@ -317,29 +323,150 @@ fn taped(tape: &Tape, rate: u32, e: Extent) -> Option<Buffer> {
 }
 
 impl Table {
-    /// Its own value's, or those of the value at the end of what it moves; none where they
-    /// repeat a period.
-    pub(crate) fn offered(
-        &mut self,
-        at: usize,
-        key: Hash,
-        foot: Option<(usize, i64)>,
-    ) -> Option<Offered> {
-        let (value, place) = self.values.placed(foot.map_or(at, |(foot, _)| foot));
-        if value.period.is_some() {
-            return None;
+    /// What `at` computed, kept with the node its samples answer.
+    pub(crate) fn kept(&mut self, at: usize, computed: &[Extent], recording: &mut Recording) {
+        if !recording.keeps() {
+            return;
         }
-        Some(match (foot, place.key) {
-            (None, own) if own == key => Offered::Own,
-            (foot, of) => Offered::Moves {
-                of,
-                by: foot.map_or(0, |(_, by)| by),
-            },
-        })
+        let (value, place) = self.values.placed(at);
+        let kept = samples(value, place, computed);
+        let (slot, noted, label) = (place.slot, place.noted, value.label.clone());
+        let mut node = self.node(at, !kept.is_empty());
+        for (key, payload) in kept {
+            let keep = Keep {
+                samples: Some(payload),
+                label: label.as_ref(),
+                slot,
+                node: node.take_if(|(stored, _, _)| stored.key == key),
+            };
+            recording.keep((key, noted), keep);
+        }
+        if let Some(node) = node {
+            let key = node.0.key;
+            let keep = Keep {
+                samples: None,
+                label: None,
+                slot,
+                node: Some(node),
+            };
+            recording.keep((key, None), keep);
+        }
     }
 
-    pub(crate) fn slot(&mut self, at: usize) -> Option<Hash> {
-        self.values.placed(at).1.slot
+    /// The node to tell memory of now: with each keep of its own samples, else once.
+    fn node(&mut self, at: usize, keeping: bool) -> Option<(Stored, Offered, Facts)> {
+        let label = self.label(at);
+        let value = &self.values[at];
+        let place = self.values.place(at);
+        let offer = place.offer.as_ref()?;
+        if !value.pure || (place.told && !(keeping && offer.offered == Some(Offered::Own))) {
+            return None;
+        }
+        let offered = match &offer.offered {
+            Some(Offered::Own) if value.holding().is_empty() => return None,
+            Some(offered) => offered.clone(),
+            None if !offer.over.is_bounded() || !self.copied(at, offer.over) => return None,
+            None => Offered::Held(vec![Arc::new(self.samples(at, offer.over))]),
+        };
+        let stored = Stored {
+            label,
+            ..offer.stored.clone()
+        };
+        let facts = offer.facts;
+        self.values.place_mut(at).told = true;
+        Some((stored, offered, facts))
+    }
+
+    fn copied(&self, at: usize, over: Extent) -> bool {
+        let (mut foot, mut by) = (at, 0);
+        while let Some((read, shift)) = self.values[foot].alias() {
+            (foot, by) = (read, by + shift);
+        }
+        let value = &self.values[foot];
+        let mut asked = Segments::of(over.shifted(by)).intersect(value.support());
+        if let Some(period) = value.period {
+            asked = asked.folded(period);
+        }
+        value.holding().covers(&asked)
+    }
+
+    /// Each value an instance's own node holds named by that node, priced with all under it; a
+    /// value that only moves another is answered as what it moves.
+    pub(crate) fn offers(&mut self, tys: &Typing, range: Extent) {
+        let under = Under::of(self);
+        let mut named: BTreeMap<usize, Stored> = BTreeMap::new();
+        for (id, at) in self.nodes.clone() {
+            if named.contains_key(&at) {
+                continue;
+            }
+            if let Some(stored) = self.offerable(tys, (id, at), &under) {
+                named.insert(at, stored);
+            }
+        }
+        let feet = self.values.feet();
+        for (at, stored) in named.iter() {
+            let foot = feet.get(at).copied();
+            let moved = foot.and_then(|(foot, by)| {
+                let of = match &self.values[foot].kind {
+                    Kind::Resident(held) => held.key,
+                    _ => named.get(&foot)?.key,
+                };
+                Some(Offered::Moves { of, by })
+            });
+            let offered = moved.or_else(|| {
+                let (place, by) = foot.unwrap_or((*at, 0));
+                let value = &self.values[place];
+                match (value.period, foot, self.values.place(place).key) {
+                    (Some(_), _, _) => None,
+                    (None, None, own) if own == stored.key => Some(Offered::Own),
+                    (None, _, of) => Some(Offered::Moves { of, by }),
+                }
+            });
+            let over = range.intersect(stored.support);
+            let samples = match over.is_bounded() {
+                true => over.len() as u64,
+                false => u64::MAX,
+            };
+            let facts = Facts {
+                target: *at == self.root,
+                samples,
+            };
+            let offer = Offer {
+                stored: stored.clone(),
+                offered,
+                over,
+                facts,
+            };
+            self.values.place_mut(*at).offer = Some(offer);
+        }
+    }
+
+    fn offerable(&self, tys: &Typing, (id, at): (NodeId, usize), under: &Under) -> Option<Stored> {
+        let value = &self.values[at];
+        let path = tys.name(id);
+        let own = tys.id(path) == Some(id) && crate::refs::passes(tys, id).is_none();
+        let kind = matches!(value.kind, Kind::Frames { .. } | Kind::Resident(_));
+        if !own || kind || !value.pure {
+            return None;
+        }
+        let identity = crate::refs::identity(tys, id).ok()?;
+        let (priced, moved) = under.of_value(at);
+        let ty = tys.ty(id);
+        Some(Stored {
+            key: super::node_key(tys, id, identity, &self.profile),
+            identity,
+            label: self.label(at),
+            width: u8::try_from(value.width).expect("a width the typing held"),
+            codomain: ty.codomain,
+            rate: ty.rate,
+            grid: tys.grid(id),
+            support: value.support(),
+            priced,
+            moved,
+            readable: super::readable(tys, id) && value.alias().is_none(),
+            sampled: ty.held == Representation::Sampled,
+            held: Vec::new(),
+        })
     }
 
     /// Each node memory holds that `window` asks samples of no value holds: its key, and the
@@ -403,6 +530,118 @@ impl Table {
                     }
                 }
             }
+        }
+    }
+}
+
+/// What each value and all under it cost, and the most any moved a read: a value one other
+/// reads sums into its reader's own tree; one more read is summed once into each value over it.
+struct Under {
+    own: Vec<u128>,
+    apart: Vec<Rc<BTreeSet<usize>>>,
+    moved: Vec<f64>,
+}
+
+impl Under {
+    fn of(table: &Table) -> Under {
+        let span = table.values.span();
+        let mut readers = vec![0u32; span];
+        let distinct = |at: usize| {
+            let mut reads = table.values[at].reads.clone();
+            reads.sort_unstable();
+            reads.dedup();
+            reads
+        };
+        for at in table.values.ordered() {
+            for read in distinct(at) {
+                readers[read] += 1;
+            }
+        }
+        let mut under = Under {
+            own: vec![0; span],
+            apart: vec![Rc::default(); span],
+            moved: vec![0.0; span],
+        };
+        for at in table.values.ordered() {
+            let (mut own, mut moved) = (table.planned[at], table.values[at].moved);
+            let mut sets: Vec<Rc<BTreeSet<usize>>> = Vec::new();
+            let mut more = Vec::new();
+            for read in distinct(at) {
+                crate::steps::step(1);
+                moved = moved.max(under.moved[read]);
+                match readers[read] {
+                    1 => own += under.own[read],
+                    _ => more.push(read),
+                }
+                let held = &under.apart[read];
+                if !held.is_empty() && !sets.iter().any(|set| Rc::ptr_eq(set, held)) {
+                    sets.push(Rc::clone(held));
+                }
+            }
+            under.apart[at] = match (sets.len(), more.is_empty()) {
+                (0, true) => Rc::default(),
+                (1, true) => Rc::clone(&sets[0]),
+                _ => Rc::new(
+                    sets.iter()
+                        .flat_map(|s| s.iter())
+                        .copied()
+                        .chain(more)
+                        .collect(),
+                ),
+            };
+            (under.own[at], under.moved[at]) = (own, moved);
+        }
+        under
+    }
+
+    fn of_value(&self, at: usize) -> (u128, f64) {
+        crate::steps::step(self.apart[at].len());
+        let apart = self.apart[at].iter().map(|s| self.own[*s]).sum::<u128>();
+        (self.own[at] + apart, self.moved[at])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{RenderConfig, Tier, render};
+
+    /// The steps a render folds, naming its nodes and bounding, over a chain `depth` nodes
+    /// deep, each reading the one below 10 ms late, every node a miss.
+    fn folded(depth: usize) -> u64 {
+        folded_as(depth, "@P(t - 10ms)")
+    }
+
+    fn folded_as(depth: usize, body: &str) -> u64 {
+        let mut files = sva_ast::Composition::new();
+        let decays = "sample(crop(sin(2*pi*440*t)*exp(-t/0.1), 0s, 10s))\n";
+        files.insert("c0", decays);
+        for k in 1..=depth {
+            files.insert(
+                format!("c{k}"),
+                body.replace('P', &format!("c{}", k - 1)) + "\n",
+            );
+        }
+        let g = sva_ast::load(&files).expect("a composition");
+        let before = crate::steps::taken();
+        let top = format!("c{depth}");
+        render(&g, &top, RenderConfig::at(8_000), &Tier::default()).expect("a render");
+        crate::steps::taken() - before
+    }
+
+    /// Four times the nodes, four times the steps: no node walks what lies under it.
+    #[test]
+    fn a_chains_nodes_and_bounds_fold_steps_linear_in_its_nodes() {
+        let (short, long) = (folded(100), folded(400));
+        assert!(short > 0);
+        assert!(long <= 4 * short, "{short} then {long}");
+    }
+
+    /// Four times the nodes, under five times the steps.
+    #[test]
+    fn a_chain_of_scaled_and_summed_reads_folds_steps_linear_in_its_nodes() {
+        for body in ["0.9*@P(t - 10ms)", "@P(t)*0.5 + @P(t - 10ms)*0.4"] {
+            let (short, long) = (folded_as(50, body), folded_as(200, body));
+            assert!(long < 5 * short, "{body}: {short} then {long}");
         }
     }
 }

@@ -1,4 +1,4 @@
-// Concern: the memory tier: each resident value and its node under one cap, what it evicts and writes back, its misses | Non-concern: the disk | IO: (key) -> held, answered; offers -> kept
+// Concern: the memory tier: each resident value and its node under one cap, what it evicts and writes back, its misses | Non-concern: the disk | IO: (key) -> held, answered; (key, samples, node) -> kept
 
 #[cfg(test)]
 mod chains;
@@ -55,13 +55,20 @@ impl Counters {
 /// A node cheaper than a priced flop per this many bytes it holds is computed, never read back.
 pub const BYTES_PER_FLOP: u128 = 64;
 
-/// What a render states of a node it offers.
+/// What a keep states of the node its samples answer: whether it is the target, and how many
+/// samples it is asked over.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Facts {
-    pub(crate) slot: Option<Hash>,
-    pub(crate) settled: bool,
     pub(crate) target: bool,
     pub(crate) samples: u64,
+}
+
+/// What one keep sends memory: the samples a value computed, and the node they answer.
+pub(crate) struct Keep<'a> {
+    pub(crate) samples: Option<Payload>,
+    pub(crate) label: Option<&'a Label>,
+    pub(crate) slot: Option<Hash>,
+    pub(crate) node: Option<(Stored, Offered, Facts)>,
 }
 
 /// The protected segment holds at most this share of the cap, so probation always has a
@@ -83,7 +90,7 @@ pub(crate) enum Known {
     Unknown,
 }
 
-/// Where an offered node's sample `n` is.
+/// Where a kept node's sample `n` is.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Offered {
     /// The value held under the node's own key: a run's through each segment before it.
@@ -102,7 +109,7 @@ pub(crate) struct Writeback {
     pub(crate) parts: Vec<Arc<Buffer>>,
 }
 
-/// A value's samples, and the node they were offered or read off the disk as.
+/// A value's samples, and the node they were kept or read off the disk as.
 struct Item {
     payload: Option<Payload>,
     label: Option<Label>,
@@ -112,9 +119,8 @@ struct Item {
 
 struct Node {
     source: Source,
-    /// Holds what the disk may lack: a node a render still computes always does.
+    /// Holds what the disk lacks: each keep of more samples sets it again.
     dirty: bool,
-    settled: bool,
     bound: bool,
 }
 
@@ -279,10 +285,6 @@ impl State {
         }
     }
 
-    fn unsettled(&self, key: Hash) -> bool {
-        self.node(key).is_some_and(|node| !node.settled)
-    }
-
     /// A run's segment, then each before it, ending where the one after it starts.
     fn segments(&self, key: Hash) -> Vec<(Hash, Extent)> {
         let (mut out, mut at, mut end) = (Vec::new(), Some(key), i64::MAX);
@@ -333,18 +335,9 @@ impl State {
         out
     }
 
-    /// `key` and every node reading its samples gone, each dirty node flushed first; a node a
-    /// render still computes stays, to send the rest.
+    /// `key` and every node reading its samples gone, each dirty node flushed first: a later
+    /// keep brings back what it keeps on computing.
     fn remove(&mut self, key: Hash) -> bool {
-        self.removed(key, true)
-    }
-
-    /// As `remove`, its own node staying while a render computes it.
-    fn release(&mut self, key: Hash) -> bool {
-        self.removed(key, false)
-    }
-
-    fn removed(&mut self, key: Hash, whole: bool) -> bool {
         if !self.entries.contains_key(&key) {
             return false;
         }
@@ -353,11 +346,7 @@ impl State {
             self.flush(*at);
         }
         for at in doomed {
-            match (at == key, self.unsettled(at)) {
-                (true, true) if !whole => self.unvalued(at),
-                (true, _) | (false, false) => self.discard(at),
-                (false, true) => {}
-            }
+            self.discard(at);
         }
         true
     }
@@ -375,15 +364,6 @@ impl State {
         }
     }
 
-    fn unvalued(&mut self, key: Hash) {
-        let Some(held) = self.entries.get_mut(&key) else {
-            return;
-        };
-        let before = held.bytes();
-        held.item.payload = None;
-        self.bytes = self.bytes - before + held.bytes();
-    }
-
     fn unnoded(&mut self, key: Hash) {
         let Some(held) = self.entries.get_mut(&key) else {
             return;
@@ -397,12 +377,10 @@ impl State {
         self.links.get_mut().evict(key);
     }
 
-    /// A dirty node's header and what memory holds of it, on their way to the disk; a node a
-    /// render still computes stays dirty, for the samples it has yet to send.
+    /// A dirty node's header and what memory holds of it, on their way to the disk.
     fn flush(&mut self, key: Hash) {
         let Some(Node {
             dirty: dirty @ true,
-            settled,
             ..
         }) = self
             .entries
@@ -411,7 +389,7 @@ impl State {
         else {
             return;
         };
-        *dirty = !*settled;
+        *dirty = false;
         if let Some(back) = self.written(key) {
             self.pending.push(back);
         }
@@ -491,6 +469,70 @@ impl State {
             }
         }
         link
+    }
+
+    /// The node `stored` names, as `offered` says, in place of the last one under its key, and,
+    /// `sole`, with no samples to keep, under its slot; whether memory writes it to the disk.
+    fn noded(
+        &mut self,
+        stored: Stored,
+        offered: Offered,
+        (slot, sole, facts): (Option<Hash>, bool, Facts),
+    ) -> bool {
+        let bound = self.disk && writes(&stored, facts);
+        let key = stored.key;
+        let read = self.tick();
+        let same = self.node(key).is_some_and(|node| match &node.source {
+            Source::Offered {
+                stored: had,
+                offered: was,
+            } => **had == stored && *was == offered,
+            Source::Disk { .. } => false,
+        });
+        let node = Node {
+            source: Source::Offered {
+                stored: Box::new(stored),
+                offered,
+            },
+            dirty: bound,
+            bound,
+        };
+        match self.entries.get_mut(&key) {
+            Some(held) if same => {
+                let node = held.item.node.as_mut().expect("the node held");
+                node.dirty |= node.bound;
+                held.read = read;
+            }
+            Some(held) => {
+                let before = held.bytes();
+                held.item.node = Some(node);
+                held.item.slot = slot;
+                held.read = read;
+                let after = held.bytes();
+                self.bytes = self.bytes - before + after;
+                self.links.get_mut().evict(key);
+            }
+            None => {
+                let item = Item {
+                    payload: None,
+                    label: None,
+                    slot,
+                    node: Some(node),
+                };
+                let held = Held::admitted(item, read);
+                self.bytes += held.bytes();
+                self.admit(key, held);
+            }
+        }
+        self.misses.remove(&key);
+        if let Some(last) = slot
+            .filter(|_| sole)
+            .and_then(|slot| self.slots.insert(slot, key))
+            && last != key
+        {
+            self.remove(last);
+        }
+        bound
     }
 
     fn admit(&mut self, key: Hash, held: Held) -> Option<Held> {
@@ -633,7 +675,7 @@ impl State {
                 self.bytes -= before;
                 true
             }
-            _ => self.release(key),
+            _ => self.remove(key),
         };
         match (gone, protected) {
             (false, _) => {}
@@ -782,7 +824,7 @@ impl Memory {
         }
     }
 
-    /// Over a disk: each node a render offers is written back before it goes.
+    /// Over a disk: each node a value keeps is written back before it goes.
     pub(crate) fn over_disk(max_bytes: u64) -> Memory {
         let memory = Memory::holding(max_bytes);
         memory.locked().disk = true;
@@ -896,7 +938,6 @@ impl Memory {
                 chunks: Vec::new(),
             },
             dirty: false,
-            settled: true,
             bound: true,
         };
         match state.entries.get_mut(&key) {
@@ -960,61 +1001,33 @@ impl Memory {
         self.locked().remove(key);
     }
 
-    /// A node a render computes, in place of the last one under `key`, keeping the segment
-    /// that one earned. Until `settled` it holds what is computed so far, each eviction
-    /// sending that much to the disk; settled, it replaces what its slot held, and goes where
-    /// memory holds none of its samples and will write none to the disk.
-    pub(crate) fn offer(&self, stored: Stored, offered: Offered, facts: Facts) {
-        let mut state = self.locked();
-        let Facts { slot, settled, .. } = facts;
-        let bound = state.disk && writes(&stored, facts);
-        let key = stored.key;
-        let read = state.tick();
-        let node = Node {
-            source: Source::Offered {
-                stored: Box::new(stored),
-                offered,
-            },
-            dirty: bound,
-            settled,
-            bound,
-        };
-        match state.entries.get_mut(&key) {
-            Some(held) => {
-                let before = held.bytes();
-                held.item.node = Some(node);
-                held.item.slot = slot;
-                held.read = read;
-                let after = held.bytes();
-                state.bytes = state.bytes - before + after;
-                state.links.get_mut().evict(key);
+    /// A value's samples, joined to what memory holds under `key`, and the node they answer,
+    /// in place of the last one under its key or slot: the node first, so samples a node over
+    /// the disk stands on are kept to be written back. A node holding none of its samples that
+    /// memory will write nowhere goes. What became of the samples.
+    pub(crate) fn keep(&self, key: Hash, keep: Keep) -> Option<Kept> {
+        let Keep {
+            samples,
+            label,
+            slot,
+            node,
+        } = keep;
+        let sole = samples.is_none();
+        let noded = node.map(|(stored, offered, facts)| {
+            let key = stored.key;
+            let bound = self.locked().noded(stored, offered, (slot, sole, facts));
+            (key, bound)
+        });
+        let kept = samples.map(|samples| self.merge(key, samples, label, slot));
+        if let Some((key, bound)) = noded {
+            let mut state = self.locked();
+            let covered = state.coverage(key).is_some_and(|held| !held.is_empty());
+            if !covered && !bound {
+                state.unnoded(key);
             }
-            None => {
-                let item = Item {
-                    payload: None,
-                    label: None,
-                    slot,
-                    node: Some(node),
-                };
-                let held = Held::admitted(item, read);
-                state.bytes += held.bytes();
-                state.admit(key, held);
-            }
+            state.bounded();
         }
-        state.misses.remove(&key);
-        let covered = state.coverage(key).is_some_and(|held| !held.is_empty());
-        if settled && !covered && !bound {
-            state.unnoded(key);
-            return;
-        }
-        if let Some(last) = slot
-            .filter(|_| settled)
-            .and_then(|slot| state.slots.insert(slot, key))
-            && last != key
-        {
-            state.remove(last);
-        }
-        state.bounded();
+        kept
     }
 
     /// The nodes read after `since`, least recent first, and the clock now.
@@ -1098,7 +1111,7 @@ impl Memory {
             label: item.label.clone(),
         };
         if !entry.payload.answers(expected) {
-            state.release(key);
+            state.remove(key);
             return None;
         }
         state.hit(key, None);
@@ -1107,7 +1120,7 @@ impl Memory {
 
     /// A value's segments join those held under `key`, and a run continuing the one held
     /// there extends it, each in place; anything else replaces what `key` held.
-    pub(crate) fn merge(
+    fn merge(
         &self,
         key: Hash,
         payload: Payload,
@@ -1165,7 +1178,7 @@ impl Memory {
     /// A value the disk holds under `key` is held there alone. One too large to stay is
     /// refused, unless a node over the disk stands on it: then it is kept only to be evicted,
     /// and so written back.
-    pub(crate) fn store(
+    fn store(
         &self,
         key: Hash,
         payload: Payload,
@@ -1182,7 +1195,7 @@ impl Memory {
         }
         let read = state.tick();
         let replaced = match slot.and_then(|slot| state.slots.insert(slot, key)) {
-            Some(last) if last != key => state.release(last),
+            Some(last) if last != key => state.remove(last),
             _ => false,
         };
         let old = state.entries.remove(&key);

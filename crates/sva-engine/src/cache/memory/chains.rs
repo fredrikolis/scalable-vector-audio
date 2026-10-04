@@ -1,11 +1,11 @@
-// Concern: states that memory answers a node through any length of moved nodes | Non-concern: how a render offers them (render/offer.rs) | IO: (offers) -> Known
+// Concern: states that memory answers a node through any length of moved nodes | Non-concern: when a value keeps them (render/table/store.rs) | IO: (keeps) -> Known
 
 use std::sync::Arc;
 
 use sva_formula::{Codomain, Hash};
 use sva_samples::{Buffer, Extent, Grid, Label};
 
-use super::{Facts, Known, Memory, Offered, Stored};
+use super::{Facts, Keep, Known, Memory, Offered, Stored};
 
 fn stored(key: Hash) -> Stored {
     Stored {
@@ -25,23 +25,32 @@ fn stored(key: Hash) -> Stored {
     }
 }
 
-const SETTLED: Facts = Facts {
-    slot: None,
-    settled: true,
+const FACTS: Facts = Facts {
     target: false,
     samples: 100,
 };
 
+fn kept(memory: &Memory, key: Hash, offered: Offered) {
+    let node = Some((stored(key), offered, FACTS));
+    let keep = Keep {
+        samples: None,
+        label: None,
+        slot: None,
+        node,
+    };
+    memory.keep(key, keep);
+}
+
 /// Node `i` moves node `i - 1` a sample on, down to a foot holding samples of its own.
 fn chain(memory: &Memory, links: u64) {
     let foot = Offered::Held(vec![Arc::new(Buffer::mono(8_000, vec![0.5; 100]))]);
-    memory.offer(stored(Hash(0, 0)), foot, SETTLED);
+    kept(memory, Hash(0, 0), foot);
     for i in 1..=links {
         let link = Offered::Moves {
             of: Hash(i - 1, 0),
             by: -1,
         };
-        memory.offer(stored(Hash(i, 0)), link, SETTLED);
+        kept(memory, Hash(i, 0), link);
     }
 }
 
