@@ -1,6 +1,6 @@
 // Concern: cuts one renderer into spans, each compiled without the reads and crops zero there | Non-concern: where a read is zero, running a span | IO: (NodeRenderer, supports) -> Spanned
 
-use super::Program;
+use super::CompiledOps;
 use super::ops::{self, Layout, lowered};
 use super::renderer::{Formula, Index, NodeRenderer, Slot};
 use crate::error::SampleError;
@@ -17,7 +17,7 @@ pub struct Span {
 /// depends on its index alone.
 #[derive(Clone)]
 pub struct Spanned {
-    spans: Vec<(Span, Program)>,
+    spans: Vec<(Span, CompiledOps)>,
     layout: Layout,
 }
 
@@ -33,8 +33,8 @@ impl Spanned {
             .spans(layout, (from, to), live)?
             .into_iter()
             .map(|span| {
-                let program = span.renderer.compile(layout)?;
-                Ok((span, program))
+                let compiled_ops = span.renderer.compile(layout)?;
+                Ok((span, compiled_ops))
             })
             .collect::<Result<_, SampleError>>()?;
         Ok(Spanned {
@@ -51,12 +51,12 @@ impl Spanned {
         self.layout.grid
     }
 
-    pub(super) fn compiled(&self) -> &[(Span, Program)] {
+    pub(super) fn compiled(&self) -> &[(Span, CompiledOps)] {
         &self.spans
     }
 
     /// A program writing +0 where no span reaches.
-    pub(super) fn silent(&self) -> Result<Program, SampleError> {
+    pub(super) fn silent(&self) -> Result<CompiledOps, SampleError> {
         let zero = match self.layout.width {
             0 | 1 => NodeRenderer::Const(0.0),
             w => NodeRenderer::Join(vec![NodeRenderer::Const(0.0); w]),
@@ -68,10 +68,10 @@ impl Spanned {
     pub fn ops(&self, from: i64, to: i64) -> u128 {
         self.spans
             .iter()
-            .map(|(span, program)| {
+            .map(|(span, compiled_ops)| {
                 let n = (to.min(span.to) - from.max(span.from)).max(0) as u128;
-                let formulas: usize = program.formulas.iter().map(Formula::ops).sum();
-                n * (program.ops.len() + formulas) as u128
+                let formulas: usize = compiled_ops.formulas.iter().map(Formula::ops).sum();
+                n * (compiled_ops.ops.len() + formulas) as u128
             })
             .sum()
     }

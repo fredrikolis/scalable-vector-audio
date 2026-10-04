@@ -1,13 +1,13 @@
-// Concern: one reading of a source's stored samples at the whole index a map names | Non-concern: the positions a map names (renderer.rs) | IO: (Window, map, sample) -> f64 per component
+// Concern: one reading of a source's stored samples at the whole index a map names | Non-concern: the positions a map names (renderer.rs) | IO: (SampleView, map, sample) -> f64 per component
 
 use super::renderer::Map;
-use crate::buffer::Window;
+use crate::buffer::SampleView;
 use crate::error::SampleError;
 
-/// Samples of `window`, or `fresh`, before `limit` only: a node's own past is written up to
+/// Samples of `view`, or `fresh`, before `limit` only: a node's own past is written up to
 /// the sample being computed.
 pub(super) struct Source<'a> {
-    pub(super) window: Window<'a>,
+    pub(super) view: SampleView<'a>,
     pub(super) limit: Option<i64>,
     pub(super) fresh: Fresh<'a>,
 }
@@ -37,7 +37,7 @@ impl Source<'_> {
             Some(at) => values
                 .get(at * width..(at + 1) * width)
                 .map(|v| super::part(v, c)),
-            None => self.window.get(c, k),
+            None => self.view.get(c, k),
         };
         held.ok_or(SampleError::ReadsAhead { at: k })
     }
@@ -54,7 +54,7 @@ impl Source<'_> {
         if self.limit.is_some() && by >= 0 {
             return false;
         }
-        let runs: Option<Vec<&[f64]>> = (0..w).map(|c| self.window.run(c, first, len)).collect();
+        let runs: Option<Vec<&[f64]>> = (0..w).map(|c| self.view.run(c, first, len)).collect();
         let Some(runs) = runs else {
             return false;
         };

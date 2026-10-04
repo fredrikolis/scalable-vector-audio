@@ -120,16 +120,16 @@ fn grow(value_graph: &ValueGraph, at: usize, walked: &mut BTreeSet<usize>) -> No
     }
 }
 
-/// The rule its label names, or a program's own where it has none.
+/// The rule its label names, or a machine run's own where it has none.
 fn route(value_graph: &ValueGraph, at: usize) -> &'static str {
     let named = value_graph.values[at]
         .label
         .as_ref()
         .map(|l| l.rule().as_str());
     match &value_graph.values[at].kind {
-        Kind::Rows(_) | Kind::Program(_) if named.is_some() => named.expect("a label"),
+        Kind::Rows(_) | Kind::MachineRun(_) if named.is_some() => named.expect("a label"),
         Kind::Rows(_) => "rows",
-        Kind::Program(_) => "sampled program",
+        Kind::MachineRun(_) => "sampled program",
         Kind::Frames { .. } => "short-time transform",
         Kind::Istft => "inverse short-time transform",
         Kind::Resident { .. } => "stored",

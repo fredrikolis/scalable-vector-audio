@@ -6,13 +6,13 @@ pub mod ops;
 mod read;
 pub mod renderer;
 
-use crate::buffer::{Buffer, Window};
+use crate::buffer::{Buffer, SampleView};
 use crate::error::SampleError;
 use crate::filters::FilterSite;
 use crate::grid::Extent;
 use crate::grid::Grid;
 use crate::physics::{Solver, site};
-use block::{BLOCK, Block, Here};
+use block::{BLOCK, BlockScratch, Here};
 use ops::{Layout, Op, lowered};
 use renderer::{Formula, Index, NodeRenderer, Site, Slot};
 
@@ -23,7 +23,7 @@ pub use ops::Layout as MachineLayout;
 /// The op array, each op's width and operand slots, the formulas its ops name and the call
 /// sites the run opens state for.
 #[derive(Clone)]
-pub(super) struct Program {
+pub(super) struct CompiledOps {
     ops: Vec<Op>,
     widths: Vec<usize>,
     args: Vec<Vec<usize>>,
@@ -34,9 +34,9 @@ pub(super) struct Program {
 }
 
 impl NodeRenderer {
-    pub(super) fn compile(&self, layout: &Layout) -> Result<Program, SampleError> {
+    pub(super) fn compile(&self, layout: &Layout) -> Result<CompiledOps, SampleError> {
         let (lowered, width) = lowered(self, layout)?;
-        Ok(Program {
+        Ok(CompiledOps {
             ops: lowered.ops,
             widths: lowered.widths,
             args: lowered.args,
@@ -62,7 +62,7 @@ impl Clone for Box<dyn Solver> {
 
 /// A filter site carries one lane per component of its widest argument, which the compiled
 /// slot width already states.
-fn open(p: &Program, grid: Grid) -> Result<Vec<State>, SampleError> {
+fn open(p: &CompiledOps, grid: Grid) -> Result<Vec<State>, SampleError> {
     let mut lanes = vec![1usize; p.sites.len()];
     for (slot, op) in p.ops.iter().enumerate() {
         if let Op::Filter { site, .. } = op {
@@ -99,12 +99,12 @@ pub type Own<'a> = (&'a mut Buffer, i64);
 /// One compiled node and every call site's state, run over any span of the grid in order.
 /// A span continues exactly where the last ended, so blocks write the samples one run would.
 pub struct Machine {
-    program: Program,
+    compiled_ops: CompiledOps,
     states: Vec<State>,
-    block: Block,
+    block: BlockScratch,
     grid: Grid,
     /// Each later span's first sample and the program it runs, the next one last.
-    ahead: Vec<(i64, Program)>,
+    ahead: Vec<(i64, CompiledOps)>,
 }
 
 #[derive(Clone)]
@@ -133,21 +133,21 @@ impl Machine {
     /// Stepping from `at`, each span's own program from where it starts.
     pub fn over(spanned: &Spanned, at: i64) -> Result<Machine, SampleError> {
         let grid = spanned.grid();
-        let mut ahead: Vec<(i64, Program)> = spanned
+        let mut ahead: Vec<(i64, CompiledOps)> = spanned
             .compiled()
             .iter()
             .filter(|(span, _)| span.to > at)
-            .map(|(span, program)| (span.from, program.clone()))
+            .map(|(span, compiled_ops)| (span.from, compiled_ops.clone()))
             .collect();
         ahead.reverse();
         let first = match ahead.pop() {
-            Some((_, program)) => program,
+            Some((_, compiled_ops)) => compiled_ops,
             None => spanned.silent()?,
         };
         let states = open(&first, grid)?;
-        let block = Block::of(&first.widths);
+        let block = BlockScratch::of(&first.widths);
         Ok(Machine {
-            program: first,
+            compiled_ops: first,
             states,
             block,
             grid,
@@ -156,18 +156,18 @@ impl Machine {
     }
 
     pub fn width(&self) -> usize {
-        self.program.width
+        self.compiled_ops.width
     }
 
     pub fn stateful(&self) -> bool {
-        !self.program.sites.is_empty()
+        !self.compiled_ops.sites.is_empty()
     }
 
     pub fn bytes(&self) -> usize {
         self.states.iter().map(State::bytes).sum()
     }
 
-    pub fn run_to(&mut self, to: i64, reads: &[Window], own: Own) -> Result<(), SampleError> {
+    pub fn run_to(&mut self, to: i64, reads: &[SampleView], own: Own) -> Result<(), SampleError> {
         for state in &mut self.states {
             if let State::Filter(filter) = state {
                 filter.forget_frames();
@@ -177,18 +177,23 @@ impl Machine {
     }
 
     /// `run_to`, the filters' frames kept.
-    pub fn run_on(&mut self, to: i64, reads: &[Window], own: Own) -> Result<(), SampleError> {
+    pub fn run_on(&mut self, to: i64, reads: &[SampleView], own: Own) -> Result<(), SampleError> {
         self.steps(to, reads, own)
     }
 
-    fn steps(&mut self, to: i64, reads: &[Window], (own, origin): Own) -> Result<(), SampleError> {
+    fn steps(
+        &mut self,
+        to: i64,
+        reads: &[SampleView],
+        (own, origin): Own,
+    ) -> Result<(), SampleError> {
         loop {
             while let Some((from, _)) = self.ahead.last()
                 && *from <= own.end()
             {
-                let (_, program) = self.ahead.pop().expect("a span ahead");
-                self.block = Block::of(&program.widths);
-                self.program = program;
+                let (_, compiled_ops) = self.ahead.pop().expect("a span ahead");
+                self.block = BlockScratch::of(&compiled_ops.widths);
+                self.compiled_ops = compiled_ops;
             }
             let until = self.ahead.last().map_or(to, |(from, _)| (*from).min(to));
             self.stepped(until, reads, (own, origin))?;
@@ -201,10 +206,10 @@ impl Machine {
     fn stepped(
         &mut self,
         to: i64,
-        reads: &[Window],
+        reads: &[SampleView],
         (own, origin): Own,
     ) -> Result<(), SampleError> {
-        let p = &self.program;
+        let p = &self.compiled_ops;
         while own.end() < to {
             let from = own.end();
             let most = (to - from).min(BLOCK as i64 - from.rem_euclid(BLOCK as i64)) as usize;
@@ -246,18 +251,18 @@ impl Machine {
 
     pub fn state(&self) -> MachineState {
         MachineState {
-            sites: self.program.sites.clone(),
+            sites: self.compiled_ops.sites.clone(),
             states: self.states.clone(),
         }
     }
 
     pub fn restart(&mut self) {
-        self.states = open(&self.program, self.grid).expect("the sites opened once already");
+        self.states = open(&self.compiled_ops, self.grid).expect("the sites opened once already");
     }
 
     /// Whether `carry` takes `held`: the same sites, a varying parameter's values aside.
     pub fn accepts(&self, held: &MachineState) -> bool {
-        held.sites == self.program.sites
+        held.sites == self.compiled_ops.sites
     }
 
     /// Takes `held`'s state whole where its sites are these; `false`, and nothing taken, else.
@@ -270,7 +275,7 @@ impl Machine {
     }
 }
 
-impl Program {
+impl CompiledOps {
     /// Up to `most` samples from `from`, and the slots run sample by sample: each reading its
     /// own past inside the block, and what reads one.
     fn block(&self, from: i64, most: usize, recurrent: &mut Vec<bool>) -> usize {

@@ -1,4 +1,4 @@
-// Concern: lowers one node into the per-sample program that writes its value, each other value it reads a slot | Non-concern: holding or evaluating values (mod.rs) | IO: (NodeId) -> Program
+// Concern: lowers one node into the per-sample renderer that writes its value, each other value it reads a slot | Non-concern: holding or evaluating values (mod.rs) | IO: (NodeId) -> LoweredNode
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,8 +25,8 @@ pub(crate) enum Source {
     Formula(ClosedForm),
 }
 
-/// One node's program, the value behind each slot, and the width each slot is read at.
-pub(crate) struct Program {
+/// One node's renderer, the value behind each slot, and the width each slot is read at.
+pub(crate) struct LoweredNode {
     pub(crate) renderer: NodeRenderer,
     pub(crate) reads: Vec<Source>,
     pub(crate) sites: Vec<Site>,
@@ -34,7 +34,7 @@ pub(crate) struct Program {
     pub(crate) moved: f64,
 }
 
-/// `id`'s program on its own grid: its operations, filters, solvers and reads inline, every
+/// `id`'s renderer on its own grid: its operations, filters, solvers and reads inline, every
 /// other value it reads a slot. A closed form that reads other nodes reads each at the whole
 /// sample its shift rounds to.
 pub(crate) fn of(
@@ -42,7 +42,7 @@ pub(crate) fn of(
     supports: &Supports,
     (id, grid): (NodeId, Grid),
     (profile, alone): (&sva_samples::Profile, bool),
-) -> Result<Program, EngineError> {
+) -> Result<LoweredNode, EngineError> {
     let mut build = Build {
         tys,
         supports,
@@ -56,7 +56,7 @@ pub(crate) fn of(
         moved: Q::ZERO,
     };
     let renderer = build.owner()?;
-    Ok(Program {
+    Ok(LoweredNode {
         renderer,
         reads: build.reads,
         sites: build.sites,
@@ -69,7 +69,7 @@ struct Build<'a> {
     supports: &'a Supports<'a>,
     profile: &'a sva_samples::Profile,
     /// Whether a node another may read as its samples alone is read as a value of its own,
-    /// never inlined into a reader's program.
+    /// never inlined into a reader's renderer.
     alone: bool,
     owner: NodeId,
     /// Evaluated finer than its own typing's step, as an alias score's reference is: only a
@@ -348,7 +348,7 @@ impl Build<'_> {
         })
     }
 
-    /// An exact index is its map on this program's grid; a time that moves is evaluated as
+    /// An exact index is its map on this renderer's grid; a time that moves is evaluated as
     /// any operand is.
     fn index(&mut self, step: &Step) -> Result<Index, EngineError> {
         Ok(match step {
@@ -369,7 +369,7 @@ impl Build<'_> {
     }
 
     /// A time a read moves to, as the machine computes it at each instant: a closed form in
-    /// `t` exactly as written, each node it reads a slot; any other node as its program.
+    /// `t` exactly as written, each node it reads a slot; any other node as its renderer.
     fn time(&mut self, id: NodeId) -> Result<NodeRenderer, EngineError> {
         match self.tys.value(id) {
             Value::ClosedForm(form) if form.var == Var::T => self.time_body(&form.body.clone()),
@@ -535,9 +535,9 @@ impl Build<'_> {
     }
 }
 
-/// Whether a program lowers `body` whole as one value of its own rather than part by part: a
-/// construct no program splits, every node it reads a closed form reading none. A node whose
-/// whole body is one is that value, so it is built as that formula is, never as a program
+/// Whether lowering takes `body` whole as one value of its own rather than part by part: a
+/// construct no renderer splits, every node it reads a closed form reading none. A node whose
+/// whole body is one is that value, so it is built as that formula is, never as a renderer
 /// reading itself.
 pub(crate) fn is_one_value(tys: &Typing, body: &Body) -> bool {
     let split = match body {

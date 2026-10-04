@@ -1,4 +1,4 @@
-// Concern: what each value a node's program reads contributed to it | Non-concern: building the program (value_graph/), sharing a target's energy out (sva-samples) | IO: (NodeId) -> a ref and its addend
+// Concern: what each value a node's renderer reads contributed to it | Non-concern: building the renderer, sharing a target's energy out (sva-samples) | IO: (NodeId) -> a ref and its addend
 
 use sva_formula::NodeId;
 use sva_samples::{BufId, Buffer, NodeRenderer, Slot};
@@ -7,7 +7,7 @@ use crate::error::EngineError;
 use crate::render::Render;
 use crate::render::value_graph::{Kind, ValueGraph};
 
-/// Every ref a node's program reads, one row per name however many slots carry it.
+/// Every ref a node's renderer reads, one row per name however many slots carry it.
 pub(super) fn refs_read(
     render: &Render,
     node: NodeId,
@@ -16,7 +16,7 @@ pub(super) fn refs_read(
     if let Some(only) = crate::refs::passes(&render.tys, node) {
         return Ok(holds(only).then_some(only).into_iter().collect());
     }
-    let Some((value_graph, at)) = program(render, node) else {
+    let Some((value_graph, at)) = machine_run_of(render, node) else {
         return Ok(Vec::new());
     };
     let here = render.tys.name(node);
@@ -36,19 +36,19 @@ pub(super) fn refs_read(
     Ok(out)
 }
 
-/// The node each slot of a program was built for.
+/// The node each slot of a machine run was built for.
 fn sources(value: &crate::render::value_graph::Value) -> Vec<Option<NodeId>> {
     match &value.kind {
-        Kind::Program(program) => program.sources.to_vec(),
+        Kind::MachineRun(machine_run) => machine_run.sources.to_vec(),
         _ => Vec::new(),
     }
 }
 
-/// The value graph's program for `node`, where it computes one.
-fn program(render: &Render, node: NodeId) -> Option<(&ValueGraph, usize)> {
+/// The value graph's machine run for `node`, where it computes one.
+fn machine_run_of(render: &Render, node: NodeId) -> Option<(&ValueGraph, usize)> {
     let value_graph = render.value_graph.as_ref()?;
     let at = value_graph.of(node)?;
-    matches!(value_graph.values[at].kind, Kind::Program(_)).then_some((value_graph, at))
+    matches!(value_graph.values[at].kind, Kind::MachineRun(_)).then_some((value_graph, at))
 }
 
 pub(super) fn reads_held(render: &Render, node: NodeId) -> Result<bool, EngineError> {
@@ -80,7 +80,7 @@ fn behind(
     }
 }
 
-/// What one ref put into the node reading it: that node's program run with every other slot
+/// What one ref put into the node reading it: that node's renderer run with every other slot
 /// silenced, so the refs of a sum add back to it. `None` is an edge no slot isolates, never a
 /// run that refused.
 pub(super) fn contributed(
@@ -98,7 +98,8 @@ pub(super) fn contributed(
     let Some((renderer, kept)) = isolated(render, parent, child, &holds)? else {
         return Ok(None);
     };
-    let (value_graph, at) = program(render, parent).expect("an isolated edge is a program's");
+    let (value_graph, at) =
+        machine_run_of(render, parent).expect("an isolated edge is a machine run's");
     let range = render.range.expect("a ledger reads a decided range");
     let held = |id: BufId| kept.contains(&id);
     value_graph
@@ -112,14 +113,14 @@ pub(super) fn isolated(
     child: NodeId,
     holds: &dyn Fn(NodeId) -> bool,
 ) -> Result<Option<(NodeRenderer, Vec<BufId>)>, EngineError> {
-    let Some((value_graph, at)) = program(render, parent) else {
+    let Some((value_graph, at)) = machine_run_of(render, parent) else {
         return Ok(None);
     };
-    let Kind::Program(program) = &value_graph.values[at].kind else {
+    let Kind::MachineRun(machine_run) = &value_graph.values[at].kind else {
         return Ok(None);
     };
     let (here, name) = (render.tys.name(parent), render.tys.name(child));
-    let kept: Vec<BufId> = program
+    let kept: Vec<BufId> = machine_run
         .sources
         .iter()
         .enumerate()
@@ -131,9 +132,9 @@ pub(super) fn isolated(
         .map(|(slot, _)| BufId(slot as u32))
         .collect();
     let held = |id: BufId| kept.contains(&id);
-    match kept.is_empty() || !separable(&program.renderer, &held) {
+    match kept.is_empty() || !separable(&machine_run.renderer, &held) {
         true => Ok(None),
-        false => Ok(Some(((*program.renderer).clone(), kept))),
+        false => Ok(Some(((*machine_run.renderer).clone(), kept))),
     }
 }
 

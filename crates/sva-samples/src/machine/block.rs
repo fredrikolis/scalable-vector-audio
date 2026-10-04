@@ -1,10 +1,10 @@
-// Concern: runs one program over a block op by op, its recurrent ops sample by sample | Non-concern: which program runs where, how long a block runs | IO: (Program, reads, states) -> each slot's samples
+// Concern: runs compiled ops over a block, its recurrent ops sample by sample | Non-concern: which ops run where, how long a block runs | IO: (CompiledOps, reads, states) -> each slot's samples
 
 use super::ops::Op;
 use super::read::{Fresh, Source};
 use super::renderer::Slot;
-use super::{Program, State, part};
-use crate::buffer::Window;
+use super::{CompiledOps, State, part};
+use crate::buffer::SampleView;
 use crate::error::SampleError;
 use crate::grid::Grid;
 
@@ -17,7 +17,7 @@ const _: () = assert!(
 
 /// Every slot's samples over one block, component after component within each sample, and
 /// each sample's instant.
-pub(super) struct Block {
+pub(super) struct BlockScratch {
     values: Vec<f64>,
     offsets: Vec<usize>,
     times: Vec<f64>,
@@ -25,8 +25,8 @@ pub(super) struct Block {
     pub(super) recurrent: Vec<bool>,
 }
 
-impl Block {
-    pub(super) fn of(widths: &[usize]) -> Block {
+impl BlockScratch {
+    pub(super) fn of(widths: &[usize]) -> BlockScratch {
         let mut offsets = Vec::with_capacity(widths.len() + 1);
         let mut end = 0;
         for w in widths {
@@ -34,7 +34,7 @@ impl Block {
             end += w * BLOCK;
         }
         offsets.push(end);
-        Block {
+        BlockScratch {
             values: vec![0.0; end],
             offsets,
             times: vec![0.0; BLOCK],
@@ -43,7 +43,7 @@ impl Block {
     }
 
     /// Sample `i` of the program's last slot.
-    pub(super) fn top(&self, p: &Program, i: usize) -> &[f64] {
+    pub(super) fn top(&self, p: &CompiledOps, i: usize) -> &[f64] {
         let slot = p.ops.len() - 1;
         let w = p.widths[slot];
         &self.values[self.offsets[slot] + i * w..][..w]
@@ -53,8 +53,8 @@ impl Block {
 /// What a block reads: other nodes' samples, this node's own past before the block, and the
 /// grid it steps on.
 pub(super) struct Here<'a> {
-    pub(super) reads: &'a [Window<'a>],
-    pub(super) own: Window<'a>,
+    pub(super) reads: &'a [SampleView<'a>],
+    pub(super) own: SampleView<'a>,
     pub(super) grid: Grid,
 }
 
@@ -62,12 +62,12 @@ impl<'a> Here<'a> {
     fn source(&self, slot: Slot, n: i64, fresh: Fresh<'a>) -> Source<'a> {
         match slot {
             Slot::Read(id) => Source {
-                window: self.reads[id.0 as usize],
+                view: self.reads[id.0 as usize],
                 limit: None,
                 fresh,
             },
             Slot::Own => Source {
-                window: self.own,
+                view: self.own,
                 limit: Some(n),
                 fresh,
             },
@@ -80,8 +80,8 @@ impl<'a> Here<'a> {
 /// the refusal a sample-at-a-time run meets first: the earliest sample, and within it the
 /// earliest op.
 pub(super) fn run(
-    p: &Program,
-    block: &mut Block,
+    p: &CompiledOps,
+    block: &mut BlockScratch,
     here: &Here,
     states: &mut [State],
     (from, len): (i64, usize),
@@ -181,9 +181,9 @@ fn binary(
 
 /// Samples `[start, end)` of the block, of one slot.
 fn fill(
-    p: &Program,
+    p: &CompiledOps,
     slot: usize,
-    block: &mut Block,
+    block: &mut BlockScratch,
     here: &Here,
     states: &mut [State],
     (from, start, end): (i64, usize, usize),

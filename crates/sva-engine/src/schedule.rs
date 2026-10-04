@@ -234,7 +234,7 @@ fn attributed(typing: &Typing, id: NodeId, depth: usize, wanted: &mut BTreeSet<N
     }
 }
 
-/// A node reading its own output is one program, whatever its width: a component on its own
+/// A node reading its own output is one renderer, whatever its width: a component on its own
 /// would read the loop at its own width.
 pub(crate) fn holds_self(typing: &Typing, id: NodeId, seen: &mut BTreeSet<NodeId>) -> bool {
     if !seen.insert(id) {
@@ -256,7 +256,7 @@ pub(crate) fn holds_self(typing: &Typing, id: NodeId, seen: &mut BTreeSet<NodeId
 }
 
 /// Which nodes under `id` a render has to hold before it can hold `id` itself: the buffers its
-/// program reads, an operation, filter or read under it being part of that program.
+/// renderer reads, an operation, filter or read under it being part of that renderer.
 pub(crate) fn materialized_operands(typing: &Typing, id: NodeId) -> Vec<NodeId> {
     let sampled = |set: Vec<NodeId>| -> Vec<NodeId> {
         let mut out = Vec::new();

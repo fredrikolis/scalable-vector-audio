@@ -146,9 +146,9 @@ fn reached(
 fn kind(kind: &Kind) -> String {
     match kind {
         Kind::Rows(_) => "rows".to_string(),
-        Kind::Program(program) => format!(
+        Kind::MachineRun(machine_run) => format!(
             "{:?} {:?} {} {:?}",
-            program.renderer, program.start, program.own, program.alias
+            machine_run.renderer, machine_run.start, machine_run.own, machine_run.alias
         ),
         Kind::Frames { window, hop } => format!("frames {window} {hop}"),
         Kind::Istft => "istft".to_string(),

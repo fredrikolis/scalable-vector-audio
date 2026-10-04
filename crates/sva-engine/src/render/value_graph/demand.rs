@@ -1,10 +1,10 @@
-// Concern: what a window of the root asks of each value, met with its zeros and carried through each read's map | Non-concern: computing it (eval.rs) | IO: (values, windows) -> a Need per value
+// Concern: what a range of the root asks of each value, met with its zeros and carried through each read's map | Non-concern: computing it (eval.rs) | IO: (values, ranges) -> a Need per value
 
 use sva_samples::{Extent, NodeRenderer, Slot};
 
-use super::program::leaves;
+use super::lowered_node::leaves;
 use super::segments::Segments;
-use super::value::{Kind, Program, Value};
+use super::value::{Kind, MachineRun, Value};
 use super::values::Values;
 
 /// What readers read of a value, and what it computes to answer them.
@@ -19,8 +19,8 @@ pub(crate) struct Need {
 /// Readers first, so a value is asked everything before it asks its own reads.
 pub(crate) fn demand(values: &Values, asked: &[(usize, Extent)]) -> Vec<Need> {
     let mut holds = vec![Segments::default(); values.span()];
-    for (v, window) in asked {
-        holds[*v].add(*window);
+    for (v, asked_range) in asked {
+        holds[*v].add(*asked_range);
     }
     let mut needs = vec![Need::default(); values.span()];
     for v in values.ordered().rev() {
@@ -30,14 +30,16 @@ pub(crate) fn demand(values: &Values, asked: &[(usize, Extent)]) -> Vec<Need> {
             hold = hold.folded(period);
         }
         let (compute, restart) = match &value.kind {
-            Kind::Program(program) if program.stateful() => stateful(value, program, &hold),
+            Kind::MachineRun(machine_run) if machine_run.stateful() => {
+                stateful(value, machine_run, &hold)
+            }
             Kind::Frames { .. } | Kind::Istft => whole(value, &hold),
             _ => (hold.minus(&value.holding()), false),
         };
         match &value.kind {
-            Kind::Program(program) => {
+            Kind::MachineRun(machine_run) => {
                 for segment in compute.iter() {
-                    for (slot, image) in images(program, segment).into_iter().enumerate() {
+                    for (slot, image) in images(machine_run, segment).into_iter().enumerate() {
                         holds[value.reads[slot]].union(&image);
                     }
                 }
@@ -67,16 +69,16 @@ pub(crate) fn demand(values: &Values, asked: &[(usize, Extent)]) -> Vec<Need> {
 /// reader reads it back rather than stepping it again from its start.
 pub(crate) fn reach(values: &Values, asked: &[(usize, Extent)]) -> Vec<Segments> {
     let mut reach = vec![Segments::default(); values.span()];
-    for (v, window) in asked {
-        reach[*v].add(*window);
+    for (v, asked_range) in asked {
+        reach[*v].add(*asked_range);
     }
     for v in values.ordered().rev() {
         let value = &values[v];
         let held = reach[v].intersect(value.support());
         match &value.kind {
-            Kind::Program(program) => {
+            Kind::MachineRun(machine_run) => {
                 for segment in held.iter() {
-                    for (slot, image) in images(program, segment).into_iter().enumerate() {
+                    for (slot, image) in images(machine_run, segment).into_iter().enumerate() {
                         reach[value.reads[slot]].union(&image);
                     }
                 }
@@ -93,12 +95,15 @@ pub(crate) fn reach(values: &Values, asked: &[(usize, Extent)]) -> Vec<Segments>
     reach
 }
 
-fn stateful(value: &Value, program: &Program, hold: &Segments) -> (Segments, bool) {
+fn stateful(value: &Value, machine_run: &MachineRun, hold: &Segments) -> (Segments, bool) {
     if hold.is_empty() {
         return (Segments::default(), false);
     }
     let first = hold.hull().start;
-    let start = program.start.expect("a stateful program").min(first);
+    let start = machine_run
+        .start
+        .expect("a stateful machine run")
+        .min(first);
     let last = hold.hull().end;
     let (from, restart) = match value.end() {
         None => (start, true),
@@ -126,9 +131,9 @@ fn whole(value: &Value, hold: &Segments) -> (Segments, bool) {
 }
 
 /// Only the reads a span keeps are read there.
-pub(crate) fn images(program: &Program, over: Extent) -> Vec<Segments> {
-    let mut out = vec![Segments::default(); program.layout.read_widths.len()];
-    for span in program.spanned.spans() {
+pub(crate) fn images(machine_run: &MachineRun, over: Extent) -> Vec<Segments> {
+    let mut out = vec![Segments::default(); machine_run.layout.read_widths.len()];
+    for span in machine_run.spanned.spans() {
         let met = over.intersect(Extent::new(span.from, span.to));
         if met.is_empty() {
             continue;

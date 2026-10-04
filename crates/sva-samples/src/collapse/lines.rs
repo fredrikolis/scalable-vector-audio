@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use sva_formula::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom, SpectralAtomKey};
 use sva_formula::{C64, Lane, Line, Origin, Reads, Run, SpectralSum, Var, lines_read, modal};
 
-use super::active::{self, Window};
+use super::active::{self, SampleInterval};
 use super::truncate::Audible;
 use crate::error::CollapseError;
 use crate::grid::Grid;
@@ -142,10 +142,10 @@ pub(super) fn kept_lines(
 }
 
 /// Outside it the factor zeroes its lines' sum, where that sum is finite.
-pub(super) fn group_window(factor: &SpectralAtom, held: &[Line], grid: Grid) -> Window {
+pub(super) fn group_interval(factor: &SpectralAtom, held: &[Line], grid: Grid) -> SampleInterval {
     let reach: f64 = held.iter().map(|l| l.amp.re.abs() + l.amp.im.abs()).sum();
     match reach < 1e300 {
-        true => active::window(factor, grid),
+        true => active::nonzero_interval(factor, grid),
         false => active::OPEN,
     }
 }
@@ -194,7 +194,7 @@ fn grouped(lane: &Lane) -> Option<Vec<(SpectralAtom, Vec<Line>)>> {
     Some(out)
 }
 
-/// A lane's lines under each common factor, each series' on its own ladders under its window.
+/// A lane's lines under each common factor, each series' on its own ladders under its interval.
 pub(super) fn line_groups(
     lane: &Lane,
     band: super::truncate::Audible,

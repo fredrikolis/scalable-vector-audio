@@ -16,7 +16,7 @@ pub mod profile;
 pub mod stft;
 
 pub use biquad::Coeffs;
-pub use buffer::{Buffer, Window};
+pub use buffer::{Buffer, SampleView};
 pub use collapse::{
     At, Audible, Refs, Rows, crop_gain, dropped_db, eval_spectral_sum_at, eval_written_at, lane_of,
     truncate_spectral_sum, truncate_spectral_sum_read, truncate_written, truncate_written_with,

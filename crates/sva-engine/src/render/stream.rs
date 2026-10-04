@@ -273,8 +273,8 @@ impl Stream {
             self.driver.value_graph.abort(&freed);
             return Err(e);
         }
-        let window = ahead(from, self.config.render.rate);
-        let wants = self.driver.value_graph.needs_made(root, window);
+        let asked_range = ahead(from, self.config.render.rate);
+        let wants = self.driver.value_graph.needs_made(root, asked_range);
         let wants: Vec<(Hash, Extent)> = wants
             .into_iter()
             .filter(|(key, over)| !local.holds(*key, *over))
@@ -460,12 +460,12 @@ impl Stream {
     fn reads_on(&mut self, n: usize) -> Result<(), EngineError> {
         let at = self.driver.at;
         let range = Extent::new(self.driver.start, self.driver.last());
-        let window = Extent::new(at, at.saturating_add(n as i64).min(range.end).max(at));
+        let asked_range = Extent::new(at, at.saturating_add(n as i64).min(range.end).max(at));
         let value_graph = &mut self.driver.value_graph;
-        if window.is_empty() {
+        if asked_range.is_empty() {
             return Ok(());
         }
-        for short in value_graph.short((value_graph.root, window, Past::Held)) {
+        for short in value_graph.short((value_graph.root, asked_range, Past::Held)) {
             value_graph.read_on(&self.world.typing, short)?;
             let made = value_graph.made().to_vec();
             let landed = value_graph.landed(short);

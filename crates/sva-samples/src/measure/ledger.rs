@@ -80,7 +80,7 @@ pub fn attribute(
     let held = |path: &str| contributed.get(path).or_else(|| buffers.get(path));
     let slice = |path: &str, c: usize| -> std::borrow::Cow<'_, [f64]> {
         held(path).map_or(std::borrow::Cow::Borrowed(&[][..]), |b| {
-            b.window(c, range.clone())
+            b.plane_slice(c, range.clone())
         })
     };
     let width = |path: &str| held(path).map_or(1, |b| b.width());
@@ -89,7 +89,7 @@ pub fn attribute(
         let Some(buffer) = buffers.get(reader).filter(|b| b.width() > 0) else {
             return 0.0;
         };
-        let y = buffer.window(c % buffer.width(), range.clone());
+        let y = buffer.plane_slice(c % buffer.width(), range.clone());
         let energy: f64 = y.iter().map(|&v| v * v).sum();
         match energy > 0.0 {
             true => x.iter().zip(y.iter()).map(|(a, b)| a * b).sum::<f64>() / energy,

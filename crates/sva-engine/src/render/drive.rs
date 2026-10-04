@@ -155,10 +155,10 @@ impl Driver {
         }
         let to = self.next_to(n).min(block_end(from));
         self.recording.reach(from);
-        let window = Extent::new(from, to);
+        let asked_range = Extent::new(from, to);
         if from == self.start {
             let history = self.value_graph.history(
-                window,
+                asked_range,
                 self.block as i64,
                 (&self.memory, &mut self.recording),
             )?;
@@ -166,7 +166,7 @@ impl Driver {
         }
         let pulled = self
             .value_graph
-            .pull(window, (&self.memory, &mut self.recording))?;
+            .pull(asked_range, (&self.memory, &mut self.recording))?;
         self.priced(&pulled);
         self.work.samples += (to - from) as u64;
         self.at = to;

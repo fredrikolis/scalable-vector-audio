@@ -1,4 +1,4 @@
-// Concern: where on the grid each atom of a lane can be nonzero, and a lane summed over only those | Non-concern: one atom's value (point.rs), choosing the row | IO: (&Lane, span) -> windows, a plane
+// Concern: where on the grid each atom of a lane can be nonzero, and a lane summed over only those | Non-concern: one atom's value (point.rs), choosing the row | IO: (&Lane, span) -> intervals, a plane
 
 use sva_formula::spectral_sum::atom::{Gauss, SpectralAtom};
 use sva_formula::{Lane, exp_zero_at};
@@ -7,9 +7,9 @@ use super::point;
 use crate::error::CollapseError;
 use crate::grid::Grid;
 
-pub(crate) type Window = (i64, i64);
+pub(crate) type SampleInterval = (i64, i64);
 
-pub(crate) const OPEN: Window = (i64::MIN, i64::MAX);
+pub(crate) const OPEN: SampleInterval = (i64::MIN, i64::MAX);
 
 const REACH: i64 = 1 << 62;
 
@@ -17,7 +17,7 @@ const FINITE: f64 = 1e300;
 
 /// Outside it `smooth_at` is exactly zero: its indicator, or a factor the engine's own `exp`
 /// underflows while every other factor stays finite.
-pub(crate) fn window(a: &SpectralAtom, grid: Grid) -> Window {
+pub(crate) fn nonzero_interval(a: &SpectralAtom, grid: Grid) -> SampleInterval {
     if a.is_delta() {
         return OPEN;
     }
@@ -54,7 +54,7 @@ pub(crate) fn window(a: &SpectralAtom, grid: Grid) -> Window {
     held
 }
 
-fn gaussian(g: Gauss, grid: Grid, zero: f64, grows: &dyn Fn(i64, bool) -> bool) -> Window {
+fn gaussian(g: Gauss, grid: Grid, zero: f64, grows: &dyn Fn(i64, bool) -> bool) -> SampleInterval {
     let dead = |n: i64| {
         let x = grid.instant(n);
         -g.a * (x - g.mu) * (x - g.mu) <= zero
@@ -73,11 +73,11 @@ fn reaches_finite(a: &SpectralAtom, grid: Grid) -> bool {
 }
 
 /// The indices whose instant, increasing in the index, lies in `[l, r)`.
-pub(crate) fn between(l: f64, r: f64, at: impl Fn(i64) -> f64) -> Window {
+pub(crate) fn between(l: f64, r: f64, at: impl Fn(i64) -> f64) -> SampleInterval {
     (start(|n| l <= at(n)), end(|n| r <= at(n)))
 }
 
-pub(crate) fn meet(a: Window, b: Window) -> Window {
+pub(crate) fn meet(a: SampleInterval, b: SampleInterval) -> SampleInterval {
     let held = (a.0.max(b.0), a.1.min(b.1));
     match held.0 < held.1 {
         true => held,
@@ -119,48 +119,53 @@ fn end(holds: impl Fn(i64) -> bool) -> i64 {
     }
 }
 
-pub(crate) fn windows(lane: &Lane, grid: Grid) -> Vec<Window> {
-    lane.atoms.iter().map(|a| window(a, grid)).collect()
+pub(crate) fn nonzero_intervals(lane: &Lane, grid: Grid) -> Vec<SampleInterval> {
+    lane.atoms
+        .iter()
+        .map(|a| nonzero_interval(a, grid))
+        .collect()
 }
 
 /// Samples `[from, to)` of one lane into `out`, each summed in lane order over the atoms
 /// live there: one left out adds an exact zero to a sum that starts at +0.
 pub(crate) fn sweep(
     lane: &Lane,
-    windows: &[Window],
-    span: Window,
+    intervals: &[SampleInterval],
+    span: SampleInterval,
     grid: Grid,
     out: &mut [f64],
 ) -> Result<(), CollapseError> {
-    sweep_by(windows, span, out, |m, live| {
+    sweep_by(intervals, span, out, |m, live| {
         Ok(point::eval_among(lane, live, (grid, m))?.re)
     })
 }
 
 /// Each sample `m` of `[from, to)` into `out` as `each(m, live)`, `live` the indices of the
-/// windows holding `m`, ascending: each index is visited only inside its own window.
+/// intervals holding `m`, ascending: each index is visited only inside its own interval.
 pub(crate) fn sweep_by(
-    windows: &[Window],
-    (from, to): Window,
+    intervals: &[SampleInterval],
+    (from, to): SampleInterval,
     out: &mut [f64],
     mut each: impl FnMut(i64, &[usize]) -> Result<f64, CollapseError>,
 ) -> Result<(), CollapseError> {
-    let mut order: Vec<usize> = (0..windows.len())
-        .filter(|&i| windows[i].0 < windows[i].1 && windows[i].0 < to && windows[i].1 > from)
+    let mut order: Vec<usize> = (0..intervals.len())
+        .filter(|&i| {
+            intervals[i].0 < intervals[i].1 && intervals[i].0 < to && intervals[i].1 > from
+        })
         .collect();
-    order.sort_by_key(|&i| windows[i].0);
+    order.sort_by_key(|&i| intervals[i].0);
     let (mut live, mut next, mut n) = (Vec::<usize>::new(), 0, from);
     while n < to {
-        while let Some(&i) = order.get(next).filter(|&&i| windows[i].0 <= n) {
+        while let Some(&i) = order.get(next).filter(|&&i| intervals[i].0 <= n) {
             let slot = live.partition_point(|&j| j < i);
             live.insert(slot, i);
             next += 1;
         }
-        live.retain(|&i| windows[i].1 > n);
+        live.retain(|&i| intervals[i].1 > n);
         let stop = live
             .iter()
-            .map(|&i| windows[i].1)
-            .chain(order.get(next).map(|&i| windows[i].0))
+            .map(|&i| intervals[i].1)
+            .chain(order.get(next).map(|&i| intervals[i].0))
             .fold(to, i64::min);
         for m in n..stop {
             out[(m - from) as usize] = each(m, &live)?;
@@ -170,8 +175,8 @@ pub(crate) fn sweep_by(
     Ok(())
 }
 
-pub(crate) fn evaluated(windows: &[Window], spans: &[Window]) -> u128 {
-    windows
+pub(crate) fn evaluated(intervals: &[SampleInterval], spans: &[SampleInterval]) -> u128 {
+    intervals
         .iter()
         .map(|w| {
             spans
@@ -191,10 +196,10 @@ pub(crate) fn spans(lane: &Lane, grid: Grid) -> Option<Vec<(i64, i64)>> {
         .atoms
         .iter()
         .filter_map(|a| {
-            let window = a.ind?;
+            let interval = a.ind?;
             let (from, to) = (
-                grid.first_at(window.l.value()),
-                grid.first_at(window.r.value()),
+                grid.first_at(interval.l.value()),
+                grid.first_at(interval.r.value()),
             );
             (from < to).then_some((from, to))
         })

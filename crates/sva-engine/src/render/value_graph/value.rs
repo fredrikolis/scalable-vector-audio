@@ -3,7 +3,7 @@
 use sva_formula::{Hash, NodeId};
 use sva_samples::machine::ops::Layout;
 use sva_samples::{
-    Buffer, Extent, Frames, Grid, Label, Machine, NodeRenderer, Rows, Spanned, Window,
+    Buffer, Extent, Frames, Grid, Label, Machine, NodeRenderer, Rows, SampleView, Spanned,
 };
 
 use std::sync::Arc;
@@ -19,7 +19,7 @@ pub(crate) struct Key {
 
 pub(crate) enum Kind {
     Rows(Arc<Rows>),
-    Program(Box<Program>),
+    MachineRun(Box<MachineRun>),
     Frames {
         window: usize,
         hop: usize,
@@ -29,14 +29,14 @@ pub(crate) enum Kind {
     Resident(Arc<crate::cache::Stored>),
 }
 
-pub(crate) struct Program {
+pub(crate) struct MachineRun {
     pub(crate) renderer: Arc<NodeRenderer>,
     pub(crate) spanned: Arc<Spanned>,
     pub(crate) layout: Arc<Layout>,
     /// Where a stateful value's run starts.
     pub(crate) start: Option<i64>,
     pub(crate) own: i64,
-    /// A program that only reads one value at a whole-sample shift is that value moved: the
+    /// A run that only reads one value at a whole-sample shift is that value moved: the
     /// slot and the shift, and it computes and holds nothing of its own.
     pub(crate) alias: Option<(usize, i64)>,
     /// Each slot's node, a ledger's row.
@@ -46,13 +46,13 @@ pub(crate) struct Program {
     pub(crate) marks: std::collections::BTreeMap<i64, sva_samples::MachineState>,
 }
 
-impl Program {
+impl MachineRun {
     pub(crate) fn stateful(&self) -> bool {
         self.start.is_some()
     }
 }
 
-pub(crate) enum Held {
+pub(crate) enum Holding {
     Segments(Vec<Arc<Buffer>>),
     /// A stateful run's samples, its past silent before `origin`.
     Run {
@@ -74,7 +74,7 @@ pub(crate) struct Value {
     pub(crate) period: Option<i64>,
     pub(crate) kind: Kind,
     pub(crate) reads: Vec<usize>,
-    pub(crate) held: Held,
+    pub(crate) holding: Holding,
     /// Every segment computed, in order.
     pub(crate) evaluated: Vec<Extent>,
     pub(crate) label: Option<Label>,
@@ -97,7 +97,9 @@ impl Value {
     /// The value it reads and the shift it reads it at, where it only moves that value.
     pub(crate) fn alias(&self) -> Option<(usize, i64)> {
         match &self.kind {
-            Kind::Program(program) => program.alias.map(|(slot, by)| (self.reads[slot], by)),
+            Kind::MachineRun(machine_run) => {
+                machine_run.alias.map(|(slot, by)| (self.reads[slot], by))
+            }
             _ => None,
         }
     }
@@ -105,7 +107,7 @@ impl Value {
     /// The value it only moves and by how much: an alias, or a crop with no fade of a read,
     /// whose window holds all it may be nonzero over.
     pub(crate) fn moves(&self) -> Option<(usize, i64)> {
-        let Kind::Program(program) = &self.kind else {
+        let Kind::MachineRun(machine_run) = &self.kind else {
             return None;
         };
         if let Some(moved) = self.alias() {
@@ -117,7 +119,7 @@ impl Value {
             rise,
             fall,
             ..
-        } = &*program.renderer
+        } = &*machine_run.renderer
         else {
             return None;
         };
@@ -131,18 +133,18 @@ impl Value {
         let held = Extent::new(window.0, window.1);
         let bare = *rise <= 0.0 && *fall <= 0.0 && map.a == 1 && map.d == 1;
         let within = held.intersect(self.support()) == self.support();
-        (bare && within && program.start.is_none())
+        (bare && within && machine_run.start.is_none())
             .then(|| (self.reads[slot.0 as usize], map.at(0)))
     }
 
     /// A stateful value with nothing of its past computed: silent before `now`.
     pub(crate) fn silent_from(&mut self, now: i64) -> Result<(), sva_samples::SampleError> {
-        let Kind::Program(program) = &mut self.kind else {
-            unreachable!("a stateful value is a program");
+        let Kind::MachineRun(machine_run) = &mut self.kind else {
+            unreachable!("a stateful value is a machine run");
         };
-        program.machine = Some(Machine::over(&program.spanned, now)?);
-        program.marks.clear();
-        self.held = Held::Run {
+        machine_run.machine = Some(Machine::over(&machine_run.spanned, now)?);
+        machine_run.marks.clear();
+        self.holding = Holding::Run {
             samples: Buffer::empty(self.grid.rate, self.width, 0, now),
             origin: now,
         };
@@ -163,18 +165,20 @@ impl Value {
 
     pub(crate) fn holding(&self) -> Segments {
         let mut out = Segments::default();
-        match &self.held {
-            Held::Segments(parts) => parts.iter().for_each(|b| out.add(b.extent())),
-            Held::Run { samples, .. } => out.add(samples.extent()),
-            Held::Frames(Some(_)) => out.add(self.support()),
-            Held::Frames(None) => {}
+        match &self.holding {
+            Holding::Segments(parts) => parts.iter().for_each(|b| out.add(b.extent())),
+            Holding::Run { samples, .. } => out.add(samples.extent()),
+            Holding::Frames(Some(_)) => out.add(self.support()),
+            Holding::Frames(None) => {}
         }
         out
     }
 
     pub(crate) fn end(&self) -> Option<i64> {
-        match (&self.kind, &self.held) {
-            (Kind::Program(program), Held::Run { samples, .. }) if program.machine.is_some() => {
+        match (&self.kind, &self.holding) {
+            (Kind::MachineRun(machine_run), Holding::Run { samples, .. })
+                if machine_run.machine.is_some() =>
+            {
                 Some(samples.end())
             }
             _ => None,
@@ -183,29 +187,29 @@ impl Value {
 
     pub(crate) fn bytes(&self) -> usize {
         let planes = |b: &Buffer| b.len() * b.width() * size_of::<f64>();
-        let held = match &self.held {
-            Held::Segments(parts) => parts.iter().map(|b| planes(b)).sum(),
-            Held::Run { samples, .. } => samples.capacity() * samples.width() * size_of::<f64>(),
-            Held::Frames(Some(frames)) => {
+        let held = match &self.holding {
+            Holding::Segments(parts) => parts.iter().map(|b| planes(b)).sum(),
+            Holding::Run { samples, .. } => samples.capacity() * samples.width() * size_of::<f64>(),
+            Holding::Frames(Some(frames)) => {
                 frames.width * frames.frames * frames.bins * 2 * size_of::<f64>()
             }
-            Held::Frames(None) => 0,
+            Holding::Frames(None) => 0,
         };
         let state = match &self.kind {
-            Kind::Program(program) => program.machine.as_ref().map_or(0, Machine::bytes),
+            Kind::MachineRun(machine_run) => machine_run.machine.as_ref().map_or(0, Machine::bytes),
             _ => 0,
         };
         held + state
     }
 
     /// `over` on its own index, laid from what it holds there.
-    pub(crate) fn window(&self, over: Extent) -> std::borrow::Cow<'_, Buffer> {
-        if self.period.is_some() && matches!(self.held, Held::Segments(_)) {
+    pub(crate) fn samples_over(&self, over: Extent) -> std::borrow::Cow<'_, Buffer> {
+        if self.period.is_some() && matches!(self.holding, Holding::Segments(_)) {
             return std::borrow::Cow::Owned(self.samples(over));
         }
-        match &self.held {
-            Held::Run { samples, .. } => std::borrow::Cow::Borrowed(samples),
-            Held::Segments(parts) => {
+        match &self.holding {
+            Holding::Run { samples, .. } => std::borrow::Cow::Borrowed(samples),
+            Holding::Segments(parts) => {
                 let meets: Vec<&Buffer> = parts
                     .iter()
                     .map(|b| &**b)
@@ -216,7 +220,7 @@ impl Value {
                     _ => std::borrow::Cow::Owned(laid(&meets, self.width, self.grid.rate)),
                 }
             }
-            Held::Frames(_) => {
+            Holding::Frames(_) => {
                 std::borrow::Cow::Owned(Buffer::silence(self.grid.rate, self.width, 0))
             }
         }
@@ -224,23 +228,23 @@ impl Value {
 
     pub(crate) fn samples(&self, over: Extent) -> Buffer {
         let mut planes = vec![vec![0.0; over.len()]; self.width.max(1)];
-        let mut lay = |window: Window| {
+        let mut lay = |view: SampleView| {
             for (c, plane) in planes.iter_mut().enumerate() {
                 for (i, n) in (over.start..over.end).enumerate() {
-                    if let Some(v) = window.get(c, n) {
+                    if let Some(v) = view.get(c, n) {
                         plane[i] = v;
                     }
                 }
             }
         };
-        match &self.held {
-            Held::Run { samples, .. } => lay(samples.within(self.support())),
-            Held::Segments(parts) => {
+        match &self.holding {
+            Holding::Run { samples, .. } => lay(samples.within(self.support())),
+            Holding::Segments(parts) => {
                 for part in parts {
                     lay(part.within(self.support()).folded(self.period));
                 }
             }
-            Held::Frames(_) => {}
+            Holding::Frames(_) => {}
         }
         let mut out = Buffer::of_planes(self.grid.rate, planes);
         out.start = over.start;
@@ -249,8 +253,8 @@ impl Value {
 
     /// A run keeps everything from `kept`'s first sample on.
     pub(crate) fn retain(&mut self, kept: &Segments) {
-        match &mut self.held {
-            Held::Segments(parts) => {
+        match &mut self.holding {
+            Holding::Segments(parts) => {
                 let mut out = Vec::new();
                 for part in parts.drain(..) {
                     for e in kept.intersect(part.extent()).iter() {
@@ -262,7 +266,7 @@ impl Value {
                 }
                 *parts = out;
             }
-            Held::Run { samples, origin } => {
+            Holding::Run { samples, origin } => {
                 let from = kept
                     .iter()
                     .next()
@@ -274,7 +278,7 @@ impl Value {
                     *origin = end;
                 }
             }
-            Held::Frames(frames) => {
+            Holding::Frames(frames) => {
                 if kept.is_empty() {
                     *frames = None;
                 }
@@ -290,7 +294,7 @@ impl Value {
 
     /// `hold`, shared; copied only to grow.
     pub(crate) fn hold_shared(&mut self, buffer: Arc<Buffer>) {
-        let Held::Segments(parts) = &mut self.held else {
+        let Holding::Segments(parts) = &mut self.holding else {
             unreachable!("only a value with no state holds segments");
         };
         let at = buffer.extent();
@@ -365,7 +369,7 @@ mod tests {
             period: None,
             kind: Kind::Istft,
             reads: Vec::new(),
-            held: Held::Segments(Vec::new()),
+            holding: Holding::Segments(Vec::new()),
             evaluated: Vec::new(),
             label: None,
             switches: Vec::new(),
@@ -392,7 +396,7 @@ mod tests {
         let mut last = std::ptr::null();
         for k in 0..blocks {
             value.hold(block((k * len) as i64, len, 2));
-            let Held::Segments(parts) = &value.held else {
+            let Holding::Segments(parts) = &value.holding else {
                 unreachable!("a value of segments");
             };
             assert_eq!(parts.len(), 1, "one run of contiguous samples");
@@ -404,7 +408,7 @@ mod tests {
             moves <= 2 * blocks.ilog2() as usize,
             "{moves} moves over {blocks} blocks"
         );
-        let Held::Segments(parts) = &value.held else {
+        let Holding::Segments(parts) = &value.holding else {
             unreachable!("a value of segments");
         };
         assert_eq!(parts[0].extent(), Extent::new(0, (blocks * len) as i64));

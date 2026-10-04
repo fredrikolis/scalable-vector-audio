@@ -91,7 +91,7 @@ fn below(tys: &Typing, path: &BTreeSet<NodeId>, id: NodeId) -> Vec<NodeId> {
     out
 }
 
-/// Whether `id`'s own program reads itself back, as a fold over that program.
+/// Whether `id`'s own renderer reads itself back, as a fold over that renderer.
 fn loops(tys: &Typing, id: NodeId, held: &mut BTreeMap<NodeId, bool>) -> bool {
     for n in tys.unfolded_over(id, |n| program(tys, n), |n| held.contains_key(&n)) {
         let found = match tys.value(n) {

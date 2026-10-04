@@ -523,8 +523,8 @@ fn drove(held: &mut Render, driver: drive::Driver) {
         let Some(at) = at else {
             continue;
         };
-        match &value_graph.values[at].held {
-            value_graph::Held::Frames(Some(frames)) => {
+        match &value_graph.values[at].holding {
+            value_graph::Holding::Frames(Some(frames)) => {
                 held.frames.insert(id, (**frames).clone());
             }
             _ => {

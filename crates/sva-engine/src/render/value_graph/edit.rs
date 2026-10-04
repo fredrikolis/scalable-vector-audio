@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use sva_samples::{Machine, NodeRenderer, Slot};
 
-use super::program::leaves;
-use super::value::{Held, Kind, Value};
+use super::lowered_node::leaves;
+use super::value::{Holding, Kind, Value};
 use super::values::Values;
 
 /// Each value a change started silent, and how many took an old state.
@@ -115,11 +115,11 @@ fn earliest(held: Option<i64>, there: Option<i64>) -> Option<i64> {
     }
 }
 
-/// Each read of `value`'s program, by slot and map, where it reads through one.
+/// Each read of `value`'s renderer, by slot and map, where it reads through one.
 fn reads(value: &Value) -> Vec<(usize, sva_samples::Map)> {
     let mut out = Vec::new();
-    if let Kind::Program(program) = &value.kind {
-        leaves(&program.renderer, &mut |leaf| {
+    if let Kind::MachineRun(machine_run) = &value.kind {
+        leaves(&machine_run.renderer, &mut |leaf| {
             if let NodeRenderer::Read {
                 slot: Slot::Read(at),
                 map,
@@ -132,11 +132,11 @@ fn reads(value: &Value) -> Vec<(usize, sva_samples::Map)> {
     out
 }
 
-/// Each index read of `value`'s program, by slot, and its reach where bounded.
+/// Each index read of `value`'s renderer, by slot, and its reach where bounded.
 fn indexed(value: &Value) -> Vec<(usize, Option<(i64, i64)>)> {
     let mut out = Vec::new();
-    if let Kind::Program(program) = &value.kind {
-        leaves(&program.renderer, &mut |leaf| {
+    if let Kind::MachineRun(machine_run) = &value.kind {
+        leaves(&machine_run.renderer, &mut |leaf| {
             if let NodeRenderer::Indexed {
                 slot: Slot::Read(at),
                 reach,
@@ -181,51 +181,52 @@ fn predecessors(
 }
 
 fn stateful(value: &Value) -> bool {
-    matches!(&value.kind, Kind::Program(program) if program.stateful())
+    matches!(&value.kind, Kind::MachineRun(machine_run) if machine_run.stateful())
 }
 
 /// An alike value, stood no later than `now`, holding as much of its past as the new value
 /// reads back, whose call sites take the new value's.
 fn continues(value: &Value, old: &Value, now: i64) -> bool {
-    let (Kind::Program(program), Kind::Program(was)) = (&value.kind, &old.kind) else {
+    let (Kind::MachineRun(machine_run), Kind::MachineRun(was)) = (&value.kind, &old.kind) else {
         return false;
     };
-    let (Some(machine), Some(end), Held::Run { samples, origin }) =
-        (&was.machine, old.end(), &old.held)
+    let (Some(machine), Some(end), Holding::Run { samples, origin }) =
+        (&was.machine, old.end(), &old.holding)
     else {
         return false;
     };
-    let fresh = Machine::over(&program.spanned, end);
+    let fresh = Machine::over(&machine_run.spanned, end);
     old.width == value.width
         && end <= now
-        && samples.start <= end.saturating_sub(program.own).max(*origin)
+        && samples.start <= end.saturating_sub(machine_run.own).max(*origin)
         && fresh.is_ok_and(|opened| opened.accepts(&machine.state()))
 }
 
-/// The old value's samples and state, stepped on under the new program; the old keeps none.
+/// The old value's samples and state, stepped on under the new machine run; the old keeps none.
 fn carry(value: &mut Value, old: &mut Value) {
     let end = old.end().expect("a stateful value stands somewhere");
-    let Kind::Program(was) = &mut old.kind else {
-        unreachable!("a stateful predecessor is a program");
+    let Kind::MachineRun(was) = &mut old.kind else {
+        unreachable!("a stateful predecessor is a machine run");
     };
     let state = was.machine.take().expect("a machine that ran").state();
-    let Kind::Program(program) = &mut value.kind else {
-        unreachable!("a stateful value is a program");
+    let Kind::MachineRun(machine_run) = &mut value.kind else {
+        unreachable!("a stateful value is a machine run");
     };
-    let mut machine = Machine::over(&program.spanned, end).expect("its spans opened once already");
+    let mut machine =
+        Machine::over(&machine_run.spanned, end).expect("its spans opened once already");
     machine.carry(&state);
-    program.machine = Some(machine);
-    value.held = std::mem::replace(&mut old.held, Held::Segments(Vec::new()));
+    machine_run.machine = Some(machine);
+    value.holding = std::mem::replace(&mut old.holding, Holding::Segments(Vec::new()));
     value.pure = false;
 }
 
 /// A fresh stateful value started silent at `now`.
 fn start_silent(value: &mut Value, now: i64) -> bool {
     let end = value.end();
-    let Kind::Program(program) = &value.kind else {
+    let Kind::MachineRun(machine_run) = &value.kind else {
         return false;
     };
-    let start = program.start.expect("a stateful program");
+    let start = machine_run.start.expect("a stateful machine run");
     if now <= start || end.is_some_and(|end| end > start) {
         return false;
     }

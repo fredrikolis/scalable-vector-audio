@@ -115,8 +115,8 @@ impl Buffer {
     }
 
     /// A node zero outside `support`.
-    pub fn within(&self, support: Extent) -> Window<'_> {
-        Window {
+    pub fn within(&self, support: Extent) -> SampleView<'_> {
+        SampleView {
             planes: &self.planes,
             base: self.start,
             support,
@@ -127,7 +127,7 @@ impl Buffer {
 
     /// These samples over `over`, a node that is zero outside `support`.
     pub fn over(&self, over: Extent, support: Extent) -> Buffer {
-        let window = self.within(support);
+        let view = self.within(support);
         let planes = match !over.is_empty() && self.extent().intersect(over) == over {
             true => self
                 .planes
@@ -135,7 +135,7 @@ impl Buffer {
                 .map(|p| p[(over.start - self.start) as usize..][..over.len()].to_vec())
                 .collect(),
             false => (0..self.width())
-                .map(|c| (over.start..over.end).map(|n| window.at(c, n)).collect())
+                .map(|c| (over.start..over.end).map(|n| view.at(c, n)).collect())
                 .collect(),
         };
         let mut out = Buffer::of_planes(self.rate, planes);
@@ -143,7 +143,7 @@ impl Buffer {
         out
     }
 
-    pub fn window(&self, c: usize, range: Range<usize>) -> Cow<'_, [f64]> {
+    pub fn plane_slice(&self, c: usize, range: Range<usize>) -> Cow<'_, [f64]> {
         let plane = self.plane(c);
         if range.end <= plane.len() {
             return Cow::Borrowed(&plane[range]);
@@ -163,7 +163,7 @@ impl Buffer {
 /// A view of held samples; a periodic value's samples are held over one period from 0, and
 /// sample `k` is sample `k mod period`.
 #[derive(Clone, Copy, Debug)]
-pub struct Window<'a> {
+pub struct SampleView<'a> {
     planes: &'a [Vec<f64>],
     base: i64,
     support: Extent,
@@ -172,13 +172,13 @@ pub struct Window<'a> {
     offset: i64,
 }
 
-impl<'a> Window<'a> {
-    pub fn folded(self, period: Option<i64>) -> Window<'a> {
-        Window { period, ..self }
+impl<'a> SampleView<'a> {
+    pub fn folded(self, period: Option<i64>) -> SampleView<'a> {
+        SampleView { period, ..self }
     }
 
-    pub fn shifted(self, by: i64) -> Window<'a> {
-        Window {
+    pub fn shifted(self, by: i64) -> SampleView<'a> {
+        SampleView {
             offset: self.offset + by,
             ..self
         }
@@ -192,7 +192,7 @@ impl<'a> Window<'a> {
         }
     }
 
-    /// `None` for a sample inside the support this window does not hold.
+    /// `None` for a sample inside the support this view does not hold.
     pub fn get(&self, c: usize, k: i64) -> Option<f64> {
         let k = self.fold(k);
         let plane = &self.planes[c];

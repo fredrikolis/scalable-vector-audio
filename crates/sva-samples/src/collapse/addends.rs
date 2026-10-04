@@ -1,9 +1,9 @@
-// Concern: a written form's addends, the window each is live in, and what walking it costs | Non-concern: evaluating one (point.rs) | IO: (&Body, grid) -> addends, windows, (nodes, waves)
+// Concern: a written form's addends, the interval each is live in, and what walking it costs | Non-concern: evaluating one (point.rs) | IO: (&Body, grid) -> addends, intervals, (nodes, waves)
 
 use sva_formula::closed_form::{Part, map_children};
 use sva_formula::{Body, ClosedForm};
 
-use super::active::{self, Window};
+use super::active::{self, SampleInterval};
 use super::point;
 use crate::grid::Grid;
 
@@ -50,8 +50,13 @@ fn linear_over(f: &Body) -> Option<Body> {
 
 /// One component's `(nodes, waves)` over the samples `[from, to)` of `grid`, as
 /// `point::eval_body` walks them: a run is priced by its Horner steps and turns its lines,
-/// every other node is one, and a crop's operand counts only at the instants its window holds.
-pub(crate) fn point_work(f: &Body, component: usize, grid: Grid, span: Window) -> (u128, u128) {
+/// every other node is one, and a crop's operand counts only at the instants its interval holds.
+pub(crate) fn point_work(
+    f: &Body,
+    component: usize,
+    grid: Grid,
+    span: SampleInterval,
+) -> (u128, u128) {
     let clock = Clock::grid(grid);
     let Some(parts) = summed(f) else {
         return walked(f, component, &clock, span);
@@ -59,7 +64,7 @@ pub(crate) fn point_work(f: &Body, component: usize, grid: Grid, span: Window) -
     let n = (i128::from(span.1) - i128::from(span.0)).max(0) as u128;
     parts
         .iter()
-        .zip(addend_windows(&parts, grid))
+        .zip(addend_intervals(&parts, grid))
         .fold((n, 0), |held, (part, live)| {
             let (priced, waves) = walked(&part.body, component, &clock, active::meet(span, live));
             (held.0 + priced, held.1 + waves)
@@ -86,18 +91,18 @@ pub(super) fn summed(f: &Body) -> Option<Vec<&Part>> {
     Some(out)
 }
 
-pub(super) fn addend_windows(parts: &[&Part], grid: Grid) -> Vec<Window> {
+pub(super) fn addend_intervals(parts: &[&Part], grid: Grid) -> Vec<SampleInterval> {
     parts
         .iter()
-        .map(|part| live_window(&part.body, grid))
+        .map(|part| live_interval(&part.body, grid))
         .collect()
 }
 
-pub(super) fn live_window(f: &Body, grid: Grid) -> Window {
+pub(super) fn live_interval(f: &Body, grid: Grid) -> SampleInterval {
     live(f, &Clock::grid(grid), active::OPEN)
 }
 
-fn live(f: &Body, clock: &Clock, span: Window) -> Window {
+fn live(f: &Body, clock: &Clock, span: SampleInterval) -> SampleInterval {
     match f {
         Body::Crop { of, .. } => live(&of.body, clock, clock.cropped(span, f)),
         Body::Mul(parts) => parts
@@ -135,7 +140,7 @@ impl Clock {
 
     /// The terms a banded series sums over the span, each instant's own count; where a warp
     /// moves the instants, the most any instant sums.
-    fn summed(&self, b: &sva_formula::Banded, (from, to): Window) -> u128 {
+    fn summed(&self, b: &sva_formula::Banded, (from, to): SampleInterval) -> u128 {
         let Some(shifts) = &self.shifts else {
             return (to - from).max(0) as u128 * b.widest as u128;
         };
@@ -161,7 +166,7 @@ impl Clock {
     }
 
     /// Where a crop's gain is not zero: inside `[l, r)` less the instants a shoulder opens at.
-    fn cropped(&self, span: Window, crop: &Body) -> Window {
+    fn cropped(&self, span: SampleInterval, crop: &Body) -> SampleInterval {
         let (
             Body::Crop {
                 l, r, rise, fall, ..
@@ -174,11 +179,11 @@ impl Clock {
         let at = |n: i64| shifts.iter().fold(self.grid.instant(n), |t, by| t - by);
         let (l, r) = (l.value(), r.value());
         let grid = shifts.is_empty().then_some(self.grid);
-        let window = match grid {
+        let interval = match grid {
             Some(grid) => (grid.first_at(l), grid.first_at(r)),
             None => active::between(l, r, at),
         };
-        let (mut from, mut to) = active::meet(span, window);
+        let (mut from, mut to) = active::meet(span, interval);
         let shut = |n: i64| match grid {
             Some(_) => point::shoulders(at(n), l, r, *rise, *fall) == 0.0,
             None => point::crop_gain(at(n), l, r, *rise, *fall) == 0.0,
@@ -193,13 +198,13 @@ impl Clock {
     }
 }
 
-fn walked(f: &Body, component: usize, clock: &Clock, span: Window) -> (u128, u128) {
+fn walked(f: &Body, component: usize, clock: &Clock, span: SampleInterval) -> (u128, u128) {
     let n = (i128::from(span.1) - i128::from(span.0)).max(0) as u128;
     if n == 0 {
         return (0, 0);
     }
     let add = |a: (u128, u128), b: (u128, u128)| (a.0 + b.0, a.1 + b.1);
-    let branch = |part: &Part, c: usize, clock: &Clock, span: Window| {
+    let branch = |part: &Part, c: usize, clock: &Clock, span: SampleInterval| {
         add((n, 0), walked(&part.body, c, clock, span))
     };
     match f {

@@ -5,8 +5,8 @@ pub(crate) mod edit;
 mod eval;
 #[cfg(test)]
 mod laws;
+pub(crate) mod lowered_node;
 mod period;
-pub(crate) mod program;
 pub(crate) mod segments;
 mod store;
 pub(crate) mod support;
@@ -22,7 +22,7 @@ use sva_samples::{
 };
 
 pub(crate) use demand::Need;
-pub(crate) use value::{Held, Key, Kind, Value};
+pub(crate) use value::{Holding, Key, Kind, Value};
 pub(crate) use values::Values;
 
 use crate::cache::{Memory, Question, Recording, Shape, Stored};
@@ -31,10 +31,10 @@ use crate::error::EngineError;
 use crate::refs;
 use crate::time::Lattice;
 use crate::typing::{Typing, Value as Typed};
-use program::Source;
+use lowered_node::Source;
 use segments::Segments;
 use support::{Memo, Supports};
-use value::Program;
+use value::MachineRun;
 
 /// Every value the root and each wanted node read, once per identity and step, each in its
 /// slot while a reader, a node or the root holds it.
@@ -163,15 +163,15 @@ impl ValueGraph {
         self.grown(tys, Start::Node(id), (bounds, false))
     }
 
-    /// Each value standing on memory's samples, reading nothing yet, that `window` of `root`
+    /// Each value standing on memory's samples, reading nothing yet, that `asked_range` of `root`
     /// asks `past` them.
-    pub(crate) fn short(&self, (root, window, past): (usize, Extent, Past)) -> Vec<usize> {
+    pub(crate) fn short(&self, (root, asked_range, past): (usize, Extent, Past)) -> Vec<usize> {
         let lazy =
             |value: &Value| matches!(value.kind, Kind::Resident(_)) && value.reads.is_empty();
         if !self.values.iter().any(|(_, value)| lazy(value)) {
             return Vec::new();
         }
-        let mut asked = self.asked(window);
+        let mut asked = self.asked(asked_range);
         asked[0].0 = root;
         let needs = demand::demand(&self.values, &asked);
         let past = |at: usize, value: &Value| match past {
@@ -302,14 +302,14 @@ impl ValueGraph {
         self.nodes.get(&node).copied()
     }
 
-    /// What a window of the root, and of each wanted node, asks of every value.
-    pub(crate) fn demand(&self, window: Extent) -> Vec<Need> {
-        demand::demand(&self.values, &self.asked(window))
+    /// What a range of the root, and of each wanted node, asks of every value.
+    pub(crate) fn demand(&self, asked_range: Extent) -> Vec<Need> {
+        demand::demand(&self.values, &self.asked(asked_range))
     }
 
-    /// What a window asks, refused where a value would compute samples without end.
-    fn bounded_demand(&self, window: Extent) -> Result<Vec<Need>, EngineError> {
-        let needs = self.demand(window);
+    /// What a range asks, refused where a value would compute samples without end.
+    fn bounded_demand(&self, asked_range: Extent) -> Result<Vec<Need>, EngineError> {
+        let needs = self.demand(asked_range);
         self.endless(&needs)?;
         Ok(needs)
     }
@@ -325,37 +325,37 @@ impl ValueGraph {
         }
     }
 
-    fn asked(&self, window: Extent) -> Vec<(usize, Extent)> {
+    fn asked(&self, asked_range: Extent) -> Vec<(usize, Extent)> {
         std::iter::once(self.root)
             .chain(self.wanted.iter().copied())
-            .map(|v| (v, window))
+            .map(|v| (v, asked_range))
             .collect()
     }
 
-    /// Computes what `window` asks that is not held, each value once, after the store answers
+    /// Computes what `asked_range` asks that is not held, each value once, after the store answers
     /// what it holds; the price of what ran.
     pub(crate) fn pull(
         &mut self,
-        window: Extent,
+        asked_range: Extent,
         (memory, seen): (&Memory, &mut Recording),
     ) -> Result<Pulled, EngineError> {
-        self.pulled(&self.asked(window), (memory, seen))
+        self.pulled(&self.asked(asked_range), (memory, seen))
     }
 
-    /// The history each stateful value runs through before what `window` holds of it, pulled
+    /// The history each stateful value runs through before what `asked_range` holds of it, pulled
     /// up to `block` samples at a time within the grid's blocks, each dropped once no later one
-    /// reads it: the state a late window starts from, streamed as a render streams it.
+    /// reads it: the state a late range starts from, streamed as a render streams it.
     pub(crate) fn history(
         &mut self,
-        window: Extent,
+        asked_range: Extent,
         block: i64,
         (memory, seen): (&Memory, &mut Recording),
     ) -> Result<Pulled, EngineError> {
-        let needs = self.bounded_demand(window)?;
+        let needs = self.bounded_demand(asked_range)?;
         let spans: Vec<(usize, Extent)> = self
             .values
             .iter()
-            .filter(|(_, value)| matches!(&value.kind, Kind::Program(p) if p.stateful()))
+            .filter(|(_, value)| matches!(&value.kind, Kind::MachineRun(p) if p.stateful()))
             .filter_map(|(at, _)| {
                 let need = &needs[at];
                 let span = Extent::new(need.compute.hull().start, need.hold.hull().start);
@@ -384,26 +384,27 @@ impl ValueGraph {
             pulled.waves += done.waves;
             pulled.most_bytes = pulled.most_bytes.max(done.most_bytes);
             let mut later = within(Extent::new(to, i64::MAX));
-            later.extend(self.asked(window));
+            later.extend(self.asked(asked_range));
             let asked = (
                 demand::demand(&self.values, &later),
                 demand::reach(&self.values, &later),
             );
-            self.released(asked, Extent::NOWHERE, Some(window.start));
+            self.released(asked, Extent::NOWHERE, Some(asked_range.start));
             from = to;
         }
         Ok(pulled)
     }
 
-    /// Silences each stateful value `window` asks from a sample its run has not reached, from
+    /// Silences each stateful value `asked_range` asks from a sample its run has not reached, from
     /// that sample, readers first: nothing before it is computed. Those it silenced.
-    pub(crate) fn skipped(&mut self, window: Extent) -> Result<Vec<usize>, EngineError> {
+    pub(crate) fn skipped(&mut self, asked_range: Extent) -> Result<Vec<usize>, EngineError> {
         let mut silenced = Vec::new();
         loop {
-            let needs = self.bounded_demand(window)?;
+            let needs = self.bounded_demand(asked_range)?;
             let behind = self.values.ordered().rev().find(|at| {
                 let need = &needs[*at];
-                let stateful = matches!(&self.values[*at].kind, Kind::Program(p) if p.stateful());
+                let stateful =
+                    matches!(&self.values[*at].kind, Kind::MachineRun(p) if p.stateful());
                 let asked = need.hold.hull().start;
                 stateful && !need.compute.is_empty() && need.compute.hull().start < asked
             });
@@ -483,13 +484,16 @@ impl ValueGraph {
         Ok(done)
     }
 
-    /// Drops what no later window reads: `future` is the rest of the root's range, `keep` more
+    /// Drops what no later range reads: `future` is the rest of the root's range, `keep` more
     /// the root holds besides, and `since` where the output is read from, if it is.
     pub(crate) fn release(&mut self, future: Option<Extent>, keep: Extent, since: Option<i64>) {
         let asked = match future {
-            Some(window) => {
-                let asked = self.asked(window);
-                (self.demand(window), demand::reach(&self.values, &asked))
+            Some(asked_range) => {
+                let asked = self.asked(asked_range);
+                (
+                    self.demand(asked_range),
+                    demand::reach(&self.values, &asked),
+                )
             }
             None => (
                 vec![Need::default(); self.values.span()],
@@ -531,8 +535,8 @@ impl ValueGraph {
                 }
             }
             let value = &mut self.values[at];
-            if let (Kind::Program(program), Some(end)) = (&value.kind, value.end()) {
-                kept.add(Extent::new(end.saturating_sub(program.own), end));
+            if let (Kind::MachineRun(machine_run), Some(end)) = (&value.kind, value.end()) {
+                kept.add(Extent::new(end.saturating_sub(machine_run.own), end));
                 kept.union(&reach[at].intersect(Extent::new(i64::MIN, end)));
             }
             value.retain(&kept);
@@ -562,7 +566,7 @@ impl ValueGraph {
         eval::samples_of(&self.values, at, over)
     }
 
-    /// `at`'s program with another renderer, over `over`.
+    /// `at`'s machine run with another renderer, over `over`.
     pub(crate) fn rerun(
         &self,
         at: usize,
@@ -572,14 +576,14 @@ impl ValueGraph {
         eval::rerun(&self.values, at, renderer, over)
     }
 
-    /// A program that only reads another value at a whole sample holds that value's label.
+    /// A machine run that only reads another value at a whole sample holds that value's label.
     pub(crate) fn label(&self, at: usize) -> Label {
         let value = &self.values[at];
-        if let Kind::Program(program) = &value.kind
+        if let Kind::MachineRun(machine_run) = &value.kind
             && let NodeRenderer::Read {
                 slot: Slot::Read(slot),
                 ..
-            } = *program.renderer
+            } = *machine_run.renderer
         {
             return self.label(value.reads[slot.0 as usize]);
         }
@@ -786,7 +790,7 @@ enum Then {
     Done,
     /// A short-time transform, refused where its input never ends.
     Frames,
-    Program(NodeId, Box<program::Program>),
+    Lowered(NodeId, Box<lowered_node::LoweredNode>),
 }
 
 impl Building<'_> {
@@ -917,7 +921,7 @@ impl Building<'_> {
             period: None,
             kind: Kind::Resident(Arc::clone(stored)),
             reads: Vec::new(),
-            held: Held::Segments(Vec::new()),
+            holding: Holding::Segments(Vec::new()),
             evaluated: Vec::new(),
             label: Some(stored.label.clone()),
             switches: Vec::new(),
@@ -1013,7 +1017,7 @@ impl Building<'_> {
             period: None,
             kind: Kind::Istft,
             reads: Vec::new(),
-            held: Held::Segments(Vec::new()),
+            holding: Holding::Segments(Vec::new()),
             evaluated: Vec::new(),
             label: None,
             switches: Vec::new(),
@@ -1034,7 +1038,7 @@ impl Building<'_> {
                     window: *window,
                     hop: *hop,
                 };
-                value.held = Held::Frames(None);
+                value.holding = Holding::Frames(None);
                 value.whole = self.support(*of);
                 Ok((value, Then::Frames, vec![Step::Node(*of)]))
             }
@@ -1061,7 +1065,7 @@ impl Building<'_> {
                 none(self.formula(value, Some(sum), None)?)
             }
             (_, Typed::ClosedForm(form))
-                if form.var == Var::T && program::is_one_value(tys, &form.body) =>
+                if form.var == Var::T && lowered_node::is_one_value(tys, &form.body) =>
             {
                 none(self.written(value, form)?)
             }
@@ -1114,7 +1118,7 @@ impl Building<'_> {
             (None, None) => unreachable!("a formula is a sum or a written form"),
         };
         let band = sva_samples::Audible::on(self.profile, grid);
-        let shared = program::shared(tys, &form.body, band).map_err(|e| refused(&e))?;
+        let shared = lowered_node::shared(tys, &form.body, band).map_err(|e| refused(&e))?;
         let renderer = NodeRenderer::Formula {
             formula: Formula::Written(Box::new(shared)),
             width: value.width,
@@ -1135,13 +1139,13 @@ impl Building<'_> {
         self.running(value, renderer, (Vec::new(), Vec::new()), Vec::new(), None)
     }
 
-    /// A closed form's program point-samples it; any other program is a reading of samples.
+    /// A closed form's renderer point-samples it; any other renderer is a reading of samples.
     fn program(
         &mut self,
         mut value: Value,
         id: NodeId,
     ) -> Result<(Value, Then, Vec<Step>), EngineError> {
-        let built = program::of(
+        let built = lowered_node::of(
             self.tys,
             self.supports,
             (id, value.grid),
@@ -1165,7 +1169,7 @@ impl Building<'_> {
             .iter()
             .map(|source| Step::Source(source.clone(), value.grid, value.name.clone()))
             .collect();
-        Ok((value, Then::Program(id, Box::new(built)), reads))
+        Ok((value, Then::Lowered(id, Box::new(built)), reads))
     }
 
     fn finished(&mut self, open: Open, reads: Vec<usize>) -> Result<Value, EngineError> {
@@ -1184,7 +1188,7 @@ impl Building<'_> {
                     false => Err(unbounded(&value.name)),
                 }
             }
-            Then::Program(id, built) => self.programmed(value, id, *built, reads),
+            Then::Lowered(id, built) => self.programmed(value, id, *built, reads),
         }
     }
 
@@ -1192,7 +1196,7 @@ impl Building<'_> {
         &mut self,
         mut value: Value,
         id: NodeId,
-        built: program::Program,
+        built: lowered_node::LoweredNode,
         reads: Vec<usize>,
     ) -> Result<Value, EngineError> {
         let endless = |slot: Slot| match slot {
@@ -1241,7 +1245,7 @@ impl Building<'_> {
         let spanned = Spanned::new(&renderer, &layout, (from, value.support().end), &live)
             .map_err(|e| eval::sample_refused(&value.name, &e))?;
         if start.is_some() {
-            value.held = Held::Run {
+            value.holding = Holding::Run {
                 samples: Buffer::empty(value.grid.rate, value.width, 0, from),
                 origin: from,
             };
@@ -1256,7 +1260,7 @@ impl Building<'_> {
             ) if map.a == 1 && map.d == 1 => Some((slot.0 as usize, map.at(0))),
             _ => None,
         };
-        value.kind = Kind::Program(Box::new(Program {
+        value.kind = Kind::MachineRun(Box::new(MachineRun {
             alias,
             sources: sources.into(),
             own: own_reach(&renderer),
@@ -1346,11 +1350,11 @@ fn segments(switches: &[(i64, Hash)], whole: Hash, key: impl Fn(Hash) -> Hash) -
     starts.into_iter().zip(keys).collect()
 }
 
-/// Each distinct read a value's program makes, however many leaves share a slot; a value of no
-/// program reads each of its reads once, whole. A read through an alias reads the value it
+/// Each distinct read a value's renderer makes, however many leaves share a slot; a value of no
+/// renderer reads each of its reads once, whole. A read through an alias reads the value it
 /// moves, and an alias reads nothing of its own.
 fn leaf_reads(values: &Values, value: &Value) -> Vec<store::Unread> {
-    let Kind::Program(program) = &value.kind else {
+    let Kind::MachineRun(machine_run) = &value.kind else {
         return value
             .reads
             .iter()
@@ -1361,11 +1365,11 @@ fn leaf_reads(values: &Values, value: &Value) -> Vec<store::Unread> {
             })
             .collect();
     };
-    if program.alias.is_some() {
+    if machine_run.alias.is_some() {
         return Vec::new();
     }
     let mut out: Vec<store::Unread> = Vec::new();
-    program::leaves(&program.renderer, &mut |leaf| {
+    lowered_node::leaves(&machine_run.renderer, &mut |leaf| {
         let (NodeRenderer::Read {
             slot: Slot::Read(at),
             ..
@@ -1389,10 +1393,10 @@ fn leaf_reads(values: &Values, value: &Value) -> Vec<store::Unread> {
     out
 }
 
-/// The loudest term any series a program's formulas sum instant by instant may drop.
+/// The loudest term any series a renderer's formulas sum instant by instant may drop.
 fn dropped_db(renderer: &NodeRenderer) -> Option<f64> {
     let mut held: Option<f64> = None;
-    program::leaves(renderer, &mut |leaf| {
+    lowered_node::leaves(renderer, &mut |leaf| {
         if let NodeRenderer::Formula {
             formula: Formula::Written(written),
             ..
@@ -1468,7 +1472,7 @@ fn whole_rate(grid: Grid) -> Option<u32> {
 fn reads_own(renderer: &NodeRenderer) -> bool {
     own_reach(renderer) > 0 || {
         let mut found = false;
-        program::leaves(renderer, &mut |leaf| {
+        lowered_node::leaves(renderer, &mut |leaf| {
             found |= matches!(
                 leaf,
                 NodeRenderer::Read {
@@ -1487,7 +1491,7 @@ fn reads_own(renderer: &NodeRenderer) -> bool {
 /// How far back its own past is read: past any sample where an index has no bound.
 fn own_reach(renderer: &NodeRenderer) -> i64 {
     let mut back = 0i64;
-    program::leaves(renderer, &mut |leaf| match leaf {
+    lowered_node::leaves(renderer, &mut |leaf| match leaf {
         NodeRenderer::Read {
             slot: Slot::Own,
             map,

@@ -317,7 +317,7 @@ impl<'a> Supports<'a> {
         }
     }
 
-    /// Where the node `owner`'s program must start so that every state it holds starts
+    /// Where the node `owner`'s machine run must start so that every state it holds starts
     /// where its input does: a filter's input, a solver at t = 0, a loop at its own support.
     pub(crate) fn state_start(&self, id: NodeId, owner: NodeId) -> Option<i64> {
         let earliest = |a: Option<i64>, b: Option<i64>| match (a, b) {

@@ -617,7 +617,7 @@ fn edges_under(
     Ok(out)
 }
 
-/// Every ref one node's program reads, one row per name.
+/// Every ref one node's renderer reads, one row per name.
 fn refs_read(
     render: &Render,
     node: sva_formula::NodeId,
@@ -627,7 +627,7 @@ fn refs_read(
 }
 
 /// What one ref contributed to the node reading it, at that node's own offset and window: its
-/// program with every other slot silenced. Two under one product have no addend apiece and no
+/// renderer with every other slot silenced. Two under one product have no addend apiece and no
 /// share either, so that edge is left unattributed.
 fn contributed(
     render: &Render,

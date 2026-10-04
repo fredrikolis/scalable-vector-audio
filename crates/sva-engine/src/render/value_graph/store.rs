@@ -10,7 +10,7 @@ use sva_samples::{Buffer, Extent, Machine, MachineState, NodeRenderer};
 use super::ValueGraph;
 use super::eval::Marks;
 use super::segments::Segments;
-use super::value::{Held, Kind, Value};
+use super::value::{Holding, Kind, Value};
 use crate::cache::{
     Expected, Facts, Keep, Memory, Offered, Payload, PayloadKind, Recording, Run, Stored,
 };
@@ -57,9 +57,9 @@ pub(crate) struct Unread {
 
 impl Place {
     fn kind(value: &Value) -> PayloadKind {
-        match (&value.kind, &value.held) {
+        match (&value.kind, &value.holding) {
             (Kind::Frames { .. }, _) => PayloadKind::Frames,
-            (_, Held::Run { .. }) => PayloadKind::Run,
+            (_, Holding::Run { .. }) => PayloadKind::Run,
             _ => PayloadKind::Segments,
         }
     }
@@ -116,7 +116,7 @@ pub(crate) fn load(
             true
         }
         Payload::Frames(frames) => {
-            value.held = Held::Frames(Some(frames));
+            value.holding = Holding::Frames(Some(frames));
             true
         }
         Payload::Run(_) => false,
@@ -127,10 +127,10 @@ pub(crate) fn load(
 /// next segment where its state there is marked, else from its last mark. A value that has
 /// stepped already takes none.
 fn resumed(value: &mut Value, place: &Place, (memory, seen): (&Memory, &mut Recording)) -> bool {
-    let Kind::Program(program) = &value.kind else {
+    let Kind::MachineRun(machine_run) = &value.kind else {
         return false;
     };
-    if program.machine.is_some() {
+    if machine_run.machine.is_some() {
         return false;
     }
     let expected = Expected::Run {
@@ -164,7 +164,7 @@ fn resumed(value: &mut Value, place: &Place, (memory, seen): (&Memory, &mut Reco
     let (Some(base), Some((&at, state))) = (base, marks.range(..=pos).next_back()) else {
         return false;
     };
-    let Ok(mut machine) = Machine::over(&program.spanned, at) else {
+    let Ok(mut machine) = Machine::over(&machine_run.spanned, at) else {
         return false;
     };
     if at <= base || !machine.carry(state) {
@@ -175,12 +175,12 @@ fn resumed(value: &mut Value, place: &Place, (memory, seen): (&Memory, &mut Reco
     }
     let mut samples = Buffer::of_planes(value.grid.rate, planes);
     samples.start = base;
-    let Kind::Program(program) = &mut value.kind else {
-        unreachable!("a program");
+    let Kind::MachineRun(machine_run) = &mut value.kind else {
+        unreachable!("a machine run");
     };
-    program.machine = Some(machine);
-    program.marks = marks.into_iter().filter(|(m, _)| *m <= at).collect();
-    value.held = Held::Run {
+    machine_run.machine = Some(machine);
+    machine_run.marks = marks.into_iter().filter(|(m, _)| *m <= at).collect();
+    value.holding = Holding::Run {
         origin: samples.start,
         samples,
     };
@@ -224,13 +224,13 @@ pub(crate) fn reached(
         return Vec::new();
     }
     let mut runs: Vec<bool> = place.unread.iter().map(|u| u.leaf.is_none()).collect();
-    if let Kind::Program(program) = &reader.kind {
-        for span in program.spanned.spans() {
+    if let Kind::MachineRun(machine_run) = &reader.kind {
+        for span in machine_run.spanned.spans() {
             let met = computed
                 .iter()
                 .any(|e| !e.intersect(Extent::new(span.from, span.to)).is_empty());
             if met {
-                super::program::leaves(&span.renderer, &mut |leaf| {
+                super::lowered_node::leaves(&span.renderer, &mut |leaf| {
                     for (k, unread) in place.unread.iter().enumerate() {
                         runs[k] |= unread.leaf.as_ref() == Some(leaf);
                     }
@@ -258,24 +258,25 @@ fn samples(value: &mut Value, place: &Place, computed: &[Extent]) -> Vec<(Hash, 
     if computed.is_empty() || stored || !value.pure {
         return Vec::new();
     }
-    let payload = match &mut value.held {
-        Held::Segments(parts) => Payload::Segments(
+    let payload = match &mut value.holding {
+        Holding::Segments(parts) => Payload::Segments(
             computed
                 .iter()
                 .flat_map(|e| parts.iter().filter_map(move |b| over(b, *e)))
                 .collect(),
         ),
-        Held::Frames(Some(frames)) => Payload::Frames(Arc::clone(frames)),
-        Held::Frames(None) => return Vec::new(),
-        Held::Run { samples, .. } => {
-            let (Some(from), Kind::Program(program)) = (computed.first(), &mut value.kind) else {
+        Holding::Frames(Some(frames)) => Payload::Frames(Arc::clone(frames)),
+        Holding::Frames(None) => return Vec::new(),
+        Holding::Run { samples, .. } => {
+            let (Some(from), Kind::MachineRun(machine_run)) = (computed.first(), &mut value.kind)
+            else {
                 return Vec::new();
             };
-            let Some(machine) = &program.machine else {
+            let Some(machine) = &machine_run.machine else {
                 return Vec::new();
             };
-            program.marks.insert(samples.end(), machine.state());
-            let marks = std::mem::take(&mut program.marks);
+            machine_run.marks.insert(samples.end(), machine.state());
+            let marks = std::mem::take(&mut machine_run.marks);
             let mut out = Vec::new();
             for (k, (start, segment)) in place.segments.iter().enumerate() {
                 let (lo, hi) = (from.start.max(*start), samples.end().min(place.end(k)));
@@ -487,19 +488,19 @@ impl ValueGraph {
         })
     }
 
-    /// Each node memory holds that `window` asks samples of no value holds: its key, and the
+    /// Each node memory holds that `asked_range` asks samples of no value holds: its key, and the
     /// stretch.
-    pub(crate) fn needs(&self, window: Extent) -> Vec<(Hash, Extent)> {
+    pub(crate) fn needs(&self, asked_range: Extent) -> Vec<(Hash, Extent)> {
         if !self.lacks() {
             return Vec::new();
         }
-        let needs = self.demand(window);
+        let needs = self.demand(asked_range);
         let ats: Vec<usize> = self.values.ordered().collect();
         self.lacking(&ats, &needs)
     }
 
-    pub(crate) fn needs_made(&self, root: usize, window: Extent) -> Vec<(Hash, Extent)> {
-        let needs = super::demand::demand(&self.values, &[(root, window)]);
+    pub(crate) fn needs_made(&self, root: usize, asked_range: Extent) -> Vec<(Hash, Extent)> {
+        let needs = super::demand::demand(&self.values, &[(root, asked_range)]);
         self.lacking(self.made(), &needs)
     }
 
