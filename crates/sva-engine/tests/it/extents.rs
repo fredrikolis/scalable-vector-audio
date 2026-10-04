@@ -167,3 +167,45 @@ fn a_transform_of_an_endless_input_refuses() {
     };
     assert_eq!(refused.code(), "engine.unbounded_extent", "{refused}");
 }
+
+/// A crop's edge is the first sample whose exact instant is at or past the decimal it was
+/// written as, for its support and every evaluator alike. 0.8333333333333334 s is past 5/6 s,
+/// sample 40000's instant at 48 kHz, so that sample is silent on rows, in a program and read
+/// through a ref, even under a sum whose support runs past the crop.
+#[test]
+fn a_crop_starts_on_the_first_sample_past_its_edge_on_every_route() {
+    let g = graph_of(
+        "edge",
+        &[
+            (
+                "rows",
+                "crop(sin(2*pi*440*t), 0.8333333333333334s, 2s) + 0.25\n",
+            ),
+            (
+                "program",
+                "crop(sample(sin(2*pi*440*t)), 0.8333333333333334s, 2s) + 0.25\n",
+            ),
+            ("read", "@rows\n"),
+        ],
+    );
+    let at = |target: &str| {
+        let config = RenderConfig {
+            range: Range {
+                start: Some(39_990),
+                end: Some(40_010),
+            },
+            ..RenderConfig::at(48_000)
+        };
+        let held = render(&g, target, config, &Tier::default())
+            .unwrap_or_else(|e| panic!("{target}: {e}"));
+        held.output(held.root).expect("the root").plane(0).to_vec()
+    };
+    for target in ["rows", "program", "read"] {
+        let samples = at(target);
+        assert_eq!(
+            samples[10], 0.25,
+            "{target}: sample 40000 is before the edge"
+        );
+        assert_ne!(samples[11], 0.25, "{target}: sample 40001 is past it");
+    }
+}

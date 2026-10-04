@@ -6,19 +6,48 @@ use sva_formula::closed_form::{Fold, Unary, children};
 use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
 use sva_formula::{Banded, Body, C64, IndexId, Lane, NodeId, SpectralSum};
 
+use crate::Grid;
 use crate::error::CollapseError;
 
 /// How a `Body::Node` reaches a value at one instant, and how many components it holds: a
 /// closed form on its own holds no node, so the caller holding the graph answers both.
 pub trait Refs {
-    fn value(&self, id: NodeId, component: usize, t: f64) -> Result<C64, CollapseError>;
+    fn value(&self, id: NodeId, component: usize, at: At) -> Result<C64, CollapseError>;
     fn width(&self, id: NodeId) -> usize;
 }
+
+/// Where a form is evaluated: a free instant, or a grid sample, whose edges the grid decides.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum At {
+    Free(f64),
+    Sample(Grid, i64),
+}
+
+impl At {
+    pub fn t(self) -> f64 {
+        match self {
+            At::Free(t) => t,
+            At::Sample(grid, n) => grid.instant(n),
+        }
+    }
+
+    fn sample(self) -> Option<(Grid, i64)> {
+        match self {
+            At::Free(_) => None,
+            At::Sample(grid, n) => Some((grid, n)),
+        }
+    }
+}
+
+/// The sample an instant inside an evaluation stands at, where it still is one.
+type On = Option<(Grid, i64)>;
+
+type Evaluated = (usize, u64, On, C64);
 
 /// The forms a shared written form reads, each evaluated once per instant and component.
 pub(crate) struct Shared<'a> {
     bodies: &'a [Body],
-    held: RefCell<Vec<Option<(usize, u64, C64)>>>,
+    held: RefCell<Vec<Option<Evaluated>>>,
 }
 
 impl<'a> Shared<'a> {
@@ -31,18 +60,18 @@ impl<'a> Shared<'a> {
 }
 
 impl Refs for Shared<'_> {
-    fn value(&self, id: NodeId, component: usize, t: f64) -> Result<C64, CollapseError> {
-        let at = id.0 as usize;
-        let Some(body) = self.bodies.get(at) else {
-            return NoRefs.value(id, component, t);
+    fn value(&self, id: NodeId, component: usize, at: At) -> Result<C64, CollapseError> {
+        let Some(body) = self.bodies.get(id.0 as usize) else {
+            return NoRefs.value(id, component, at);
         };
-        if let Some((c, bits, value)) = self.held.borrow()[at]
-            && (c, bits) == (component, t.to_bits())
+        let key = (component, at.t().to_bits(), at.sample());
+        if let Some((c, bits, on, value)) = self.held.borrow()[id.0 as usize]
+            && (c, bits, on) == key
         {
             return Ok(value);
         }
-        let value = eval_body(body, component, t, self)?;
-        self.held.borrow_mut()[at] = Some((component, t.to_bits(), value));
+        let value = eval_body_on(body, component, at, self)?;
+        self.held.borrow_mut()[id.0 as usize] = Some((key.0, key.1, key.2, value));
         Ok(value)
     }
 
@@ -58,7 +87,7 @@ impl Refs for Shared<'_> {
 pub(crate) struct NoRefs;
 
 impl Refs for NoRefs {
-    fn value(&self, _: NodeId, _: usize, _: f64) -> Result<C64, CollapseError> {
+    fn value(&self, _: NodeId, _: usize, _: At) -> Result<C64, CollapseError> {
         Err(CollapseError::NotEvaluable("a node"))
     }
 
@@ -69,47 +98,75 @@ impl Refs for NoRefs {
 
 /// The six atom factors in closed form. A delta has no ordinary value, and a principal
 /// value has none at its own pole.
-pub fn eval_atom(a: &SpectralAtom, t: f64) -> Result<C64, CollapseError> {
+pub(crate) fn eval_atom_on(a: &SpectralAtom, t: f64, on: On) -> Result<C64, CollapseError> {
+    debug_assert!(
+        on.is_none_or(|(grid, n)| grid.instant(n) == t),
+        "a sample at its instant"
+    );
     if let Singular::Delta { at, order } = a.sing {
         return Err(CollapseError::SingularInCt {
             at,
             order: i32::from(order),
         });
     }
-    a.smooth_at(t).ok_or(CollapseError::SingularInCt {
+    let held = match (a.ind, on) {
+        (Some(ind), Some((grid, n))) => match grid.inside(n, ind.l.value(), ind.r.value()) {
+            true => a.smooth_inside(t),
+            false => Some(C64::ZERO),
+        },
+        _ => a.smooth_at(t),
+    };
+    held.ok_or(CollapseError::SingularInCt {
         at: a.pole.map_or(t, |p| p.at.re),
         order: -1,
     })
 }
 
 pub fn eval_lane(lane: &Lane, t: f64) -> Result<C64, CollapseError> {
+    eval_lane_on(lane, t, None)
+}
+
+fn eval_lane_on(lane: &Lane, t: f64, on: On) -> Result<C64, CollapseError> {
     let mut sum = C64::ZERO;
     for a in &lane.atoms {
-        sum = sum + eval_atom(a, t)?;
+        sum = sum + eval_atom_on(a, t, on)?;
     }
-    with_modal(lane, sum, t)
+    with_modal(lane, sum, t, on)
 }
 
-/// Every atom `live` leaves out is exactly zero here.
-pub(crate) fn eval_among(lane: &Lane, live: &[usize], t: f64) -> Result<C64, CollapseError> {
+/// Every atom `live` leaves out is exactly zero at sample `m`.
+pub(crate) fn eval_among(
+    lane: &Lane,
+    live: &[usize],
+    (grid, m): (Grid, i64),
+) -> Result<C64, CollapseError> {
+    let (t, on) = (grid.instant(m), Some((grid, m)));
     let mut sum = C64::ZERO;
     for &i in live {
-        sum = sum + eval_atom(&lane.atoms[i], t)?;
+        sum = sum + eval_atom_on(&lane.atoms[i], t, on)?;
     }
-    with_modal(lane, sum, t)
+    with_modal(lane, sum, t, on)
 }
 
-fn with_modal(lane: &Lane, mut sum: C64, t: f64) -> Result<C64, CollapseError> {
+fn with_modal(lane: &Lane, mut sum: C64, t: f64, on: On) -> Result<C64, CollapseError> {
     for bank in &lane.modal {
         for a in sva_formula::modal::atoms(bank, sva_formula::Origin::UNKNOWN) {
-            sum = sum + eval_atom(&a, t)?;
+            sum = sum + eval_atom_on(&a, t, on)?;
         }
     }
     Ok(sum)
 }
 
 pub fn eval_spectral_sum(n: &SpectralSum, c: usize, t: f64) -> Result<C64, CollapseError> {
-    eval_lane(&n.lanes[c.min(n.lanes.len() - 1)], t)
+    eval_spectral_sum_on(n, c, At::Free(t))
+}
+
+pub(crate) fn eval_spectral_sum_on(
+    n: &SpectralSum,
+    c: usize,
+    at: At,
+) -> Result<C64, CollapseError> {
+    eval_lane_on(&n.lanes[c.min(n.lanes.len() - 1)], at.t(), at.sample())
 }
 
 /// A shut crop zeroes a factor beside it that passes a double.
@@ -130,20 +187,21 @@ fn product(
 
 /// The fallback for a closed form with no spectral sum at all: `tanh`, `sat`, `abs`, `log`, `sqrt`,
 /// a non-integer power, a non-affine `sin`. Nothing here is claimed exact.
-pub fn eval_body(
+pub(crate) fn eval_body_on(
     fm: &Body,
     component: usize,
-    t: f64,
+    at: At,
     refs: &dyn Refs,
 ) -> Result<C64, CollapseError> {
-    eval_at(fm, component, t, (refs, &[]))
+    eval_at(fm, component, at.t(), (refs, &[], at.sample()))
 }
 
-/// Each index a banded series binds, at the value it holds for the term being summed.
-type Bound<'a> = (&'a dyn Refs, &'a [(IndexId, f64)]);
+/// Each index a banded series binds, at its value for the term summed, and `t`'s sample.
+type Bound<'a> = (&'a dyn Refs, &'a [(IndexId, f64)], On);
 
 fn eval_at(fm: &Body, component: usize, t: f64, at: Bound) -> Result<C64, CollapseError> {
-    let (refs, bound) = at;
+    let (refs, bound, on) = at;
+    let moved = (refs, bound, None);
     let of = |p: &sva_formula::Part| eval_at(&p.body, component, t, at);
     let value = match fm {
         Body::Const(c) => *c,
@@ -154,13 +212,13 @@ fn eval_at(fm: &Body, component: usize, t: f64, at: Bound) -> Result<C64, Collap
         Body::Pow(a, n) => power(of(a)?, *n),
         Body::Apply(op, a) => unary(*op, of(a)?),
         Body::Fold(op, parts) => fold(*op, parts, component, t, at)?,
-        Body::Shift { by, of: inner } => eval_at(&inner.body, component, t - by, at)?,
+        Body::Shift { by, of: inner } => eval_at(&inner.body, component, t - by, moved)?,
         Body::Warp {
             at: when,
             of: inner,
         } => {
             let when = eval_at(&when.body, component, t, at)?.re;
-            eval_at(&inner.body, component, when, at)?
+            eval_at(&inner.body, component, when, moved)?
         }
         Body::Crop {
             of: inner,
@@ -168,10 +226,18 @@ fn eval_at(fm: &Body, component: usize, t: f64, at: Bound) -> Result<C64, Collap
             r,
             rise,
             fall,
-        } => match crop_gain(t, l.value(), r.value(), *rise, *fall) {
-            0.0 => C64::ZERO,
-            gain => of(inner)?.scale(gain),
-        },
+        } => {
+            let (l, r) = (l.value(), r.value());
+            let gain = match on {
+                Some((grid, n)) if grid.inside(n, l, r) => shoulders(t, l, r, *rise, *fall),
+                Some(_) => 0.0,
+                None => crop_gain(t, l, r, *rise, *fall),
+            };
+            match gain {
+                0.0 => C64::ZERO,
+                gain => of(inner)?.scale(gain),
+            }
+        }
         Body::Channel(inner, k) => eval_at(&inner.body, usize::from(*k), t, at)?,
         Body::Delta { order, .. } => {
             return Err(CollapseError::SingularInCt {
@@ -193,11 +259,15 @@ fn eval_at(fm: &Body, component: usize, t: f64, at: Bound) -> Result<C64, Collap
         Body::Modal(bank) => {
             let mut sum = C64::ZERO;
             for a in sva_formula::modal::atoms(bank, sva_formula::Origin::UNKNOWN) {
-                sum = sum + eval_atom(&a, t)?;
+                sum = sum + eval_atom_on(&a, t, on)?;
             }
             sum
         }
-        Body::Node(id) => refs.value(*id, component, t)?,
+        Body::Node(id) => refs.value(
+            *id,
+            component,
+            on.map_or(At::Free(t), |(g, n)| At::Sample(g, n)),
+        )?,
         Body::Run(run) => super::run::at(run, t),
         Body::Index(i) if let Some((_, k)) = bound.iter().find(|(j, _)| j == i) => C64::real(*k),
         Body::Banded(b) => banded(b, component, t, at)?,
@@ -211,10 +281,10 @@ pub(crate) fn eval_addends(
     parts: &[&sva_formula::Part],
     live: &[usize],
     component: usize,
-    t: f64,
+    (grid, n): (Grid, i64),
 ) -> Result<C64, CollapseError> {
     let sum = live.iter().try_fold(C64::ZERO, |held, &i| {
-        Ok(held + eval_body(&parts[i].body, component, t, &NoRefs)?)
+        Ok(held + eval_body_on(&parts[i].body, component, At::Sample(grid, n), &NoRefs)?)
     })?;
     finite(sum)
 }
@@ -321,16 +391,18 @@ fn fold(
 
 /// The terms whose carrier turns under the ceiling at `t`, summed from +0 in index order.
 fn banded(b: &Banded, component: usize, t: f64, at: Bound) -> Result<C64, CollapseError> {
-    let Some((from, to)) = b.within(turning(&b.slope, t)?, turning(&b.offset, t)?) else {
+    let turned =
+        |rate: &SpectralSum| Ok::<f64, CollapseError>(eval_lane_on(&rate.lanes[0], t, at.2)?.re);
+    let Some((from, to)) = b.within(turned(&b.slope)?, turned(&b.offset)?) else {
         return Ok(C64::ZERO);
     };
-    let (refs, outer) = at;
+    let (refs, outer, on) = at;
     let mut bound = outer.to_vec();
     bound.push((b.series.index, 0.0));
     let mut sum = C64::ZERO;
     for k in from..=to {
         *bound.last_mut().expect("the index pushed") = (b.series.index, k as f64);
-        sum = sum + eval_at(&b.series.term.body, component, t, (refs, &bound))?;
+        sum = sum + eval_at(&b.series.term.body, component, t, (refs, &bound, on))?;
     }
     Ok(sum)
 }

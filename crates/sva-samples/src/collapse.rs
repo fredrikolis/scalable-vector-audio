@@ -27,7 +27,7 @@ pub use plan::transform_flops;
 
 use plan::Plan;
 pub(crate) use point::Shared;
-pub use point::{Refs, crop_gain, lane_of, shoulders, unary};
+pub use point::{At, Refs, crop_gain, lane_of, shoulders, unary};
 pub use truncate::{
     Audible, dropped_db, spectral_sum as truncate_spectral_sum,
     spectral_sum_read as truncate_spectral_sum_read, steady_read as truncate_steady_read,
@@ -38,9 +38,9 @@ pub use truncate::{
 pub fn eval_spectral_sum_at(
     sum: &SpectralSum,
     component: usize,
-    t: f64,
+    at: At,
 ) -> Result<C64, CollapseError> {
-    point::eval_spectral_sum(sum, component, t)
+    point::eval_spectral_sum_on(sum, component, at)
 }
 
 /// One written closed form's value at one instant, every `Body::Node` in it answered by the
@@ -48,10 +48,10 @@ pub fn eval_spectral_sum_at(
 pub fn eval_written_at(
     body: &Body,
     component: usize,
-    t: f64,
+    at: At,
     refs: &dyn Refs,
 ) -> Result<C64, CollapseError> {
-    point::eval_body(body, component, t, refs)
+    point::eval_body_on(body, component, at, refs)
 }
 
 /// Samples `[start, end)` of the one grid every node is read on, whose sample 0 is t = 0.
@@ -441,7 +441,10 @@ fn spectral_sum_alias(
     let mut scored = Vec::with_capacity(planes.len());
     for (c, base) in planes.iter().enumerate() {
         let high: Vec<f64> = (0..len * ALIAS_OVERSAMPLE)
-            .map(|i| point::eval_spectral_sum(sum, c, finer.instant(from + i as i64)).map(|v| v.re))
+            .map(|i| {
+                let at = At::Sample(finer, from + i as i64);
+                point::eval_spectral_sum_on(sum, c, at).map(|v| v.re)
+            })
             .collect::<Result<_, _>>()?;
         scored.push(one_component(base, &high, rate, extent));
     }

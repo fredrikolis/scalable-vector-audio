@@ -91,7 +91,12 @@ fn a_form_in_f_has_no_row_a_span_reads_alone() {
 struct NoNodes;
 
 impl Refs for NoNodes {
-    fn value(&self, _: sva_formula::NodeId, _: usize, _: f64) -> Result<C64, CollapseError> {
+    fn value(
+        &self,
+        _: sva_formula::NodeId,
+        _: usize,
+        _: sva_samples::At,
+    ) -> Result<C64, CollapseError> {
         Err(CollapseError::NotEvaluable("a node"))
     }
 
@@ -132,8 +137,13 @@ fn a_point_sampled_sum_reads_each_term_only_inside_its_crop() {
     let written = notes(8, gap, width);
     let planes = rows(8).planes(0, len(8)).expect("samples");
     for (n, v) in planes[0].iter().enumerate() {
-        let t = n as f64 / f64::from(RATE);
-        let want = sva_samples::eval_written_at(&written, 0, t, &NoNodes).expect("a value");
+        let want = sva_samples::eval_written_at(
+            &written,
+            0,
+            sva_samples::At::Sample(sva_samples::Grid::of(RATE), n as i64),
+            &NoNodes,
+        )
+        .expect("a value");
         assert_eq!(v.to_bits(), want.re.to_bits(), "sample {n}");
     }
 

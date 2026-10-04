@@ -263,8 +263,13 @@ fn fill(
         }
         Op::Formula { at } => each(out, (from, start, w), &mut |i, n, s| {
             for (c, v) in s.iter_mut().enumerate() {
+                let t = part(arg(0, i), c);
+                let when = match t == times[i] {
+                    true => crate::collapse::At::Sample(here.grid, n),
+                    false => crate::collapse::At::Free(t),
+                };
                 *v = p.formulas[*at]
-                    .at(c, part(arg(0, i), c))
+                    .at(c, when)
                     .map_err(|_| SampleError::FormulaUnevaluable { at: n })?;
             }
             Ok(())

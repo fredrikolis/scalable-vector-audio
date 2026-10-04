@@ -398,8 +398,8 @@ fn values(row: &Row, c: usize, (from, to): Window, rate: u32) -> Result<Vec<f64>
                         .direct
                         .as_ref()
                         .map_or(0.0, |d| 0.0 + d.at(m as f64 / f64::from(rate)));
-                    out[(m - from) as usize] +=
-                        summed * point::eval_atom(&g.factor, grid.instant(m))?.re;
+                    out[(m - from) as usize] += summed
+                        * point::eval_atom_on(&g.factor, grid.instant(m), Some((grid, m)))?.re;
                 }
             }
             out

@@ -311,6 +311,11 @@ impl SpectralAtom {
         if self.ind.is_some_and(|i| !i.contains(x)) {
             return Some(C64::ZERO);
         }
+        self.smooth_inside(x)
+    }
+
+    /// `smooth_at` at an `x` its caller already placed inside the window.
+    pub fn smooth_inside(&self, x: f64) -> Option<C64> {
         let mut v = self.c;
         if !self.poly.is_one() {
             v = v.scale(self.poly.value(x));

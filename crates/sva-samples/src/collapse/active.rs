@@ -25,7 +25,7 @@ pub(crate) fn window(a: &SpectralAtom, grid: Grid) -> Window {
     if let Some(ind) = a.ind {
         held = meet(
             held,
-            between(ind.l.value(), ind.r.value(), |n| grid.instant(n)),
+            (grid.first_at(ind.l.value()), grid.first_at(ind.r.value())),
         );
     }
     if a.pole.is_some() || !reaches_finite(a, grid) {
@@ -133,7 +133,7 @@ pub(crate) fn sweep(
     out: &mut [f64],
 ) -> Result<(), CollapseError> {
     sweep_by(windows, span, out, |m, live| {
-        Ok(point::eval_among(lane, live, grid.instant(m))?.re)
+        Ok(point::eval_among(lane, live, (grid, m))?.re)
     })
 }
 

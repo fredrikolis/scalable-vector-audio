@@ -212,7 +212,6 @@ pub trait Lattice: Sized {
     fn snapped(self, time: Affine) -> Option<Map>;
     /// Seconds between `time` and the sample `snapped` reads.
     fn moved(self, time: Affine) -> Option<Q>;
-    fn edge(self, edge: f64) -> i64;
 }
 
 fn rate_q(g: Grid) -> Q {
@@ -274,10 +273,6 @@ impl Lattice for Grid {
         let off = Q::new(off.num().abs(), off.den())?;
         off.mul(on.step())?.div(rate_q(self))
     }
-
-    fn edge(self, edge: f64) -> i64 {
-        first_at(self, edge)
-    }
 }
 
 /// `q` rounded to the nearest integer, ties to even; `None` past `i64`.
@@ -290,28 +285,4 @@ pub fn nearest(q: Q) -> Option<i64> {
         Ordering::Equal => floor + floor.rem_euclid(2),
     };
     i64::try_from(k).ok()
-}
-
-/// The first sample whose exact instant `a*n/(d*rate)` is at or past `edge`; an edge no
-/// 120-bit decimal spells is read at its binary value.
-fn first_at(grid: Grid, edge: f64) -> i64 {
-    let beyond = if edge < 0.0 { i64::MIN } else { i64::MAX };
-    if edge.is_nan() {
-        return beyond;
-    }
-    if edge.is_infinite() {
-        return beyond;
-    }
-    let decimal = || {
-        let steps = Q::decimal(edge)?
-            .mul(Q::new(grid.d.checked_mul(i128::from(grid.rate))?, 1)?)?
-            .div(Q::new(grid.a, 1)?)?;
-        let (num, den) = (steps.num(), steps.den());
-        Some(num.div_euclid(den) + i128::from(num.rem_euclid(den) != 0))
-    };
-    if let Some(n) = decimal() {
-        return i64::try_from(n).unwrap_or(beyond);
-    }
-    grid.step_at(edge, sva_samples::Round::Ceil)
-        .unwrap_or(beyond)
 }

@@ -56,8 +56,9 @@ fn under_a_window(
         };
         lines::add_direct(&mut held[from..to], &group.summed, live, rate);
         for (at, value) in held.into_iter().enumerate().take(to).skip(from) {
-            plane[at] +=
-                value * point::eval_atom(&group.factor, grid.instant(extent.start + at as i64))?.re;
+            let n = extent.start + at as i64;
+            let factor = point::eval_atom_on(&group.factor, grid.instant(n), Some((grid, n)))?;
+            plane[at] += value * factor.re;
         }
     }
     Ok(plane)
@@ -93,15 +94,17 @@ pub(super) fn written(
     (from, to): Window,
     grid: Grid,
 ) -> Result<Vec<f64>, CollapseError> {
-    let at = |n: i64| grid.instant(n);
     let Some(parts) = plan::summed(body) else {
         return (from..to)
-            .map(|n| Ok(point::eval_body(body, component, at(n), &point::NoRefs)?.re))
+            .map(|n| {
+                let at = point::At::Sample(grid, n);
+                Ok(point::eval_body_on(body, component, at, &point::NoRefs)?.re)
+            })
             .collect();
     };
     let mut out = vec![0.0; (to - from) as usize];
     active::sweep_by(windows, (from, to), &mut out, |n, live| {
-        Ok(point::eval_addends(&parts, live, component, at(n))?.re)
+        Ok(point::eval_addends(&parts, live, component, (grid, n))?.re)
     })?;
     Ok(out)
 }

@@ -668,7 +668,9 @@ fn ramp(grid: Grid, parts: &[sva_formula::Part]) -> Extent {
     if !falls || !slope.is_some_and(|a| a < 0.0) {
         return Extent::EVERYWHERE;
     }
-    let at = |t: f64| sva_samples::eval_written_at(v, 0, t, &Unread).map(|x| x.re);
+    let at = |t: f64| {
+        sva_samples::eval_written_at(v, 0, sva_samples::At::Free(t), &Unread).map(|x| x.re)
+    };
     let zero = |n: i64| at(grid.instant(n)).is_ok_and(|x| x <= 0.0);
     let reach = 1i64 << 62;
     match zero(reach) {
@@ -702,7 +704,12 @@ fn monotone(body: &Body, moving: &mut bool) -> bool {
 struct Unread;
 
 impl sva_samples::Refs for Unread {
-    fn value(&self, _: NodeId, _: usize, _: f64) -> Result<C64, sva_samples::CollapseError> {
+    fn value(
+        &self,
+        _: NodeId,
+        _: usize,
+        _: sva_samples::At,
+    ) -> Result<C64, sva_samples::CollapseError> {
         Err(sva_samples::CollapseError::NotEvaluable("a node"))
     }
 
@@ -732,13 +739,12 @@ fn keeps_zero(op: Unary) -> bool {
     )
 }
 
-/// The samples whose exact instants lie in a crop's `[l, r)`, each edge the decimal it was
-/// written as: `[ceil(l*rate), ceil(r*rate))` on the render's own grid.
+/// The samples whose instants lie in a crop's `[l, r)`, by the grid's one edge rule.
 pub(crate) fn window(grid: Grid, l: f64, r: f64) -> Extent {
     if l.is_nan() || r.is_nan() {
         return Extent::EVERYWHERE;
     }
-    let (start, end) = (grid.edge(l), grid.edge(r));
+    let (start, end) = (grid.first_at(l), grid.first_at(r));
     match start < end {
         true => Extent::new(start, end),
         false => Extent::NOWHERE,

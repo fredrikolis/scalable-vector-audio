@@ -292,6 +292,49 @@ impl Grid {
         num as f64 / self.d.saturating_mul(i128::from(self.rate)) as f64
     }
 
+    /// The first sample whose exact instant is at or past `edge` read as the decimal it prints
+    /// as: the one rule every crop and indicator edge meets the grid by.
+    pub fn first_at(&self, edge: f64) -> i64 {
+        let beyond = if edge < 0.0 { i64::MIN } else { i64::MAX };
+        if !edge.is_finite() {
+            return beyond;
+        }
+        match self.decimal_steps(edge) {
+            Some(n) => i64::try_from(n).unwrap_or(beyond),
+            None => self.step_at(edge, Round::Ceil).unwrap_or(beyond),
+        }
+    }
+
+    /// `ceil(edge * d * rate / a)`, `edge` as the shortest decimal that prints it.
+    fn decimal_steps(&self, edge: f64) -> Option<i128> {
+        const LIMIT: i128 = 1 << 120;
+        let text = format!("{edge:e}");
+        let (mantissa, exp) = text.split_once('e')?;
+        let (whole, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+        let digits: i128 = format!("{whole}{frac}").parse().ok()?;
+        let shift = exp.parse::<i32>().ok()? - frac.len() as i32;
+        let ten = 10i128
+            .checked_pow(shift.unsigned_abs())
+            .filter(|p| *p < LIMIT)?;
+        let (num, den) = match shift >= 0 {
+            true => (digits.checked_mul(ten)?, 1),
+            false => (digits, ten),
+        };
+        let top = num.checked_mul(self.d.checked_mul(i128::from(self.rate))?)?;
+        let bottom = den.checked_mul(self.a)?;
+        Some(top.div_euclid(bottom) + i128::from(top.rem_euclid(bottom) != 0))
+    }
+
+    /// Whether sample `n` lies in `[l, r)` by `first_at`, which only a tie of its instant needs.
+    pub(crate) fn inside(&self, n: i64, l: f64, r: f64) -> bool {
+        let t = self.instant(n);
+        let reached = |edge: f64| match t == edge {
+            true => n >= self.first_at(edge),
+            false => t > edge,
+        };
+        reached(l) && !reached(r)
+    }
+
     pub fn position(&self, n: i64) -> f64 {
         self.a.saturating_mul(i128::from(n)) as f64 / self.d as f64
     }
@@ -583,23 +626,22 @@ pub struct Written {
 }
 
 impl Formula {
-    pub fn at(&self, component: usize, t: f64) -> Result<f64, CollapseError> {
-        let value: C64 =
-            match self {
-                Formula::Drawn { seed, rate } => {
-                    let step = Grid::of(*rate).step_at(t, Round::Even).ok_or(
-                        CollapseError::NotEvaluable("a draw at an instant past any step"),
-                    )?;
-                    return Ok(sva_formula::draw(*seed, step));
-                }
-                Formula::Sum(sum) => crate::collapse::eval_spectral_sum_at(sum, component, t)?,
-                Formula::Written(written) => crate::collapse::eval_written_at(
-                    &written.body,
-                    component,
-                    t,
-                    &crate::collapse::Shared::new(&written.refs),
-                )?,
-            };
+    pub fn at(&self, component: usize, at: crate::collapse::At) -> Result<f64, CollapseError> {
+        let value: C64 = match self {
+            Formula::Drawn { seed, rate } => {
+                let step = Grid::of(*rate).step_at(at.t(), Round::Even).ok_or(
+                    CollapseError::NotEvaluable("a draw at an instant past any step"),
+                )?;
+                return Ok(sva_formula::draw(*seed, step));
+            }
+            Formula::Sum(sum) => crate::collapse::eval_spectral_sum_at(sum, component, at)?,
+            Formula::Written(written) => crate::collapse::eval_written_at(
+                &written.body,
+                component,
+                at,
+                &crate::collapse::Shared::new(&written.refs),
+            )?,
+        };
         Ok(value.re)
     }
 
@@ -799,6 +841,20 @@ impl Binary {
 #[cfg(test)]
 mod tests {
     use super::{Grid, Map, Round, rated};
+
+    /// 0.8333333333333334 s lies past 5/6 s, sample 40000's at 48 kHz, though the doubles tie.
+    #[test]
+    fn an_edge_tying_an_instant_is_decided_by_its_decimal() {
+        let cd = Grid::of(44_100);
+        assert_eq!(cd.first_at(0.1), 4410);
+        assert!(cd.inside(4410, 0.1, 1.0));
+        let grid = Grid::of(48_000);
+        let edge = 60.0 / 72.0;
+        assert_eq!(grid.instant(40_000), edge);
+        assert_eq!(grid.first_at(edge), 40_001);
+        assert!(!grid.inside(40_000, edge, 2.0));
+        assert!(grid.inside(40_000, 0.0, edge));
+    }
 
     /// Doubles at, near and far from whole and half steps.
     fn instants(rate: u32) -> Vec<f64> {

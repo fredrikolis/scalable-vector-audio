@@ -3,7 +3,6 @@
 use sva_formula::Lane;
 
 use super::Extent;
-use super::active::between;
 use crate::Grid;
 
 /// Where every atom is windowed, the lane is zero outside their union.
@@ -38,7 +37,10 @@ pub(super) fn windows(lane: &Lane, rate: u32) -> Option<Vec<(i64, i64)>> {
         .iter()
         .filter_map(|a| {
             let window = a.ind?;
-            let (from, to) = between(window.l.value(), window.r.value(), |n| grid.instant(n));
+            let (from, to) = (
+                grid.first_at(window.l.value()),
+                grid.first_at(window.r.value()),
+            );
             (from < to).then_some((from, to))
         })
         .collect();

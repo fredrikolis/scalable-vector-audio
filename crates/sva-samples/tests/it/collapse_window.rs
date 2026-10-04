@@ -75,7 +75,7 @@ fn a_cropped_series_is_its_own_law_inside_the_window() {
         render(&law, RATE, (0.0, 4.0), &PSYCHOACOUSTIC_V1).expect("a cropped noise series");
 
     for i in [0usize, 1, 4_001, 95_999] {
-        let want = sva_samples::eval_spectral_sum_at(&sum, 0, i as f64 / f64::from(RATE))
+        let want = sva_samples::eval_spectral_sum_at(&sum, 0, at(i))
             .expect("a value")
             .re;
         assert!(
@@ -132,7 +132,7 @@ fn a_windowed_series_plus_a_line_keeps_its_route() {
     .expect("a truncated form");
     let (held, _) = render(&law, RATE, horizon, &PSYCHOACOUSTIC_V1).expect("the sum");
     for i in [0usize, 1, 4_001, 95_999] {
-        let want = sva_samples::eval_spectral_sum_at(&sum, 0, i as f64 / f64::from(RATE))
+        let want = sva_samples::eval_spectral_sum_at(&sum, 0, at(i))
             .expect("a value")
             .re;
         assert!(
@@ -186,7 +186,7 @@ fn a_shouldered_noise_series_places_by_its_route() {
         render(&law, RATE, horizon, &PSYCHOACOUSTIC_V1).expect("a shouldered series");
     assert_eq!(label.source, Source::Measured, "a window is measured");
     for i in [0usize, 1, 24_000, 96_000, 168_000] {
-        let want = sva_samples::eval_spectral_sum_at(&truncated, 0, i as f64 / f64::from(RATE))
+        let want = sva_samples::eval_spectral_sum_at(&truncated, 0, at(i))
             .expect("a value")
             .re;
         assert!(
@@ -239,4 +239,9 @@ fn a_swept_lane_is_read_only_inside_the_window_it_carries() {
     let (held, _) = render(&law, RATE, horizon, &PSYCHOACOUSTIC_V1).expect("a windowed decay");
     assert!(held.at(0, 100) != 0.0, "inside the window");
     assert_eq!(held.at(0, len - 1), 0.0, "outside it");
+}
+
+/// Sample `i`'s instant at `RATE`, and the sample it is.
+fn at(i: usize) -> sva_samples::At {
+    sva_samples::At::Sample(sva_samples::Grid::of(RATE), i as i64)
 }

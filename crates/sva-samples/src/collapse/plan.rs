@@ -342,8 +342,16 @@ impl Clock {
         };
         let at = |n: i64| shifts.iter().fold(self.grid.instant(n), |t, by| t - by);
         let (l, r) = (l.value(), r.value());
-        let (mut from, mut to) = active::meet(span, active::between(l, r, at));
-        let shut = |n: i64| point::crop_gain(at(n), l, r, *rise, *fall) == 0.0;
+        let grid = shifts.is_empty().then_some(self.grid);
+        let window = match grid {
+            Some(grid) => (grid.first_at(l), grid.first_at(r)),
+            None => active::between(l, r, at),
+        };
+        let (mut from, mut to) = active::meet(span, window);
+        let shut = |n: i64| match grid {
+            Some(_) => point::shoulders(at(n), l, r, *rise, *fall) == 0.0,
+            None => point::crop_gain(at(n), l, r, *rise, *fall) == 0.0,
+        };
         while from < to && shut(from) {
             from += 1;
         }
