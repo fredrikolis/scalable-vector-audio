@@ -141,8 +141,8 @@ impl Terms {
 
 const SPAN: ByteSpan = ByteSpan { start: 0, end: 0 };
 
-/// `term` cut at `at` seconds on the sum's own clock.
-pub(super) fn cut(term: &Expr, at: f64) -> Expr {
+/// `term` cut at sample `at` of the sum's own clock.
+pub(super) fn cut(term: &Expr, at: i64) -> Expr {
     let never = Expr::Bin(
         BinOp::Sub,
         Box::new(Expr::Lit(Literal::Num(0.0))),
@@ -153,7 +153,7 @@ pub(super) fn cut(term: &Expr, at: f64) -> Expr {
         args: vec![
             Arg::Pos(term.clone()),
             Arg::Pos(never),
-            Arg::Pos(Expr::Lit(Literal::Num(at))),
+            Arg::Pos(Expr::Lit(Literal::Samples(at as f64))),
         ],
         span: SPAN,
     }

@@ -305,6 +305,14 @@ impl Grid {
         }
     }
 
+    /// An edge `first_at` meets at sample `n` exactly, beside `n`'s instant.
+    pub fn edge_at(&self, n: i64) -> Option<f64> {
+        let t = self.instant(n);
+        [t, t.next_down(), t.next_up()]
+            .into_iter()
+            .find(|edge| self.first_at(*edge) == n)
+    }
+
     /// `ceil(edge * d * rate / a)`, `edge` as the shortest decimal that prints it.
     fn decimal_steps(&self, edge: f64) -> Option<i128> {
         const LIMIT: i128 = 1 << 120;
@@ -842,9 +850,10 @@ impl Binary {
 mod tests {
     use super::{Grid, Map, Round, rated};
 
-    /// 0.8333333333333334 s lies past 5/6 s, sample 40000's at 48 kHz, though the doubles tie.
+    /// An edge in seconds: 0.8333333333333334 s lies past 5/6 s, sample 40000's at 48 kHz,
+    /// though the doubles tie.
     #[test]
-    fn an_edge_tying_an_instant_is_decided_by_its_decimal() {
+    fn an_edge_in_seconds_tying_an_instant_is_decided_by_its_decimal() {
         let cd = Grid::of(44_100);
         assert_eq!(cd.first_at(0.1), 4410);
         assert!(cd.inside(4410, 0.1, 1.0));

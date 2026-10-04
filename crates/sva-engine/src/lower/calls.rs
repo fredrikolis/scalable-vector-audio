@@ -1,6 +1,6 @@
 // Concern: the formula each written call lowers to | Non-concern: the recursion over an Expr (mod.rs) | IO: (name, args) -> a Piece
 
-use sva_ast::{Arg, ByteSpan, Expr};
+use sva_ast::{Arg, ByteSpan, Expr, Literal};
 use sva_formula::{
     Body, C64, Codomain, Edge, Fold, Held, NodeId, Origin, Part, Ty, Unary, Var, hash,
 };
@@ -104,8 +104,15 @@ impl Lowering<'_> {
             return Ok(piece);
         }
         let mut pieces = Vec::with_capacity(positional.len());
-        for x in &positional {
-            pieces.push(self.walk(x, cx, var)?);
+        for (at, x) in positional.iter().enumerate() {
+            pieces.push(match (name, at, x) {
+                ("crop", 1 | 2, Expr::Lit(Literal::Samples(n)))
+                    if let Some(edge) = self.counted(*n) =>
+                {
+                    Piece::ClosedForm(Body::Const(C64::real(edge)))
+                }
+                _ => self.walk(x, cx, var)?,
+            });
         }
         if let Some(held) = beside_infinity(name, &mut pieces) {
             return Ok(held);
@@ -125,6 +132,14 @@ impl Lowering<'_> {
             })
             .collect();
         self.image(name, bodies, &positional, &view, span, var)
+    }
+
+    /// An edge written in `sp` is a count of samples: it opens on the first sample at or past
+    /// the count, whatever decimal the instant prints as.
+    fn counted(&self, n: f64) -> Option<f64> {
+        let at = n.ceil();
+        (at.abs() < 2f64.powi(53)).then_some(())?;
+        self.grid.edge_at(at as i64)
     }
 
     /// The atoms a written name lowers to, once every operand is inside the same closed form.

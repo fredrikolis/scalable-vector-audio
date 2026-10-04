@@ -213,7 +213,7 @@ impl Stream {
                 )
             }
             Change::Remove(handle) => {
-                let at = self.driver.at as f64 / f64::from(self.config.render.rate);
+                let at = self.driver.at;
                 let terms = self.terms.removed(handle).ok_or(Changed::Held(false))?;
                 let held = self.world.graph.expr(&handle.node());
                 let term = cut(held.expect("a held term's node"), at);

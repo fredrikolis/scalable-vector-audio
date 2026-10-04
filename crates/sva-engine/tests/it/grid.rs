@@ -14,7 +14,7 @@ fn composition() -> sva_ast::Graph {
             ("lfo", "lowpass(sample(0.001*sin(2*pi*3*t)), cutoff=100)\n"),
             ("vibrato", "@tone(t + @lfo)\n"),
             ("scaled", "@tone(0.37*t - 0.0123456s)\n"),
-            ("decay", "crop(1, 0s, 0.5sp) + 0.5*self[idx(t) - 1]\n"),
+            ("decay", "crop(1, 0s, 1sp) + 0.5*self[idx(t) - 1]\n"),
             (
                 "mix",
                 "lowpass(sample(0.3*saw(220*t)), cutoff=900) + @vibrato + rand(t - t % 0.01s, \
@@ -59,6 +59,35 @@ fn an_open_range_ends_at_the_crops_exact_sample_count() {
         let held = render(&g, "cut", RenderConfig::at(rate), &Tier::default())
             .unwrap_or_else(|e| panic!("{rate}: {e}"));
         assert_eq!(plane(&held, "cut").len(), rate as usize * 4 / 5, "{rate}");
+    }
+}
+
+/// An edge written in `sp` counts samples, whatever decimal their instant prints as: at
+/// 22.05 and 44.1 kHz `1/rate` prints past sample 1's instant, and `1sp` is still one sample.
+#[test]
+fn a_crop_edge_in_samples_holds_that_many() {
+    for count in [1, 3, 7] {
+        let g = graph_of(
+            "grid-crop-samples",
+            &[
+                ("form", &format!("crop(1, 0s, {count}sp)\n")),
+                (
+                    "value",
+                    &format!("crop(sample(cos(2*pi*10*t)), 0s, {count}sp)\n"),
+                ),
+            ],
+        );
+        for rate in [8_000, 22_050, 44_100, 48_000, 96_000] {
+            for node in ["form", "value"] {
+                let held = render(&g, node, RenderConfig::at(rate), &Tier::default())
+                    .unwrap_or_else(|e| panic!("{rate}: {e}"));
+                assert_eq!(
+                    plane(&held, node).len(),
+                    count,
+                    "{node} {count}sp at {rate}"
+                );
+            }
+        }
     }
 }
 

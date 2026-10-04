@@ -185,7 +185,7 @@ fn every_onset_lands_within_half_a_sample_and_the_tempo_never_drifts() {
         .collect();
     let song: Vec<String> = bars.iter().map(|(name, _)| format!("@{name}")).collect();
     let song = format!("{}\n", song.join(" + "));
-    let mut files: Vec<(&str, &str)> = vec![("click", "crop(1, 0s, 0.5sp)\n"), ("song", &song)];
+    let mut files: Vec<(&str, &str)> = vec![("click", "crop(1, 0s, 1sp)\n"), ("song", &song)];
     files.extend(
         bars.iter()
             .map(|(name, body)| (name.as_str(), body.as_str())),
