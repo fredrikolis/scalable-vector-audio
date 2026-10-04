@@ -531,3 +531,53 @@ fn a_sum_index_in_a_binding_is_one_instance_per_index() {
     );
     assert_eq!(rendered(g), rendered(by_hand), "the sum is its terms");
 }
+
+/// A default is a number each instance knows, so a sum written out one node per index may take
+/// its bound from one, and a caller binding that parameter writes out its own count.
+#[test]
+fn a_sum_bounded_by_a_parameter_writes_out_each_instance_s_own_count() {
+    let partials = |song: &str| {
+        let g = graph_of(
+            "bounded",
+            &[
+                ("partial", "k = 1\nsin(2*pi*110*k*t)/k\n"),
+                ("bank", "n = 3\nsum(k, 1, n, @partial(t, k=k))\n"),
+                ("song", song),
+            ],
+        );
+        let i = instantiate(&g, "song", DEFAULT_SAMPLE_RATE).expect("instances");
+        named(&i)
+            .into_iter()
+            .filter(|n| i.origin(n) == Some("partial"))
+            .count()
+    };
+    assert_eq!(partials("@bank\n"), 3);
+    assert_eq!(partials("@bank(t, n=5)\n"), 5);
+    assert_eq!(partials("@bank(t, n=2) + @bank(t, n=4)\n"), 4);
+
+    let g = graph_of(
+        "fractional",
+        &[
+            ("partial", "k = 1\nsin(2*pi*110*k*t)/k\n"),
+            ("bank", "n = 2.5\nsum(k, 1, n, @partial(t, k=k))\n"),
+        ],
+    );
+    let refused = instantiate(&g, "bank", DEFAULT_SAMPLE_RATE).unwrap_err();
+    assert_eq!(refused.code(), "engine.unwritten_series", "{refused}");
+
+    let g = graph_of(
+        "spent",
+        &[
+            ("partial", "k = 1\nsin(2*pi*110*k*t)/k\n"),
+            ("bank", "n = 3\nsum(k, 1, n, @partial(t, k=k))\n"),
+            ("unbounded", "sum(k, 1, q, @partial(t, k=k))\n"),
+            ("song", "@bank(t, n=2, gain=3)\n"),
+        ],
+    );
+    assert_eq!(
+        fault_of(instantiate(&g, "song", DEFAULT_SAMPLE_RATE).unwrap_err()),
+        BindingFault::Unused("bank".to_string(), "gain".to_string())
+    );
+    let refused = instantiate(&g, "unbounded", DEFAULT_SAMPLE_RATE).unwrap_err();
+    assert_eq!(refused.code(), "engine.unwritten_series", "{refused}");
+}

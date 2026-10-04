@@ -40,7 +40,11 @@ pub use parameters::free_parameters;
 pub use parser::parse as parse_expr;
 pub use print::render as render_expr;
 pub use refusal::{Location, Refusal};
-pub use series::written_out as write_out_series;
+pub use series::{
+    bounds_waiting as series_bounds_waiting, folded as fold_number,
+    waits_for_instance as series_waits_for_instance, written_out as write_out_series,
+    written_out_with as write_out_series_with,
+};
 pub use skipped::{Skip, Skipped};
 pub use source::{Composition, Listing, Source};
 pub use tsv::Grid;

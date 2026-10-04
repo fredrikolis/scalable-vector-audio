@@ -218,7 +218,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 86] = [
+pub static REGISTRY: [(&str, &str); 87] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -510,6 +510,10 @@ pub static REGISTRY: [(&str, &str); 86] = [
     (
         "engine.unbounded_extent",
         "a node read whole whose input, or whose own inverse spectrum, never ends",
+    ),
+    (
+        "engine.unwritten_series",
+        "a sum written out one node per index whose bounds name no whole number in this instance",
     ),
     (
         "engine.unbounded_read",

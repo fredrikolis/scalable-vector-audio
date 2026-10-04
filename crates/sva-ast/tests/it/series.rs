@@ -58,11 +58,18 @@ fn an_outer_index_bounding_an_inner_written_sum_writes_both_out() {
     );
 }
 
+/// A bound naming a parameter is a number each instance knows, so the sum waits for one.
+#[test]
+fn a_sum_bounded_by_a_parameter_waits_for_its_instance() {
+    let text = "sum(k, 1, n, @band(t, fc=k))";
+    assert_eq!(body(&format!("{text}\n")), Ok(printed(text)));
+}
+
 #[test]
 fn a_sum_with_no_written_count_of_nodes_refuses() {
     for text in [
         "sum(k, 1, inf, @band(t, fc=k))",
-        "sum(k, 1, n, @band(t, fc=k))",
+        "sum(k, 1, n % 2, @band(t, fc=k))",
         "sum(k, 1, 100000, @band(t, fc=k))",
         "sum(a, 1, 4000, sum(b, 1, 4000, @band(t, fc=a + b)))",
     ] {

@@ -376,8 +376,20 @@ impl<'b> Builder<'b> {
             self.scan(value.written.expr(), &mut walked, inside, sinks)
                 .map_err(|e| relocate(e, &caller, at))?;
         }
+        // A sum written out for this instance spent the parameters its bounds named.
+        let waiting = self
+            .graph
+            .defined(&file)
+            .map(|d| sva_ast::series_bounds_waiting(&d.body));
+        let spent = |key: &str| {
+            let bounds = waiting.iter().flatten();
+            bounds.into_iter().any(|b| sva_ast::occurs_free(b, key))
+        };
         let vars = &self.out.scope(body.scope).vars;
-        if let Some((key, bound)) = vars.iter().find(|(key, _)| !used.contains(key)) {
+        let unused = vars
+            .iter()
+            .find(|(key, _)| !used.contains(key) && !spent(key));
+        if let Some((key, bound)) = unused {
             let found = match key == SIGNAL_PARAM && bound.written.is_positional() {
                 true => {
                     BindingFault::UnusedPositional(file, sva_ast::render_expr(bound.written.expr()))
@@ -496,11 +508,12 @@ impl<'b> Builder<'b> {
                 BindingFault::TooManyInstances(MAX_INSTANCES),
             ));
         }
+        let defined = self.written_out(defined, &binds, file)?;
         let scope = self.out.made(binds, false);
         self.out.retain(scope);
         let held = Instance {
             body: Bound {
-                written: Written::of(defined, 0),
+                written: Written::of(&defined, 0),
                 scope,
             },
             file: file.to_string(),
@@ -512,6 +525,48 @@ impl<'b> Builder<'b> {
         self.out.insert(name.clone(), held);
         self.out.journal.named.push(name.clone());
         Ok(name)
+    }
+
+    /// `defined` with each sum whose bounds name parameters written out at this instance's
+    /// numbers for them.
+    fn written_out(
+        &self,
+        defined: &Arc<Defined>,
+        binds: &[(String, Bound)],
+        file: &str,
+    ) -> Result<Arc<Defined>, EngineError> {
+        if !sva_ast::series_waits_for_instance(&defined.body) {
+            return Ok(Arc::clone(defined));
+        }
+        let named = |name: &str| self.number_named(name, binds, 0);
+        let body = sva_ast::write_out_series_with(&defined.body, &named).map_err(|d| {
+            EngineError::refused(crate::error::Diagnostic {
+                code: "engine.unwritten_series".to_string(),
+                message: d.message,
+                location: crate::error::Located::at(file, Some(d.span)),
+                help: "bind each parameter a bound names to a whole number, or write the bound \
+                       as one"
+                    .to_string(),
+            })
+        })?;
+        Ok(Arc::new(Defined {
+            body,
+            defaults: defined.defaults.clone(),
+        }))
+    }
+
+    /// The number `name` holds among `binds`, through the scopes its value was written in.
+    fn number_named(&self, name: &str, binds: &[(String, Bound)], depth: usize) -> Option<f64> {
+        let (_, bound) = binds.iter().find(|(key, _)| key == name)?;
+        let vars = &self.out.scope(bound.scope).vars;
+        self.number_in(bound.written.expr(), vars, depth + 1)
+    }
+
+    fn number_in(&self, e: &Expr, vars: &[(String, Bound)], depth: usize) -> Option<f64> {
+        match depth > MAX_FOLD_DEPTH {
+            true => None,
+            false => sva_ast::fold_number(e, &|name| self.number_named(name, vars, depth)),
+        }
     }
 
     /// Frees each scope made for a tuple no instance took.
@@ -783,6 +838,9 @@ impl<'b> Builder<'b> {
         Ok(())
     }
 }
+
+/// How many scopes a bound's number is followed through before it names none.
+const MAX_FOLD_DEPTH: usize = 64;
 
 /// The one allowed positional argument binds [`SIGNAL_PARAM`]; a second has nothing to mean.
 fn call_bindings(
