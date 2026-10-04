@@ -345,23 +345,15 @@ impl Graph {
 
     /// Each node `roots` reach through `from` that this graph lacks, taken.
     pub fn adopt(&mut self, from: &Graph, roots: &[String]) -> Vec<String> {
-        let mut taken = Vec::new();
-        let mut open: Vec<String> = roots.iter().rev().cloned().collect();
-        while let Some(path) = open.pop() {
-            if self.defines(&path) {
-                continue;
-            }
-            let Some(held) = from.held(&path) else {
-                continue;
-            };
-            open.extend(reads_of(&path, &held.defined.body));
-            for (_, value) in &held.defined.defaults {
-                open.extend(reads_of(&path, value));
-            }
-            self.set(&path, Some(held));
-            taken.push(path);
+        let lacking: Vec<String> = from
+            .reaching(roots)
+            .into_iter()
+            .filter(|path| !self.defines(path))
+            .collect();
+        for path in &lacking {
+            self.set(path, from.held(path));
         }
-        taken
+        lacking
     }
 
     /// Expands every `repeat`/`concat` call into `crop` + shifted-ref + sum (FORMAT.md sugar).

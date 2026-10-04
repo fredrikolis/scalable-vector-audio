@@ -81,3 +81,30 @@ fn an_add_reads_off_its_source_only_what_the_stream_lacks() {
         Vec::<String>::new()
     );
 }
+
+/// An edit whose held node now reads a node the stream never held takes that node in, and
+/// plays from there the samples a render of the edited source writes.
+#[test]
+fn an_edit_takes_in_a_node_a_held_node_newly_reads() {
+    let mut held = Composition::new();
+    held.insert("a", "0.1*sin(2*pi*220*t)\n");
+    held.insert("master", "@a\n");
+    let job = Job::over(&held, "@master");
+    let stream = now(sva_core::stream(&job, (64, None), &Tier::default())).expect("a stream");
+    let stream = RefCell::new(stream);
+    stream.borrow_mut().read(0, 64).expect("a block");
+    held.insert("b", "0.1*sin(2*pi*330*t)\n");
+    held.insert("master", "@a + @b\n");
+    now(sva_core::edit(&stream, &held, "@master", &Tier::default())).expect("an edit");
+    let at = stream.borrow().position();
+    let block = stream.borrow_mut().read(at, 64).expect("a block");
+    let played = block.expect("samples").plane(0).to_vec();
+    let job = Job::over(&held, "@master([0, 0.01s])");
+    let rendered = sva_core::execute(job, &Tier::default()).expect("a render");
+    let whole = rendered
+        .render
+        .output(rendered.render.root)
+        .expect("the root");
+    let span = at as usize..at as usize + 64;
+    assert_eq!(played, whole.plane(0)[span].to_vec());
+}
