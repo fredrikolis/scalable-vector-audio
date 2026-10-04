@@ -4,7 +4,7 @@ use crate::fixtures::graph_of;
 use sva_engine::instantiate::{instantiate, resolve_ref_path};
 use sva_engine::schedule_from;
 use sva_engine::{Ask, EngineError, Held, RenderConfig, Representation, Tier, Var, render, types};
-use sva_engine::{DEFAULT_SAMPLE_RATE, symbolic_hash};
+use sva_engine::{DEFAULT_SAMPLE_RATE, identity};
 
 #[test]
 fn dependencies_precede_dependents() {
@@ -47,7 +47,7 @@ fn a_fractional_shift_hashes_as_a_new_expression() {
         let g = graph_of(name, &[("src", "sin(2*pi*220*t)\n"), ("node", body)]);
         let typing = types(&g, "node").expect("a law");
         let id = typing.id("node").expect("the root");
-        symbolic_hash(&typing, id, sva_engine::Var::T).expect("a law hashes")
+        identity(&typing, id).expect("a law hashes")
     };
     let plain = hash("plain", "@src\n");
     let moved = hash("moved", "@src(t - 0.000001s)\n");

@@ -1,6 +1,6 @@
 // Concern: content-addresses one node, whatever representation it holds | Non-concern: composing a closed form across a ref (mod.rs) | IO: (NodeId) -> Hash
 
-use sva_formula::{Body, ClosedForm, Hash, NodeId, Var, hash_spectral_sum_with, hash_written_with};
+use sva_formula::{Body, ClosedForm, Hash, NodeId, hash_written_with};
 
 use sva_samples::Params;
 
@@ -8,22 +8,7 @@ use crate::error::EngineError;
 use crate::index::Round;
 use crate::typing::{Step, SumSlot, Typing, Value, When};
 
-use super::{cyclic, spectral_sum_of};
-
-/// What keys a closed form's spectral sum wherever a reading composes one: a ref a series
-/// term reads is named by what it is.
-pub fn symbolic_hash(typing: &Typing, node: NodeId, want: Var) -> Result<Hash, EngineError> {
-    let sum = spectral_sum_of(typing, node, want)?;
-    let mut refused = None;
-    let hash = hash_spectral_sum_with(&sum, &mut |id| match identity(typing, id) {
-        Ok(held) => held,
-        Err(e) => {
-            refused.get_or_insert(e);
-            Hash(0, 0)
-        }
-    });
-    refused.map_or(Ok(hash), Err)
-}
+use super::cyclic;
 
 /// What one node is, whatever it holds: its definition and the identities of what it reads,
 /// never where a reader places it.

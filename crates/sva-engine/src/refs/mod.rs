@@ -21,7 +21,7 @@ use crate::typing::{Typing, Value};
 mod identity;
 mod prefix;
 
-pub use identity::{identity, symbolic_hash};
+pub use identity::identity;
 pub(crate) use identity::{passes, subterm_identity};
 pub(crate) use prefix::switches;
 

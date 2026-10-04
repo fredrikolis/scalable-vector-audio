@@ -34,10 +34,7 @@ pub use closed_form::{
 pub use complex::C64;
 pub use env::{Env, NodeId, ParamId};
 pub use filter::{ALL_SHAPES, Shape, design};
-pub use hash::{
-    Hash, draw, draw_nearest, either_order, hash_closed_form, hash_spectral_sum,
-    hash_spectral_sum_with, hash_written_with,
-};
+pub use hash::{Hash, draw, draw_nearest, either_order, hash_written_with};
 pub use infer::infer;
 pub use lanes::Lanes;
 pub use modal::damping::Damping;

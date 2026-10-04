@@ -1,7 +1,7 @@
 // Concern: proves the canonical form is one image per written closed form | Non-concern: typing it (inference.rs) | IO: (a Body) -> the SpectralSum it always lowers to
 
 use crate::fixtures::{constant, gaussian, line, part, sine};
-use sva_formula::{Body, C64, Edge, Gauss, Singular, Unary, Var, hash_spectral_sum, normalize};
+use sva_formula::{Body, C64, Edge, Gauss, Singular, Unary, Var, normalize};
 
 fn atoms(f: &Body) -> Vec<sva_formula::SpectralAtom> {
     normalize(f, Var::T)
@@ -42,7 +42,6 @@ fn two_spellings_of_a_sinusoid_are_one_normal() {
     )
     .unwrap();
     assert_eq!(written, spelled_out);
-    assert_eq!(hash_spectral_sum(&written), hash_spectral_sum(&spelled_out));
 }
 
 #[test]
@@ -184,7 +183,6 @@ fn the_sort_key_is_total_over_minus_zero() {
         normalize(&positive, Var::T).unwrap(),
     );
     assert_eq!(a, b);
-    assert_eq!(hash_spectral_sum(&a), hash_spectral_sum(&b));
 
     let at_zero = Body::Delta {
         at: part(Body::Add(vec![part(line()), part(constant(0.0))])),

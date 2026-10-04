@@ -1,4 +1,4 @@
-// Concern: content-addresses a SpectralSum under the table version, and draws a seed at a step | Non-concern: what a hash keys (sva-engine) | IO: (&SpectralSum) -> Hash
+// Concern: content-addresses a written closed form and a read's time, and draws a seed at a step | Non-concern: what a hash keys (sva-engine) | IO: (&ClosedForm, a namer) -> Hash
 
 use std::fmt;
 
@@ -10,8 +10,8 @@ use crate::complex::{C64, canonical};
 use crate::env::NodeId;
 use crate::lanes::Lanes;
 use crate::run::Mirror;
+use crate::spectral_sum::Lane;
 use crate::spectral_sum::atom::{Singular, SpectralAtom};
-use crate::spectral_sum::{Lane, SpectralSum};
 use crate::table::TABLE_VERSION;
 
 /// Two independently primed FNV-1a lanes: serving one closed form's samples for another is silent
@@ -23,47 +23,6 @@ impl fmt::Display for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:016x}{:016x}", self.0, self.1)
     }
-}
-
-pub fn hash_spectral_sum(n: &SpectralSum) -> Hash {
-    hash_spectral_sum_under(n, TABLE_VERSION)
-}
-
-pub fn hash_closed_form(t: &ClosedForm) -> Hash {
-    hash_closed_form_under(t, TABLE_VERSION)
-}
-
-/// A spectral sum whose series terms read other nodes, each ref hashed as what `node` names it:
-/// the node's own content, never the number a graph gave it. A sum reading no node hashes as
-/// `hash_spectral_sum` does.
-pub fn hash_spectral_sum_with(n: &SpectralSum, node: &mut dyn FnMut(NodeId) -> Hash) -> Hash {
-    let mut s = Sink::new(0x01, TABLE_VERSION);
-    s.node = Some(node);
-    s.var(n.var);
-    s.u64(n.lanes.len() as u64);
-    for lane in &n.lanes {
-        s.lane(lane);
-    }
-    s.finish()
-}
-
-/// The version is the first field after the tag, so a table bump retires every entry keyed
-/// by one of these.
-pub fn hash_spectral_sum_under(n: &SpectralSum, table_version: u64) -> Hash {
-    let mut s = Sink::new(0x01, table_version);
-    s.var(n.var);
-    s.u64(n.lanes.len() as u64);
-    for lane in &n.lanes {
-        s.lane(lane);
-    }
-    s.finish()
-}
-
-pub fn hash_closed_form_under(t: &ClosedForm, table_version: u64) -> Hash {
-    let mut s = Sink::new(0x02, table_version);
-    s.var(t.var);
-    s.formula(&t.body);
-    s.finish()
 }
 
 /// Two operands of a sum or product, which IEEE commutes bit for bit; three never associate so.
@@ -168,13 +127,6 @@ impl<'a> Sink<'a> {
         let (re, im) = v.bits();
         self.u64(re);
         self.u64(im);
-    }
-
-    fn var(&mut self, v: Var) {
-        self.byte(match v {
-            Var::T => 0,
-            Var::F => 1,
-        });
     }
 
     fn edge(&mut self, e: Edge) {

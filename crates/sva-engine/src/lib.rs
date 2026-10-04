@@ -36,7 +36,7 @@ pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
 pub use flops::{Row as FlopRow, Tree as FlopTree, Work};
 pub use meaning::{Meaning, meaning};
 pub use query::{Answer, Ask, DEFAULT_FRAME_SECS, Output, Representation};
-pub use refs::{identity, nodes_in, spectral_sum_of, symbolic_hash};
+pub use refs::{identity, nodes_in, spectral_sum_of};
 pub use render::until::{Cmp, Term};
 pub use render::{
     Abandon, Block, Built, Change, Changed, Counts, Handle, LATEST, NOTES, Never, Out, Placed,

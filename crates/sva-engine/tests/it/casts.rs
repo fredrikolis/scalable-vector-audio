@@ -1,9 +1,7 @@
 // Concern: proves each written crossing keeps the value it declares and is keyed on its own | Non-concern: what the value denotes (sva-formula) | IO: (a composition) -> a Buffer or a refusal
 
 use crate::fixtures::graph_of;
-use sva_engine::{
-    Ask, Cast, Codomain, Held, RenderConfig, Representation, Source, Tier, Ty, Var, render,
-};
+use sva_engine::{Cast, Codomain, Held, RenderConfig, Source, Tier, Ty, Var, render};
 
 const CHORD: &str = "sin(2*pi*256*t) + sin(2*pi*512*t)\n";
 
@@ -95,17 +93,12 @@ fn each_cast_has_its_own_key() {
             ("as_spectrum", "fourier(@chord)\n"),
         ],
     );
-    let config = RenderConfig::seconds(8_192, 1.0).asking(vec![Ask {
-        node: "as_law".to_string(),
-        representation: Representation::Lines,
-    }]);
-    let held = render(&g, "as_law", config, &Tier::default()).expect("a law");
-    let law = held.id("as_law").expect("the law");
-    let law_key =
-        sva_engine::symbolic_hash(&held.tys, law, sva_engine::Var::T).expect("a law hashes");
-    let turned_key =
-        sva_engine::symbolic_hash(&held.tys, law, sva_engine::Var::F).expect("its dual hashes");
-    assert_ne!(law_key, turned_key, "one value read on two axes, two keys");
+    let key = |root: &str| {
+        let typing = sva_engine::types(&g, root).expect("a typing");
+        sva_engine::identity(&typing, typing.id(root).expect("the root")).expect("an identity")
+    };
+    let (law_key, turned_key) = (key("as_law"), key("as_spectrum"));
+    assert_ne!(law_key, turned_key, "a crossing is a key of its own");
 }
 
 /// A retyping cast holds a closed form, so a spectrum written beside one composes into the product

@@ -18,9 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sva_ast::Graph;
 use sva_formula::{NodeId, SpectralSum};
-use sva_samples::{
-    AliasScore, Buffer, Extent, FilterTrace, Frames, Label, PSYCHOACOUSTIC_V1, Profile,
-};
+use sva_samples::{Buffer, Extent, FilterTrace, Frames, Label, PSYCHOACOUSTIC_V1, Profile};
 
 use crate::bindings::Binding;
 use crate::cache::{CacheStats, Memory, Recording, Tier, now};
@@ -223,13 +221,6 @@ impl Render {
                 _ => None,
             })
     }
-
-    pub fn alias_score(&self, node: NodeId) -> AliasScore {
-        match self.alias_oversample(node) {
-            Some(_) => AliasScore::Asked,
-            None => AliasScore::NotAsked,
-        }
-    }
 }
 
 /// `render_over` memory alone. Nothing is materialized that no reading asked for.
@@ -318,8 +309,7 @@ pub fn plan(graph: &Graph, target: &str, config: RenderConfig) -> Result<Render,
     )
 }
 
-/// The sample each of `roots` read bare would end at, `None` where its support, pruning
-/// included, never ends and such a render refuses for it. Typed together, and no sample.
+/// The sample each of `roots` read bare would end at, `None` where its support never ends.
 pub fn ends(
     graph: &Graph,
     roots: &[String],

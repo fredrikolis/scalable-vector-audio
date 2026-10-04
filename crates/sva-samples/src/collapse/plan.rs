@@ -37,8 +37,7 @@ pub struct Group {
     samples: usize,
 }
 
-/// `atoms` times `samples` chose the route before a sweep skipped dead atoms, so the choice
-/// keeps its bits; `evaluated` is what it now runs.
+/// `atoms` times `samples` chose the route; `evaluated` is what it runs.
 pub enum LanePlan {
     Grouped {
         groups: Vec<Group>,
@@ -139,8 +138,7 @@ pub fn of_written(
     }
 }
 
-/// A row the addend alone cannot take refuses nothing; the written row still stands for it.
-/// A nesting past the bound is the one exception, refused wherever it is written.
+/// A row the addend cannot take refuses nothing, save a nesting past the bound.
 fn of_term(
     form: &ClosedForm,
     rate: u32,
@@ -635,17 +633,6 @@ impl LanePlan {
             LanePlan::Sweep { atoms, samples, .. } => *atoms as u128 * *samples as u128,
         }
     }
-
-    fn swept_flops(&self, len: u128) -> u128 {
-        let terms: u128 = match self {
-            LanePlan::Grouped { groups, .. } => groups
-                .iter()
-                .map(|g| (g.placed.len() + g.summed.len() + 1) as u128)
-                .sum(),
-            LanePlan::Sweep { atoms, .. } => *atoms as u128,
-        };
-        terms * len
-    }
 }
 
 fn transformed(g: &Group, bins: usize) -> u128 {
@@ -656,84 +643,6 @@ fn transformed(g: &Group, bins: usize) -> u128 {
 }
 
 impl Plan {
-    /// Outside it every sample is +0.0 and inside each is its own instant's, so a run over it
-    /// alone holds the same bits; a row reading the whole extent at once answers all of it.
-    pub fn nonzero(&self, rate: u32, extent: Extent) -> Extent {
-        let grid = Grid::of(rate);
-        let lane = |lane: &Lane, taken: &LanePlan| -> Option<Option<Window>> {
-            match taken {
-                LanePlan::Sweep { .. } if lane.modal.is_empty() => Some(active::hull(
-                    &active::windows(lane, grid),
-                    &super::span::absolute(lane, extent, rate),
-                )),
-                LanePlan::Grouped { groups, .. } if groups.iter().all(|g| g.placed.is_empty()) => {
-                    Some(active::hull(
-                        &groups.iter().map(|g| g.live).collect::<Vec<_>>(),
-                        &[(extent.start, extent.end)],
-                    ))
-                }
-                _ => None,
-            }
-        };
-        let found = match self {
-            Plan::Sampled(held) => held
-                .sum
-                .lanes
-                .iter()
-                .zip(&held.lanes)
-                .map(|(l, taken)| lane(l, taken))
-                .collect::<Option<Vec<_>>>()
-                .map(|lanes| lanes.into_iter().flatten().collect::<Vec<_>>()),
-            Plan::Added(parts) => Some(
-                parts
-                    .iter()
-                    .map(|part| part.nonzero(rate, extent))
-                    .filter(|part| !part.is_empty())
-                    .map(|part| (part.start, part.end))
-                    .collect(),
-            ),
-            _ => None,
-        };
-        match found {
-            None => extent,
-            Some(spans) => spans
-                .into_iter()
-                .map(|(a, b)| Extent::new(a, b))
-                .fold(Extent::NOWHERE, Extent::hull)
-                .intersect(extent),
-        }
-    }
-
-    /// What two extents cut to one may still differ in.
-    pub fn route(&self) -> Vec<u64> {
-        let lines = |held: &[Vec<Line>]| held.iter().map(|l| l.len() as u64).collect::<Vec<_>>();
-        match self {
-            Plan::Spectrum(_) => vec![0],
-            Plan::Lines(found) => [vec![1], lines(&found.placed), lines(&found.summed)].concat(),
-            Plan::Sampled(held) => {
-                let mut out = vec![2, held.rule as u64];
-                for lane in &held.lanes {
-                    match lane {
-                        LanePlan::Sweep { .. } => out.push(0),
-                        LanePlan::Grouped { groups, .. } => {
-                            out.push(1 + groups.len() as u64);
-                            for g in groups {
-                                out.extend([g.placed.len() as u64, g.summed.len() as u64]);
-                            }
-                        }
-                    }
-                }
-                out
-            }
-            Plan::Point { .. } => vec![3],
-            Plan::Added(parts) => {
-                let mut out = vec![4, parts.len() as u64];
-                parts.iter().for_each(|part| out.extend(part.route()));
-                out
-            }
-        }
-    }
-
     pub fn flops(&self, rate: u32, extent: Extent) -> u128 {
         let len = extent.len();
         match self {
@@ -744,36 +653,6 @@ impl Plan {
                 point_flops(&written.body, Grid::of(rate), (extent.start, extent.end))
             }
             Plan::Added(parts) => parts.iter().map(|part| part.flops(rate, extent)).sum(),
-        }
-    }
-
-    pub fn alias_flops(&self, rate: u32, extent: Extent) -> u128 {
-        self.alias_flops_at(rate, extent, super::ALIAS_OVERSAMPLE)
-    }
-
-    /// The multiple a reading names need not be the label's `ALIAS_OVERSAMPLE`. Every component
-    /// is scored, so every component's reference is paid for.
-    pub fn alias_flops_at(&self, rate: u32, extent: Extent, oversample: usize) -> u128 {
-        let reference = (extent.len() * oversample) as u128;
-        match self {
-            Plan::Point { written, .. } => {
-                let finer = oversample as i64;
-                point_flops(
-                    &written.body,
-                    Grid::finer(rate, oversample),
-                    (extent.start * finer, extent.end * finer),
-                )
-            }
-            Plan::Sampled(held) if held.rule == Rule::PointSampled => held
-                .lanes
-                .iter()
-                .map(|lane| lane.swept_flops(reference))
-                .sum(),
-            Plan::Added(parts) => parts
-                .iter()
-                .map(|part| part.alias_flops_at(rate, extent, oversample))
-                .sum(),
-            Plan::Spectrum(_) | Plan::Lines(_) | Plan::Sampled(_) => 0,
         }
     }
 

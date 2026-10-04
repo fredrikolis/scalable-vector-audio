@@ -181,16 +181,3 @@ pub(crate) fn evaluated(windows: &[Window], spans: &[Window]) -> u128 {
         })
         .sum()
 }
-
-pub(crate) fn hull(windows: &[Window], spans: &[Window]) -> Option<Window> {
-    let mut held: Option<Window> = None;
-    for w in windows {
-        for s in spans {
-            let met = meet(*w, *s);
-            if met.0 < met.1 {
-                held = Some(held.map_or(met, |h| (h.0.min(met.0), h.1.max(met.1))));
-            }
-        }
-    }
-    held
-}

@@ -1,11 +1,24 @@
-// Concern: proves the content address ignores where a closed form was written and follows the table version | Non-concern: what a hash keys (sva-engine) | IO: (a SpectralSum) -> its Hash
+// Concern: proves the content address ignores where a closed form was written and names an index by its binder | Non-concern: what a hash keys (sva-engine) | IO: (a ClosedForm) -> its Hash
 
-use crate::fixtures::{line, part, sine, terms};
+use crate::fixtures::{line, part, sine};
 use sva_formula::{
-    Body, Bound, ClosedForm, IndexId, Lanes, Origin, Part, Series, TABLE_VERSION, Var,
-    hash::hash_closed_form_under, hash::hash_spectral_sum_under, hash_closed_form,
-    hash_spectral_sum, normalize, normalize_closed_form,
+    Body, Bound, ClosedForm, Hash, IndexId, Lanes, NodeId, Origin, Part, Series, Var,
+    hash_written_with,
 };
+
+/// A form that reads no ref, as written.
+fn written(body: Body) -> Hash {
+    let form = ClosedForm {
+        var: Var::T,
+        body,
+        origin: Origin::new(0),
+    };
+    hash_written(&form)
+}
+
+fn hash_written(form: &ClosedForm) -> Hash {
+    hash_written_with(form, &mut |id: NodeId| panic!("no ref here, {id:?} read"))
+}
 
 #[test]
 fn two_spellings_hash_alike_and_origin_does_not_enter() {
@@ -17,58 +30,30 @@ fn two_spellings_hash_alike_and_origin_does_not_enter() {
         Part::new(Origin::new(900), sine(440.0)),
         Part::new(Origin::new(901), sine(3.0)),
     ]);
-    let (a, b) = (
-        normalize(&here, Var::T).unwrap(),
-        normalize(&there, Var::T).unwrap(),
-    );
-    assert_eq!(a, b);
-    assert_eq!(hash_spectral_sum(&a), hash_spectral_sum(&b));
+    assert_eq!(written(here.clone()), written(there));
 
     let spaced = Body::Mul(vec![part(sine(440.0)), part(sine(3.1))]);
     assert_ne!(
-        hash_spectral_sum(&a),
-        hash_spectral_sum(&normalize(&spaced, Var::T).unwrap()),
+        written(here),
+        written(spaced),
         "a different law is a different address"
     );
 }
 
+/// One body on two axes is two values.
 #[test]
-fn a_table_version_bump_changes_every_hash() {
-    for (name, subject) in terms() {
-        assert_ne!(
-            hash_closed_form_under(&subject, TABLE_VERSION),
-            hash_closed_form_under(&subject, TABLE_VERSION + 1),
-            "{name} keeps its address across a table bump"
-        );
-        assert_eq!(
-            hash_closed_form(&subject),
-            hash_closed_form_under(&subject, TABLE_VERSION)
-        );
-
-        let Ok(sum) = normalize_closed_form(&subject) else {
-            continue;
-        };
-        assert_ne!(
-            hash_spectral_sum_under(&sum, TABLE_VERSION),
-            hash_spectral_sum_under(&sum, TABLE_VERSION + 1),
-            "{name} keeps its spectral-sum address across a table bump"
-        );
-    }
-}
-
-#[test]
-fn the_written_law_and_its_spectral_sum_are_different_addresses() {
-    let subject = ClosedForm {
-        var: Var::T,
-        body: sine(440.0),
-        origin: Origin::new(0),
+fn a_body_in_f_is_another_address_than_in_t() {
+    let on = |var| {
+        hash_written(&ClosedForm {
+            var,
+            body: sine(440.0),
+            origin: Origin::new(0),
+        })
     };
-    let sum = normalize_closed_form(&subject).unwrap();
-    assert_ne!(hash_closed_form(&subject).0, hash_spectral_sum(&sum).0);
+    assert_ne!(on(Var::T), on(Var::F));
 }
 
-/// One mixer, three address spaces: the rotate is what keeps a closed form's address and
-/// the buffer key under it from ever landing on one value.
+/// One mixer, three address spaces kept apart by their rotates.
 #[test]
 fn each_address_space_stays_its_own_under_the_shared_mixer() {
     let word = 0x0123_4567_89ab_cdefu64;
@@ -115,18 +100,14 @@ fn nested(outer: u32, inner: u32, product: [u32; 2]) -> ClosedForm {
     }
 }
 
-/// A typing numbers each index it lowers, so one node lowered after others holds other
-/// numbers; its address names each index by the series binding it, whatever its number.
+/// An address names each index by the series binding it, whatever number a typing drew.
 #[test]
 fn an_index_is_hashed_by_the_series_binding_it_never_by_its_number() {
     let first = nested(1, 2, [1, 2]);
-    assert_eq!(
-        hash_closed_form(&first),
-        hash_closed_form(&nested(40, 7, [40, 7]))
-    );
+    assert_eq!(hash_written(&first), hash_written(&nested(40, 7, [40, 7])));
     assert_ne!(
-        hash_closed_form(&first),
-        hash_closed_form(&nested(1, 2, [2, 2])),
+        hash_written(&first),
+        hash_written(&nested(1, 2, [2, 2])),
         "a term reading the inner index twice is another law"
     );
 }

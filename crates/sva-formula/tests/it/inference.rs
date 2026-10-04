@@ -4,8 +4,8 @@ use crate::fixtures::{
     DUAL, Fixed, IN_T, bank, causal, constant, decay, line, part, sine, term, terms,
 };
 use sva_formula::{
-    Body, C64, Code, Codomain, Edge, Env, Held, NodeId, ParamId, Part, TABLE_VERSION, Unary, Var,
-    dual, infer, normalize_closed_form,
+    Body, C64, Code, Codomain, Edge, Env, Held, NodeId, ParamId, Part, Unary, Var, dual, infer,
+    normalize_closed_form,
 };
 
 fn ty_of(f: Body) -> sva_formula::Ty {
@@ -130,19 +130,14 @@ fn infer_agrees_with_normalize_and_dual_on_every_fixture() {
     }
 }
 
-/// A version bump moves every content address and no type: inference reads the table's
-/// preconditions, never its version, so a row nothing reaches retypes nothing.
+/// Inference reads the table's preconditions, never its version, so a row nothing reaches
+/// retypes nothing.
 #[test]
 fn adding_a_dead_rule_retypes_nothing() {
     for (name, subject) in terms() {
         let before = infer(&subject, &Fixed::holding(DUAL, false));
         let after = infer(&subject, &Fixed::holding(DUAL, false));
         assert_eq!(before, after, "{name}");
-        assert_ne!(
-            sva_formula::hash::hash_closed_form_under(&subject, TABLE_VERSION),
-            sva_formula::hash::hash_closed_form_under(&subject, TABLE_VERSION + 1),
-            "{name}"
-        );
     }
 }
 

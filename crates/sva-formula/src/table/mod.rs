@@ -18,7 +18,7 @@ use crate::spectral_sum::{Lane, SpectralSum};
 use crate::through::{Opaque, Reads};
 use class::{blocked_pair, over_pole_order};
 
-/// Every hash feeds this first, so a bump retires each entry written before it. 4: a
+/// A persistent store's version names it, so a bump retires each entry written before it. 4: a
 /// polynomial keeps the instant it is read from, and a sample is read at its exact instant.
 pub const TABLE_VERSION: u64 = 4;
 
