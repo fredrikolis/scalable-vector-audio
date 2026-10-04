@@ -10,8 +10,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use sva_formula::Hash;
 use sva_samples::{Buffer, Extent, Label};
 
+use super::stats::{Outcome, Recording};
 use super::stored::{Header, Samples};
-use super::{Entry, Expected, Payload, Stored, joined};
+use super::{Entry, Expected, Payload, PayloadKind, Run, Stored, joined};
 
 pub const DEFAULT_CACHE_BYTES: u64 = 2 << 30;
 
@@ -921,6 +922,29 @@ impl Memory {
         }
     }
 
+    /// `answer`, told to `seen` once a hit or a miss.
+    pub(crate) fn answered(
+        &self,
+        (key, round): (Hash, u64),
+        (node, seen): (&str, &mut Recording),
+    ) -> Known {
+        let known = self.answer(key, round);
+        let outcome = match &known {
+            Known::Hit(_) => Outcome::Hit,
+            Known::Miss => Outcome::ComputedNotStored,
+            Known::Unknown => return known,
+        };
+        let state = self.locked();
+        let held = state
+            .entries
+            .get(&key)
+            .and_then(|held| held.item.payload.as_ref());
+        let kind = held.map_or(PayloadKind::Segments, Payload::kind);
+        drop(state);
+        seen.answered(key, node, kind, outcome);
+        known
+    }
+
     pub(crate) fn miss(&self, key: Hash, round: u64) {
         let mut state = self.locked();
         let met = state.misses.entry(key).or_insert(round);
@@ -1008,8 +1032,8 @@ impl Memory {
     /// A value's samples, joined to what memory holds under `key`, and the node they answer,
     /// in place of the last one under its key or slot: the node first, so samples a node over
     /// the disk stands on are kept to be written back. A node holding none of its samples that
-    /// memory will write nowhere goes. What became of the samples.
-    pub(crate) fn keep(&self, key: Hash, keep: Keep) -> Option<Kept> {
+    /// memory will write nowhere goes. What became of the samples is told to `seen`.
+    pub(crate) fn keep(&self, key: Hash, keep: Keep, seen: &mut Recording) {
         let Keep {
             samples,
             label,
@@ -1023,6 +1047,9 @@ impl Memory {
             (key, bound)
         });
         let kept = samples.map(|samples| self.merge(key, samples, label, slot));
+        if let Some(kept) = kept {
+            seen.kept(key, kept);
+        }
         if let Some((key, bound)) = noded {
             let mut state = self.locked();
             let covered = state.coverage(key).is_some_and(|held| !held.is_empty());
@@ -1031,7 +1058,6 @@ impl Memory {
             }
             state.bounded();
         }
-        kept
     }
 
     /// The nodes read after `since`, least recent first, and the clock now.
@@ -1106,8 +1132,52 @@ impl Memory {
         }
     }
 
-    /// What `key` holds, shared, never copied: a hit.
-    pub(crate) fn load(&self, key: Hash, expected: Expected) -> Option<Entry> {
+    /// What `key` holds, shared, never copied, told to `seen`.
+    pub(crate) fn load(
+        &self,
+        key: Hash,
+        expected: Expected,
+        (node, seen): (&str, &mut Recording),
+    ) -> Option<Entry> {
+        let entry = self.entry(key, expected);
+        let outcome = match entry {
+            Some(_) => Outcome::Hit,
+            None => Outcome::ComputedNotStored,
+        };
+        seen.answered(key, node, expected.kind(), outcome);
+        entry
+    }
+
+    /// A run's segments held under `keys` in turn, each handed to `take` until it takes none or
+    /// asks no more, told to `seen` as one lookup of the last: a prefix where it took fewer.
+    pub(crate) fn runs(
+        &self,
+        keys: &[Hash],
+        expected: Expected,
+        (node, seen): (&str, &mut Recording),
+        mut take: impl FnMut(usize, Arc<Run>) -> (bool, bool),
+    ) {
+        let mut taken = 0;
+        for (k, key) in keys.iter().enumerate() {
+            let Some(run) = self.entry(*key, expected).and_then(|e| e.payload.run()) else {
+                break;
+            };
+            let (took, more) = take(k, run);
+            taken += usize::from(took);
+            if !(took && more) {
+                break;
+            }
+        }
+        let outcome = match taken {
+            0 => Outcome::ComputedNotStored,
+            n if n == keys.len() => Outcome::Hit,
+            _ => Outcome::Prefix,
+        };
+        let last = *keys.last().expect("a run of a segment or more");
+        seen.answered(last, node, PayloadKind::Run, outcome);
+    }
+
+    fn entry(&self, key: Hash, expected: Expected) -> Option<Entry> {
         let mut state = self.locked();
         let item = &state.entries.get(&key)?.item;
         let entry = Entry {
@@ -1265,7 +1335,7 @@ mod tests {
         for (rate, width) in [(48_000, 1), (8_000, 2)] {
             memory.store(key, four.clone(), None, None);
             let asked = Expected::Segments { rate, width };
-            assert!(memory.load(key, asked).is_none());
+            assert!(memory.entry(key, asked).is_none());
             assert!(!memory.holds(key));
             assert_eq!(memory.bytes(), 0);
         }
@@ -1282,7 +1352,7 @@ mod tests {
             width: 1,
         };
         for _ in 0..2 {
-            let loaded = memory.load(key, asked).expect("a hit");
+            let loaded = memory.entry(key, asked).expect("a hit");
             let Payload::Segments(parts) = loaded.payload else {
                 panic!("segments were stored");
             };

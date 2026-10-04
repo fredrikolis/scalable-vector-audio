@@ -242,7 +242,7 @@ fn a_miss_expires_so_another_holders_commit_is_found() {
     let hits = stream.borrow().stats().lookups;
     assert!(
         hits.iter()
-            .any(|l| l.node.starts_with("blip") && l.store == Some(true))
+            .any(|l| l.node.starts_with("blip") && l.outcome == sva_engine::Outcome::Hit)
     );
 }
 
@@ -365,7 +365,10 @@ fn a_new_process_reuses_the_disk_for_each_node_an_edit_left_alone() {
     let stats = edited.cache_stats.as_ref().expect("stats");
     let answered = |node: &str| {
         let looked = stats.lookups.iter().filter(|l| l.node == node);
-        looked.filter_map(|l| l.store).collect::<Vec<bool>>()
+        let looked = looked.filter(|l| l.outcome != sva_engine::Outcome::Reused);
+        looked
+            .map(|l| l.outcome == sva_engine::Outcome::Hit)
+            .collect::<Vec<bool>>()
     };
     assert_eq!(answered("n2"), [true], "{stats:?}");
     assert_eq!(answered("n3"), [false]);
@@ -396,8 +399,8 @@ fn a_shifted_read_of_a_note_staged_before_a_persist_lands_on_the_disk() {
     let stats = held.cache_stats.as_ref().expect("stats");
     let late = stats.lookups.iter().filter(|l| l.node == "late");
     assert_eq!(
-        late.map(|l| l.store).collect::<Vec<_>>(),
-        [Some(true)],
+        late.map(|l| l.outcome).collect::<Vec<_>>(),
+        [sva_engine::Outcome::Hit],
         "{stats:?}"
     );
 }

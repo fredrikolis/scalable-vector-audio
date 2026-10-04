@@ -469,8 +469,8 @@ fn two_readings_share_one_collapse() {
     let buffers = stats
         .lookups
         .iter()
-        .filter(|l| l.node == "master" && l.kind == PayloadKind::Segments)
-        .filter(|l| l.store.is_none())
+        .filter(|l| l.kind == PayloadKind::Segments)
+        .filter(|l| l.outcome != sva_engine::Outcome::Reused)
         .count();
     assert_eq!(
         buffers, 1,

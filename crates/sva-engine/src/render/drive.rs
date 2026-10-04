@@ -5,7 +5,7 @@ use sva_samples::Extent;
 use super::RenderConfig;
 use super::table::{Pulled, Table};
 use super::until::{Known, Until};
-use crate::cache::Recording;
+use crate::cache::{Memory, Recording};
 use crate::error::EngineError;
 use crate::flops::Work;
 use crate::query::{DEFAULT_FRAME_SECS, Representation};
@@ -27,6 +27,7 @@ pub(super) struct Driver {
     output: bool,
     most_bytes: usize,
     pub(super) work: Work,
+    pub(super) memory: Memory,
     pub(super) recording: Recording,
 }
 
@@ -86,7 +87,7 @@ impl Driver {
         range: Extent,
         block: usize,
         config: &RenderConfig,
-        recording: Recording,
+        (memory, recording): (Memory, Recording),
     ) -> Driver {
         let frame = frame(config, config.rate);
         Driver {
@@ -107,6 +108,7 @@ impl Driver {
                 waves: Some(0),
                 ..Work::default()
             },
+            memory,
             recording,
         }
     }
@@ -177,12 +179,16 @@ impl Driver {
         self.recording.reach(from);
         let window = Extent::new(from, to);
         if from == self.start {
-            let history = self
-                .table
-                .history(window, self.block as i64, &mut self.recording)?;
+            let history = self.table.history(
+                window,
+                self.block as i64,
+                (&self.memory, &mut self.recording),
+            )?;
             self.priced(&history);
         }
-        let pulled = self.table.pull(window, &mut self.recording)?;
+        let pulled = self
+            .table
+            .pull(window, (&self.memory, &mut self.recording))?;
         self.priced(&pulled);
         self.work.samples += (to - from) as u64;
         self.at = to;

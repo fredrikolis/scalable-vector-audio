@@ -102,9 +102,11 @@ impl Stream {
             )));
         }
         let world = World::over(graph, render.rate, !graph.defines(NOTES));
-        let recording = Recording::over(tier.memory()).latest(LATEST);
+        let memory = tier.memory().clone();
+        let recording = Recording::over(&memory).latest(LATEST);
         let table = Table::new(&render.profile);
-        let driver = Driver::new(table, Extent::new(0, 0), config.block, &render, recording);
+        let memo = (memory, recording);
+        let driver = Driver::new(table, Extent::new(0, 0), config.block, &render, memo);
         let mut stream = Stream {
             world,
             driver,
@@ -243,8 +245,9 @@ impl Stream {
             from: prospect.from.as_ref().map(|(g, roots)| (g, roots.clone())),
             whole: false,
         };
-        let found = |key: Hash| memory.answer(key, round);
-        let walked = self.world.plan(&wanted, &self.config.render, &found)?;
+        let seen = &mut self.driver.recording;
+        let mut found = |node: &str, key: Hash| memory.answered((key, round), (node, &mut *seen));
+        let walked = self.world.plan(&wanted, &self.config.render, &mut found)?;
         let mut plan = match walked {
             Walked::Asks(keys) => return Ok(Attempt::Asks(keys)),
             Walked::Planned(plan) => plan,
@@ -354,7 +357,6 @@ impl Stream {
         }
         let last = self.last(range.end);
         self.driver.bound(last);
-        self.driver.recording.found(std::mem::take(&mut plan.hits));
         self.expr = prospect.target.clone();
         self.terms = prospect.terms.clone();
         if let Changed::Added(handle) = prospect.answer {
@@ -497,7 +499,7 @@ impl Stream {
             terms: self.terms.count(),
             built: self.built,
             demands: self.demands,
-            tier: self.driver.recording.since(),
+            tier: self.driver.recording.since(&self.driver.memory),
         }
     }
 
@@ -608,7 +610,7 @@ impl Stream {
     }
 
     pub fn stats(&self) -> CacheStats {
-        self.driver.recording.stats()
+        self.driver.recording.stats(&self.driver.memory)
     }
 
     /// The bytes its values hold, samples and state.
@@ -730,6 +732,7 @@ pub async fn change<E: From<EngineError>, B: Backend>(
         ..Local::default()
     };
     let round = tier.begin();
+    stream.borrow_mut().driver.recording.begin();
     loop {
         let change = build(&stream.borrow())?;
         let prospect = match stream.borrow().prospect(change) {
@@ -741,8 +744,10 @@ pub async fn change<E: From<EngineError>, B: Backend>(
             if stream.borrow().generation != generation {
                 break;
             }
-            let memory = (tier.memory(), round);
-            let attempt = stream.borrow_mut().attempt(&prospect, &mut local, memory)?;
+            let attempt =
+                stream
+                    .borrow_mut()
+                    .attempt(&prospect, &mut local, (tier.memory(), round))?;
             match attempt {
                 Attempt::Landed(answer) => return Ok(answer),
                 Attempt::Moved => break,

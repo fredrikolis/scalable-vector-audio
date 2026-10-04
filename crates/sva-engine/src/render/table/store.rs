@@ -8,10 +8,11 @@ use sva_formula::{Hash, Held as Representation, NodeId};
 use sva_samples::{Buffer, Extent, Machine, MachineState, NodeRenderer, Tape};
 
 use super::Table;
+use super::eval::Marks;
 use super::segments::Segments;
 use super::value::{Held, Kind, Value};
 use crate::cache::{
-    Expected, Facts, Keep, Offered, Outcome, Payload, PayloadKind, Recording, Run, Stored,
+    Expected, Facts, Keep, Memory, Offered, Payload, PayloadKind, Recording, Run, Stored,
 };
 use crate::typing::Typing;
 
@@ -28,10 +29,6 @@ pub(crate) struct Place {
     /// Reads of it run so far.
     pub(crate) reached: usize,
     pub(crate) looked: bool,
-    /// Answered only up to a switch.
-    pub(crate) prefixed: bool,
-    /// The lookup its first ask made, once made.
-    pub(crate) noted: Option<usize>,
     /// The node its samples answer, where it is an instance's own.
     pub(crate) offer: Option<Offer>,
     /// Whether memory was told of that node.
@@ -84,7 +81,7 @@ pub(crate) fn load(
     value: &mut Value,
     place: &mut Place,
     hold: &Segments,
-    recording: &Recording,
+    (memory, seen): (&Memory, &mut Recording),
 ) -> bool {
     if let Kind::Resident(stored) = &value.kind {
         let (stored_over, lacks) = (value.covers(), hold.minus(&value.holding()));
@@ -92,20 +89,20 @@ pub(crate) fn load(
         if lacks.is_empty() {
             return false;
         }
-        let parts = recording.resident(stored.key, lacks.hull());
+        let parts = memory.resident(stored.key, lacks.hull()).0;
         return laid(value, &parts);
     }
     place.looked = true;
     let kind = Place::kind(value);
     let (rate, width) = (value.grid.rate, value.width);
     if kind == PayloadKind::Run {
-        return resumed(value, place, recording);
+        return resumed(value, place, (memory, seen));
     }
     let expected = match kind {
         PayloadKind::Frames => Expected::Frames,
         _ => Expected::Segments { rate, width },
     };
-    let Some(entry) = recording.load(place.key, expected) else {
+    let Some(entry) = memory.load(place.key, expected, (&value.name, seen)) else {
         return false;
     };
     if entry.label.is_some() {
@@ -129,7 +126,7 @@ pub(crate) fn load(
 /// Segment by segment from the first: a segment's samples up to the next switch, on to the
 /// next segment where its state there is marked, else from its last mark. A value that has
 /// stepped already takes none.
-fn resumed(value: &mut Value, place: &mut Place, recording: &Recording) -> bool {
+fn resumed(value: &mut Value, place: &Place, (memory, seen): (&Memory, &mut Recording)) -> bool {
     let Kind::Program(program) = &value.kind else {
         return false;
     };
@@ -141,21 +138,16 @@ fn resumed(value: &mut Value, place: &mut Place, recording: &Recording) -> bool 
         width: value.width,
     };
     let mut planes = vec![Vec::new(); value.width];
-    let (mut base, mut pos, mut reached) = (None, i64::MIN, 0);
+    let (mut base, mut pos) = (None, i64::MIN);
     let mut marks: BTreeMap<i64, MachineState> = BTreeMap::new();
-    for k in 0..place.segments.len() {
-        let Some(run) = recording
-            .load(place.segments[k].1, expected)
-            .and_then(|entry| entry.payload.run())
-        else {
-            break;
-        };
+    let keys: Vec<Hash> = place.segments.iter().map(|(_, key)| *key).collect();
+    memory.runs(&keys, expected, (&value.name, seen), |k, run| {
         let placed = match k {
             0 => true,
             _ => run.samples.start == pos && run.parent == place.parent(k),
         };
         if !placed {
-            break;
+            return (false, false);
         }
         if k == 0 {
             (base, pos) = (Some(run.samples.start), run.samples.start);
@@ -166,11 +158,9 @@ fn resumed(value: &mut Value, place: &mut Place, recording: &Recording) -> bool 
             plane.extend((pos..upto).map(at));
         }
         marks.extend(run.marks.range(pos..=upto).map(|(at, m)| (*at, m.clone())));
-        (pos, reached) = (upto, k + 1);
-        if upto < place.end(k) || !run.marks.contains_key(&upto) {
-            break;
-        }
-    }
+        pos = upto;
+        (true, upto == place.end(k) && run.marks.contains_key(&upto))
+    });
     let (Some(base), Some((&at, state))) = (base, marks.range(..=pos).next_back()) else {
         return false;
     };
@@ -185,7 +175,6 @@ fn resumed(value: &mut Value, place: &mut Place, recording: &Recording) -> bool 
     }
     let mut samples = Buffer::of_planes(value.grid.rate, planes);
     samples.start = base;
-    place.prefixed = reached < place.segments.len();
     let Kind::Program(program) = &mut value.kind else {
         unreachable!("a program");
     };
@@ -195,29 +184,28 @@ fn resumed(value: &mut Value, place: &mut Place, recording: &Recording) -> bool 
     true
 }
 
-/// The first time a value is asked: one lookup, answered by what it computes now.
-pub(crate) fn noted(value: &Value, place: &mut Place, computes: bool, recording: &mut Recording) {
-    if place.noted.is_some() || matches!(value.kind, Kind::Resident { .. }) {
-        return;
+/// Where a value's run marks its state: at each switch, and as often as memory keeps a mark.
+pub(crate) fn marks(place: &Place, memory: &Memory) -> Marks {
+    Marks {
+        at: place
+            .segments
+            .iter()
+            .skip(1)
+            .map(|(start, _)| *start)
+            .collect(),
+        every: memory.keeps().then(|| memory.mark_every()),
     }
-    let (kind, key) = (Place::kind(value), place.key);
-    let first = match (computes, place.prefixed) {
-        (_, true) => Outcome::Prefix,
-        (true, false) => Outcome::ComputedNotStored,
-        (false, false) => Outcome::Hit,
-    };
-    place.noted = Some(recording.note(&value.name, key, kind, first));
 }
 
-/// `count` more reads of a value run, each past the first a reuse.
-pub(crate) fn reread(value: &Value, place: &mut Place, count: usize, recording: &mut Recording) {
-    if place.noted.is_none() {
-        return;
-    }
-    let (kind, key) = (Place::kind(value), place.key);
+/// `count` more reads of a value, each past the first a reuse of its key's lookup.
+pub(crate) fn reread(value: &Value, place: &mut Place, count: usize, seen: &mut Recording) {
+    let key = match &value.kind {
+        Kind::Resident(stored) => stored.key,
+        _ => place.key,
+    };
     for _ in 0..count {
         if place.reached > 0 {
-            recording.note(&value.name, key, kind, Outcome::Hit);
+            seen.reused(key, &value.name, Place::kind(value));
         }
         place.reached += 1;
     }
@@ -354,13 +342,18 @@ fn taped(tape: &Tape, rate: u32, e: Extent) -> Option<Buffer> {
 
 impl Table {
     /// What `at` computed, kept with the node its samples answer.
-    pub(crate) fn kept(&mut self, at: usize, computed: &[Extent], recording: &mut Recording) {
-        if !recording.keeps() {
+    pub(crate) fn kept(
+        &mut self,
+        at: usize,
+        computed: &[Extent],
+        (memory, seen): (&Memory, &mut Recording),
+    ) {
+        if !memory.keeps() {
             return;
         }
         let (value, place) = self.values.placed(at);
         let kept = samples(value, place, computed);
-        let (slot, noted, label) = (place.slot, place.noted, value.label.clone());
+        let (slot, label) = (place.slot, value.label.clone());
         let mut node = self.node(at, !kept.is_empty());
         for (key, payload) in kept {
             let keep = Keep {
@@ -369,7 +362,7 @@ impl Table {
                 slot,
                 node: node.take_if(|(stored, _, _)| stored.key == key),
             };
-            recording.keep((key, noted), keep);
+            memory.keep(key, keep, seen);
         }
         if let Some(node) = node {
             let key = node.0.key;
@@ -379,7 +372,7 @@ impl Table {
                 slot,
                 node: Some(node),
             };
-            recording.keep((key, None), keep);
+            memory.keep(key, keep, seen);
         }
     }
 

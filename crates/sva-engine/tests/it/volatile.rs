@@ -48,7 +48,7 @@ fn reach(before: &CacheStats, after: &CacheStats) -> (Vec<Outcome>, Vec<Outcome>
         .lookups
         .iter()
         .filter(|l| matches!(l.kind, PayloadKind::Segments | PayloadKind::Run))
-        .filter(|l| l.store.is_none() || l.outcome == Outcome::Hit)
+        .filter(|l| l.outcome != Outcome::Reused)
         .partition(|l| !before.lookups.iter().any(|b| b.key == l.key));
     let outcomes = |set: Vec<&sva_engine::Lookup>| set.iter().map(|l| l.outcome).collect();
     (outcomes(moved), outcomes(kept))

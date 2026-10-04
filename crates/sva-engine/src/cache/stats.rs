@@ -1,12 +1,11 @@
 // Concern: what one render asked of its values and memory, how far its output got, and what each lookup came to | Non-concern: what memory evicts (memory.rs) | IO: (loads, stores) -> CacheStats
 
-use std::sync::Arc;
+use std::collections::HashMap;
 
 use sva_formula::Hash;
-use sva_samples::{Buffer, Extent};
 
-use super::memory::{Counters, Keep, Kept, Memory};
-use super::{Entry, Expected, PayloadKind};
+use super::PayloadKind;
+use super::memory::{Counters, Kept, Memory};
 use crate::recent::Recent;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,9 +15,11 @@ pub enum Outcome {
     ComputedNotStored,
     /// A volatile node's value, stored in place of its last one.
     ComputedReplaced,
+    /// Found short, the rest computed and stored.
     Extended,
     /// Found only up to a switch.
     Prefix,
+    Reused,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -27,8 +28,6 @@ pub struct Lookup {
     pub key: Hash,
     pub kind: PayloadKind,
     pub outcome: Outcome,
-    /// What memory answered a node with.
-    pub store: Option<bool>,
 }
 
 /// Every lookup in order, or a stream's latest, and memory as the render left it.
@@ -60,15 +59,11 @@ impl CacheStats {
     }
 
     pub fn hits(&self) -> usize {
-        self.lookups
-            .iter()
-            .filter(|l| l.outcome == Outcome::Hit)
-            .count()
+        self.count(|o| o == Outcome::Hit)
     }
 
-    /// Every value computed: a node memory missed computes nothing until its values do.
     pub fn computed(&self) -> usize {
-        self.count(|o| o != Outcome::Hit)
+        self.count(|o| !matches!(o, Outcome::Hit | Outcome::Reused))
     }
 
     pub fn stored(&self) -> usize {
@@ -83,28 +78,35 @@ impl CacheStats {
         self.count(|o| o == Outcome::Extended)
     }
 
+    pub fn reused(&self) -> usize {
+        self.count(|o| o == Outcome::Reused)
+    }
+
     fn count(&self, of: impl Fn(Outcome) -> bool) -> usize {
-        let values = self.lookups.iter().filter(|l| l.store.is_none());
-        values.filter(|l| of(l.outcome)).count()
+        self.lookups.iter().filter(|l| of(l.outcome)).count()
     }
 }
 
+/// What the memo told one render or stream: one lookup per key a change asks.
 pub(crate) struct Recording {
-    memory: Memory,
     since: Counters,
     failures: u64,
     lookups: Recent<Lookup>,
     reached: Option<Vec<(i64, usize)>>,
+    /// Each key's latest lookup still held, and the change that made it.
+    looked: HashMap<Hash, (u64, usize)>,
+    change: u64,
 }
 
 impl Recording {
     pub(crate) fn over(memory: &Memory) -> Recording {
         Recording {
-            memory: memory.clone(),
             since: memory.counters(),
             failures: memory.failures().0,
             lookups: Recent::keeping(usize::MAX),
             reached: Some(Vec::new()),
+            looked: HashMap::new(),
+            change: 0,
         }
     }
 
@@ -116,10 +118,11 @@ impl Recording {
         }
     }
 
-    pub(crate) fn found(&mut self, lookups: Vec<Lookup>) {
-        for lookup in lookups {
-            self.lookups.push(lookup);
-        }
+    /// A stream's change: each key it asks is a lookup anew.
+    pub(crate) fn begin(&mut self) {
+        self.change += 1;
+        let shed = self.lookups.shed();
+        self.looked.retain(|_, (_, at)| *at >= shed);
     }
 
     pub(crate) fn reach(&mut self, at: i64) {
@@ -129,9 +132,8 @@ impl Recording {
         }
     }
 
-    pub(crate) fn stats(&self) -> CacheStats {
-        let memory = &self.memory;
-        let tier = memory.counters().since(self.since);
+    pub(crate) fn stats(&self, memory: &Memory) -> CacheStats {
+        let tier = self.since(memory);
         let (failures, why) = memory.failures();
         let failed = failures > self.failures;
         CacheStats {
@@ -150,58 +152,64 @@ impl Recording {
         }
     }
 
-    pub(crate) fn since(&self) -> Counters {
-        self.memory.counters().since(self.since)
+    pub(crate) fn since(&self, memory: &Memory) -> Counters {
+        memory.counters().since(self.since)
     }
 
-    pub(crate) fn keeps(&self) -> bool {
-        self.memory.keeps()
-    }
-
-    pub(crate) fn mark_every(&self) -> usize {
-        self.memory.mark_every()
-    }
-
-    pub(crate) fn note(
-        &mut self,
-        node: &str,
-        key: Hash,
-        kind: PayloadKind,
-        outcome: Outcome,
-    ) -> usize {
-        self.lookups.push(Lookup {
+    /// Asked again in one change, a key's lookup is settled by what any answer found.
+    pub(super) fn answered(&mut self, key: Hash, node: &str, kind: PayloadKind, outcome: Outcome) {
+        let now = self.change;
+        let held = self.looked(key).filter(|(change, _)| *change == now);
+        if let Some(lookup) = held.and_then(|(_, at)| self.lookups.get_mut(at)) {
+            let found = |o: Outcome| match o {
+                Outcome::Hit => 2,
+                Outcome::Prefix => 1,
+                _ => 0,
+            };
+            lookup.kind = kind;
+            if found(outcome) > found(lookup.outcome) {
+                lookup.outcome = outcome;
+            }
+            return;
+        }
+        let lookup = Lookup {
             node: node.to_string(),
             key,
             kind,
             outcome,
-            store: None,
-        })
-    }
-
-    /// What memory holds of a node over `over`, read unnoted.
-    pub(crate) fn resident(&self, key: Hash, over: Extent) -> Vec<Arc<Buffer>> {
-        self.memory.resident(key, over).0
-    }
-
-    /// Read unnoted; its value notes one lookup.
-    pub(crate) fn load(&self, key: Hash, expected: Expected) -> Option<Entry> {
-        self.memory.load(key, expected)
-    }
-
-    /// What a value computed, joined to what memory holds of it, with the node it answers.
-    pub(crate) fn keep(&mut self, (key, noted): (Hash, Option<usize>), keep: Keep) {
-        let outcome = match self.memory.keep(key, keep) {
-            Some(Kept::Held) => Outcome::ComputedStored,
-            Some(Kept::Replaced) => Outcome::ComputedReplaced,
-            Some(Kept::Refused) | None => return,
         };
-        let Some(lookup) = noted.and_then(|at| self.lookups.get_mut(at)) else {
+        let at = self.lookups.push(lookup);
+        self.looked.insert(key, (self.change, at));
+    }
+
+    pub(super) fn kept(&mut self, key: Hash, kept: Kept) {
+        let Some(lookup) = self
+            .looked(key)
+            .and_then(|(_, at)| self.lookups.get_mut(at))
+        else {
             return;
         };
-        match lookup.outcome {
-            Outcome::ComputedNotStored => lookup.outcome = outcome,
-            Outcome::Hit if lookup.kind == PayloadKind::Run => lookup.outcome = Outcome::Extended,
-            _ => {}
+        lookup.outcome = match (lookup.outcome, kept) {
+            (Outcome::ComputedNotStored, Kept::Held) => Outcome::ComputedStored,
+            (Outcome::ComputedNotStored, Kept::Replaced) => Outcome::ComputedReplaced,
+            (Outcome::Hit, Kept::Held | Kept::Replaced) => Outcome::Extended,
+            (outcome, _) => outcome,
+        };
+    }
+
+    pub(crate) fn reused(&mut self, key: Hash, node: &str, kind: PayloadKind) {
+        if self.looked(key).is_none() {
+            return;
         }
+        self.lookups.push(Lookup {
+            node: node.to_string(),
+            key,
+            kind,
+            outcome: Outcome::Reused,
+        });
+    }
+
+    fn looked(&self, key: Hash) -> Option<(u64, usize)> {
+        self.looked.get(&key).copied()
     }
 }

@@ -18,9 +18,15 @@ use sva_formula::TABLE_VERSION;
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
 
-/// A render's node lookups alone, each of which memory may pass to the disk.
+/// A render's node lookups alone, each of which memory may pass to the disk: the walk looks up
+/// each node before any value under it is asked.
 fn nodes(stats: &CacheStats) -> Vec<&sva_engine::Lookup> {
-    stats.lookups.iter().filter(|l| l.store.is_some()).collect()
+    let mut named = std::collections::BTreeSet::new();
+    let looked = stats
+        .lookups
+        .iter()
+        .filter(|l| l.outcome != Outcome::Reused);
+    looked.filter(|l| named.insert(l.node.as_str())).collect()
 }
 
 fn rendered(graph: &Graph, store: &Tier<Memory>) -> Render {
@@ -75,8 +81,7 @@ fn a_warm_store_answers_every_value_and_writes_nothing_until_persist() {
     let warm = rendered(&graph, &opened(&memory, u64::MAX));
     let stats = stats(&warm);
     assert_eq!(stats.computed(), 0, "every value is a hit: {stats:?}");
-    assert!(stats.lookups.iter().all(|l| l.store != Some(false)));
-    assert!(stats.lookups.iter().any(|l| l.store == Some(true)));
+    assert!(stats.lookups.iter().any(|l| l.outcome == Outcome::Hit));
     assert_eq!(samples(&cold), samples(&warm), "a hit is the bits computed");
     let (cold, warm) = (
         cold.labels[&cold.root].clone(),
@@ -944,7 +949,7 @@ fn a_stream_reads_a_note_another_store_over_its_directory_persisted() {
         .stats()
         .lookups
         .into_iter()
-        .filter(|l| l.store == Some(true));
+        .filter(|l| l.outcome == Outcome::Hit);
     let hits: Vec<String> = hits.map(|l| l.node).collect();
     assert_eq!(hits, ["blip(f0=200)"], "{:?}", warm.borrow().stats());
 }
@@ -1098,7 +1103,7 @@ fn played(stream: &RefCell<Stream>) -> Vec<u64> {
 
 fn store_hits(stream: &RefCell<Stream>) -> Vec<String> {
     let hits = stream.borrow().stats().lookups.into_iter();
-    hits.filter(|l| l.store == Some(true))
+    hits.filter(|l| matches!(l.outcome, Outcome::Hit | Outcome::Extended))
         .map(|l| l.node)
         .collect()
 }
@@ -1143,11 +1148,13 @@ fn a_stream_plays_a_stored_held_note_from_its_samples() {
         warm.0, cold.0,
         "the stored note is the live one, bit for bit"
     );
-    let note = |lookups: &[sva_engine::Lookup]| -> Vec<(Outcome, Option<bool>)> {
+    let note = |lookups: &[sva_engine::Lookup]| -> Vec<Outcome> {
         let of = lookups
             .iter()
             .filter(|l| l.node == "string(f0=261.63, release=inf)");
-        of.map(|l| (l.outcome, l.store)).collect()
+        of.map(|l| l.outcome)
+            .filter(|o| *o != Outcome::Reused)
+            .collect()
     };
     assert!(
         !note(&cold.1).is_empty(),
@@ -1155,9 +1162,7 @@ fn a_stream_plays_a_stored_held_note_from_its_samples() {
     );
     assert!(!note(&warm.1).is_empty());
     assert!(
-        note(&warm.1)
-            .iter()
-            .all(|l| *l == (Outcome::Hit, Some(true))),
+        note(&warm.1).iter().all(|o| *o == Outcome::Hit),
         "the store answers the note, which computes nothing: {:?}",
         note(&warm.1)
     );

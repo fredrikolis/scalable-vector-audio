@@ -68,13 +68,12 @@ fn a_store_under_dev_shm_answers_the_next_render_with_every_value() {
         "{}",
         String::from_utf8_lossy(&cold.stdout)
     );
-    assert!(total(&cold, "store-miss") > 0);
+    assert!(total(&cold, "miss") > 0);
     assert!(values_in(&store) > 0, "the render's values are on disk");
 
     let warm = run(&dir, &args, None);
     assert_eq!(total(&warm, "miss"), 0, "nothing is computed");
-    assert_eq!(total(&warm, "store-miss"), 0);
-    assert!(total(&warm, "store-hit") > 0);
+    assert!(total(&warm, "hit") > 0);
     assert_eq!(data(&cold), data(&warm));
     let _ = std::fs::remove_dir_all(&store);
 }
@@ -101,7 +100,7 @@ fn a_render_that_fails_after_computing_still_stores_what_it_computed() {
     let failed = run(&dir, &args, None);
     assert_eq!(failed.status.code(), Some(3), "the sample refuses");
     assert!(values_in(&store) > 0, "what it computed is stored");
-    assert!(total(&run(&dir, &args, None), "store-hit") > 0);
+    assert!(total(&run(&dir, &args, None), "hit") > 0);
 }
 
 #[test]
@@ -281,12 +280,7 @@ fn every_framing_of_a_value_reads_the_entry_its_original_stored() {
             String::from_utf8_lossy(&warm.stdout)
         );
         assert_eq!(total(&warm, "miss"), 0, "{name}: nothing is computed");
-        assert_eq!(
-            total(&warm, "store-miss"),
-            0,
-            "{name}: the stored entry answers"
-        );
-        assert!(total(&warm, "store-hit") > 0, "{name}");
+        assert!(total(&warm, "hit") > 0, "{name}: the stored entry answers");
         assert_eq!(values_in(&store), held, "{name}: nothing is written");
         assert_eq!(reading(&cold), reading(&warm), "{name}: the stored reading");
     }

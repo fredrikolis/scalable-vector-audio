@@ -71,11 +71,14 @@ fn a_note_read_at_three_placements_is_computed_once_at_either_tempo() {
             let asked: Vec<Outcome> = stats
                 .lookups
                 .iter()
-                .filter(|l| l.node == "n" && l.store.is_none())
+                .filter(|l| l.node == "n")
                 .map(|l| l.outcome)
                 .collect();
             assert_eq!(asked.len(), reads, "{bpm}: one lookup per read: {asked:?}");
-            assert!(asked[1..].iter().all(|o| *o == Outcome::Hit), "{asked:?}");
+            assert!(
+                asked[1..].iter().all(|o| *o == Outcome::Reused),
+                "{asked:?}"
+            );
         }
     }
 }

@@ -32,8 +32,8 @@ impl Stream {
             from: None,
             whole: false,
         };
-        let missed = |_| crate::cache::Known::Miss;
-        match fresh.plan(&wanted, render, &missed) {
+        let mut missed = |_: &str, _| crate::cache::Known::Miss;
+        match fresh.plan(&wanted, render, &mut missed) {
             Ok(Walked::Planned(_)) => {}
             Ok(Walked::Asks(_)) => unreachable!("every key a miss"),
             Err(e) => panic!("what a stream plays plans: {e}"),

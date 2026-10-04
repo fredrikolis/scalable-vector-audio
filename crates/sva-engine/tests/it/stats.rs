@@ -56,8 +56,23 @@ fn a_render_over_a_memory_keeping_nothing_reports_its_own_reuse() {
     assert_eq!((stats.bytes, stats.entries), (0, 0));
     assert!(stats.computed() > 0 && stats.stored() == 0, "{stats:?}");
     let pad = stats.lookups.iter().filter(|l| l.node == "pad");
-    let pad: Vec<_> = pad.filter(|l| l.store.is_none()).collect();
+    let pad: Vec<_> = pad.filter(|l| l.outcome != Outcome::Reused).collect();
     assert_eq!(pad.len(), 1, "one read of the pad: {stats:?}");
+}
+
+/// The walk asks a node's key and the table asks the same key of its value: one lookup.
+#[test]
+fn a_render_looks_each_key_up_once() {
+    let stats = stats(&demo("once"), "b", &Tier::default());
+    let looked: Vec<Hash> = stats
+        .lookups
+        .iter()
+        .filter(|l| l.outcome != Outcome::Reused)
+        .map(|l| l.key)
+        .collect();
+    let distinct: BTreeSet<Hash> = looked.iter().copied().collect();
+    assert_eq!(looked.len(), distinct.len(), "{stats:?}");
+    assert_eq!(stats.hits() + stats.computed(), looked.len());
 }
 
 /// A second render finds the target the first stored, so nothing under it is asked.
@@ -107,7 +122,7 @@ fn a_reuse_is_noted_where_its_read_first_sounds() {
             .map_or(0, |(_, made)| *made)
     };
     let reuses: Vec<usize> = (0..stats.lookups.len())
-        .filter(|&i| stats.lookups[i].node == "note" && stats.lookups[i].outcome == Outcome::Hit)
+        .filter(|&i| stats.lookups[i].node == "note" && stats.lookups[i].outcome == Outcome::Reused)
         .collect();
     assert_eq!(reuses.len(), 2, "{stats:?}");
     for (at, secs) in reuses.into_iter().zip([2.0, 4.0]) {
@@ -145,13 +160,13 @@ fn a_read_through_a_moved_node_is_a_lookup_of_the_node_it_moves() {
         stats
             .lookups
             .iter()
-            .filter(|l| l.node == node && l.store.is_none())
+            .filter(|l| l.node == node)
             .map(|l| l.outcome)
             .collect::<Vec<_>>()
     };
     assert_eq!(
         of("a"),
-        [Outcome::ComputedNotStored, Outcome::Hit],
+        [Outcome::ComputedNotStored, Outcome::Reused],
         "{stats:?}"
     );
 }

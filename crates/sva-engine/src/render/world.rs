@@ -10,7 +10,7 @@ use sva_samples::Extent;
 
 use super::terms::{Handle, NOTES, Terms, is_term};
 use super::{RenderConfig, default_end, default_start};
-use crate::cache::{Known as Answer, Lookup, Outcome, PayloadKind, Stored};
+use crate::cache::{Known as Answer, Stored};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::Instances;
 use crate::query::Representation;
@@ -19,8 +19,7 @@ use crate::typing::Typing;
 
 pub const STREAMED: &str = "streamed";
 
-/// What memory answers a key with this round.
-pub(super) type Found<'f> = &'f dyn Fn(Hash) -> Answer;
+pub(super) type Found<'f> = &'f mut dyn FnMut(&str, Hash) -> Answer;
 
 pub(super) struct World {
     pub(super) graph: Graph,
@@ -74,12 +73,10 @@ pub(super) struct Plan {
     pub(super) adopted: usize,
     pub(super) named: usize,
     pub(super) visited: usize,
-    pub(super) hits: Vec<Lookup>,
     pub(super) stored: BTreeMap<String, Arc<Stored>>,
     pub(super) found: BTreeMap<String, Known>,
 }
 
-/// A plan, or the keys a walk has to look up before it can finish one.
 pub(super) enum Walked {
     Asks(Vec<Hash>),
     Planned(Plan),
@@ -240,12 +237,10 @@ impl World {
             Reach::Asks(keys) => return Walked::Asks(keys),
             Reach::Reached(reached) => reached,
         };
-        let hits = reached.lookups.into_iter();
         Walked::Planned(Plan {
             adopted: advance.adopted,
             named: advance.named.len(),
             visited: reached.visited.len(),
-            hits: hits.filter(|l| l.outcome == Outcome::Hit).collect(),
             stored: reached.held,
             found: reached.known,
         })
@@ -428,15 +423,12 @@ pub(super) struct Walking<'w> {
     pub(super) whole: bool,
 }
 
-/// What a walk reached: each node visited, each lookup in walk order, each hit's samples.
 pub(super) struct Reached {
     pub(super) visited: BTreeSet<String>,
-    pub(super) lookups: Vec<Lookup>,
     pub(super) held: BTreeMap<String, Arc<Stored>>,
     known: BTreeMap<String, Known>,
 }
 
-/// What a walk reached, or the keys it has to look up before it can.
 pub(super) enum Reach {
     Asks(Vec<Hash>),
     Reached(Reached),
@@ -494,10 +486,7 @@ struct Walk<'w> {
     found: Found<'w>,
 }
 
-enum Step {
-    Visit(String, bool),
-    Close(String, Hash),
-}
+struct Visit(String, bool);
 
 impl Walk<'_> {
     fn known(&self, path: &str) -> Known {
@@ -506,25 +495,18 @@ impl Walk<'_> {
     }
 
     fn walked(mut self) -> Reach {
-        let (mut visited, mut lookups, mut asks) = (BTreeSet::new(), Vec::new(), Vec::new());
+        let (mut visited, mut asks) = (BTreeSet::new(), Vec::new());
         let mut held: BTreeMap<String, Arc<Stored>> = BTreeMap::new();
         let (config, whole) = (self.walking.config, self.walking.whole);
-        let mut stack = vec![Step::Visit(self.walking.root.to_string(), false)];
-        while let Some(step) = stack.pop() {
-            let (path, anew) = match step {
-                Step::Close(path, key) => {
-                    lookups.push(noted(&path, key, Outcome::ComputedNotStored));
-                    continue;
-                }
-                Step::Visit(path, anew) => (path, anew),
-            };
+        let mut stack = vec![Visit(self.walking.root.to_string(), false)];
+        while let Some(Visit(path, anew)) = stack.pop() {
             let mut known = self.known(&path);
             let pinned = known.pinned || self.pins.holds(&path);
             let key = self.world.keyed(&path, &known, config).filter(|_| !pinned);
             if visited.contains(&path) {
                 let asked = anew && !held.contains_key(&path);
                 if let Some(key) = key.filter(|_| asked)
-                    && matches!((self.found)(key), Answer::Unknown)
+                    && matches!((self.found)(&path, key), Answer::Unknown)
                 {
                     asks.push(key);
                 }
@@ -537,7 +519,7 @@ impl Walk<'_> {
             visited.insert(path.clone());
             let stored = match key {
                 None => None,
-                Some(key) => match (self.found)(key) {
+                Some(key) => match (self.found)(&path, key) {
                     Answer::Hit(hit) => Some((key, hit)),
                     Answer::Miss => None,
                     Answer::Unknown => {
@@ -553,18 +535,14 @@ impl Walk<'_> {
             };
             known.looked = true;
             match stored.filter(|(_, hit)| answering(hit)) {
-                Some((key, stored)) => {
-                    lookups.push(noted(&path, key, Outcome::Hit));
+                Some((_, stored)) => {
                     held.insert(path.clone(), stored);
                 }
                 None => {
-                    if let Some(key) = key {
-                        stack.push(Step::Close(path.clone(), key));
-                    }
                     let fresh = self.fresh.and_then(|f| f.get(&path));
                     for read in self.world.instances.deps(&path).iter().rev() {
                         let anew = fresh.is_some_and(|f| f.contains(read));
-                        stack.push(Step::Visit(read.clone(), anew));
+                        stack.push(Visit(read.clone(), anew));
                     }
                 }
             }
@@ -577,20 +555,9 @@ impl Walk<'_> {
         }
         Reach::Reached(Reached {
             visited,
-            lookups,
             held,
             known: self.known,
         })
-    }
-}
-
-pub(super) fn noted(path: &str, key: Hash, outcome: Outcome) -> Lookup {
-    Lookup {
-        node: path.to_string(),
-        key,
-        kind: PayloadKind::Segments,
-        outcome,
-        store: Some(outcome == Outcome::Hit),
     }
 }
 

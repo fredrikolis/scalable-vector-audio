@@ -418,7 +418,13 @@ fn a_shifted_term_reads_the_note_a_render_left_in_memory() {
         let stats = stream.borrow().stats();
         let lookups = stats.lookups.iter();
         lookups
-            .filter(|l| l.node.starts_with("pluck") && l.store == Some(true))
+            .filter(|l| {
+                l.node.starts_with("pluck")
+                    && matches!(
+                        l.outcome,
+                        sva_engine::Outcome::Hit | sva_engine::Outcome::Extended
+                    )
+            })
             .count()
     };
     let later = "@echo(t, x=@pluck(t - 2000sp, f0=523.25))";

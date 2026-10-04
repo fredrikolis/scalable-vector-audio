@@ -292,16 +292,15 @@ ENVIRONMENT:
                        to stderr; stdout and the samples are unchanged. Any
                        other value, or none, logs nothing. One line per second
                        of output, then one per node and a total:
-                         sva-cache pass hit=0 miss=190 ... store-miss=190 cum-hit=0.0%
+                         sva-cache pass hit=0 miss=190 ... reused=0 cum-hit=0.0%
                          sva-cache t=1.022s hit=1 miss=2 ... cum-hit=0.5%
-                         sva-cache node hit=0 miss=2 ... store-hit=1 <node>
+                         sva-cache node hit=1 miss=0 ... reused=3 <node>
                          sva-cache total hit=1 miss=198 ... hit-rate=0.5% ...
-                       `pass` is what was looked up before the first block;
-                       each read of a value past its first is a `hit`, reusing
-                       it; `prefix` found a stored run up to a switch, `miss`
-                       computed it, `new` kept it for the store. `store-hit`
-                       and `store-miss` count what the store on disk answered
-                       each value's first lookup.
+                       `pass` is what was looked up before the first block.
+                       Each value is looked up once: a `hit` was answered by
+                       the store, `prefix` found a stored run up to a switch,
+                       `miss` computed it, `new` kept it for the store. Each
+                       read of a value past its first is `reused`.
 
 EXIT CODES:
   0  success (error.code absent)

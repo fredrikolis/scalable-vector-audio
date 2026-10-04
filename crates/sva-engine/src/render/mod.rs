@@ -474,8 +474,8 @@ fn affordable(held: &Render) -> Result<(), EngineError> {
 
 /// Every wanted value pulled over the range, block by block, until `until` stops it.
 #[cfg(test)]
-fn pulled(held: &mut Render, recording: Recording) -> Result<(), EngineError> {
-    if let Some(mut driver) = driving(held, recording)? {
+fn pulled(held: &mut Render, memo: (&Memory, Recording)) -> Result<(), EngineError> {
+    if let Some(mut driver) = driving(held, memo)? {
         while driver.pull()? {}
         drove(held, driver);
     }
@@ -483,7 +483,10 @@ fn pulled(held: &mut Render, recording: Recording) -> Result<(), EngineError> {
 }
 
 /// What pulls a render's table, where it materializes one at all.
-fn driving(held: &mut Render, recording: Recording) -> Result<Option<drive::Driver>, EngineError> {
+fn driving(
+    held: &mut Render,
+    (memory, recording): (&Memory, Recording),
+) -> Result<Option<drive::Driver>, EngineError> {
     affordable(held)?;
     let (Some(table), Some(range)) = (held.table.take(), held.range) else {
         return Ok(None);
@@ -497,7 +500,7 @@ fn driving(held: &mut Render, recording: Recording) -> Result<Option<drive::Driv
         range,
         BLOCK,
         &held.config,
-        recording,
+        (memory.clone(), recording),
     )))
 }
 
@@ -510,7 +513,7 @@ fn drove(held: &mut Render, driver: drive::Driver) {
     let range = held.range.expect("a pulled render has a range");
     held.held_bytes = driver.most_bytes();
     held.computed = driver.work.priced_flops;
-    held.cache_stats = Some(driver.recording.stats());
+    held.cache_stats = Some(driver.recording.stats(&driver.memory));
     if let Some(stop) = driver.stop().filter(|stop| *stop < range.end) {
         held.range = Some(Extent::new(range.start, stop));
     }
@@ -545,7 +548,8 @@ pub(crate) fn finer(
     let profile = &render.config.profile;
     let mut table = Table::finer(&render.tys, node, &[node], profile, i128::from(fine))?;
     let at = table.root;
-    table.pull(over, &mut Recording::over(&Memory::holding(0)))?;
+    let memory = Memory::holding(0);
+    table.pull(over, (&memory, &mut Recording::over(&memory)))?;
     let mut held = table.samples(at, over);
     held.rate = render.config.rate * fine;
     Ok(held)
@@ -598,14 +602,16 @@ pub(crate) fn render_apart(
         table.plan(range)?;
         held.table = Some(table);
     }
-    pulled(&mut held, Recording::over(&Memory::holding(0)))?;
+    let memory = Memory::holding(0);
+    pulled(&mut held, (&memory, Recording::over(&memory)))?;
     Ok(held)
 }
 
 pub(crate) fn sampled(render: &Render, node: NodeId, over: Extent) -> Result<Buffer, EngineError> {
     let mut table = Table::build(&render.tys, node, &[node], &render.config.profile)?;
     let at = table.root;
-    table.pull(over, &mut Recording::over(&Memory::holding(0)))?;
+    let memory = Memory::holding(0);
+    table.pull(over, (&memory, &mut Recording::over(&memory)))?;
     Ok(table.samples(at, over))
 }
 

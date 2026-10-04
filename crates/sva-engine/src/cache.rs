@@ -83,6 +83,16 @@ pub enum Expected {
     Run { rate: u32, width: usize },
 }
 
+impl Expected {
+    pub(crate) fn kind(self) -> PayloadKind {
+        match self {
+            Expected::Segments { .. } => PayloadKind::Segments,
+            Expected::Frames => PayloadKind::Frames,
+            Expected::Run { .. } => PayloadKind::Run,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     pub payload: Payload,
@@ -95,6 +105,14 @@ impl Payload {
         match self {
             Payload::Run(run) => Some(run),
             _ => None,
+        }
+    }
+
+    pub fn kind(&self) -> PayloadKind {
+        match self {
+            Payload::Segments(_) => PayloadKind::Segments,
+            Payload::Frames(_) => PayloadKind::Frames,
+            Payload::Run(_) => PayloadKind::Run,
         }
     }
 

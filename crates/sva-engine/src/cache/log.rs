@@ -11,8 +11,7 @@ struct Tally {
     miss: usize,
     prefix: usize,
     new: usize,
-    store_hit: usize,
-    store_miss: usize,
+    reused: usize,
 }
 
 impl Tally {
@@ -24,17 +23,13 @@ impl Tally {
         tally
     }
 
-    /// An extended run was found short and written again, so it is both a miss and new.
+    /// An extended value was found short and written again, so it is both a miss and new.
     fn add(&mut self, lookup: &Lookup) {
         let outcome = lookup.outcome;
-        match lookup.store {
-            Some(true) => self.store_hit += 1,
-            Some(false) => self.store_miss += 1,
-            None => {}
-        }
         match outcome {
             Outcome::Hit => self.hit += 1,
             Outcome::Prefix => self.prefix += 1,
+            Outcome::Reused => self.reused += 1,
             _ => self.miss += 1,
         }
         if matches!(
@@ -54,8 +49,8 @@ impl std::fmt::Display for Tally {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "hit={} miss={} prefix={} new={} store-hit={} store-miss={}",
-            self.hit, self.miss, self.prefix, self.new, self.store_hit, self.store_miss
+            "hit={} miss={} prefix={} new={} reused={}",
+            self.hit, self.miss, self.prefix, self.new, self.reused
         )
     }
 }
@@ -88,11 +83,11 @@ pub fn cache_log(stats: &CacheStats, rate: u32) -> String {
     if cuts.last().is_none_or(|(_, made)| *made < lookups.len()) {
         cuts.push(("end".to_string(), lookups.len()));
     }
-    let (mut from, mut hits) = (0, 0);
+    let (mut from, mut hits, mut looked) = (0, 0, 0);
     for (label, to) in cuts {
         let tally = Tally::of(&lookups[from..to]);
-        hits += tally.hit;
-        let cum = percent(hits, to);
+        (hits, looked) = (hits + tally.hit, looked + tally.looked());
+        let cum = percent(hits, looked);
         let _ = writeln!(out, "sva-cache {label} {tally} cum-hit={cum:.1}%");
         from = to;
     }

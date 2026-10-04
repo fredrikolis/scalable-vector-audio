@@ -56,8 +56,8 @@ pub async fn render_in<B: Backend>(
     tier: &Tier<B>,
     abandon: &dyn Abandon,
 ) -> Result<Render, EngineError> {
-    let round = tier.begin();
-    let mut recording = Recording::over(tier.memory());
+    let memory = tier.memory();
+    let mut recording = Recording::over(memory);
     let Session { own, stand_in } = session;
     let (world, root) = World::rendered(own, graph, target, config.rate)?;
     let (instances, typed) = (&world.instances, &world.typing);
@@ -66,13 +66,13 @@ pub async fn render_in<B: Backend>(
         .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;
     let (config, decided) = ended(typed, id, config);
     let lowered = typed.lowered().to_vec();
-    let mut found = walked(world, (&root, &config), (tier, round)).await;
-    recording.found(std::mem::take(&mut found.lookups));
+    let round = tier.begin();
+    let found = walked(world, (&root, &config), (tier, round, &mut recording)).await;
     let tys = typed.clone();
     if dropped(&config) && found.held.contains_key(&root) {
         let schedule = schedule::plan(&tys, id, &config.asks);
         let mut held = Render::shell(tys, id, config, schedule);
-        let mut stats = recording.stats();
+        let mut stats = recording.stats(memory);
         stats.typed = lowered;
         held.cache_stats = Some(stats);
         return Ok(held);
@@ -112,8 +112,8 @@ pub async fn render_in<B: Backend>(
         }
         table.offers(&held.tys, range);
     }
-    let walked = recording.stats();
-    match driving(&mut held, recording)? {
+    let walked = recording.stats(memory);
+    match driving(&mut held, (memory, recording))? {
         Some(mut driver) => {
             loop {
                 if abandon.abandoned().await {
@@ -149,7 +149,7 @@ pub async fn render_in<B: Backend>(
 async fn walked<B: Backend>(
     world: &World,
     (root, config): (&str, &RenderConfig),
-    (tier, round): (&Tier<B>, u64),
+    (tier, round, seen): (&Tier<B>, u64, &mut Recording),
 ) -> Reached {
     let walking = Walking {
         root,
@@ -158,7 +158,9 @@ async fn walked<B: Backend>(
     };
     loop {
         let memory = tier.memory();
-        match world.walk(&walking, &|key| memory.answer(key, round)) {
+        match world.walk(&walking, &mut |node, key| {
+            memory.answered((key, round), (node, seen))
+        }) {
             Reach::Reached(reached) => return reached,
             Reach::Asks(keys) => {
                 for key in keys {

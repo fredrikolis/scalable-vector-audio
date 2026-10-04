@@ -26,7 +26,7 @@ pub(crate) use demand::Need;
 pub(crate) use value::{Held, Key, Kind, Value};
 pub(crate) use values::Values;
 
-use crate::cache::{Question, Recording, Shape, Stored};
+use crate::cache::{Memory, Question, Recording, Shape, Stored};
 use crate::cast::Cast;
 use crate::error::EngineError;
 use crate::refs;
@@ -335,9 +335,9 @@ impl Table {
     pub(crate) fn pull(
         &mut self,
         window: Extent,
-        recording: &mut Recording,
+        (memory, seen): (&Memory, &mut Recording),
     ) -> Result<Pulled, EngineError> {
-        self.pulled(&self.asked(window), recording)
+        self.pulled(&self.asked(window), (memory, seen))
     }
 
     /// The history each stateful value runs through before what `window` holds of it, pulled
@@ -347,7 +347,7 @@ impl Table {
         &mut self,
         window: Extent,
         block: i64,
-        recording: &mut Recording,
+        (memory, seen): (&Memory, &mut Recording),
     ) -> Result<Pulled, EngineError> {
         let needs = self.bounded_demand(window)?;
         let spans: Vec<(usize, Extent)> = self
@@ -374,7 +374,7 @@ impl Table {
         let mut from = over.start;
         while from < over.end {
             let to = from.saturating_add(block).min(over.end);
-            let done = self.pulled(&within(Extent::new(from, to)), recording)?;
+            let done = self.pulled(&within(Extent::new(from, to)), (memory, &mut *seen))?;
             pulled.priced += done.priced;
             pulled.waves += done.waves;
             pulled.most_bytes = pulled.most_bytes.max(done.most_bytes);
@@ -418,7 +418,7 @@ impl Table {
     fn pulled(
         &mut self,
         asked: &[(usize, Extent)],
-        recording: &mut Recording,
+        (memory, seen): (&Memory, &mut Recording),
     ) -> Result<Pulled, EngineError> {
         let mut needs = demand::demand(&self.values, asked);
         let order: Vec<usize> = self.values.ordered().collect();
@@ -430,7 +430,7 @@ impl Table {
                 if needs[at].hold.is_empty() || (place.looked && !stored) || !value.pure {
                     continue;
                 }
-                loaded |= store::load(value, place, &needs[at].hold, recording);
+                loaded |= store::load(value, place, &needs[at].hold, (memory, &mut *seen));
             }
             if !loaded {
                 break;
@@ -445,15 +445,15 @@ impl Table {
                 continue;
             }
             if self.values[at].alias().is_some() {
-                self.kept(at, &[], recording);
+                self.kept(at, &[], (memory, &mut *seen));
                 continue;
             }
             let mut lifted = self.values.lift(at);
-            let computed = self.computed(at, &mut lifted, need, recording);
+            let computed = self.computed(at, &mut lifted, need, (memory, &mut *seen));
             self.values.put(at, lifted);
             let (priced, waves) = computed?;
             let computed: Vec<Extent> = need.compute.iter().collect();
-            self.kept(at, &computed, recording);
+            self.kept(at, &computed, (memory, &mut *seen));
             pulled.priced += priced;
             pulled.waves += waves;
         }
@@ -466,24 +466,14 @@ impl Table {
         at: usize,
         value: &mut Value,
         need: &Need,
-        recording: &mut Recording,
+        (memory, seen): (&Memory, &mut Recording),
     ) -> Result<(u128, u128), EngineError> {
-        let place = self.values.place_mut(at);
-        store::noted(value, place, !need.compute.is_empty(), recording);
-        let marks = eval::Marks {
-            at: place
-                .segments
-                .iter()
-                .skip(1)
-                .map(|(start, _)| *start)
-                .collect(),
-            every: recording.keeps().then(|| recording.mark_every()),
-        };
+        let marks = store::marks(self.values.place(at), memory);
         let done = eval::compute(value, need, (&self.values, &marks), &self.profile)?;
         let place = self.values.place_mut(at);
         for (read, count) in store::reached(value, place, &need.compute) {
             let (read, place) = self.values.placed(read);
-            store::reread(read, place, count, recording);
+            store::reread(read, place, count, seen);
         }
         Ok(done)
     }
@@ -1354,8 +1344,6 @@ fn place(values: &Values, value: &Value, profile: &Profile) -> store::Place {
         unread: leaf_reads(values, value),
         reached: 0,
         looked: false,
-        prefixed: false,
-        noted: None,
         offer: None,
         told: false,
         landed: i64::MIN,

@@ -553,6 +553,7 @@ fn stats_with(stats: &CacheStats, extra: &str) -> String {
             Outcome::ComputedReplaced => "computed_replaced",
             Outcome::Extended => "extended",
             Outcome::Prefix => "prefix",
+            Outcome::Reused => "reused",
         };
         format!(
             "{{ \"node\": \"{}\", \"key\": \"{}\", \"kind\": \"{}\", \"outcome\": \"{outcome}\" }}",
@@ -566,7 +567,7 @@ fn stats_with(stats: &CacheStats, extra: &str) -> String {
         )
     });
     format!(
-        "{{ \"nodes\": {}, \"hits\": {}, \"computed\": {}, \"stored\": {}, \"replaced\": {}, \"extended\": {}, \
+        "{{ \"nodes\": {}, \"hits\": {}, \"computed\": {}, \"stored\": {}, \"replaced\": {}, \"extended\": {}, \"reused\": {}, \
          \"bytes\": {}, \"max_bytes\": {}, \"entries\": {}, \"evictions\": {}, \
          \"tier\": {}, \"lookups\": {lookups}{extra} }}",
         stats.nodes(),
@@ -575,6 +576,7 @@ fn stats_with(stats: &CacheStats, extra: &str) -> String {
         stats.stored(),
         stats.replaced(),
         stats.extended(),
+        stats.reused(),
         stats.bytes,
         stats.max_bytes,
         stats.entries,

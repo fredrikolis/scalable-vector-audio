@@ -5,7 +5,7 @@ use std::sync::Arc;
 use sva_formula::{Codomain, Hash};
 use sva_samples::{Buffer, Extent, Grid, Label};
 
-use super::{Facts, Keep, Known, Memory, Offered, Stored};
+use super::{Facts, Keep, Known, Memory, Offered, Recording, Stored};
 
 fn stored(key: Hash) -> Stored {
     Stored {
@@ -38,7 +38,7 @@ fn kept(memory: &Memory, key: Hash, offered: Offered) {
         slot: None,
         node,
     };
-    memory.keep(key, keep);
+    memory.keep(key, keep, &mut Recording::over(memory));
 }
 
 /// Node `i` moves node `i - 1` a sample on, down to a foot holding samples of its own.

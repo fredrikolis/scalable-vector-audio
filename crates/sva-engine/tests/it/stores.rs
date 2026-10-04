@@ -64,7 +64,10 @@ fn the_cap_holds_after_every_render_and_a_lowered_cap() {
 
 /// The node keys a render's walk found in memory.
 fn found(stats: &CacheStats) -> Vec<Hash> {
-    let hits = stats.lookups.iter().filter(|l| l.store == Some(true));
+    let hits = stats
+        .lookups
+        .iter()
+        .filter(|l| l.outcome == sva_engine::Outcome::Hit);
     hits.map(|l| l.key).collect()
 }
 
@@ -106,7 +109,7 @@ fn chain(n3: &str, master: &str) -> Graph {
 
 fn node_key(stats: &CacheStats, node: &str) -> Hash {
     let looked = stats.lookups.iter().filter(|l| l.node == node);
-    let mut nodes = looked.filter(|l| l.store.is_some());
+    let mut nodes = looked.filter(|l| l.outcome != sva_engine::Outcome::Reused);
     nodes.next().map(|l| l.key).expect("looked up as a node")
 }
 

@@ -140,16 +140,13 @@ fn a_long_sum_of_index_reads_shares_one_value_and_pays_each_term_only_where_it_s
         vec![Extent::new(0, i64::from(RATE / 2))]
     );
     let stats = held.cache_stats.as_ref().expect("stats");
-    let reads = stats
-        .lookups
-        .iter()
-        .filter(|l| l.node == "note" && l.store.is_none());
+    let reads = stats.lookups.iter().filter(|l| l.node == "note");
     let reads = reads.count();
     assert_eq!(
         reads, terms,
         "each read looks up the note's one value: {stats:?}"
     );
-    assert_eq!(stats.hits(), terms - 1, "{stats:?}");
+    assert_eq!(stats.reused(), terms - 1, "{stats:?}");
 
     let len = held.output(held.root).expect("the song").plane(0).len() as u128;
     let note = u128::from(RATE / 2);
