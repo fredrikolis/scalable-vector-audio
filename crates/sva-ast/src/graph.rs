@@ -27,6 +27,8 @@ pub struct Graph {
     skipped: Vec<Skipped>,
     /// Each node's text as its source answered it, or as a defined one prints.
     texts: HashMap<String, String>,
+    /// The edit of its source each node's text was read at, where the source counts them.
+    generations: HashMap<String, u64>,
 }
 
 /// A node's body and the default lines written above it, held whole so a reader may keep it.
@@ -41,6 +43,7 @@ pub struct Defined {
 pub struct Held {
     defined: Arc<Defined>,
     text: String,
+    generation: Option<u64>,
     span: Option<FileSpan>,
     grid: Option<Grid>,
 }
@@ -148,6 +151,10 @@ impl Graph {
         self.texts.get(path).map(String::as_str)
     }
 
+    pub fn generation(&self, path: &str) -> Option<u64> {
+        self.generations.get(path).copied()
+    }
+
     /// What an invocation binding nothing for a name gets, in written order. A caller's own
     /// binding wins, so this is only ever consulted for names the invocation left out.
     pub fn defaults(&self, path: &str) -> &[(String, Expr)] {
@@ -245,6 +252,7 @@ impl Graph {
         };
         Held {
             text: crate::print::render(&body),
+            generation: None,
             defined: Arc::new(Defined {
                 body,
                 defaults: Vec::new(),
@@ -262,6 +270,7 @@ impl Graph {
                 .get(path)
                 .cloned()
                 .expect("every node holds its text"),
+            generation: self.generations.get(path).copied(),
             span: self.spans.get(path).copied().flatten(),
             grid: self.grids.get(path).cloned(),
         })
@@ -274,6 +283,10 @@ impl Graph {
             Some(held) => {
                 self.nodes.insert(path.to_string(), held.defined);
                 self.texts.insert(path.to_string(), held.text);
+                match held.generation {
+                    Some(at) => self.generations.insert(path.to_string(), at),
+                    None => self.generations.remove(path),
+                };
                 self.spans.insert(path.to_string(), held.span);
                 match held.grid {
                     Some(grid) => self.grids.insert(path.to_string(), grid),
@@ -283,6 +296,7 @@ impl Graph {
             None => {
                 self.nodes.remove(path);
                 self.texts.remove(path);
+                self.generations.remove(path);
                 self.spans.remove(path);
                 self.grids.remove(path);
             }
@@ -298,6 +312,18 @@ impl Graph {
             (None, None) => true,
             _ => false,
         }
+    }
+
+    /// Each node `path` reads directly, by its body or a default.
+    fn reaching_from(&self, path: &str) -> Vec<String> {
+        let Some(defined) = self.nodes.get(path) else {
+            return Vec::new();
+        };
+        let mut out = reads_of(path, &defined.body);
+        for (_, value) in &defined.defaults {
+            out.extend(reads_of(path, value));
+        }
+        out
     }
 
     /// Each node `roots` reach here, following each one's reads.
@@ -621,17 +647,29 @@ pub fn load_reaching(source: &dyn Source, roots: &[&str]) -> Result<Graph, Vec<R
     loading.finish(None)
 }
 
-/// What `roots` reach that `base` does not hold, and nothing `base` holds: each node read and
-/// parsed once, a ref into `base` resolving there.
+/// What `roots` reach that `base` does not hold, or holds at an earlier edit of `source`:
+/// each node read and parsed once, a ref into `base` resolving there. A node `base` holds as
+/// `source` still does is walked through, never read.
 pub fn load_beside(
     source: &dyn Source,
     roots: &[&str],
     base: &Graph,
 ) -> Result<Graph, Vec<Refusal>> {
     let mut loading = Loading::new(source.name());
+    let mut walked = BTreeSet::new();
     let mut work: Vec<String> = roots.iter().rev().map(|r| (*r).to_string()).collect();
     while let Some(path) = work.pop() {
-        if base.defines(&path) || loading.holds(&path) || !loading.pull(source, &path) {
+        let current = base.defines(&path)
+            && source
+                .generation(&path)
+                .is_none_or(|at| base.generation(&path) == Some(at));
+        if current {
+            if walked.insert(path.clone()) {
+                work.extend(base.reaching_from(&path));
+            }
+            continue;
+        }
+        if loading.holds(&path) || !loading.pull(source, &path) {
             continue;
         }
         work.extend(loading.reads(&path));
@@ -650,6 +688,7 @@ struct Loading {
     refusals: Vec<Refusal>,
     skipped: Vec<Skipped>,
     texts: HashMap<String, String>,
+    generations: HashMap<String, u64>,
 }
 
 impl Loading {
@@ -664,6 +703,7 @@ impl Loading {
             refusals: Vec::new(),
             skipped: Vec::new(),
             texts: HashMap::new(),
+            generations: HashMap::new(),
         }
     }
 
@@ -698,6 +738,9 @@ impl Loading {
         let (_, span) = crate::filename::parse_filename(base_name(path));
         self.spans.insert(path.to_string(), span);
         self.texts.insert(path.to_string(), text.to_string());
+        if let Some(at) = source.generation(path) {
+            self.generations.insert(path.to_string(), at);
+        }
         match parse_file(base_name(path), &text) {
             Ok(parsed) => {
                 self.nodes.insert(path.to_string(), parsed.expr);
@@ -752,6 +795,7 @@ impl Loading {
             per_bar: None,
             skipped: self.skipped,
             texts: self.texts,
+            generations: self.generations,
         })
     }
 }

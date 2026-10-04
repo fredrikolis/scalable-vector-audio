@@ -662,6 +662,23 @@ fn a_stream_crosses_block_by_block_and_a_replaced_term_releases_it() {
     refused_as(now(gated.edit("@notes([0, 1s])")).err(), "validation_error");
 }
 
+/// A node the page inserts anew while a stream plays it is a new version: the stream's next
+/// edit plays the inserted text, from where it lands bit for bit the render of the edited page.
+#[wasm_bindgen_test]
+fn a_stream_edit_after_an_insert_plays_the_inserted_text() {
+    let mut held = page();
+    let stream = opened(&held, "master");
+    blocks(&stream, 4);
+    held.insert("partials/one", "sin(2*pi*200*t)\n");
+    now(stream.edit("@master"))
+        .unwrap_or_else(|e| unreachable!("{}", as_text(&field(&e, "refusal"))));
+    let at = stream.position() as usize;
+    let heard = blocks(&stream, 8);
+    let whole = plane(&render(&held, "master"));
+    assert!(heard.iter().any(|v| *v != 0.0), "silence tests nothing");
+    assert_eq!(heard[..], whole[at..at + heard.len()]);
+}
+
 /// A live stream behind the clock skips to now: the block starts there, a formula plays on
 /// as the whole render does, and a filter that would need the span between starts silent,
 /// listed in `dropped`.

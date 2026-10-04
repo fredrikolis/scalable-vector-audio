@@ -8,6 +8,7 @@ mod opfs;
 
 pub use opfs::DirectoryHandle;
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::pin::Pin;
 use std::rc::Rc;
@@ -275,9 +276,33 @@ fn representations_of(names: &[String]) -> Result<Vec<Asked>, JsValue> {
 /// Nothing in a browser pushes back when memory grows inside the tab's own address space.
 const DEFAULT_CACHE_BYTES: u64 = 256 << 20;
 
+/// The page's nodes as they stand at each read, so a stream's later change reads what the
+/// page inserted since it opened.
+#[derive(Clone, Default)]
+struct Live(Rc<RefCell<sva_ast::Composition>>);
+
+impl sva_ast::Source for Live {
+    fn paths(&self) -> Result<sva_ast::Listing, String> {
+        self.0.borrow().paths()
+    }
+
+    fn get(&self, path: &str) -> Result<Option<Cow<'_, str>>, String> {
+        let held = self.0.borrow();
+        Ok(held.get(path)?.map(|text| Cow::Owned(text.into_owned())))
+    }
+
+    fn generation(&self, path: &str) -> Option<u64> {
+        self.0.borrow().generation(path)
+    }
+
+    fn name(&self) -> String {
+        self.0.borrow().name()
+    }
+}
+
 #[wasm_bindgen]
 pub struct Composition {
-    inner: sva_ast::Composition,
+    inner: Live,
     tier: Rc<Tier<opfs::Opfs>>,
     /// A render in flight holds it; one beside it types in a session of its own.
     session: Cell<Session>,
@@ -300,10 +325,10 @@ impl Composition {
     fn over(name: Option<String>, tier: Tier<opfs::Opfs>) -> Composition {
         let inner = sva_ast::Composition::new();
         Composition {
-            inner: match name {
+            inner: Live(Rc::new(RefCell::new(match name {
                 Some(name) => inner.named(name),
                 None => inner,
-            },
+            }))),
             tier: Rc::new(tier),
             session: Cell::default(),
         }
@@ -345,7 +370,7 @@ impl Composition {
     }
 
     pub fn insert(&mut self, path: &str, text: &str) {
-        self.inner.insert(path, text);
+        self.inner.0.borrow_mut().insert(path, text);
     }
 
     /// `target` as `sva-cli render` takes it, `@piano([0, 2b], f0=C4)`; `representations`
@@ -434,7 +459,7 @@ impl Composition {
         }
         let edits = Edits {
             inner: Rc::new(RefCell::new(inner)),
-            source: Rc::new(self.inner.clone()),
+            source: self.inner.clone(),
             tier: Rc::clone(&self.tier),
             freed: Rc::default(),
         };
@@ -619,7 +644,7 @@ pub struct Stream {
 #[derive(Clone)]
 struct Edits {
     inner: Rc<RefCell<sva_core::Stream>>,
-    source: Rc<sva_ast::Composition>,
+    source: Live,
     tier: Rc<Tier<opfs::Opfs>>,
     freed: Rc<Cell<bool>>,
 }
@@ -648,7 +673,7 @@ impl Stream {
     pub fn edit(&self, expr: &str) -> impl Future<Output = Result<(), JsValue>> + 'static {
         let (edits, expr) = (self.edits.clone(), expr.to_string());
         async move {
-            let edited = sva_core::edit(&edits.inner, &*edits.source, &expr, &*edits.tier).await;
+            let edited = sva_core::edit(&edits.inner, &edits.source, &expr, &*edits.tier).await;
             edits.answered(edited)
         }
     }
@@ -661,7 +686,7 @@ impl Stream {
         let (edits, term) = (self.edits.clone(), term.to_string());
         async move {
             let at = placement(options)?;
-            let (inner, source) = (&edits.inner, &*edits.source);
+            let (inner, source) = (&edits.inner, &edits.source);
             let added = sva_core::add(inner, source, (&term, at), &*edits.tier).await;
             edits.answered(added.map(|handle| handle.0))
         }
@@ -676,7 +701,7 @@ impl Stream {
         let (edits, term) = (self.edits.clone(), term.to_string());
         async move {
             let replaced = (Handle(handle), term.as_str(), placement(options)?);
-            let (inner, source) = (&edits.inner, &*edits.source);
+            let (inner, source) = (&edits.inner, &edits.source);
             let replaced = sva_core::replace(inner, source, replaced, &*edits.tier).await;
             edits.answered(replaced)
         }

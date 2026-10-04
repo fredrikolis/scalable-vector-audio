@@ -349,8 +349,8 @@ pub async fn fetch<B: Backend>(stream: &RefCell<Stream>, tier: &Tier<B>) {
     sva_engine::fetch(stream, tier).await;
 }
 
-/// `text` with no interval, and each node it reads that `stream` does not hold yet, read and
-/// parsed off `source`: a node the stream holds plays as it first read it.
+/// `text` with no interval, and each node it reads that `stream` does not hold, or holds at an
+/// earlier edit of `source`, read and parsed off `source`: an edit is a version the stream plays.
 fn streamed(
     stream: &Stream,
     source: &dyn Source,

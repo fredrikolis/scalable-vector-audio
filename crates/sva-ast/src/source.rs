@@ -26,6 +26,11 @@ pub trait Source {
     /// `Ok(None)` is absent; `Err` is why a path this source names could not be read.
     fn get(&self, path: &str) -> Result<Option<Cow<'_, str>>, String>;
 
+    /// Where this source counts its edits, the edit `path`'s text was last written at.
+    fn generation(&self, _path: &str) -> Option<u64> {
+        None
+    }
+
     fn name(&self) -> String {
         UNNAMED.to_string()
     }
@@ -35,9 +40,10 @@ const UNNAMED: &str = "this composition";
 
 /// The deserialization target, and the builder: a flat path-to-text map is what a JSON object
 /// decodes into, so a producer that is not a directory needs no loader of its own.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct Composition {
-    nodes: BTreeMap<String, String>,
+    nodes: BTreeMap<String, (String, u64)>,
+    edits: u64,
     name: Option<String>,
 }
 
@@ -47,7 +53,8 @@ impl Composition {
     }
 
     pub fn insert(&mut self, path: impl Into<String>, text: impl Into<String>) -> &mut Composition {
-        self.nodes.insert(path.into(), text.into());
+        self.edits += 1;
+        self.nodes.insert(path.into(), (text.into(), self.edits));
         self
     }
 
@@ -65,6 +72,16 @@ impl Composition {
     }
 }
 
+impl PartialEq for Composition {
+    fn eq(&self, other: &Composition) -> bool {
+        let texts = self.nodes.iter().map(|(p, (t, _))| (p, t));
+        let theirs = other.nodes.iter().map(|(p, (t, _))| (p, t));
+        self.name == other.name && texts.eq(theirs)
+    }
+}
+
+impl Eq for Composition {}
+
 impl<K: Into<String>, V: Into<String>> FromIterator<(K, V)> for Composition {
     fn from_iter<I: IntoIterator<Item = (K, V)>>(pairs: I) -> Composition {
         let mut out = Composition::new();
@@ -81,7 +98,11 @@ impl Source for Composition {
     }
 
     fn get(&self, path: &str) -> Result<Option<Cow<'_, str>>, String> {
-        Ok(self.nodes.get(path).map(|t| Cow::Borrowed(t.as_str())))
+        Ok(self.nodes.get(path).map(|(t, _)| Cow::Borrowed(t.as_str())))
+    }
+
+    fn generation(&self, path: &str) -> Option<u64> {
+        self.nodes.get(path).map(|(_, at)| *at)
     }
 
     fn name(&self) -> String {
