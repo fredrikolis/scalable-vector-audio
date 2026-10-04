@@ -337,3 +337,66 @@ fn a_render_with_no_budget_of_its_own_pays_its_profiles() {
     };
     assert_eq!(refused.code(), "collapse.over_budget", "{refused}");
 }
+
+/// The count a reading prints, the work a render did and the price its budget weighed are one
+/// number, whatever route each value takes: a transform pays per frame it transforms, an
+/// inverse spectrum the transforms its plan turns, never one per sample.
+#[test]
+fn the_count_is_what_computing_paid_on_every_route() {
+    let routes = [
+        (
+            "rows",
+            "sin(2*pi*440*t)\n",
+            "line spectrum, summed directly",
+        ),
+        (
+            "program",
+            "lowpass(sample(sin(2*pi*440*t)), cutoff=300)\n",
+            "sampled program",
+        ),
+        (
+            "istft",
+            "istft(stft(sample(crop(sin(2*pi*440*t), 0s, 0.1s)), window=256sp, hop=64sp))\n",
+            "inverse short-time transform",
+        ),
+        (
+            "spectrum",
+            "sum(k, 1, 8, exp(0 - pow((f - 100*k)/10, 2)))\n",
+            "inverse spectrum",
+        ),
+    ];
+    for (name, body, route) in routes {
+        let held = rendered(
+            &format!("paid-{name}"),
+            &[("node", body)],
+            config(0.1, None),
+        );
+        let tree = counted(&held);
+        assert!(
+            tree.rows.iter().any(|row| row.route == route),
+            "{name}: {:?}",
+            tree.rows
+        );
+        assert_eq!(tree.total, held.work().priced_flops, "{name}");
+    }
+    let held = rendered(
+        "paid-transform",
+        &[(
+            "node",
+            "istft(stft(sample(crop(sin(2*pi*440*t), 0s, 0.1s)), window=256sp, hop=64sp))\n",
+        )],
+        config(0.1, None),
+    );
+    let tree = counted(&held);
+    let inverse = tree
+        .rows
+        .iter()
+        .find(|row| row.route == "inverse short-time transform")
+        .expect("the inverse");
+    let samples = (0.1 * f64::from(RATE)).ceil() as usize;
+    let frames = (samples + 2 * (256 - 64)).div_ceil(64) as u128;
+    assert_eq!(
+        inverse.own,
+        frames * sva_samples::collapse::transform_flops(256)
+    );
+}

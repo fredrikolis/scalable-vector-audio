@@ -23,7 +23,8 @@ pub(crate) fn compute(
         if let Kind::Rows(rows) = &value.kind {
             waves += rows.work(segment.start, segment.end).1;
         }
-        priced += match &value.kind {
+        priced += cost(value, segment, done, profile)?;
+        match &value.kind {
             Kind::Rows(_) => rows(value, segment)?,
             Kind::Program(program) if program.stateful() => {
                 stepped(value, segment, need.restart, (done, marks))?
@@ -38,12 +39,38 @@ pub(crate) fn compute(
                     .first()
                     .expect("a stored value short of its readers");
                 value.hold(samples_of(done, live, segment));
-                0
             }
-        };
+        }
         evaluated(&mut value.evaluated, segment);
     }
     Ok((priced, waves))
+}
+
+/// What computing `value` over `segment` costs: the one price both the budget and the count
+/// read.
+fn cost(
+    value: &Value,
+    segment: Extent,
+    values: &Values,
+    profile: &Profile,
+) -> Result<u128, EngineError> {
+    Ok(match &value.kind {
+        Kind::Rows(rows) => rows.work(segment.start, segment.end).0,
+        Kind::Program(program) if program.alias.is_some() => 0,
+        Kind::Program(program) => program.spanned.ops(segment.start, segment.end),
+        Kind::Frames { window, hop } => stft::flops(segment.len(), *window, *hop),
+        Kind::Istft => match values[value.reads[0]].kind {
+            Kind::Frames { window, hop } => stft::flops(segment.len(), window, hop),
+            _ => 0,
+        },
+        Kind::Spectrum(sum) => {
+            let rate = value.grid.rate;
+            sva_samples::collapse::plan::of(sum, rate, segment, profile, segment.len())
+                .map_err(|e| collapse_refused(&value.name, &e))?
+                .flops(rate, segment)
+        }
+        Kind::Resident { .. } => 0,
+    })
 }
 
 /// A segment continuing the last one computed extends it, so a value pulled block by block
@@ -55,7 +82,7 @@ fn evaluated(held: &mut Vec<Extent>, segment: Extent) {
     }
 }
 
-fn rows(value: &mut Value, segment: Extent) -> Result<u128, EngineError> {
+fn rows(value: &mut Value, segment: Extent) -> Result<(), EngineError> {
     let Kind::Rows(rows) = &value.kind else {
         unreachable!("a value of rows");
     };
@@ -63,11 +90,10 @@ fn rows(value: &mut Value, segment: Extent) -> Result<u128, EngineError> {
         .planes(segment.start, segment.end)
         .map_err(|e| collapse_refused(&value.name, &e))?;
     finite(&value.name, planes.iter().flatten())?;
-    let priced = rows.work(segment.start, segment.end).0;
     let mut buffer = Buffer::of_planes(value.grid.rate, planes);
     buffer.start = segment.start;
     value.hold(buffer);
-    Ok(priced)
+    Ok(())
 }
 
 /// Every value a slot reads, viewed over what `over` reads of it.
@@ -106,7 +132,7 @@ impl<'a> View<'a> {
     }
 }
 
-fn program(value: &mut Value, segment: Extent, done: &Values) -> Result<u128, EngineError> {
+fn program(value: &mut Value, segment: Extent, done: &Values) -> Result<(), EngineError> {
     let Kind::Program(program) = &value.kind else {
         unreachable!("a program");
     };
@@ -119,9 +145,8 @@ fn program(value: &mut Value, segment: Extent, done: &Values) -> Result<u128, En
         .run_to(segment.end, &windows, &mut tape)
         .map_err(|e| sample_refused(&value.name, &e))?;
     finite(&value.name, tape.planes().iter().flatten())?;
-    let priced = program.spanned.ops(segment.start, segment.end);
     value.hold(tape.into_buffer(value.grid.rate));
-    Ok(priced)
+    Ok(())
 }
 
 /// Where a run keeps its state: each switch, and a ladder `every` samples from its start.
@@ -159,7 +184,7 @@ fn stepped(
     segment: Extent,
     restart: bool,
     (done, marks): (&Values, &Marks),
-) -> Result<u128, EngineError> {
+) -> Result<(), EngineError> {
     let (name, width) = (value.name.clone(), value.width);
     let Kind::Program(program) = &mut value.kind else {
         unreachable!("a program");
@@ -176,6 +201,10 @@ fn stepped(
         );
     }
     let from = tape.end();
+    debug_assert_eq!(
+        from, segment.start,
+        "demand asks a stateful value on from where its tape ends, so `cost` prices what runs"
+    );
     let held: Vec<View> = images(program, Extent::new(from, segment.end))
         .into_iter()
         .zip(&value.reads)
@@ -197,20 +226,18 @@ fn stepped(
     finite(
         &name,
         tape.planes().iter().flat_map(|p| &p[p.len() - grown..]),
-    )?;
-    Ok(program.spanned.ops(from, segment.end))
+    )
 }
 
-fn frames(value: &mut Value, segment: Extent, done: &Values) -> Result<u128, EngineError> {
+fn frames(value: &mut Value, segment: Extent, done: &Values) -> Result<(), EngineError> {
     let Kind::Frames { window, hop } = value.kind else {
         unreachable!("frames");
     };
     let source = samples_of(done, value.reads[0], segment);
     let frames =
         stft::forward(&source, window, hop).map_err(|e| sample_refused(&value.name, &e))?;
-    let count = segment.len().div_ceil(hop.max(1)) as u128;
     value.held = Held::Frames(Some(std::sync::Arc::new(frames)));
-    Ok(count * sva_samples::collapse::transform_flops(window.max(1)))
+    Ok(())
 }
 
 fn istft(
@@ -218,7 +245,7 @@ fn istft(
     segment: Extent,
     done: &Values,
     profile: &Profile,
-) -> Result<u128, EngineError> {
+) -> Result<(), EngineError> {
     let Held::Frames(Some(frames)) = &done[value.reads[0]].held else {
         return Err(refused(
             &value.name,
@@ -227,24 +254,18 @@ fn istft(
         ));
     };
     let (inverse, label) = stft::inverse(frames, profile);
-    let count = frames.frames as u128;
-    let priced = count * sva_samples::collapse::transform_flops(frames.window.max(1));
     value.hold(inverse.over(segment, inverse.extent()));
     value.label = Some(label);
-    Ok(priced)
+    Ok(())
 }
 
-fn spectrum(value: &mut Value, segment: Extent, profile: &Profile) -> Result<u128, EngineError> {
+fn spectrum(value: &mut Value, segment: Extent, profile: &Profile) -> Result<(), EngineError> {
     let Kind::Spectrum(sum) = &value.kind else {
         unreachable!("a spectrum");
     };
-    let rate = value.grid.rate;
-    let plan = sva_samples::collapse::plan::of(sum, rate, segment, profile, segment.len())
-        .map_err(|e| collapse_refused(&value.name, &e))?;
-    let priced = plan.flops(rate, segment);
     let (buffer, label): (Buffer, Label) = sva_samples::of_spectral_sum(
         sum,
-        rate,
+        value.grid.rate,
         segment,
         profile,
         sva_samples::AliasScore::NotAsked,
@@ -253,7 +274,7 @@ fn spectrum(value: &mut Value, segment: Extent, profile: &Profile) -> Result<u12
     finite(&value.name, buffer.planes.iter().flatten())?;
     value.hold(buffer);
     value.label = Some(label);
-    Ok(priced)
+    Ok(())
 }
 
 /// `at`'s program with another renderer, over `over` from where its state starts: what a
@@ -311,19 +332,14 @@ pub(crate) fn samples_of(values: &Values, at: usize, over: Extent) -> Buffer {
 }
 
 /// What `need` would cost, priced as `compute` pays it.
-pub(crate) fn price(value: &Value, need: &Segments) -> u128 {
+pub(crate) fn price(
+    value: &Value,
+    need: &Segments,
+    values: &Values,
+    profile: &Profile,
+) -> Result<u128, EngineError> {
     need.iter()
-        .map(|segment| match &value.kind {
-            Kind::Rows(rows) => rows.work(segment.start, segment.end).0,
-            Kind::Program(program) if program.alias.is_some() => 0,
-            Kind::Program(program) => program.spanned.ops(segment.start, segment.end),
-            Kind::Frames { window, hop } => {
-                segment.len().div_ceil((*hop).max(1)) as u128
-                    * sva_samples::collapse::transform_flops((*window).max(1))
-            }
-            Kind::Istft | Kind::Spectrum(_) => segment.len() as u128,
-            Kind::Resident { .. } => 0,
-        })
+        .map(|segment| cost(value, segment, values, profile))
         .sum()
 }
 

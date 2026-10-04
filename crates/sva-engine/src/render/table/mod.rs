@@ -226,7 +226,7 @@ impl Table {
     /// computing it did.
     pub(crate) fn plan(&mut self, range: Extent) -> Result<(), EngineError> {
         let needs = self.bounded_demand(range)?;
-        self.planned = self.price(&needs);
+        self.planned = self.price(&needs)?;
         for (at, value) in self.values.iter() {
             if let Kind::Resident(stored) = &value.kind {
                 self.planned[at] += stored.priced;
@@ -595,12 +595,12 @@ impl Table {
     }
 
     /// What `need` costs each value, as computing it pays.
-    pub(crate) fn price(&self, needs: &[Need]) -> Vec<u128> {
+    pub(crate) fn price(&self, needs: &[Need]) -> Result<Vec<u128>, EngineError> {
         let mut out = vec![0; self.values.span()];
         for (at, value) in self.values.iter() {
-            out[at] = eval::price(value, &needs[at].compute);
+            out[at] = eval::price(value, &needs[at].compute, &self.values, &self.profile)?;
         }
-        out
+        Ok(out)
     }
 
     /// A value made, holding what it reads.
