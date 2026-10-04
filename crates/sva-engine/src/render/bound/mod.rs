@@ -387,8 +387,9 @@ impl Tail {
         found[&(std::ptr::from_ref(self), t.to_bits())]
     }
 
-    /// Its bound from `t`, each tail it reads bounded by `read`.
+    /// From the double before `t`: an edge tying `t` may hold it.
     fn bound_from<'a>(&'a self, t: f64, read: &dyn Fn(&'a Rc<Tail>, f64) -> f64, cx: Cx) -> f64 {
+        let t = t.next_down();
         match &self.form {
             Form::Listed(listed) => match listed.atoms(cx) {
                 Some((atoms, summed)) => atoms_from(atoms, summed, t),

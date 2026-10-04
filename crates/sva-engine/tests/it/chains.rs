@@ -91,7 +91,7 @@ fn an_exponential_window_over_a_sum_twelve_levels_deep() {
 fn a_loop_over_a_sum_with_a_modulated_term_twelve_levels_deep() {
     let body = |p: &str| format!("{p}*sin(2*pi*3*t) + {p}*0.3 + {p}*0.2");
     let digest = over(TONE, (12, "1s"), body, "@n12(t) + 0.5*self(t - 17ms)");
-    assert_eq!(digest, 0x1491_1a68_85d7_8c9e);
+    assert_eq!(digest, 0xa004_0318_faff_2338);
 }
 
 /// Samples `top` renders, unpruned, over a chain whose `ck` reads `c{k-1}` as `read` writes it.

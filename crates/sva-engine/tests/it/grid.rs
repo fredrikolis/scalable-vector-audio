@@ -14,7 +14,7 @@ fn composition() -> sva_ast::Graph {
             ("lfo", "lowpass(sample(0.001*sin(2*pi*3*t)), cutoff=100)\n"),
             ("vibrato", "@tone(t + @lfo)\n"),
             ("scaled", "@tone(0.37*t - 0.0123456s)\n"),
-            ("decay", "crop(1, 0s, 1sp) + 0.5*self[idx(t) - 1]\n"),
+            ("decay", "crop(1, 0s, 0.5sp) + 0.5*self[idx(t) - 1]\n"),
             (
                 "mix",
                 "lowpass(sample(0.3*saw(220*t)), cutoff=900) + @vibrato + rand(t - t % 0.01s, \

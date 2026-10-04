@@ -55,7 +55,7 @@ fn an_index_of_a_time_held_in_refs_reads_the_step_nearest_it() {
         ("when", "@late(t) - 0.002s\n"),
         ("top", "@x[idx(@when(t))]\n"),
     ];
-    assert_eq!(digest(&files, "top", 0.1), 0x04ac_fddc_9b3a_bbfd);
+    assert_eq!(digest(&files, "top", 0.1), 0x7898_7b4c_b8f2_a322);
 }
 
 /// A dashpot ramped in through refs switches where the crop it reads opens.

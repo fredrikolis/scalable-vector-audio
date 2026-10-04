@@ -113,3 +113,24 @@ fn a_product_of_refs_renders_as_written_inline() {
         assert!((a - b).abs() <= 1e-9 * b.abs(), "sample {n}: {a} {b}");
     }
 }
+
+/// `1sp` at 44.1 kHz prints past sample 1's instant: an open render's bound holds the samples
+/// the crop does, of an atom sum's window or of a written form's.
+#[test]
+fn a_bound_meets_a_crop_edge_tying_an_instant_as_the_grid_does() {
+    let g = graph_of(
+        "tie",
+        &[
+            ("click", "crop(1, 0s, 1sp)\n"),
+            ("bend", "crop(tanh(1000*t), 0s, 1sp)\n"),
+        ],
+    );
+    let open = |node: &str| {
+        let config = RenderConfig::at(44_100);
+        plane(&sva_engine::render(&g, node, config, &Tier::default()).expect("a render"))
+    };
+    assert_eq!(open("click"), [1.0, 1.0]);
+    let bend = open("bend");
+    assert_eq!(bend.len(), 2);
+    assert!(bend[1] > 0.02, "{bend:?}");
+}
