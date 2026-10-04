@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use sva_formula::{ClosedForm, Hash, Held as Representation, NodeId, Var};
 use sva_samples::{
-    Buffer, Extent, Formula, Grid, Label, NodeRenderer, Profile, Rows, Slot, Spanned, Tape,
+    Buffer, Extent, Formula, Grid, Label, NodeRenderer, Profile, Rows, Slot, Spanned,
 };
 
 pub(crate) use demand::Need;
@@ -1235,7 +1235,10 @@ impl Building<'_> {
         let spanned = Spanned::new(&renderer, &layout, (from, value.support().end), &live)
             .map_err(|e| eval::sample_refused(&value.name, &e))?;
         if start.is_some() {
-            value.held = Held::Run(Tape::new(value.width, 0, from));
+            value.held = Held::Run {
+                samples: Buffer::empty(value.grid.rate, value.width, 0, from),
+                origin: from,
+            };
         }
         let alias = match (&renderer, start) {
             (

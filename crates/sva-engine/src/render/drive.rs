@@ -1,6 +1,6 @@
 // Concern: pulls or skips a table block by block until its range ends or `until` holds, dropping what no later block reads | Non-concern: what a value computes | IO: (Table, range) -> blocks
 
-use sva_samples::Extent;
+use sva_samples::{Buffer, Extent};
 
 use super::RenderConfig;
 use super::table::{Pulled, Table};
@@ -29,42 +29,6 @@ pub(super) struct Driver {
     pub(super) work: Work,
     pub(super) memory: Memory,
     pub(super) recording: Recording,
-}
-
-pub struct Block {
-    planes: Vec<Vec<f64>>,
-    start: i64,
-}
-
-impl Block {
-    pub fn start(&self) -> i64 {
-        self.start
-    }
-
-    pub fn len(&self) -> usize {
-        self.planes[0].len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn width(&self) -> usize {
-        self.planes.len()
-    }
-
-    pub fn plane(&self, c: usize) -> &[f64] {
-        &self.planes[c]
-    }
-
-    /// A mono block in each of `width` channels; any other as it is.
-    pub(super) fn widened(mut self, width: usize) -> Block {
-        if self.planes.len() == 1 {
-            let copies = vec![self.planes[0].clone(); width.saturating_sub(1)];
-            self.planes.extend(copies);
-        }
-        self
-    }
 }
 
 /// The `envelope` reading's own frame at the render's rate, where one is asked.
@@ -134,17 +98,15 @@ impl Driver {
     }
 
     /// `n` samples from where it stands, cut where its range ends; `None` from there on.
-    pub(super) fn read(&mut self, n: usize) -> Result<Option<Block>, EngineError> {
+    pub(super) fn read(&mut self, n: usize) -> Result<Option<Buffer>, EngineError> {
         let from = self.at;
         if !self.pulled(n)? {
             return Ok(None);
         }
         let end = self.end.map_or(self.at, |end| end.clamp(from, self.at));
-        let held = self.table.samples(self.table.root, Extent::new(from, end));
-        Ok(Some(Block {
-            planes: held.planes,
-            start: from,
-        }))
+        Ok(Some(
+            self.table.samples(self.table.root, Extent::new(from, end)),
+        ))
     }
 
     /// Stands at `to`, computing nothing before it; the stateful values it started silent,

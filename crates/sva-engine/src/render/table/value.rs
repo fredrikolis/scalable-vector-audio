@@ -3,7 +3,7 @@
 use sva_formula::{Hash, NodeId};
 use sva_samples::machine::ops::Layout;
 use sva_samples::{
-    Buffer, Extent, Frames, Grid, Label, Machine, NodeRenderer, Rows, Spanned, Tape, Window,
+    Buffer, Extent, Frames, Grid, Label, Machine, NodeRenderer, Rows, Spanned, Window,
 };
 
 use std::sync::Arc;
@@ -54,7 +54,11 @@ impl Program {
 
 pub(crate) enum Held {
     Segments(Vec<Arc<Buffer>>),
-    Run(Tape),
+    /// A stateful run's samples, its past silent before `origin`.
+    Run {
+        samples: Buffer,
+        origin: i64,
+    },
     Frames(Option<Arc<Frames>>),
 }
 
@@ -138,7 +142,10 @@ impl Value {
         };
         program.machine = Some(Machine::over(&program.spanned, now)?);
         program.marks.clear();
-        self.held = Held::Run(Tape::new(self.width, 0, now));
+        self.held = Held::Run {
+            samples: Buffer::empty(self.grid.rate, self.width, 0, now),
+            origin: now,
+        };
         self.silent = Some(self.silent.map_or(now, |was| was.max(now)));
         self.pure = false;
         Ok(())
@@ -158,7 +165,7 @@ impl Value {
         let mut out = Segments::default();
         match &self.held {
             Held::Segments(parts) => parts.iter().for_each(|b| out.add(b.extent())),
-            Held::Run(tape) => out.add(Extent::new(tape.base(), tape.end())),
+            Held::Run { samples, .. } => out.add(samples.extent()),
             Held::Frames(Some(_)) => out.add(self.support()),
             Held::Frames(None) => {}
         }
@@ -167,18 +174,18 @@ impl Value {
 
     pub(crate) fn end(&self) -> Option<i64> {
         match (&self.kind, &self.held) {
-            (Kind::Program(program), Held::Run(tape)) if program.machine.is_some() => {
-                Some(tape.end())
+            (Kind::Program(program), Held::Run { samples, .. }) if program.machine.is_some() => {
+                Some(samples.end())
             }
             _ => None,
         }
     }
 
     pub(crate) fn bytes(&self) -> usize {
-        let planes = |b: &Buffer| b.len() * b.width * size_of::<f64>();
+        let planes = |b: &Buffer| b.len() * b.width() * size_of::<f64>();
         let held = match &self.held {
             Held::Segments(parts) => parts.iter().map(|b| planes(b)).sum(),
-            Held::Run(tape) => tape.capacity() * tape.width() * size_of::<f64>(),
+            Held::Run { samples, .. } => samples.capacity() * samples.width() * size_of::<f64>(),
             Held::Frames(Some(frames)) => {
                 frames.width * frames.frames * frames.bins * 2 * size_of::<f64>()
             }
@@ -197,7 +204,7 @@ impl Value {
             return std::borrow::Cow::Owned(self.samples(over));
         }
         match &self.held {
-            Held::Run(tape) => std::borrow::Cow::Owned(tape.clone().into_buffer(self.grid.rate)),
+            Held::Run { samples, .. } => std::borrow::Cow::Borrowed(samples),
             Held::Segments(parts) => {
                 let meets: Vec<&Buffer> = parts
                     .iter()
@@ -227,10 +234,10 @@ impl Value {
             }
         };
         match &self.held {
-            Held::Run(tape) => lay(tape.within(self.support())),
+            Held::Run { samples, .. } => lay(samples.within(self.support())),
             Held::Segments(parts) => {
                 for part in parts {
-                    lay(Window::of(part, self.support()).folded(self.period));
+                    lay(part.within(self.support()).folded(self.period));
                 }
             }
             Held::Frames(_) => {}
@@ -255,11 +262,16 @@ impl Value {
                 }
                 *parts = out;
             }
-            Held::Run(tape) => {
-                let from = kept.iter().next().map_or(tape.end(), |first| first.start);
-                tape.forget_before(from);
-                if tape.base() == tape.end() {
-                    *tape = Tape::new(tape.width(), 0, tape.end());
+            Held::Run { samples, origin } => {
+                let from = kept
+                    .iter()
+                    .next()
+                    .map_or(samples.end(), |first| first.start);
+                samples.forget_before(from);
+                if samples.is_empty() {
+                    let end = samples.end();
+                    *samples = Buffer::empty(samples.rate, samples.width(), 0, end);
+                    *origin = end;
                 }
             }
             Held::Frames(frames) => {
@@ -286,7 +298,7 @@ impl Value {
         let last = parts.partition_point(|b| b.extent().start <= at.end);
         match &mut parts[first..last] {
             [] => parts.insert(first, buffer),
-            [held] if held.extent().end == at.start && held.width == buffer.width => {
+            [held] if held.extent().end == at.start && held.width() == buffer.width() => {
                 let held = Arc::make_mut(held);
                 for (plane, more) in held.planes.iter_mut().zip(&buffer.planes) {
                     plane.extend_from_slice(more);
@@ -310,7 +322,7 @@ fn laid(parts: &[&Buffer], width: usize, rate: u32) -> Buffer {
     for part in parts {
         let at = (part.start - hull.start) as usize;
         for (c, plane) in planes.iter_mut().enumerate() {
-            let held = part.plane(c.min(part.width.saturating_sub(1)));
+            let held = part.plane(c.min(part.width().saturating_sub(1)));
             plane[at..at + held.len()].copy_from_slice(held);
         }
     }

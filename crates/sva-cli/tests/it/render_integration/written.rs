@@ -48,7 +48,7 @@ fn a_stereo_render_writes_an_interleaved_two_channel_wav() {
     let dir = scratch("stereo-wav");
     let path = dir.join("out.wav");
     let held = buffer(&rendered, PROBE);
-    let owned: Vec<Vec<f32>> = (0..held.width).map(|c| held.as_f32(c)).collect();
+    let owned: Vec<Vec<f32>> = (0..held.width()).map(|c| held.as_f32(c)).collect();
     let planes: Vec<&[f32]> = owned.iter().map(Vec::as_slice).collect();
     write_channels(&planes, rendered.config.rate, &path, SampleEncoding::Float).unwrap();
 

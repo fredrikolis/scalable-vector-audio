@@ -11,7 +11,7 @@ use std::cell::RefCell;
 
 use sva_ast::{Expr, Graph};
 use sva_engine::{
-    Backend, Block, Change, Changed, EngineError, Handle, Placed, Render, Stream, Tier, change,
+    Backend, Change, Changed, EngineError, Handle, Placed, Render, Stream, Tier, change,
 };
 
 static RUN: AtomicU32 = AtomicU32::new(0);
@@ -113,7 +113,7 @@ pub fn samples(r: &Render) -> BTreeMap<String, Vec<f64>> {
 }
 
 /// The block from where `stream` stands, of the size it opened with.
-pub fn next(stream: &mut Stream) -> Result<Option<Block>, EngineError> {
+pub fn next(stream: &mut Stream) -> Result<Option<sva_samples::Buffer>, EngineError> {
     let (at, n) = (stream.position(), stream.config().block);
     stream.read(at, n)
 }

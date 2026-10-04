@@ -338,7 +338,7 @@ fn a_per_channel_shift_on_a_law_substitutes_per_lane() {
     let buffer = held
         .output(held.id("taps").expect("the root"))
         .expect("two lanes");
-    assert_eq!(buffer.width, 2);
+    assert_eq!(buffer.width(), 2);
     for i in [0usize, 441, 1000] {
         let t = i as f64 / 44_100.0;
         let left = (std::f64::consts::TAU * 220.0 * (t - 0.01)).sin();

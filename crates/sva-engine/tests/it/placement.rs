@@ -125,7 +125,7 @@ fn streamed(
         .now()
         .expect("it streams");
     while let Some(block) = next(&mut stream).expect("a block") {
-        each(block.start(), block.plane(0));
+        each(block.start, block.plane(0));
     }
     stream
 }

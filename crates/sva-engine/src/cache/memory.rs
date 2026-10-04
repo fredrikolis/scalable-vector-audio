@@ -197,7 +197,7 @@ impl Held {
 }
 
 fn planes(b: &Buffer) -> u64 {
-    (b.len() * b.width * size_of::<f64>()) as u64
+    (b.len() * b.width() * size_of::<f64>()) as u64
 }
 
 #[derive(Default)]

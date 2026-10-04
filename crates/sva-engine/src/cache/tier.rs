@@ -141,7 +141,7 @@ impl<B: Backend> Tier<B> {
                 }
                 reads += 1;
                 let read = disk.read(&head, gap).await;
-                let samples = read.iter().flatten().map(|b| b.len() * b.width);
+                let samples = read.iter().flatten().map(|b| b.len() * b.width());
                 let bytes = (samples.sum::<usize>() * size_of::<f64>()) as u64;
                 self.memory.count(|c| {
                     c.disk_reads += 1;

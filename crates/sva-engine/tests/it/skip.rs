@@ -88,11 +88,7 @@ fn read(stream: &RefCell<Stream>, at: usize) -> Vec<f64> {
     let block = block
         .unwrap_or_else(|e| panic!("{e}"))
         .expect("before the end");
-    assert_eq!(
-        block.start(),
-        at as i64,
-        "the block starts where it was read"
-    );
+    assert_eq!(block.start, at as i64, "the block starts where it was read");
     block.plane(0).to_vec()
 }
 

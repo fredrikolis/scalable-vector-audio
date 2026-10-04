@@ -1,7 +1,7 @@
 // Concern: one reading of a source's stored samples at the whole index a map names | Non-concern: the positions a map names (renderer.rs) | IO: (Window, map, sample) -> f64 per component
 
 use super::renderer::Map;
-use super::tape::Window;
+use crate::buffer::Window;
 use crate::error::SampleError;
 
 /// Samples of `window`, or `fresh`, before `limit` only: a node's own past is written up to

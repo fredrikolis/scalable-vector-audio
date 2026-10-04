@@ -313,12 +313,12 @@ fn samples_json(b: &Buffer, limit: Option<usize>) -> String {
             )
         )
     };
-    let components: Vec<usize> = (0..b.width).collect();
+    let components: Vec<usize> = (0..b.width()).collect();
     format!(
         "{{ \"rate\": {}, \"origin_secs\": {}, \"width\": {}, \"components\": {} }}",
         b.rate,
         num(b.origin_secs()),
-        b.width,
+        b.width(),
         list(&components, |c| component(*c))
     )
 }

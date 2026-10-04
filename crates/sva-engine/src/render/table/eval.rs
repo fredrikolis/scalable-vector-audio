@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use sva_samples::{Buffer, Extent, Machine, Profile, Tape, Window, stft};
+use sva_samples::{Buffer, Extent, Machine, Profile, Window, stft};
 
 use super::demand::{Need, images};
 use super::segments::Segments;
@@ -94,10 +94,7 @@ fn views<'a>(value: &Value, program: &Program, over: Extent, done: &'a Values) -
 }
 
 /// A value's held samples, through every alias between, each moving it by its shift.
-enum View<'a> {
-    Run(&'a Tape, &'a Value, i64),
-    Held(Cow<'a, Buffer>, &'a Value, i64),
-}
+struct View<'a>(Cow<'a, Buffer>, &'a Value, i64);
 
 impl<'a> View<'a> {
     fn of(done: &'a Values, mut at: usize, over: Extent) -> View<'a> {
@@ -106,17 +103,12 @@ impl<'a> View<'a> {
             (at, by) = (read, by + shift);
         }
         let value = &done[at];
-        match &value.held {
-            Held::Run(tape) => View::Run(tape, value, by),
-            _ => View::Held(value.window(over.shifted(by)), value, by),
-        }
+        View(value.window(over.shifted(by)), value, by)
     }
 
     fn window(&self) -> Window<'_> {
-        match self {
-            View::Run(tape, value, by) => tape.within(value.support()).shifted(*by),
-            View::Held(buffer, value, by) => Window::of(buffer, value.support()).shifted(*by),
-        }
+        let View(buffer, value, by) = self;
+        buffer.within(value.support()).shifted(*by)
     }
 }
 
@@ -128,12 +120,12 @@ fn program(value: &mut Value, segment: Extent, done: &Values) -> Result<(), Engi
     let windows: Vec<Window> = held.iter().map(View::window).collect();
     let mut machine = Machine::over(&program.spanned, segment.start)
         .map_err(|e| sample_refused(&value.name, &e))?;
-    let mut tape = Tape::new(value.width, segment.len(), segment.start);
+    let mut own = Buffer::empty(value.grid.rate, value.width, segment.len(), segment.start);
     machine
-        .run_to(segment.end, &windows, &mut tape)
+        .run_to(segment.end, &windows, (&mut own, segment.start))
         .map_err(|e| sample_refused(&value.name, &e))?;
-    finite(&value.name, tape.planes().iter().flatten())?;
-    value.hold(tape.into_buffer(value.grid.rate));
+    finite(&value.name, own.planes.iter().flatten())?;
+    value.hold(own);
     Ok(())
 }
 
@@ -177,21 +169,22 @@ fn stepped(
     let Kind::Program(program) = &mut value.kind else {
         unreachable!("a program");
     };
-    let Held::Run(tape) = &mut value.held else {
+    let rate = value.grid.rate;
+    let Held::Run { samples, origin } = &mut value.held else {
         unreachable!("a stateful value holds a run");
     };
     if restart || program.machine.is_none() {
-        *tape = Tape::new(width, 0, segment.start);
+        (*samples, *origin) = (Buffer::empty(rate, width, 0, segment.start), segment.start);
         program.marks.clear();
         program.machine = Some(
             Machine::over(&program.spanned, segment.start)
                 .map_err(|e| sample_refused(&name, &e))?,
         );
     }
-    let from = tape.end();
+    let from = samples.end();
     debug_assert_eq!(
         from, segment.start,
-        "demand asks a stateful value on from where its tape ends, so `cost` prices what runs"
+        "demand asks a stateful value on from where its run ends, so `cost` prices what runs"
     );
     let held: Vec<View> = images(program, Extent::new(from, segment.end))
         .into_iter()
@@ -200,20 +193,23 @@ fn stepped(
         .collect();
     let windows: Vec<Window> = held.iter().map(View::window).collect();
     let machine = program.machine.as_mut().expect("a machine");
-    let base = program.start.expect("a stateful program").min(tape.base());
+    let base = program
+        .start
+        .expect("a stateful program")
+        .min(samples.start);
     for at in marks.within(base, from, segment.end) {
         machine
-            .run_to(at, &windows, tape)
+            .run_to(at, &windows, (samples, *origin))
             .map_err(|e| sample_refused(&name, &e))?;
         program.marks.insert(at, machine.state());
     }
     machine
-        .run_to(segment.end, &windows, tape)
+        .run_to(segment.end, &windows, (samples, *origin))
         .map_err(|e| sample_refused(&name, &e))?;
-    let grown = (tape.end() - from) as usize;
+    let grown = (samples.end() - from) as usize;
     finite(
         &name,
-        tape.planes().iter().flat_map(|p| &p[p.len() - grown..]),
+        samples.planes.iter().flat_map(|p| &p[p.len() - grown..]),
     )
 }
 
@@ -281,12 +277,11 @@ pub(crate) fn rerun(
     let windows: Vec<Window> = held.iter().map(View::window).collect();
     let mut machine =
         Machine::over(&rerun.spanned, from).map_err(|e| sample_refused(&value.name, &e))?;
-    let mut tape = Tape::new(value.width, span.len(), from);
+    let mut own = Buffer::empty(value.grid.rate, value.width, span.len(), from);
     machine
-        .run_to(over.end, &windows, &mut tape)
+        .run_to(over.end, &windows, (&mut own, from))
         .map_err(|e| sample_refused(&value.name, &e))?;
-    let buffer = tape.into_buffer(value.grid.rate);
-    Ok(buffer.over(over, buffer.extent()))
+    Ok(own.over(over, own.extent()))
 }
 
 /// A value's samples over `over`, through every alias between.

@@ -69,9 +69,9 @@ pub fn forward(x: &Buffer, window: usize, hop: usize) -> Result<Frames, SampleEr
     }
     let samples = x.len();
     let count = frame_count(samples, window, hop);
-    let mut out = Frames::silence(x.rate, window, hop, x.width, count, samples);
+    let mut out = Frames::silence(x.rate, window, hop, x.width(), count, samples);
     out.start = x.start;
-    for c in 0..x.width {
+    for c in 0..x.width() {
         let plane = x.plane(c);
         for frame in 0..count {
             let start = start_of(frame, window, hop);

@@ -126,7 +126,7 @@ fn a_joined_pair_point_samples_each_component_it_names() {
     let wide = held
         .output(held.id("wide").expect("the root"))
         .expect("both");
-    assert_eq!(wide.width, 2);
+    assert_eq!(wide.width(), 2);
     assert!(
         wide.plane(1).iter().all(|s| (s - 0.25).abs() < 1e-12),
         "the right component is the constant it was written as"
@@ -146,7 +146,7 @@ fn a_joined_pair_point_samples_each_component_it_names() {
     let picked = held
         .output(held.id("picked").expect("the root"))
         .expect("one component");
-    assert_eq!(picked.width, 1);
+    assert_eq!(picked.width(), 1);
     assert!(
         picked.plane(0).iter().all(|s| (s - 0.25).abs() < 1e-12),
         "ch(x, 1) is the second component, not the first"
@@ -260,7 +260,7 @@ fn a_panned_ct_law_point_samples_both_lanes() {
     .expect("a joined law point-samples");
     let id = held.id("pan").expect("the root");
     let buffer = held.output(id).expect("a rendered pan");
-    assert_eq!(buffer.width, 2, "the join names two components");
+    assert_eq!(buffer.width(), 2, "the join names two components");
     for i in [1usize, 17, 123] {
         let mono = (3.0 * (TAU * 220.0 * i as f64 / 44_100.0).sin()).tanh();
         assert!(

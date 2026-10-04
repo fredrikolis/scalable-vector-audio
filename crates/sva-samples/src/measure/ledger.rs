@@ -83,13 +83,13 @@ pub fn attribute(
             b.window(c, range.clone())
         })
     };
-    let width = |path: &str| held(path).map_or(1, |b| b.width);
+    let width = |path: &str| held(path).map_or(1, |b| b.width());
     // Over a sum the parts are the whole: one reader's refs add to exactly one.
     let share_of = |reader: &str, x: &[f64], c: usize| -> f64 {
-        let Some(buffer) = buffers.get(reader).filter(|b| b.width > 0) else {
+        let Some(buffer) = buffers.get(reader).filter(|b| b.width() > 0) else {
             return 0.0;
         };
-        let y = buffer.window(c % buffer.width, range.clone());
+        let y = buffer.window(c % buffer.width(), range.clone());
         let energy: f64 = y.iter().map(|&v| v * v).sum();
         match energy > 0.0 {
             true => x.iter().zip(y.iter()).map(|(a, b)| a * b).sum::<f64>() / energy,

@@ -56,7 +56,7 @@ impl Run {
 
     pub fn bytes(&self) -> usize {
         let marks: usize = self.marks.values().map(MachineState::bytes).sum();
-        self.samples.len() * self.samples.width * size_of::<f64>() + marks
+        self.samples.len() * self.samples.width() * size_of::<f64>() + marks
     }
 }
 
@@ -120,7 +120,7 @@ impl Payload {
         match self {
             Payload::Segments(parts) => parts
                 .iter()
-                .map(|b| b.len() * b.width * size_of::<f64>())
+                .map(|b| b.len() * b.width() * size_of::<f64>())
                 .sum(),
             Payload::Frames(f) => f.width * f.frames * f.bins * 2 * size_of::<f64>(),
             Payload::Run(run) => run.bytes(),
@@ -130,11 +130,11 @@ impl Payload {
     pub fn answers(&self, expected: Expected) -> bool {
         match (self, expected) {
             (Payload::Segments(parts), Expected::Segments { rate, width }) => {
-                parts.iter().all(|b| b.rate == rate && b.width == width)
+                parts.iter().all(|b| b.rate == rate && b.width() == width)
             }
             (Payload::Frames(_), Expected::Frames) => true,
             (Payload::Run(run), Expected::Run { rate, width }) => {
-                run.samples.rate == rate && run.samples.width == width
+                run.samples.rate == rate && run.samples.width() == width
             }
             _ => false,
         }

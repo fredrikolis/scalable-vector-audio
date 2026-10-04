@@ -142,7 +142,7 @@ fn a_two_channel_file_answers_a_stereo_image_a_mono_one_cannot() {
     let right: Vec<f32> = left.iter().map(|s| s * 0.25).collect();
     let path = written("analyze-stereo", rate, &[&left, &right]);
     let buffer = decoded(&path);
-    assert_eq!(buffer.width, 2);
+    assert_eq!(buffer.width(), 2);
 
     let Output::Stereo(image) = answer_buffer(
         "in.wav",

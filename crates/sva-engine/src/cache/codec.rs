@@ -52,7 +52,7 @@ pub(crate) fn entry(head: &Header, runs: &[Buffer]) -> Vec<u8> {
         laid.push(Laid {
             rate: run.rate,
             start: run.start,
-            width: run.width,
+            width: run.width(),
             len: run.len(),
             at,
             sums,
@@ -294,7 +294,7 @@ fn segments(out: &mut Vec<u8>, parts: &[Buffer]) {
     for part in parts {
         word(out, u64::from(part.rate));
         word(out, part.start as u64);
-        word(out, part.width as u64);
+        word(out, part.width() as u64);
         word(out, part.len() as u64);
         for plane in &part.planes {
             for sample in plane {

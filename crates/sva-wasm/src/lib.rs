@@ -547,7 +547,7 @@ impl Rendering {
     #[wasm_bindgen(getter)]
     pub fn channels(&self) -> usize {
         let render = &self.inner.render;
-        render.buffer(render.root).map_or(0, |b| b.width)
+        render.buffer(render.root).map_or(0, |b| b.width())
     }
 
     pub fn samples(&self, channel: usize) -> Result<Vec<f32>, JsValue> {
@@ -567,11 +567,12 @@ impl Rendering {
         let buffer = render
             .output(render.root)
             .map_err(|e| thrown(&CliError::Engine(e)))?;
-        if channel >= buffer.width {
+        if channel >= buffer.width() {
             return Err(refuse(
                 format!(
                     "`{}` is {} component(s), so there is no component {channel}",
-                    self.inner.expression, buffer.width
+                    self.inner.expression,
+                    buffer.width()
                 ),
                 "read a component this node holds, counting from zero",
             ));

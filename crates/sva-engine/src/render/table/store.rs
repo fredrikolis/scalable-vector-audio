@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use sva_formula::{Hash, Held as Representation, NodeId};
-use sva_samples::{Buffer, Extent, Machine, MachineState, NodeRenderer, Tape};
+use sva_samples::{Buffer, Extent, Machine, MachineState, NodeRenderer};
 
 use super::Table;
 use super::eval::Marks;
@@ -59,7 +59,7 @@ impl Place {
     fn kind(value: &Value) -> PayloadKind {
         match (&value.kind, &value.held) {
             (Kind::Frames { .. }, _) => PayloadKind::Frames,
-            (_, Held::Run(_)) => PayloadKind::Run,
+            (_, Held::Run { .. }) => PayloadKind::Run,
             _ => PayloadKind::Segments,
         }
     }
@@ -180,7 +180,10 @@ fn resumed(value: &mut Value, place: &Place, (memory, seen): (&Memory, &mut Reco
     };
     program.machine = Some(machine);
     program.marks = marks.into_iter().filter(|(m, _)| *m <= at).collect();
-    value.held = Held::Run(Tape::from(samples));
+    value.held = Held::Run {
+        origin: samples.start,
+        samples,
+    };
     true
 }
 
@@ -264,25 +267,26 @@ fn samples(value: &mut Value, place: &Place, computed: &[Extent]) -> Vec<(Hash, 
         ),
         Held::Frames(Some(frames)) => Payload::Frames(Arc::clone(frames)),
         Held::Frames(None) => return Vec::new(),
-        Held::Run(tape) => {
+        Held::Run { samples, .. } => {
             let (Some(from), Kind::Program(program)) = (computed.first(), &mut value.kind) else {
                 return Vec::new();
             };
             let Some(machine) = &program.machine else {
                 return Vec::new();
             };
-            program.marks.insert(tape.end(), machine.state());
+            program.marks.insert(samples.end(), machine.state());
             let marks = std::mem::take(&mut program.marks);
             let mut out = Vec::new();
             for (k, (start, segment)) in place.segments.iter().enumerate() {
-                let (lo, hi) = (from.start.max(*start), tape.end().min(place.end(k)));
+                let (lo, hi) = (from.start.max(*start), samples.end().min(place.end(k)));
                 if lo >= hi {
                     continue;
                 }
                 let piece = Extent::new(lo, hi);
-                let Some(chunk) = taped(tape, value.grid.rate, piece) else {
+                if piece.start < samples.start {
                     continue;
-                };
+                }
+                let chunk = samples.over(piece, samples.extent());
                 let run = Run {
                     samples: Arc::new(chunk),
                     marks: marks
@@ -325,19 +329,6 @@ fn over(buffer: &Arc<Buffer>, e: Extent) -> Option<Arc<Buffer>> {
         true => Arc::clone(buffer),
         false => Arc::new(buffer.over(e, held)),
     })
-}
-
-fn taped(tape: &Tape, rate: u32, e: Extent) -> Option<Buffer> {
-    if e.is_empty() || e.start < tape.base() || tape.end() < e.end {
-        return None;
-    }
-    let len = e.len();
-    let planes = (0..tape.width())
-        .map(|c| tape.since(c, e.start)[..len].to_vec())
-        .collect();
-    let mut out = Buffer::of_planes(rate, planes);
-    out.start = e.start;
-    Some(out)
 }
 
 impl Table {

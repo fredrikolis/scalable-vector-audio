@@ -464,16 +464,16 @@ pub fn off_buffer(buffer: &Buffer, representation: Representation) -> Result<Out
             max_formants,
         )),
         Representation::Stereo { frame_secs } => {
-            if buffer.width < 2 {
+            if buffer.width() < 2 {
                 return Err(NoReading::TooNarrow {
                     need: 2,
-                    held: buffer.width,
+                    held: buffer.width(),
                 });
             }
-            let planes: Vec<&[f64]> = (0..buffer.width).map(|c| buffer.plane(c)).collect();
+            let planes: Vec<&[f64]> = (0..buffer.width()).map(|c| buffer.plane(c)).collect();
             Output::Stereo(Box::new(stereo::analyze(
                 &planes,
-                buffer.width,
+                buffer.width(),
                 sr,
                 start,
                 frame_secs,
@@ -483,7 +483,7 @@ pub fn off_buffer(buffer: &Buffer, representation: Representation) -> Result<Out
         Representation::Crest => Output::Crest(Box::new(crest::analyze(plane, sr))),
         Representation::Onsets => Output::Onsets(Box::new(onsets::detect(plane, sr, start))),
         Representation::Loudness => {
-            let planes: Vec<&[f64]> = (0..buffer.width).map(|c| buffer.plane(c)).collect();
+            let planes: Vec<&[f64]> = (0..buffer.width()).map(|c| buffer.plane(c)).collect();
             Output::Loudness(Box::new(loudness::analyze(&planes, sr, start)))
         }
         _ => return Err(NoReading::NeedsAGraph),
@@ -672,11 +672,12 @@ pub(super) fn alias_db(
 /// Each component scored against its own reference; the worst answers.
 fn worst_alias(buffer: &Buffer, reference: &Buffer, oversample: u32) -> sva_samples::Alias {
     debug_assert_eq!(
-        buffer.width, reference.width,
+        buffer.width(),
+        reference.width(),
         "the reference is the same form at another rate"
     );
     let sr = f64::from(buffer.rate);
-    let width = buffer.width.min(reference.width);
+    let width = buffer.width().min(reference.width());
     sva_samples::worst_alias((0..width).map(|c| {
         measure_alias(
             buffer.plane(c),
@@ -704,7 +705,7 @@ fn oversampled(
 /// A first difference on the grid, which is what a derivative is once the closed form is gone.
 fn difference(buffer: &Buffer) -> Buffer {
     let step = f64::from(buffer.rate);
-    let planes = (0..buffer.width)
+    let planes = (0..buffer.width())
         .map(|c| {
             let plane = buffer.plane(c);
             plane

@@ -8,7 +8,7 @@ use sva_ast::{Expr, Graph};
 use sva_formula::{Hash, NodeId};
 use sva_samples::{Buffer, Extent};
 
-use super::drive::{Block, Driver};
+use super::drive::Driver;
 use super::end::{Ending, Fading, Heard, under};
 use super::table::support::Supports;
 use super::table::{Past, Table};
@@ -410,7 +410,7 @@ impl Stream {
 
     /// `n` samples from `at`, `None` past the end. An `at` behind is refused; one ahead skips
     /// there, computing through the span, or, live, as `go_live` says.
-    pub fn read(&mut self, at: i64, n: usize) -> Result<Option<Block>, EngineError> {
+    pub fn read(&mut self, at: i64, n: usize) -> Result<Option<Buffer>, EngineError> {
         let now = self.driver.at;
         if at < now {
             return Err(refused(
@@ -448,7 +448,7 @@ impl Stream {
         self.reads_on(n)?;
         let block = self.driver.read(n)?;
         self.prune();
-        Ok(block.map(|b| b.widened(self.width)))
+        Ok(block.map(|b| widened(b, self.width)))
     }
 
     /// Each node memory answered that the next `n` samples ask past what it holds reads on from
@@ -816,4 +816,13 @@ fn refused(code: &str, message: String, help: &str) -> EngineError {
         location: Located::at(STREAMED, None),
         help: help.to_string(),
     })
+}
+
+/// A mono block in each of `width` channels; any other as it is.
+fn widened(mut block: Buffer, width: usize) -> Buffer {
+    if block.planes.len() == 1 {
+        let copies = vec![block.planes[0].clone(); width.saturating_sub(1)];
+        block.planes.extend(copies);
+    }
+    block
 }

@@ -84,7 +84,7 @@ pub fn write(printed: &Printed, dest: &Path, framing: &Framing) -> Result<(), Cl
             return Err(not_audio(&printed.name));
         };
         let node = &framing.target;
-        let held: Vec<Vec<f32>> = (0..buffer.width)
+        let held: Vec<Vec<f32>> = (0..buffer.width())
             .map(|c| encode::float32(node, buffer.plane(c)))
             .collect::<Result<_, _>>()?;
         if let SampleEncoding::Pcm(_) = framing.encoding {

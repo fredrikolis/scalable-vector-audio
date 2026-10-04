@@ -309,7 +309,7 @@ fn a_two_lane_law_reports_one_dropped_line_at_one_channels_level() {
         ]),
     );
     let (buffer, label) = render(&law, RATE, whole_second(), &PSYCHOACOUSTIC_V1).expect("lines");
-    assert_eq!(buffer.width, 2);
+    assert_eq!(buffer.width(), 2);
     assert_eq!(buffer.plane(0), buffer.plane(1));
 
     let Detail::Lines {

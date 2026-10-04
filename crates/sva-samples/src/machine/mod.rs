@@ -1,20 +1,20 @@
-// Concern: runs one node renderer a block at a time, span after span, over a tape | Non-concern: the op array's own shape (ops.rs), cutting the spans (live.rs) | IO: (Spanned, reads, tape) -> samples
+// Concern: runs one node renderer a block at a time, span after span, onto its own samples | Non-concern: the op array's shape (ops.rs), cutting spans (live.rs) | IO: (Spanned, reads, own) -> samples
 
 mod block;
 mod live;
 pub mod ops;
 mod read;
 pub mod renderer;
-pub mod tape;
 
+use crate::buffer::{Buffer, Window};
 use crate::error::SampleError;
 use crate::filters::FilterSite;
+use crate::grid::Extent;
 use crate::grid::Grid;
 use crate::physics::{Solver, site};
 use block::{BLOCK, Block, Here};
 use ops::{Layout, Op, lowered};
 use renderer::{Formula, Index, NodeRenderer, Site, Slot};
-use tape::{Tape, Window};
 
 pub use live::{Span, Spanned};
 
@@ -93,6 +93,9 @@ fn part(v: &[f64], c: usize) -> f64 {
     v[c.min(v.len() - 1)]
 }
 
+/// A node's own samples, and the sample before which its past is silent.
+pub type Own<'a> = (&'a mut Buffer, i64);
+
 /// One compiled node and every call site's state, run over any span of the grid in order.
 /// A span continues exactly where the last ended, so blocks write the samples one run would.
 pub struct Machine {
@@ -164,7 +167,7 @@ impl Machine {
         self.states.iter().map(State::bytes).sum()
     }
 
-    pub fn run_to(&mut self, to: i64, reads: &[Window], own: &mut Tape) -> Result<(), SampleError> {
+    pub fn run_to(&mut self, to: i64, reads: &[Window], own: Own) -> Result<(), SampleError> {
         for state in &mut self.states {
             if let State::Filter(filter) = state {
                 filter.forget_frames();
@@ -174,11 +177,11 @@ impl Machine {
     }
 
     /// `run_to`, the filters' frames kept.
-    pub fn run_on(&mut self, to: i64, reads: &[Window], own: &mut Tape) -> Result<(), SampleError> {
+    pub fn run_on(&mut self, to: i64, reads: &[Window], own: Own) -> Result<(), SampleError> {
         self.steps(to, reads, own)
     }
 
-    fn steps(&mut self, to: i64, reads: &[Window], own: &mut Tape) -> Result<(), SampleError> {
+    fn steps(&mut self, to: i64, reads: &[Window], (own, origin): Own) -> Result<(), SampleError> {
         loop {
             while let Some((from, _)) = self.ahead.last()
                 && *from <= own.end()
@@ -188,14 +191,19 @@ impl Machine {
                 self.program = program;
             }
             let until = self.ahead.last().map_or(to, |(from, _)| (*from).min(to));
-            self.stepped(until, reads, own)?;
+            self.stepped(until, reads, (own, origin))?;
             if own.end() >= to {
                 return Ok(());
             }
         }
     }
 
-    fn stepped(&mut self, to: i64, reads: &[Window], own: &mut Tape) -> Result<(), SampleError> {
+    fn stepped(
+        &mut self,
+        to: i64,
+        reads: &[Window],
+        (own, origin): Own,
+    ) -> Result<(), SampleError> {
         let p = &self.program;
         while own.end() < to {
             let from = own.end();
@@ -203,7 +211,7 @@ impl Machine {
             let len = p.block(from, most, &mut self.block.recurrent);
             let here = Here {
                 reads,
-                own: own.window(),
+                own: own.within(Extent::from(origin)),
                 grid: self.grid,
             };
             let (held, refused) =
@@ -382,9 +390,9 @@ mod tests {
         };
         let spanned =
             Spanned::new(&feedback(), &layout, (0, to), &[Extent::EVERYWHERE]).expect("a program");
-        let mut input = Tape::new(1, to as usize, 0);
+        let mut input = Buffer::empty(48_000, 1, to as usize, 0);
         (0..to).for_each(|n| input.push(0, f64::from(u8::from(n % 4800 == 0))));
-        let mut out = Tape::new(2, to as usize, 0);
+        let mut out = Buffer::empty(48_000, 2, to as usize, 0);
         let mut machine = Machine::over(&spanned, 0).expect("a machine");
         let counted = || [&PASSES, &FILLS, &READS].map(|c| c.with(std::cell::Cell::get));
         let before = counted();
@@ -392,11 +400,11 @@ mod tests {
         while at < to {
             at = (at + step).min(to);
             machine
-                .run_to(at, &[input.window()], &mut out)
+                .run_to(at, &[input.within(Extent::from(0))], (&mut out, 0))
                 .expect("samples");
         }
         let after = counted();
-        (out.into_planes(), [0, 1, 2].map(|k| after[k] - before[k]))
+        (out.planes, [0, 1, 2].map(|k| after[k] - before[k]))
     }
 
     /// A pass per block, the far reads copied whole and only the damping run sample by sample,
@@ -519,13 +527,13 @@ mod tests {
         };
         let spanned =
             Spanned::new(&delayed(), &layout, (0, to), &[Extent::EVERYWHERE]).expect("a program");
-        let mut input = Tape::new(1, to as usize, 0);
+        let mut input = Buffer::empty(48_000, 1, to as usize, 0);
         (0..to).for_each(|n| input.push(0, (n as f64 * 0.01).sin()));
-        let mut out = Tape::new(1, to as usize, 0);
+        let mut out = Buffer::empty(48_000, 1, to as usize, 0);
         let mut machine = Machine::over(&spanned, 0).expect("a machine");
         let before = WIDE.with(std::cell::Cell::get);
         machine
-            .run_to(to, &[input.window()], &mut out)
+            .run_to(to, &[input.within(Extent::from(0))], (&mut out, 0))
             .expect("samples");
         assert_eq!(WIDE.with(std::cell::Cell::get), before);
     }

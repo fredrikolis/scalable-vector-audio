@@ -3,8 +3,8 @@
 use super::ops::Op;
 use super::read::{Fresh, Source};
 use super::renderer::Slot;
-use super::tape::Window;
 use super::{Program, State, part};
+use crate::buffer::Window;
 use crate::error::SampleError;
 use crate::grid::Grid;
 
