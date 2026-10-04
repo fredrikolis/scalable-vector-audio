@@ -13,7 +13,7 @@ pub struct Span {
     pub renderer: NodeRenderer,
 }
 
-/// A renderer cut into spans each pruned of what is exact zero there: a sample's program
+/// A renderer cut into spans each stripped of what is exact zero there: a sample's program
 /// depends on its index alone.
 #[derive(Clone)]
 pub struct Spanned {
@@ -78,8 +78,8 @@ impl Spanned {
 }
 
 impl NodeRenderer {
-    /// `[from, to)` cut where the dead reads or shut crops change, each span pruned; any cut
-    /// of a run writes the same bits.
+    /// `[from, to)` cut where the dead reads or shut crops change, each span stripped of exact
+    /// zeros; any cut of a run writes the same bits.
     pub fn spans(
         &self,
         layout: &Layout,
@@ -95,7 +95,7 @@ impl NodeRenderer {
         let mut out: Vec<Span> = Vec::new();
         for pair in edges.windows(2) {
             let span = Extent::new(pair[0], pair[1]);
-            let changed = root.prune(span, layout)?;
+            let changed = root.strip_exact_zeros(span, layout)?;
             match out.last_mut() {
                 Some(last) if !changed => last.to = span.end,
                 last => {
@@ -139,7 +139,7 @@ impl NodeRenderer {
     }
 }
 
-/// One node of the renderer, its width settled once, and what pruning made of it over the
+/// One node of the renderer, its width settled once, and what stripping exact zeros made of it over the
 /// latest span; that holds over every later span ending by `until`, since only the reads
 /// and crops under it decide it.
 struct Cut<'r> {
@@ -218,14 +218,15 @@ impl<'r> Cut<'r> {
         }
     }
 
-    /// Re-prunes what `span` passes the `until` of, bottom-up; whether what it makes changed.
-    fn prune(&mut self, span: Extent, layout: &Layout) -> Result<bool, SampleError> {
+    /// Strips the exact zeros again of what `span` passes the `until` of, bottom-up; whether
+    /// what it makes changed.
+    fn strip_exact_zeros(&mut self, span: Extent, layout: &Layout) -> Result<bool, SampleError> {
         if span.end <= self.until {
             return Ok(false);
         }
         let mut below = false;
         for o in &mut self.operands {
-            below |= o.prune(span, layout)?;
+            below |= o.strip_exact_zeros(span, layout)?;
         }
         let mut until = self
             .operands

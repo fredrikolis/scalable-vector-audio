@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use sva_formula::spectral_sum::atom::SpectralAtom;
-use sva_formula::spectral_sum::sup::sup_from;
+use sva_formula::spectral_sum::sup::magnitude_upper_bound_from_instant;
 use sva_formula::{Body, C64, Edge, Fold, Hash, NodeId, Part, SpectralSum, Through, Unary, Var};
 use sva_samples::collapse::summed_bounds;
 use sva_samples::{
@@ -25,7 +25,7 @@ use filter::Ringing;
 pub(super) use gain::{gain, key};
 use range::{OP, Range, TRANSFORM_OPS};
 
-pub(super) struct Tail {
+pub(super) struct MagnitudeUpperBoundFromInstant {
     form: Form,
     /// A reader reading one node at several places asks it at one instant each time.
     last: Cell<Option<(u64, f64)>>,
@@ -37,13 +37,13 @@ enum Form {
     /// Each direct sum over the atoms' lines as its rounding bound and the factor it is under.
     Atoms(Vec<SpectralAtom>, Summed),
     /// Each node the formula reads, bounded by its own form.
-    Written(Range, BTreeMap<NodeId, Rc<Tail>>),
+    Written(Range, BTreeMap<NodeId, Rc<MagnitudeUpperBoundFromInstant>>),
     /// A fixed filter on its grid's samples, and its input where that never ends.
-    Filter(Ringing, Grid, Option<Rc<Tail>>),
+    Filter(Ringing, Grid, Option<Rc<MagnitudeUpperBoundFromInstant>>),
     /// Every value a draw takes.
     Within(f64),
     /// A read at `k*t + c - step`, `k >= 0`, scaled; any other time reads anywhere.
-    Read(Rc<Tail>, Map, f64),
+    Read(Rc<MagnitudeUpperBoundFromInstant>, Map, f64),
 }
 
 /// Where a node can be nonzero.
@@ -52,7 +52,9 @@ pub(super) type Supported<'a> = &'a dyn Fn(NodeId) -> Extent;
 type Key = (Hash, Grid, u32);
 
 #[derive(Default)]
-pub(super) struct Tails(RefCell<HashMap<Key, Option<Rc<Tail>>>>);
+pub(super) struct MagnitudeUpperBoundsFromInstant(
+    RefCell<HashMap<Key, Option<Rc<MagnitudeUpperBoundFromInstant>>>>,
+);
 
 /// `cut` is whether a bound met a read or a support still open: what it found depends on
 /// where the search entered, so it is not kept.
@@ -61,7 +63,7 @@ struct Bounding<'a> {
     profile: &'a Profile,
     rate: u32,
     supported: Supported<'a>,
-    tails: &'a Tails,
+    magnitude_upper_bounds_from_instant: &'a MagnitudeUpperBoundsFromInstant,
     open: BTreeSet<NodeId>,
     cut: bool,
     ordering: bool,
@@ -70,31 +72,31 @@ struct Bounding<'a> {
     written: HashMap<NodeId, Range>,
 }
 
-impl Tail {
+impl MagnitudeUpperBoundFromInstant {
     pub(super) fn of(
         tys: &Typing,
         (profile, rate): (&Profile, u32),
         id: NodeId,
         supported: Supported,
-        tails: &Tails,
-    ) -> Option<Rc<Tail>> {
+        magnitude_upper_bounds_from_instant: &MagnitudeUpperBoundsFromInstant,
+    ) -> Option<Rc<MagnitudeUpperBoundFromInstant>> {
         let mut bounding = Bounding {
             tys,
             profile,
             rate,
             supported,
-            tails,
+            magnitude_upper_bounds_from_instant,
             open: BTreeSet::new(),
             cut: false,
             ordering: false,
             missing: None,
             written: HashMap::new(),
         };
-        bounding.tail(id)
+        bounding.magnitude_upper_bound_from_instant(id)
     }
 
-    fn new(form: Form) -> Option<Rc<Tail>> {
-        Some(Rc::new(Tail {
+    fn new(form: Form) -> Option<Rc<MagnitudeUpperBoundFromInstant>> {
+        Some(Rc::new(MagnitudeUpperBoundFromInstant {
             form,
             last: Cell::new(None),
         }))
@@ -109,12 +111,19 @@ impl Bounding<'_> {
             .map(|held| (held, grid, self.rate))
     }
 
-    fn held(&self, id: NodeId) -> Option<Option<Rc<Tail>>> {
+    fn held(&self, id: NodeId) -> Option<Option<Rc<MagnitudeUpperBoundFromInstant>>> {
         let key = self.key(id)?;
-        self.tails.0.borrow().get(&key).cloned()
+        self.magnitude_upper_bounds_from_instant
+            .0
+            .borrow()
+            .get(&key)
+            .cloned()
     }
 
-    fn tail(&mut self, id: NodeId) -> Option<Rc<Tail>> {
+    fn magnitude_upper_bound_from_instant(
+        &mut self,
+        id: NodeId,
+    ) -> Option<Rc<MagnitudeUpperBoundFromInstant>> {
         if let Some(held) = self.held(id) {
             return held;
         }
@@ -131,7 +140,7 @@ impl Bounding<'_> {
         self.bounded(id)
     }
 
-    fn bounded(&mut self, id: NodeId) -> Option<Rc<Tail>> {
+    fn bounded(&mut self, id: NodeId) -> Option<Rc<MagnitudeUpperBoundFromInstant>> {
         crate::steps::step(1);
         let outer = std::mem::take(&mut self.cut);
         let before = self.missing.as_ref().map(Vec::len);
@@ -141,7 +150,10 @@ impl Bounding<'_> {
             && !self.cut
             && whole
         {
-            self.tails.0.borrow_mut().insert(key, found.clone());
+            self.magnitude_upper_bounds_from_instant
+                .0
+                .borrow_mut()
+                .insert(key, found.clone());
         }
         self.cut |= outer;
         found
@@ -182,7 +194,7 @@ impl Bounding<'_> {
         opened
     }
 
-    fn fresh(&mut self, id: NodeId) -> Option<Rc<Tail>> {
+    fn fresh(&mut self, id: NodeId) -> Option<Rc<MagnitudeUpperBoundFromInstant>> {
         if let Some(range) = self.written.remove(&id) {
             return self.written(id, range);
         }
@@ -201,11 +213,11 @@ impl Bounding<'_> {
             && let Ok(sum) = read_through(tys, |t| truncate_spectral_sum_read(&whole, band, t))
         {
             let summed = read_through(tys, |t| summed_bounds(&whole, (profile, rate), t));
-            return Tail::new(Form::Atoms(atoms_of(&sum), summed.ok()?));
+            return MagnitudeUpperBoundFromInstant::new(Form::Atoms(atoms_of(&sum), summed.ok()?));
         }
-        let body =
-            match tys.value(id) {
-                Value::ClosedForm(form) if form.var == Var::T => read_through(tys, |t| {
+        let body = match tys.value(id) {
+            Value::ClosedForm(form) if form.var == Var::T => {
+                read_through(tys, |t| {
                     truncate_written_with(&form.body, band, t, &mut |id, _| match Through::stands(
                         id,
                     ) {
@@ -215,64 +227,67 @@ impl Bounding<'_> {
                         false => Ok(id),
                     })
                 })
-                .ok()?,
-                Value::Cast(Cast::Sample, source) => return self.tail(*source),
-                Value::Noise(_) => return Tail::new(Form::Within(1.0)),
-                Value::Op { name, args } => sampled(tys, name, args)?,
-                Value::Read { .. } if let Some(source) = crate::refs::passes(tys, id) => {
-                    return self.tail(source);
-                }
-                Value::Read { source, at, .. } => {
-                    let read = match at {
-                        When::At(map) => {
-                            let step = 1.0 / tys.grid(*source).sr();
-                            Some((map.scale.to_f64(), map.shift.to_f64(), step))
-                        }
-                        _ => None,
-                    };
-                    self.opened(id).then_some(())?;
-                    let inner = self.tail(*source);
-                    self.open.remove(&id);
-                    let inner = inner?;
-                    return Tail::new(match &inner.form {
-                        Form::Read(foot, under, gain) if let Some(map) = composed(read, *under) => {
-                            Form::Read(Rc::clone(foot), map, *gain)
-                        }
-                        _ => Form::Read(inner, read, 1.0),
-                    });
-                }
-                Value::Filter {
-                    shape,
-                    x,
-                    cutoff,
-                    q,
-                    gain,
-                } => {
-                    let [cutoff, q, gain] = [cutoff, q, gain].map(|p| number_of(tys, *p));
-                    let grid = tys.grid(id);
-                    if tys.grid(*x) != grid {
-                        return None;
+                .ok()?
+            }
+            Value::Cast(Cast::Sample, source) => {
+                return self.magnitude_upper_bound_from_instant(*source);
+            }
+            Value::Noise(_) => return MagnitudeUpperBoundFromInstant::new(Form::Within(1.0)),
+            Value::Op { name, args } => sampled(tys, name, args)?,
+            Value::Read { .. } if let Some(source) = crate::refs::passes(tys, id) => {
+                return self.magnitude_upper_bound_from_instant(source);
+            }
+            Value::Read { source, at, .. } => {
+                let read = match at {
+                    When::At(map) => {
+                        let step = 1.0 / tys.grid(*source).sr();
+                        Some((map.scale.to_f64(), map.shift.to_f64(), step))
                     }
-                    let (coeffs, _) =
-                        sva_samples::filters::coefficients(*shape, cutoff?, q?, gain?, grid.sr());
-                    let input = self.tail(*x)?;
-                    let span = (self.supported)(*x);
-                    let first = match span.start {
-                        i64::MIN => f64::NEG_INFINITY,
-                        start => grid.instant(start),
-                    };
-                    let ringing = Ringing::of(&coeffs, input.from(first), span.end)?;
-                    let endless = (span.end == i64::MAX).then_some(input);
-                    return Tail::new(Form::Filter(ringing, grid, endless));
+                    _ => None,
+                };
+                self.opened(id).then_some(())?;
+                let inner = self.magnitude_upper_bound_from_instant(*source);
+                self.open.remove(&id);
+                let inner = inner?;
+                return MagnitudeUpperBoundFromInstant::new(match &inner.form {
+                    Form::Read(foot, under, gain) if let Some(map) = composed(read, *under) => {
+                        Form::Read(Rc::clone(foot), map, *gain)
+                    }
+                    _ => Form::Read(inner, read, 1.0),
+                });
+            }
+            Value::Filter {
+                shape,
+                x,
+                cutoff,
+                q,
+                gain,
+            } => {
+                let [cutoff, q, gain] = [cutoff, q, gain].map(|p| number_of(tys, *p));
+                let grid = tys.grid(id);
+                if tys.grid(*x) != grid {
+                    return None;
                 }
-                _ => return None,
-            };
+                let (coeffs, _) =
+                    sva_samples::filters::coefficients(*shape, cutoff?, q?, gain?, grid.sr());
+                let input = self.magnitude_upper_bound_from_instant(*x)?;
+                let span = (self.supported)(*x);
+                let first = match span.start {
+                    i64::MIN => f64::NEG_INFINITY,
+                    start => grid.instant(start),
+                };
+                let ringing = Ringing::of(&coeffs, input.at_and_after_instant(first), span.end)?;
+                let endless = (span.end == i64::MAX).then_some(input);
+                return MagnitudeUpperBoundFromInstant::new(Form::Filter(ringing, grid, endless));
+            }
+            _ => return None,
+        };
         let range = Range::of(&body).ok()?;
         self.written(id, range)
     }
 
     /// A try keeps the form for its retry.
-    fn written(&mut self, id: NodeId, range: Range) -> Option<Rc<Tail>> {
+    fn written(&mut self, id: NodeId, range: Range) -> Option<Rc<MagnitudeUpperBoundFromInstant>> {
         let mut nodes = Vec::new();
         range.nodes(&mut nodes);
         self.opened(id).then_some(())?;
@@ -280,9 +295,9 @@ impl Bounding<'_> {
         let mut whole = true;
         for n in nodes {
             let before = self.missing.as_ref().map(Vec::len);
-            match self.tail(n) {
-                Some(tail) => {
-                    reads.insert(n, tail);
+            match self.magnitude_upper_bound_from_instant(n) {
+                Some(upper_bound) => {
+                    reads.insert(n, upper_bound);
                 }
                 None if self.missing.as_ref().map(Vec::len) != before => whole = false,
                 None => {
@@ -296,39 +311,42 @@ impl Bounding<'_> {
             self.written.insert(id, range);
             return None;
         }
-        Tail::new(linear(&range, &reads).unwrap_or(Form::Written(range, reads)))
+        MagnitudeUpperBoundFromInstant::new(
+            linear(&range, &reads).unwrap_or(Form::Written(range, reads)),
+        )
     }
 }
 
-impl Tail {
+impl MagnitudeUpperBoundFromInstant {
     /// Bounds `|x(s)|` for every `s >= t`, its rounding included; infinite where none holds,
     /// never NaN.
-    /// Each tail it reads is bounded first, at each instant it asks, so a chain of reads costs
+    /// Each bound it reads is bounded first, at each instant it asks, so a chain of reads costs
     /// heap, never call depth.
-    pub(super) fn from<'a>(&'a self, t: f64) -> f64 {
+    pub(super) fn at_and_after_instant<'a>(&'a self, t: f64) -> f64 {
         if let Some((held, bound)) = self.last.get()
             && held == t.to_bits()
         {
             return bound;
         }
-        let mut found: HashMap<(*const Tail, u64), f64> = HashMap::new();
-        let mut open: Vec<(&'a Tail, f64)> = vec![(self, t)];
-        while let Some(&(tail, at)) = open.last() {
-            let key = (std::ptr::from_ref(tail), at.to_bits());
+        let mut found: HashMap<(*const MagnitudeUpperBoundFromInstant, u64), f64> = HashMap::new();
+        let mut open: Vec<(&'a MagnitudeUpperBoundFromInstant, f64)> = vec![(self, t)];
+        while let Some(&(upper_bound, at)) = open.last() {
+            let key = (std::ptr::from_ref(upper_bound), at.to_bits());
             if found.contains_key(&key) {
                 open.pop();
                 continue;
             }
-            if let Some((held, bound)) = tail.last.get()
+            if let Some((held, bound)) = upper_bound.last.get()
                 && held == at.to_bits()
             {
                 found.insert(key, bound);
                 open.pop();
                 continue;
             }
-            let missing: RefCell<Vec<(&'a Tail, f64)>> = RefCell::default();
-            let read = |read: &'a Rc<Tail>, at: f64| -> f64 {
-                let read: &'a Tail = read;
+            let missing: RefCell<Vec<(&'a MagnitudeUpperBoundFromInstant, f64)>> =
+                RefCell::default();
+            let read = |read: &'a Rc<MagnitudeUpperBoundFromInstant>, at: f64| -> f64 {
+                let read: &'a MagnitudeUpperBoundFromInstant = read;
                 if let Some((held, bound)) = read.last.get()
                     && held == at.to_bits()
                 {
@@ -344,13 +362,13 @@ impl Tail {
             };
             crate::steps::step(1);
             // A bound no arithmetic defines proves nothing.
-            let bound = match tail.bound_from(at, &read) {
+            let bound = match upper_bound.bound_from(at, &read) {
                 b if b.is_nan() => f64::INFINITY,
                 b => b,
             };
             let missing = missing.into_inner();
             if missing.is_empty() {
-                tail.last.set(Some((at.to_bits(), bound)));
+                upper_bound.last.set(Some((at.to_bits(), bound)));
                 found.insert(key, bound);
                 open.pop();
             } else {
@@ -361,10 +379,16 @@ impl Tail {
     }
 
     /// From the double before `t`: an edge tying `t` may hold it.
-    fn bound_from<'a>(&'a self, t: f64, read: &dyn Fn(&'a Rc<Tail>, f64) -> f64) -> f64 {
+    fn bound_from<'a>(
+        &'a self,
+        t: f64,
+        read: &dyn Fn(&'a Rc<MagnitudeUpperBoundFromInstant>, f64) -> f64,
+    ) -> f64 {
         let t = t.next_down();
         match &self.form {
-            Form::Atoms(atoms, summed) => atoms_from(atoms, summed, t),
+            Form::Atoms(atoms, summed) => {
+                atoms_magnitude_upper_bound_from_instant(atoms, summed, t)
+            }
             Form::Written(range, reads) => range
                 .from(t, &|n, t| read(&reads[&n], t))
                 .map_or(f64::INFINITY, |s| s.reach() + s.err),
@@ -388,17 +412,23 @@ fn sample(grid: Grid, t: f64) -> i64 {
     grid.count(t).floor().clamp(-9e18, 9e18) as i64
 }
 
-fn atoms_from(atoms: &[SpectralAtom], summed: &Summed, t: f64) -> f64 {
+fn atoms_magnitude_upper_bound_from_instant(
+    atoms: &[SpectralAtom],
+    summed: &Summed,
+    t: f64,
+) -> f64 {
     let rounded = 1.0 + OP * (atoms.len() as f64 + TRANSFORM_OPS);
     let mut sum = 0.0;
     for atom in atoms {
-        match sup_from(atom, t) {
+        match magnitude_upper_bound_from_instant(atom, t) {
             Some(sup) => sum += sup,
             None => return f64::INFINITY,
         }
     }
     let direct = summed.iter().try_fold(0.0, |held, (factor, err)| {
-        let under = factor.as_ref().map_or(Some(1.0), |f| sup_from(f, t))?;
+        let under = factor
+            .as_ref()
+            .map_or(Some(1.0), |f| magnitude_upper_bound_from_instant(f, t))?;
         Some(held + err * under)
     });
     direct.map_or(f64::INFINITY, |direct| sum * rounded + direct)
@@ -430,16 +460,19 @@ fn times(gain: f64, bound: f64) -> f64 {
 
 /// A form linear in reads of one foot on one clock, as one scaled read of it where any reads
 /// earliest: bounds never rise with their instant, and the span is homogeneous in its reads.
-fn linear(range: &Range, reads: &BTreeMap<NodeId, Rc<Tail>>) -> Option<Form> {
+fn linear(
+    range: &Range,
+    reads: &BTreeMap<NodeId, Rc<MagnitudeUpperBoundFromInstant>>,
+) -> Option<Form> {
     if reads.is_empty() || !range.linear() {
         return None;
     }
     let identity = Some((1.0, 0.0, 0.0));
-    let feet = reads.values().map(|tail| match &tail.form {
+    let feet = reads.values().map(|upper_bound| match &upper_bound.form {
         Form::Read(foot, map, gain) => (foot, *map, *gain),
-        _ => (tail, identity, 1.0),
+        _ => (upper_bound, identity, 1.0),
     });
-    let feet: Vec<(&Rc<Tail>, Map, f64)> = feet.collect();
+    let feet: Vec<(&Rc<MagnitudeUpperBoundFromInstant>, Map, f64)> = feet.collect();
     let (foot, first, _) = feet[0];
     let (k, ..) = first?;
     let mut earliest = f64::INFINITY;

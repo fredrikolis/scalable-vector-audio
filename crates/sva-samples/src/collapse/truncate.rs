@@ -10,7 +10,7 @@ use sva_formula::fourier_dual::series::{Shape, read_with};
 use sva_formula::series::{falls, mentions, mentions_line_read, ratio, substitute};
 use sva_formula::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom};
 use sva_formula::spectral_sum::merge::simplify;
-use sva_formula::spectral_sum::sup::sup_from;
+use sva_formula::spectral_sum::sup::magnitude_upper_bound_from_instant;
 use sva_formula::through::{Read, looked};
 use sva_formula::{
     Banded, Body, C64, Codomain, Env, IndexId, Lane, NodeId, Opaque, ParamId, Part, Reads, Run,
@@ -736,7 +736,7 @@ fn steady(term: &Body, angle: &Body) -> Body {
 fn sup(f: &SpectralSum) -> f64 {
     let atoms = f.lanes.iter().flat_map(|lane| lane.atoms.iter());
     atoms
-        .map(|a| sup_from(a, f64::NEG_INFINITY).unwrap_or(f64::INFINITY))
+        .map(|a| magnitude_upper_bound_from_instant(a, f64::NEG_INFINITY).unwrap_or(f64::INFINITY))
         .sum()
 }
 
@@ -750,7 +750,7 @@ fn least(f: &SpectralSum) -> f64 {
         .abs();
     let moves: f64 = moving
         .iter()
-        .map(|a| sup_from(a, f64::NEG_INFINITY).unwrap_or(f64::INFINITY))
+        .map(|a| magnitude_upper_bound_from_instant(a, f64::NEG_INFINITY).unwrap_or(f64::INFINITY))
         .sum();
     (held - moves).max(0.0)
 }

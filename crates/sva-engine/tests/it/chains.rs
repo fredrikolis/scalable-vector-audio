@@ -94,7 +94,7 @@ fn a_loop_over_a_sum_with_a_modulated_term_twelve_levels_deep() {
     assert_eq!(digest, 0xa004_0318_faff_2338);
 }
 
-/// Samples `top` renders, unpruned, over a chain whose `ck` reads `c{k-1}` as `read` writes it.
+/// Samples `top` renders, never treated as silent, over a chain whose `ck` reads `c{k-1}` as `read` writes it.
 fn underflowing(depth: usize, read: impl Fn(&str) -> String, top: &str) -> usize {
     let mut files = vec![("c0".to_string(), "sin(2*pi*220*t)\n".to_string())];
     for k in 1..=depth {
@@ -110,7 +110,7 @@ fn underflowing(depth: usize, read: impl Fn(&str) -> String, top: &str) -> usize
         .collect();
     let g = graph_of("underflowing", &held);
     let mut config = RenderConfig::at(RATE);
-    config.profile.prune_db = -1e4;
+    config.profile.silence_threshold_dbfs = -1e4;
     let render =
         render(&g, "top", config, &Tier::default()).unwrap_or_else(|e| panic!("{top}: {e}"));
     let id = render.id("top").expect("the root");

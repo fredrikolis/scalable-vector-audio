@@ -51,8 +51,8 @@ pub struct Stream {
     faded: f64,
     /// The first sounding term's end, which `heard` evicts.
     ending: Option<Option<i64>>,
-    /// The sample a silence cut ends the stream's root at.
-    cut: Option<i64>,
+    /// The sample the stream's root is treated as silent from.
+    treated_as_silent_from_sample: Option<i64>,
     generation: u64,
     live: bool,
     dropped: Recent<String>,
@@ -118,7 +118,7 @@ impl Stream {
             fading: Vec::new(),
             faded: 0.0,
             ending: None,
-            cut: None,
+            treated_as_silent_from_sample: None,
             generation: 0,
             live: false,
             dropped: Recent::keeping(LATEST),
@@ -253,7 +253,7 @@ impl Stream {
             Walked::Planned(plan) => plan,
         };
         let built = self.built(&mut plan);
-        let (root, range, cut) = match built {
+        let (root, range, treated_as_silent_from_sample) = match built {
             Ok(held) => held,
             Err(e) => {
                 let freed = self.world.abort();
@@ -284,7 +284,7 @@ impl Stream {
             self.driver.value_graph.abort(&freed);
             return Ok(Attempt::Reads(wants));
         }
-        self.cut = cut;
+        self.treated_as_silent_from_sample = treated_as_silent_from_sample;
         Ok(Attempt::Landed(self.land(
             prospect,
             (plan, root, range),
@@ -292,7 +292,8 @@ impl Stream {
         )))
     }
 
-    /// The plan typed and built: the root's value, its range, and where a cut ends it.
+    /// The plan typed and built: the root's value, its range, and the sample it is treated as
+    /// silent from.
     fn built(&mut self, plan: &mut Plan) -> Result<(usize, Extent, Option<i64>), EngineError> {
         let typing = &mut self.world.typing;
         let id = typing
@@ -324,7 +325,7 @@ impl Stream {
             _ => ending.exact(id),
         };
         let range = range_over((&render, STREAMED), end.support, Ends::Pulled)?;
-        Ok((root, range, end.cut))
+        Ok((root, range, end.treated_as_silent_from_sample))
     }
 
     /// The change held, each value it made carrying on what it continues.
@@ -376,7 +377,7 @@ impl Stream {
             lookups: local.lookups,
         };
         self.generation += 1;
-        self.prune();
+        self.retire_terms_below_silence_threshold();
         prospect.answer
     }
 
@@ -444,13 +445,13 @@ impl Stream {
                     if !self.driver.pulled(step)? {
                         return Ok(None);
                     }
-                    self.prune();
+                    self.retire_terms_below_silence_threshold();
                 }
             }
         }
         self.reads_on(n)?;
         let block = self.driver.read(n)?;
-        self.prune();
+        self.retire_terms_below_silence_threshold();
         Ok(block.map(|b| widened(b, self.width)))
     }
 
@@ -511,8 +512,9 @@ impl Stream {
     }
 
     /// Retires every term silent at the root by now and from the first sample of `notes` the
-    /// root asks, while all it retired early, summed through the gain, stay under the level.
-    fn prune(&mut self) {
+    /// root asks, while all it retired early, summed through the gain, stay under the silence
+    /// threshold.
+    fn retire_terms_below_silence_threshold(&mut self) {
         let now = self.driver.at;
         let heard = &self.heard;
         let ending = *self
@@ -532,11 +534,11 @@ impl Stream {
             Some(_) => None,
             None => Some(i64::MIN),
         };
-        let level = self.config.render.profile.prune_level();
+        let silence_threshold = self.config.render.profile.silence_threshold_amplitude();
         let gain = self.gain.gain.unwrap_or(f64::INFINITY);
         if let Some(from) = asked {
-            // Far under the level, a bound joins one sum, so the list stays short.
-            let let_go = level * 2f64.powi(-30);
+            // Far under the silence threshold, a bound joins one sum, so the list stays short.
+            let let_go = silence_threshold * 2f64.powi(-30);
             let mut faded = self.faded;
             self.fading.retain(|f| match f.from(from) {
                 b if b <= let_go => {
@@ -562,7 +564,7 @@ impl Stream {
                 let left: f64 = self.fading.iter().map(|f| f.from(from)).sum();
                 let ops = self.fading.len() as f64 + 3.0;
                 let left = (self.faded + left + own) * (1.0 + ops * f64::EPSILON);
-                if !under(gain, left, level) {
+                if !under(gain, left, silence_threshold) {
                     continue;
                 }
                 self.fading.push(fading.clone());
@@ -593,11 +595,11 @@ impl Stream {
             .map_or(Vec::new(), |at| value_graph.values[at].evaluated.clone())
     }
 
-    pub fn pruned(&self) -> sva_samples::Pruned {
-        sva_samples::Pruned {
-            db: self.config.render.profile.prune_db,
-            cuts: self
-                .cut
+    pub fn cutting_below_silence_threshold(&self) -> sva_samples::CuttingBelowSilenceThreshold {
+        sva_samples::CuttingBelowSilenceThreshold {
+            silence_threshold_dbfs: self.config.render.profile.silence_threshold_dbfs,
+            treated_as_silent_from_sample: self
+                .treated_as_silent_from_sample
                 .map(|at| (STREAMED.to_string(), at))
                 .into_iter()
                 .collect(),

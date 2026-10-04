@@ -43,7 +43,7 @@ fn never_ends(path: String) -> Finding {
         code: LintCode::SupportNeverEnds,
         severity: Severity::Warning,
         message: format!(
-            "`{path}`'s support never ends, even cut where its bound falls under the prune level, so a bare \
+            "`{path}`'s support never ends, even cut where its bound falls under the silence threshold, so a bare \
              `@{path}` has no end to render to"
         ),
         subject: path,

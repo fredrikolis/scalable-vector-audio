@@ -59,7 +59,10 @@ pub fn steepest_read(f: &Body, reads: &dyn crate::through::Reads) -> Option<f64>
             return None;
         }
         for atom in &lane.atoms {
-            held += crate::spectral_sum::sup::sup_from(atom, f64::NEG_INFINITY)?;
+            held += crate::spectral_sum::sup::magnitude_upper_bound_from_instant(
+                atom,
+                f64::NEG_INFINITY,
+            )?;
         }
     }
     held.is_finite().then_some(held)

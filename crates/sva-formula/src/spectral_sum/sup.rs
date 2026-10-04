@@ -12,7 +12,7 @@ pub enum Fate {
 
 /// `sup |atom(s)|` over `s >= t`, `None` for a delta or a pole on the interval. The power
 /// and the exponential peak together at an end or at their one stationary point.
-pub fn sup_from(atom: &SpectralAtom, t: f64) -> Option<f64> {
+pub fn magnitude_upper_bound_from_instant(atom: &SpectralAtom, t: f64) -> Option<f64> {
     if let Singular::Delta { .. } = atom.sing {
         return None;
     }

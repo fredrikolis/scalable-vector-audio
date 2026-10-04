@@ -233,7 +233,7 @@ fn a_sum_of_two_indices_reads_the_sample_it_names() {
 /// A read whose reach a constant or a clamp by constants bounds holds only that much of its
 /// source at any block; one no bound holds keeps all of it, and still plays.
 #[test]
-fn an_index_prunes_its_source_only_where_its_reach_is_bounded() {
+fn an_index_holds_of_its_source_only_what_a_bounded_reach_needs() {
     let g = graph_of(
         "index-held",
         &[

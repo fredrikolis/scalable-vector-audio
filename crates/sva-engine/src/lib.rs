@@ -46,10 +46,11 @@ pub use render::{
 pub use schedule::{Order, Schedule, schedule_from};
 pub use sva_formula::{C64, Codomain, Held, Line, NodeId, SpectralSum, Ty, Var};
 pub use sva_samples::{
-    Alias, AliasBand, BAND_COUNT, BandCrest, BandTrack, Bands, Buffer, Cost, Crest, Detail,
-    EnvelopeFrame, Extent, FormantFrame, Frames, Label, LedgerEntry, Loudness, LoudnessFrame,
-    MAX_PINNED_FRAME, Onsets, PSYCHOACOUSTIC_V1, PitchFrame, Profile, Pruned, Rule, SignalKind,
-    Source, Spectrum, StereoFrame, StereoImage, measure_alias, pinned_frame,
+    Alias, AliasBand, BAND_COUNT, BandCrest, BandTrack, Bands, Buffer, Cost, Crest,
+    CuttingBelowSilenceThreshold, Detail, EnvelopeFrame, Extent, FormantFrame, Frames, Label,
+    LedgerEntry, Loudness, LoudnessFrame, MAX_PINNED_FRAME, Onsets, PSYCHOACOUSTIC_V1, PitchFrame,
+    Profile, Rule, SignalKind, Source, Spectrum, StereoFrame, StereoImage, measure_alias,
+    pinned_frame,
 };
 pub use trace::{Traced, Up, trace};
 pub use typing::{Typing, Value, When};

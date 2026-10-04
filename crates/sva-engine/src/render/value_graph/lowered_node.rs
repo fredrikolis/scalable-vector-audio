@@ -577,7 +577,7 @@ fn one_value(tys: &Typing, body: &Body) -> bool {
 }
 
 /// `a + b + c` nests to the left; as one sum, the same fold from `+0` in the same order, a
-/// span prunes a dead addend outright rather than leaving the sum around it.
+/// span drops a dead addend outright rather than leaving the sum around it.
 fn addends(tys: &Typing, args: &[NodeId], apart: &dyn Fn(NodeId) -> bool) -> Vec<NodeId> {
     let (mut head, mut tails) = (args, Vec::new());
     while let Value::Op { name, args: inner } = tys.value(head[0])

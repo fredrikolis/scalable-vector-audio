@@ -47,25 +47,27 @@ impl Ringing {
         Some(ringing)
     }
 
-    /// `settle + 2` samples past where its input stays within `tail`, roundings as in `past`.
-    pub(super) fn fed_from(&self, tail: f64) -> f64 {
-        self.fed_past(self.settle, tail) * (1.0 + SLACK)
+    /// `settle + 2` samples past where its input stays within `input_magnitude_upper_bound`,
+    /// roundings as in `past`.
+    pub(super) fn fed_from(&self, input_magnitude_upper_bound: f64) -> f64 {
+        self.fed_past(self.settle, input_magnitude_upper_bound) * (1.0 + SLACK)
     }
 
     pub(super) fn settle(&self) -> i64 {
         self.settle
     }
 
-    fn fed_past(&self, m: i64, tail: f64) -> f64 {
+    fn fed_past(&self, m: i64, input_magnitude_upper_bound: f64) -> f64 {
         if m < 0 {
             return self.whole;
         }
         let rings = self.lead * self.decay.at(m) + self.lag * self.decay.at(m - 1);
         let split = m / 2;
-        let fed = self.feeding * tail;
+        let fed = self.feeding * input_magnitude_upper_bound;
         let early = (self.rounding * self.whole + fed + TINY) * self.decay.tail(m - split + 1);
-        let late = self.decay.sum() * (self.rounding * self.fed_past(split - 2, tail) + fed + TINY);
-        (rings + self.fed * tail + early + late).min(self.whole)
+        let late = self.decay.sum()
+            * (self.rounding * self.fed_past(split - 2, input_magnitude_upper_bound) + fed + TINY);
+        (rings + self.fed * input_magnitude_upper_bound + early + late).min(self.whole)
     }
 
     fn settled(&self) -> i64 {

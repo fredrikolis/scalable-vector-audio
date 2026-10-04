@@ -1,4 +1,4 @@
-// Concern: proves an open render, or a stream's term, ends where its bound at the root is under the prune level | Non-concern: deriving a bound | IO: (a composition, a profile) -> samples, the cut
+// Concern: proves an open render, or a stream's term, ends where its bound at the root is under the silence threshold | Non-concern: deriving a bound | IO: (a composition, a profile) -> samples, the cut
 
 use std::cell::RefCell;
 
@@ -39,12 +39,12 @@ fn plane(r: &Render) -> Vec<f64> {
 
 /// Where the render's own label says `node` was cut.
 fn cut(r: &Render, node: &str) -> Option<i64> {
-    let pruned = r.labels[&r.root]
-        .pruned
+    let cutting = r.labels[&r.root]
+        .cutting_below_silence_threshold
         .clone()
-        .expect("a render states its prune level");
-    pruned
-        .cuts
+        .expect("a render states its silence threshold");
+    cutting
+        .treated_as_silent_from_sample
         .iter()
         .find(|(n, _)| n == node)
         .map(|(_, at)| *at)
@@ -52,7 +52,7 @@ fn cut(r: &Render, node: &str) -> Option<i64> {
 
 fn at(profile_db: f64) -> Profile {
     Profile {
-        prune_db: profile_db,
+        silence_threshold_dbfs: profile_db,
         ..PSYCHOACOUSTIC_V1
     }
 }
@@ -60,14 +60,14 @@ fn at(profile_db: f64) -> Profile {
 /// `exp(-t/0.15)` falls under -120 dBFS a little past 2.07 s: an open render of the fade ends
 /// at the sample its bound stays under, and says so.
 #[test]
-fn a_decayed_sound_ends_where_its_bound_stays_under_the_level() {
+fn a_decayed_sound_ends_where_its_bound_stays_under_the_silence_threshold() {
     let g = fades();
     let fade = rendered(&g, "fade", PSYCHOACOUSTIC_V1);
-    let pruned = fade.labels[&fade.root]
-        .pruned
+    let cutting = fade.labels[&fade.root]
+        .cutting_below_silence_threshold
         .clone()
-        .expect("a stated level");
-    assert_eq!(pruned.db, -120.0);
+        .expect("a stated silence threshold");
+    assert_eq!(cutting.silence_threshold_dbfs, -120.0);
     let from = cut(&fade, "fade").expect("the fade is cut");
     let seconds = from as f64 / f64::from(RATE);
     assert!((2.07..2.2).contains(&seconds), "cut at {seconds} s");
@@ -76,14 +76,17 @@ fn a_decayed_sound_ends_where_its_bound_stays_under_the_level() {
     assert!(samples.iter().rev().take(40).any(|v| *v != 0.0));
 }
 
-/// A profile pruning at -60 dBFS cuts the fade at about half the time -120 does.
+/// A profile whose silence threshold is -60 dBFS cuts the fade at about half the time -120 does.
 #[test]
-fn the_profile_s_level_moves_the_cut() {
+fn the_profile_s_silence_threshold_moves_the_cut() {
     let g = fades();
     let loud = rendered(&g, "fade", at(-60.0));
     let quiet = rendered(&g, "fade", PSYCHOACOUSTIC_V1);
     assert_eq!(
-        loud.labels[&loud.root].pruned.as_ref().map(|p| p.db),
+        loud.labels[&loud.root]
+            .cutting_below_silence_threshold
+            .as_ref()
+            .map(|p| p.silence_threshold_dbfs),
         Some(-60.0)
     );
     let (early, late) = (
@@ -110,17 +113,21 @@ fn a_closed_interval_cuts_nothing() {
         ..RenderConfig::seconds(RATE, 4.0)
     };
     let mix = sva_engine::render(&g, "mix", closed, &Tier::default()).expect("a render");
-    let pruned = mix.labels[&mix.root]
-        .pruned
+    let cutting = mix.labels[&mix.root]
+        .cutting_below_silence_threshold
         .clone()
-        .expect("a stated level");
-    assert!(pruned.cuts.is_empty(), "{:?}", pruned.cuts);
+        .expect("a stated silence threshold");
+    assert!(
+        cutting.treated_as_silent_from_sample.is_empty(),
+        "{:?}",
+        cutting.treated_as_silent_from_sample
+    );
     let exact = RenderConfig {
         profile: at(f64::NEG_INFINITY),
         ..RenderConfig::seconds(RATE, 4.0)
     };
-    let unpruned = sva_engine::render(&g, "mix", exact, &Tier::default()).expect("a render");
-    let (a, b) = (plane(&mix), plane(&unpruned));
+    let uncut = sva_engine::render(&g, "mix", exact, &Tier::default()).expect("a render");
+    let (a, b) = (plane(&mix), plane(&uncut));
     assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
 }
 
@@ -172,24 +179,30 @@ fn a_faded_key_up_leaves_the_stream_s_sum_with_no_remove() {
         assert_eq!(
             terms(),
             1,
-            "{target}: under the level, 2.5 s after its key-up"
+            "{target}: under the silence threshold, 2.5 s after its key-up"
         );
-        assert_eq!(stream.borrow().pruned().db, -120.0);
+        assert_eq!(
+            stream
+                .borrow()
+                .cutting_below_silence_threshold()
+                .silence_threshold_dbfs,
+            -120.0
+        );
     }
 }
 
-/// Notes each falling under the level leave the sum early only while all that left early,
+/// Notes each falling under the silence threshold leave the sum early only while all that left early,
 /// summed at the root, stay under it: decaying notes sounding as one, every 32nd of a second,
-/// differ from the stream with cuts off by less than the level, and few sound at once.
+/// differ from the stream with cuts off by less than the silence threshold, and few sound at once.
 #[test]
 fn notes_let_go_early_stay_under_the_level_together() {
     let g = graph_of("faded-together", &[("pad", "sin(2*pi*f0*t)\n")]);
-    let played = |prune_db: f64| {
+    let played = |silence_threshold_dbfs: f64| {
         let config = StreamConfig {
             block: 50,
             channels: None,
             render: RenderConfig {
-                profile: at(prune_db),
+                profile: at(silence_threshold_dbfs),
                 ..RenderConfig::at(RATE)
             },
         };
@@ -212,11 +225,11 @@ fn notes_let_go_early_stay_under_the_level_together() {
         }
         (samples, most, stream.borrow().counts().terms)
     };
-    let (pruned, most, _) = played(-120.0);
+    let (cutting, most, _) = played(-120.0);
     let (exact, _, kept) = played(f64::NEG_INFINITY);
     assert_eq!(kept, 160, "with cuts off every note stays");
     assert!(most < 40, "{most} sound at once");
-    let moved = pruned.iter().zip(&exact).map(|(a, b)| (a - b).abs());
+    let moved = cutting.iter().zip(&exact).map(|(a, b)| (a - b).abs());
     let moved = moved.fold(0.0f64, f64::max);
     assert!(moved > 0.0 && moved < 1e-6, "the root moved {moved}");
 }

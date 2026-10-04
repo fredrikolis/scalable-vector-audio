@@ -89,11 +89,12 @@ pub struct Cost {
     pub budget: u128,
 }
 
-/// The level a render prunes at, and the sample each node it cut is zero from.
+/// The silence threshold a render cuts below, and the sample each node it cut is treated as
+/// silent from.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Pruned {
-    pub db: f64,
-    pub cuts: Vec<(String, i64)>,
+pub struct CuttingBelowSilenceThreshold {
+    pub silence_threshold_dbfs: f64,
+    pub treated_as_silent_from_sample: Vec<(String, i64)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -105,7 +106,7 @@ pub struct Label {
     pub cost: Option<Cost>,
     /// The most seconds a read was moved to land on a whole sample.
     pub moved: Option<f64>,
-    pub pruned: Option<Pruned>,
+    pub cutting_below_silence_threshold: Option<CuttingBelowSilenceThreshold>,
 }
 
 impl Label {
@@ -119,7 +120,7 @@ impl Label {
             },
             cost: None,
             moved: None,
-            pruned: None,
+            cutting_below_silence_threshold: None,
         }
     }
 
@@ -131,7 +132,7 @@ impl Label {
             detail,
             cost: None,
             moved: None,
-            pruned: None,
+            cutting_below_silence_threshold: None,
         }
     }
 

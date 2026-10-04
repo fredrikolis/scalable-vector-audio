@@ -131,7 +131,7 @@ pub struct Render {
     pub(crate) unslotted: Option<String>,
     /// Each node typed with every volatile parameter at its stand-in.
     pub(crate) stand_in_typed: Vec<String>,
-    pub(crate) cut: Option<i64>,
+    pub(crate) treated_as_silent_from_sample: Option<i64>,
     /// What its readings ask past the samples it holds.
     pub(crate) memory: Memory,
 }
@@ -161,7 +161,7 @@ impl Render {
             computed: 0,
             unslotted: None,
             stand_in_typed: Vec::new(),
-            cut: None,
+            treated_as_silent_from_sample: None,
             memory,
         }
     }
@@ -368,7 +368,7 @@ fn ranged(
         (Some(_), None) => Ending::new(&held.tys, &held.config.profile, &supports).exact(held.root),
         (None, None) => Ending::new(&held.tys, &held.config.profile, &supports).of(held.root),
     };
-    held.cut = end.cut;
+    held.treated_as_silent_from_sample = end.treated_as_silent_from_sample;
     let support = end.support;
     let range = range_over(
         (&held.config, held.tys.name(held.root)),
@@ -622,15 +622,17 @@ fn stamp(held: &mut Render) {
         return;
     };
     let counted = crate::flops::total(held);
-    let cut = held.cut.map(|at| (held.tys.name(root).to_string(), at));
-    let pruned = sva_samples::Pruned {
-        db: held.config.profile.prune_db,
-        cuts: cut.into_iter().collect(),
+    let treated_as_silent_from_sample = held
+        .treated_as_silent_from_sample
+        .map(|at| (held.tys.name(root).to_string(), at));
+    let cutting = sva_samples::CuttingBelowSilenceThreshold {
+        silence_threshold_dbfs: held.config.profile.silence_threshold_dbfs,
+        treated_as_silent_from_sample: treated_as_silent_from_sample.into_iter().collect(),
     };
     let label = sva_samples::Label {
         rate: held.config.rate,
         moved: held.value_graph.as_ref().map(ValueGraph::moved),
-        pruned: Some(pruned),
+        cutting_below_silence_threshold: Some(cutting),
         ..label.costing(counted, held.config.budget())
     };
     held.labels.insert(root, label);

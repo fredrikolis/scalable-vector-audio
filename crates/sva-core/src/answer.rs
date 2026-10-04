@@ -4,9 +4,9 @@ use std::path::Path;
 
 use sva_engine::{
     Alias, AliasBand, Answer, Arguments, BandCrest, BandTrack, Bands, Binding, Buffer, CacheStats,
-    Cost, Counters, Crest, Detail, EnvelopeFrame, FormantFrame, Label, LedgerEntry, Loudness,
-    LoudnessFrame, Onsets, Outcome, Output, PayloadKind, Pruned, Source, SpectralSum, Spectrum,
-    StereoFrame, StereoImage, Work,
+    Cost, Counters, Crest, CuttingBelowSilenceThreshold, Detail, EnvelopeFrame, FormantFrame,
+    Label, LedgerEntry, Loudness, LoudnessFrame, Onsets, Outcome, Output, PayloadKind, Source,
+    SpectralSum, Spectrum, StereoFrame, StereoImage, Work,
 };
 
 use crate::json::{NONE, capped, escape, latest, list, num};
@@ -481,9 +481,12 @@ pub fn label_json(label: &Label) -> String {
         Some(Cost { flops, budget }) => format!(", \"flops\": {flops}, \"flop_budget\": {budget}"),
         None => format!(", \"flops\": {NONE}, \"flop_budget\": {NONE}"),
     };
-    let pruned = label.pruned.as_ref().map_or(NONE.to_string(), pruned_json);
+    let cutting = label
+        .cutting_below_silence_threshold
+        .as_ref()
+        .map_or(NONE.to_string(), cutting_below_silence_threshold_json);
     let cost = format!(
-        "{cost}, \"moved_s\": {}, \"pruned\": {pruned}",
+        "{cost}, \"moved_s\": {}, \"pruned\": {cutting}",
         maybe(label.moved)
     );
     format!(
@@ -498,13 +501,16 @@ pub fn label_json(label: &Label) -> String {
     )
 }
 
-/// The level a term under which, for good, was taken as zero, and each node cut at the sample
-/// it is zero from.
-pub fn pruned_json(pruned: &Pruned) -> String {
-    let cuts = list(&pruned.cuts, |(node, from)| {
+/// The silence threshold, and each node treated as silent from a sample on, under the JSON
+/// keys `pruned`, `db` and `cuts`.
+pub fn cutting_below_silence_threshold_json(cutting: &CuttingBelowSilenceThreshold) -> String {
+    let cuts = list(&cutting.treated_as_silent_from_sample, |(node, from)| {
         format!("{{ \"node\": \"{}\", \"from\": {from} }}", escape(node))
     });
-    format!("{{ \"db\": {}, \"cuts\": {cuts} }}", num(pruned.db))
+    format!(
+        "{{ \"db\": {}, \"cuts\": {cuts} }}",
+        num(cutting.silence_threshold_dbfs)
+    )
 }
 
 /// Whole counts every one; `waves` is null where a node's go uncounted.
@@ -524,15 +530,15 @@ pub fn stats_json(stats: &CacheStats) -> String {
 }
 
 /// `stats_json` over a stream's latest lookups, `dropped`: the latest nodes its live edits
-/// started silent, and `pruned`: where its table prunes. Each list's `pagination.count` counts
-/// all it made.
+/// started silent, and `pruned`: where it cuts below the silence threshold. Each list's
+/// `pagination.count` counts all it made.
 pub fn stream_stats_json(
     stats: &CacheStats,
     (dropped, made): (&[&str], usize),
-    pruned: &Pruned,
+    cutting: &CuttingBelowSilenceThreshold,
 ) -> String {
     let dropped = latest(dropped, made, |name| format!("\"{}\"", escape(name)));
-    let pruned = pruned_json(pruned);
+    let pruned = cutting_below_silence_threshold_json(cutting);
     stats_with(
         stats,
         &format!(", \"dropped\": {dropped}, \"pruned\": {pruned}"),

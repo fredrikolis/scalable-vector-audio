@@ -438,7 +438,7 @@ fn the_cache_budget_is_the_pages_own() {
     render(&held, "master");
     held.set_cache_max_bytes(1_024.0);
     assert_eq!(held.cache_max_bytes(), 1_024.0);
-    assert!(held.cache_bytes() <= 1_024.0, "a lower cap prunes at once");
+    assert!(held.cache_bytes() <= 1_024.0, "a lower cap evicts at once");
 }
 
 /// A located refusal is the contract everywhere else in this engine, so it has to cross as one:

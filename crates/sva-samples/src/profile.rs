@@ -11,7 +11,7 @@ pub struct Profile {
     /// The operation count a render pays without the caller saying so.
     pub flop_budget: u128,
     pub precision_bits: i32,
-    pub prune_db: f64,
+    pub silence_threshold_dbfs: f64,
 }
 
 pub const PSYCHOACOUSTIC_V1: Profile = Profile {
@@ -21,7 +21,7 @@ pub const PSYCHOACOUSTIC_V1: Profile = Profile {
     ceiling_hz: 20_000.0,
     flop_budget: 10_000_000_000,
     precision_bits: 24,
-    prune_db: -120.0,
+    silence_threshold_dbfs: -120.0,
 };
 
 impl Profile {
@@ -33,8 +33,8 @@ impl Profile {
         2f64.powi(-self.precision_bits)
     }
 
-    pub fn prune_level(&self) -> f64 {
-        10f64.powf(self.prune_db / 20.0)
+    pub fn silence_threshold_amplitude(&self) -> f64 {
+        10f64.powf(self.silence_threshold_dbfs / 20.0)
     }
 
     /// Every setting a value or its label depends on.
@@ -46,7 +46,7 @@ impl Profile {
             ceiling_hz,
             flop_budget: _,
             precision_bits,
-            prune_db: _,
+            silence_threshold_dbfs: _,
         } = *self;
         let mut named = ContentHasher::new(HashDomain::ProfileName);
         named.text(name);

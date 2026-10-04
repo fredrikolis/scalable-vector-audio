@@ -1,4 +1,4 @@
-// Concern: proves a placed read shares its node's one value: computed once, pruned, folded, snapped to a sample | Non-concern: what a value holds | IO: (a composition) -> evaluated segments, onsets
+// Concern: proves a placed read shares its node's one value: computed once, zero-skipped, folded, snapped | Non-concern: what a value holds | IO: (a composition) -> evaluated segments, onsets
 
 use crate::fixtures::{Now, graph_of, next};
 use sva_ast::{Graph, PerBar};
@@ -84,9 +84,9 @@ fn a_note_read_at_three_placements_is_computed_once_at_either_tempo() {
 }
 
 #[test]
-fn a_crop_prunes_what_it_reads_before_it_is_computed() {
+fn a_crop_skips_what_it_reads_outside_it_before_it_is_computed() {
     let g = graph_of(
-        "pruned",
+        "crop-skips",
         &[
             ("long", "exp(0 - t/60)*sin(2*pi*220*t)\n"),
             ("cut", "crop(@long(t), 0s, 1s)\n"),

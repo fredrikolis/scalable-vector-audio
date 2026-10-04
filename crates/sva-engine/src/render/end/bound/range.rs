@@ -1,7 +1,7 @@
 // Concern: bounds a written closed form's value from each instant on, constructor by constructor | Non-concern: forms an atom sum reaches, bounded atom by atom | IO: (&Body) -> Range, (t) -> [lo, hi]
 
 use sva_formula::spectral_sum::atom::SpectralAtom;
-use sva_formula::spectral_sum::sup::sup_from;
+use sva_formula::spectral_sum::sup::magnitude_upper_bound_from_instant;
 use sva_formula::{Body, Edge, Fold, Indicator, NodeId, Unary, Var};
 use sva_samples::collapse::run::{bound, reach};
 
@@ -248,7 +248,7 @@ impl Range {
             Range::Atoms(atoms) => {
                 let mut sum = 0.0;
                 for atom in atoms {
-                    sum += sup_from(&until(atom, to), t)?;
+                    sum += magnitude_upper_bound_from_instant(&until(atom, to), t)?;
                 }
                 let terms = atoms.len() as f64 + TRANSFORM_OPS;
                 Some(Span::new(-sum, sum, OP * terms * sum))

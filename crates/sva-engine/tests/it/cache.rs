@@ -1,4 +1,4 @@
-// Concern: states what a cache key is made of, so a warm render answers a cold one | Non-concern: memory's cap and prunes (stores.rs) | IO: (a composition, twice) -> the same bytes
+// Concern: states what a cache key is made of, so a warm render answers a cold one | Non-concern: memory's cap and evictions (stores.rs) | IO: (a composition, twice) -> the same bytes
 
 use std::fs;
 use std::path::{Path, PathBuf};

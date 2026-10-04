@@ -120,9 +120,9 @@ fn a_node_whose_support_never_ends_is_warned_of() {
     assert_eq!(found(&cropped, LintCode::SupportNeverEnds), []);
 }
 
-/// A decay never reaches zero, yet the prune the render already takes ends it.
+/// A decay never reaches zero, yet the cut below the silence threshold the render already takes ends it.
 #[test]
-fn a_decay_the_prune_ends_is_bounded() {
+fn a_decay_cut_below_the_silence_threshold_is_bounded() {
     let dir = composition(
         "decays",
         &[("pluck", "step(t)*exp(-t/0.1s)*sin(2*pi*440*t)\n")],
@@ -168,8 +168,8 @@ fn a_reserved_variable_is_no_sound() {
     assert_eq!(codes, [] as [(&str, &str); 0], "{codes:?}");
 }
 
-/// A fixed filter's ringing past its input's end decays at its poles' rate, so the prune
-/// ends it; a moving cutoff proves no decay and still never ends.
+/// A fixed filter's ringing past its input's end decays at its poles' rate, so the cut below the
+/// silence threshold ends it; a moving cutoff proves no decay and still never ends.
 #[test]
 fn a_fixed_filter_over_a_cropped_input_is_bounded() {
     let dir = composition(

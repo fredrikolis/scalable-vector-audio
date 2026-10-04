@@ -7,12 +7,12 @@ use sva_engine::{RenderConfig, Tier, render};
 
 const RATE: u32 = 8_000;
 
-/// Pruning off: an echo is held to its recurrence to half a step, far under the prune level.
+/// No silence threshold: an echo is held to its recurrence to half a step, far under -120 dBFS.
 fn rendered(files: &[(&str, &str)], root: &str, secs: f64) -> Vec<f64> {
     let g = graph_of(root, files);
     let config = RenderConfig {
         profile: sva_samples::Profile {
-            prune_db: f64::NEG_INFINITY,
+            silence_threshold_dbfs: f64::NEG_INFINITY,
             ..sva_samples::PSYCHOACOUSTIC_V1
         },
         ..RenderConfig::seconds(RATE, secs)

@@ -55,7 +55,7 @@ impl Lowering<'_> {
             return Ok(piece);
         }
         let inline = self.inlined(&piece, var);
-        let Some(inline) = inline.map(|body| self.addends(pruned(body, var))) else {
+        let Some(inline) = inline.map(|body| self.addends(without_zero_addends(body, var))) else {
             return Err(self.refused(
                 "engine.series_body_not_inlinable",
                 "a closed loop expands its body once per term, and this body holds a value \
@@ -789,7 +789,7 @@ fn per_lane(arg: &Expr) -> Option<Vec<&Expr>> {
 
 /// The `self` term of a series body folds to zero, and a zero addend is not a wave any
 /// line enumeration can read: it goes before the series is built.
-fn pruned(body: Body, var: Var) -> Body {
+fn without_zero_addends(body: Body, var: Var) -> Body {
     let Body::Add(parts) = body else {
         return body;
     };

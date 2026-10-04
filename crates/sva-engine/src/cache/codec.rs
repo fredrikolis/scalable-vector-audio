@@ -377,13 +377,13 @@ fn labelled(out: &mut Vec<u8>, label: &Label) {
         }
     }
     float(out, label.moved);
-    match &label.pruned {
+    match &label.cutting_below_silence_threshold {
         None => out.push(0),
-        Some(pruned) => {
+        Some(cutting) => {
             out.push(1);
-            word(out, pruned.db.to_bits());
-            word(out, pruned.cuts.len() as u64);
-            for (node, at) in &pruned.cuts {
+            word(out, cutting.silence_threshold_dbfs.to_bits());
+            word(out, cutting.treated_as_silent_from_sample.len() as u64);
+            for (node, at) in &cutting.treated_as_silent_from_sample {
                 text(out, node);
                 word(out, *at as u64);
             }
@@ -544,15 +544,18 @@ impl Reader<'_> {
             _ => return None,
         };
         let moved = self.float()?;
-        let pruned = match self.byte()? {
+        let cutting_below_silence_threshold = match self.byte()? {
             0 => None,
             1 => {
-                let db = f64::from_bits(self.word()?);
+                let silence_threshold_dbfs = f64::from_bits(self.word()?);
                 let count = usize::try_from(self.word()?).ok()?;
-                let cuts = (0..count)
+                let treated_as_silent_from_sample = (0..count)
                     .map(|_| Some((self.text()?.to_string(), self.word()? as i64)))
                     .collect::<Option<Vec<_>>>()?;
-                Some(sva_samples::Pruned { db, cuts })
+                Some(sva_samples::CuttingBelowSilenceThreshold {
+                    silence_threshold_dbfs,
+                    treated_as_silent_from_sample,
+                })
             }
             _ => return None,
         };
@@ -563,7 +566,7 @@ impl Reader<'_> {
             detail,
             cost,
             moved,
-            pruned,
+            cutting_below_silence_threshold,
         })
     }
 

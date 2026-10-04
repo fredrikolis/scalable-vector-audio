@@ -3,7 +3,7 @@
 use sva_formula::spectral_sum::atom::{
     Exp, Factors, Gauss, Indicator, Pole, Poly, Singular, SpectralAtom,
 };
-use sva_formula::spectral_sum::sup::sup_from;
+use sva_formula::spectral_sum::sup::magnitude_upper_bound_from_instant;
 use sva_formula::{C64, Edge, Origin};
 
 fn atom(factors: Factors) -> SpectralAtom {
@@ -60,7 +60,7 @@ fn an_atom_s_bound_from_an_instant_holds_at_every_later_instant() {
     let starts = [-3.0, 0.0, 0.3, 1.0, 5.0, 40.0, 900.0];
     for a in atoms() {
         for t in starts {
-            let Some(bound) = sup_from(&a, t) else {
+            let Some(bound) = magnitude_upper_bound_from_instant(&a, t) else {
                 continue;
             };
             assert!(!bound.is_nan(), "{a:?} from {t}: NaN");
@@ -96,6 +96,6 @@ fn a_factor_past_a_double_s_range_still_bounds_the_product() {
         ..Factors::NONE
     });
     let truth = (0.7f64.ln() - 760.0 + 300.0 * 10f64.ln()).exp();
-    let bound = sup_from(&a, 760.0).expect("a bound");
+    let bound = magnitude_upper_bound_from_instant(&a, 760.0).expect("a bound");
     assert!(truth > 1e-31 && bound >= truth, "{bound} under {truth}");
 }

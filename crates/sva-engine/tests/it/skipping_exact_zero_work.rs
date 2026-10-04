@@ -10,7 +10,7 @@ const RATE: u32 = 8_000;
 
 fn notes() -> Graph {
     graph_of(
-        "pruning",
+        "skipping-exact-zero-work",
         &[
             ("note", "crop(sin(2*pi*440*t)*exp(-t/0.2), 0s, 0.5s)\n"),
             ("song", "@note(t) + @note(t - 2s) + @note(t - 4s)\n"),
@@ -20,7 +20,7 @@ fn notes() -> Graph {
 
 fn sampled_notes() -> Graph {
     graph_of(
-        "pruning-sampled",
+        "skipping-exact-zero-work-sampled",
         &[
             (
                 "note",
@@ -127,7 +127,7 @@ fn a_long_sum_of_index_reads_shares_one_value_and_pays_each_term_only_where_it_s
         .map(|k| format!("@note[idx(t - {}s)]", 2 * k))
         .collect();
     let g = graph_of(
-        "pruning-indexed",
+        "skipping-exact-zero-work-indexed",
         &[
             ("note", "crop(sin(2*pi*440*t)*exp(-t/0.2), 0s, 0.5s)\n"),
             ("song", &format!("{}\n", song.join(" + "))),
@@ -163,7 +163,7 @@ fn a_long_sum_of_index_reads_shares_one_value_and_pays_each_term_only_where_it_s
 fn a_scaled_sampled_term_is_read_only_where_it_is_nonzero() {
     let g = sampled_notes();
     let scaled = graph_of(
-        "pruning-scaled",
+        "skipping-exact-zero-work-scaled",
         &[
             (
                 "note",
@@ -221,13 +221,13 @@ fn a_count_prices_the_render_it_names() {
     assert_eq!(tree.total, held.work().priced_flops);
 }
 
-/// With pruning off, an open range ends where its root is exactly zero from: a ramp past its
+/// With no silence threshold, an open range ends where its root is exactly zero from: a ramp past its
 /// foot, a sample later where its line ties it, and a decay where the engine's own `exp`
 /// underflows it.
 #[test]
 fn a_ramp_and_a_decay_end_where_they_are_exactly_zero() {
     let g = graph_of(
-        "pruning-decay",
+        "skipping-exact-zero-work-decay",
         &[
             ("decay", "sin(2*pi*440*t)*exp(-t/0.05)*exp(-t/0.1)\n"),
             ("ramp", "sample(max(0, 1 - t/2))\n"),
@@ -235,7 +235,7 @@ fn a_ramp_and_a_decay_end_where_they_are_exactly_zero() {
     );
     let exact = RenderConfig {
         profile: sva_engine::Profile {
-            prune_db: f64::NEG_INFINITY,
+            silence_threshold_dbfs: f64::NEG_INFINITY,
             ..sva_engine::PSYCHOACOUSTIC_V1
         },
         ..RenderConfig::at(RATE)
@@ -282,7 +282,7 @@ fn a_chain_under_a_window_computes_each_level_only_where_the_window_asks() {
         .iter()
         .map(|(n, b)| (n.as_str(), b.as_str()))
         .collect();
-    let g = graph_of("pruning-window", &held);
+    let g = graph_of("skipping-exact-zero-work-window", &held);
     let (start, end) = (i64::from(RATE / 2), i64::from(RATE) * 2);
     let config = RenderConfig {
         range: Range {
@@ -316,15 +316,15 @@ fn a_chain_under_a_window_computes_each_level_only_where_the_window_asks() {
 fn a_clamped_edge_ends_what_it_shapes_where_it_holds_zero() {
     let shut = "(1 - (0.5 - 0.5*cos(pi*min(1, max(0, (t - 0.1)/0.03)))))";
     let g = graph_of(
-        "pruning-clamp",
+        "skipping-exact-zero-work-clamp",
         &[
             ("tone", &format!("crop({shut}*sin(2*pi*200*t), 0s, 2s)\n")),
             ("top", "sample(@tone(t))\n"),
         ],
     );
-    let config = |prune_db| RenderConfig {
+    let config = |silence_threshold_dbfs| RenderConfig {
         profile: sva_engine::Profile {
-            prune_db,
+            silence_threshold_dbfs,
             ..sva_engine::PSYCHOACOUSTIC_V1
         },
         ..RenderConfig::seconds(RATE, 2.0)

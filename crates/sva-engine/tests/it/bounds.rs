@@ -1,4 +1,4 @@
-// Concern: proves where a bound ends an open render, the root unpruned holds only samples under the prune level | Non-concern: where a cut lands (faded.rs) | IO: (a composition) -> cuts, samples
+// Concern: proves where a bound ends an open render, the root uncut holds only samples under the silence threshold | Non-concern: where a cut lands (faded.rs) | IO: (a composition) -> cuts, samples
 
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
@@ -47,20 +47,25 @@ fn graph() -> Graph {
     graph_of("bounds", &files)
 }
 
-fn rendered(g: &Graph, target: &str, prune_db: f64) -> Render {
-    over(g, target, prune_db, RenderConfig::seconds(RATE, 4.0))
-        .unwrap_or_else(|e| panic!("{target}: {e}"))
+fn rendered(g: &Graph, target: &str, silence_threshold_dbfs: f64) -> Render {
+    over(
+        g,
+        target,
+        silence_threshold_dbfs,
+        RenderConfig::seconds(RATE, 4.0),
+    )
+    .unwrap_or_else(|e| panic!("{target}: {e}"))
 }
 
 fn over(
     g: &Graph,
     target: &str,
-    prune_db: f64,
+    silence_threshold_dbfs: f64,
     config: RenderConfig,
 ) -> Result<Render, sva_engine::EngineError> {
     let config = RenderConfig {
         profile: Profile {
-            prune_db,
+            silence_threshold_dbfs,
             ..PSYCHOACOUSTIC_V1
         },
         ..config
@@ -73,19 +78,22 @@ fn plane(r: &Render) -> Vec<f64> {
 }
 
 /// Every open render a bound ends holds: its root, rendered a second past the cut with nothing
-/// cut, stays under the level from the cut on.
+/// cut, stays under the silence threshold from the cut on.
 #[test]
-fn every_cut_zeroes_only_samples_under_the_prune_level() {
+fn every_cut_zeroes_only_samples_under_the_silence_threshold() {
     let g = graph();
-    let level = PSYCHOACOUSTIC_V1.prune_level();
+    let silence_threshold = PSYCHOACOUSTIC_V1.silence_threshold_amplitude();
     let (mut checked, mut wrong) = (0, Vec::new());
     for (name, _) in NODES {
         let open = RenderConfig::at(RATE);
-        let Ok(r) = over(&g, name, PSYCHOACOUSTIC_V1.prune_db, open) else {
+        let Ok(r) = over(&g, name, PSYCHOACOUSTIC_V1.silence_threshold_dbfs, open) else {
             continue;
         };
-        let pruned = r.labels[&r.root].pruned.clone().expect("a stated level");
-        for (node, from) in pruned.cuts {
+        let cutting = r.labels[&r.root]
+            .cutting_below_silence_threshold
+            .clone()
+            .expect("a stated silence threshold");
+        for (node, from) in cutting.treated_as_silent_from_sample {
             assert_eq!(node, *name, "only the root is cut");
             let reference = RenderConfig {
                 range: Range {
@@ -98,7 +106,7 @@ fn every_cut_zeroes_only_samples_under_the_prune_level() {
             let truth = plane(&truth);
             let from = usize::try_from(from.max(0)).expect("a sample");
             let peak = truth[from..].iter().fold(0.0f64, |m, v| m.max(v.abs()));
-            if peak >= level {
+            if peak >= silence_threshold {
                 wrong.push(format!("{name} cut from {from}, reaching {peak:e}"));
             }
             checked += 1;
@@ -113,8 +121,16 @@ fn every_cut_zeroes_only_samples_under_the_prune_level() {
 fn a_product_of_refs_renders_as_written_inline() {
     let g = graph();
     let (refs, inline) = (
-        plane(&rendered(&g, "s_q", PSYCHOACOUSTIC_V1.prune_db)),
-        plane(&rendered(&g, "s_q_inline", PSYCHOACOUSTIC_V1.prune_db)),
+        plane(&rendered(
+            &g,
+            "s_q",
+            PSYCHOACOUSTIC_V1.silence_threshold_dbfs,
+        )),
+        plane(&rendered(
+            &g,
+            "s_q_inline",
+            PSYCHOACOUSTIC_V1.silence_threshold_dbfs,
+        )),
     );
     let peak = |x: &[f64]| x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     assert!(peak(&inline) > 9e8, "{}", peak(&inline));

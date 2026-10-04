@@ -1946,17 +1946,17 @@ fn a_moving_index_read_of_a_stored_value_drops_nothing() {
     assert_eq!(hits, ["looped"], "the store answers it");
 }
 
-/// A fade the prune level would end: the level decides only where an open render stops, never
+/// A fade the silence threshold would end: the threshold decides only where an open render stops, never
 /// a value's samples, so a node stored at one level answers a render at another.
 #[test]
-fn a_node_stored_at_one_prune_level_answers_another() {
+fn a_node_stored_at_one_silence_threshold_answers_another() {
     let graph = graph_of(
-        "prune-keyed",
+        "silence-threshold-keyed",
         &[("master", "sample(sin(2*pi*200*t)*exp(-t/0.02))\n")],
     );
-    let at = |prune_db: f64| RenderConfig {
+    let at = |silence_threshold_dbfs: f64| RenderConfig {
         profile: sva_engine::Profile {
-            prune_db,
+            silence_threshold_dbfs,
             ..sva_engine::PSYCHOACOUSTIC_V1
         },
         ..RenderConfig::seconds(RATE, 1.0)
@@ -2043,7 +2043,7 @@ fn a_stored_closed_form_asked_for_its_law_is_never_answered_by_its_samples() {
     assert_eq!(read_off(&warm, &envelope), read_off(&fresh, &envelope));
 }
 
-/// The fade `master` reads falls under the prune level, so an open render of it ends there: one
+/// The fade `master` reads falls under the silence threshold, so an open render of it ends there: one
 /// answered by the store ends where the one that computed it did, and says so.
 #[test]
 fn a_hit_ends_an_open_render_where_the_render_that_stored_it_did() {
@@ -2060,10 +2060,10 @@ fn a_hit_ends_an_open_render_where_the_render_that_stored_it_did() {
     let cold = now(render_over(&graph, "master", config.clone(), &store)).expect("a render");
     now(store.persist()).expect("persisted");
     let cut = cold.labels[&cold.root]
-        .pruned
+        .cutting_below_silence_threshold
         .clone()
-        .expect("a prune level");
-    assert!(!cut.cuts.is_empty(), "{cut:?}");
+        .expect("a silence threshold");
+    assert!(!cut.treated_as_silent_from_sample.is_empty(), "{cut:?}");
 
     let warm = now(render_over(
         &graph,

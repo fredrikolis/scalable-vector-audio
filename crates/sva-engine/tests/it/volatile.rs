@@ -1,4 +1,4 @@
-// Concern: proves what a moving parameter reaches keeps one value per node, however far it moves | Non-concern: memory's cap or prunes (stores.rs) | IO: (a composition, names) -> CacheStats
+// Concern: proves what a moving parameter reaches keeps one value per node, however far it moves | Non-concern: memory's cap or evictions (stores.rs) | IO: (a composition, names) -> CacheStats
 
 use crate::fixtures::{graph_of, samples};
 use sva_ast::Graph;

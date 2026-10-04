@@ -44,14 +44,14 @@ RENDER:
   else: outside its support a node is exactly zero. A closed interval renders
   exactly its length, nothing cut. An open one ends where the root's support
   does: a crop's end, the exact underflow of an `exp`, a clamp holding a factor
-  at zero; or earlier, where a proven bound on the root's magnitude stays under
-  the profile's prune level (-120 dBFS) from a sample on. A root with no such
-  bound (a held sine, a loop) is never cut. The label's `pruned` states the
-  level as `db` and the root's cut, `from` the sample the render ends at. A
-  stream's term leaves `@notes` where its support ends. An open interval over
-  a root whose support never ends and is never cut (a held sine, a physical
-  solver) refuses as `render.no_end`. A short-time transform
-  reads its input whole, and refuses one with no end as
+  at zero; or earlier, where a proven upper bound on the root's magnitude stays
+  under the profile's silence threshold (-120 dBFS) from a sample on. A root
+  with no such bound (a held sine, a loop) is never cut. The label's `pruned`
+  states the threshold as `db` and the root's cut, `from` the sample the render
+  is treated as silent from. A stream's term leaves `@notes` where its support
+  ends. An open interval over a root whose support never ends and is never cut
+  (a held sine, a physical solver) refuses as `render.no_end`. A short-time
+  transform reads its input whole, and refuses one with no end as
   `engine.unbounded_extent`. A form in `f` with no dual in `t` has no samples
   and refuses as its dual does, `cast.left_algebra`.
 
@@ -184,8 +184,8 @@ LINT:
                                  a node reads a parameter no `name = value` line
                                  binds, so a bare `@node` cannot play
            support-never-ends    a node's support, cut where its bound falls
-                                 under the prune level, has no end for a bare
-                                 render to stop at
+                                 under the silence threshold, has no end for a
+                                 bare render to stop at
 
 TRACE:
   sva-cli trace <node|expression>

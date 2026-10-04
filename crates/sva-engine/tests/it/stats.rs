@@ -1,4 +1,4 @@
-// Concern: proves a render reports every lookup it made and what each came to | Non-concern: memory's cap and prunes (stores.rs) | IO: (a composition, a tier) -> CacheStats
+// Concern: proves a render reports every lookup it made and what each came to | Non-concern: memory's cap and evictions (stores.rs) | IO: (a composition, a tier) -> CacheStats
 
 use std::collections::BTreeSet;
 
