@@ -2,8 +2,8 @@
 
 use sva_formula::Body;
 
-use crate::Grid;
 use crate::error::CollapseError;
+use crate::grid::Grid;
 
 use super::active::{self, Window};
 use super::{addends, point};

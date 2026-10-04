@@ -3,8 +3,9 @@
 use std::collections::HashMap;
 
 use crate::error::SampleError;
+use crate::grid::Grid;
 use crate::machine::renderer::{
-    Between, Binary, Formula, Grid, Index, Map, NodeRenderer, Site, SiteId, Slot, Stepped, Unary,
+    Between, Binary, Formula, Index, Map, NodeRenderer, Site, SiteId, Slot, Stepped, Unary,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]

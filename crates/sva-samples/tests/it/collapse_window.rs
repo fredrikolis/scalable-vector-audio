@@ -155,7 +155,7 @@ fn a_swept_lane_is_read_only_inside_the_window_it_carries() {
         Body::Mul(vec![Part::bare(decaying(3.0)), Part::bare(sine(440.0))]),
         1.0,
     ));
-    let rows = Rows::of(&law, RATE, &PSYCHOACOUSTIC_V1).expect("rows");
+    let rows = Rows::of(&law, sva_samples::Grid::of(RATE), &PSYCHOACOUSTIC_V1).expect("rows");
     let quarter = len as i64 / 4;
     assert!(rows.work(0, quarter).0 > 0, "the window is read");
     assert_eq!(rows.work(quarter, len as i64).0, 0, "past it nothing is");

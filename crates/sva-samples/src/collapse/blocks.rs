@@ -1,4 +1,4 @@
-// Concern: which row a closed form takes, read onto any span of the grid and priced | Non-concern: one instant's value (point.rs) | IO: (form, rate) -> Rows; (Tape, to) -> samples, work
+// Concern: which row a closed form takes, read on any span of its grid or at any instant, and priced | Non-concern: one instant's arithmetic (point.rs) | IO: (form, grid) -> Rows; (span, t) -> samples
 
 use sva_formula::spectral_sum::atom::SpectralAtom;
 use sva_formula::{ClosedForm, Lane, Opaque, Reads, SpectralSum, Var, normalize_closed_form};
@@ -7,17 +7,16 @@ use super::active::{self, Window};
 use super::lines::{self, Direct};
 use super::truncate::{self, Audible};
 use super::{addends, atoms, point, reading, tail};
-use crate::Grid;
 use crate::error::CollapseError;
+use crate::grid::{Grid, Round};
 use crate::label::{Detail, Label, Rule, Source};
-use crate::machine::tape::Tape;
 use crate::profile::Profile;
 
-/// Rows chosen from the form, the rate and the profile alone: each sample is its own
+/// Rows chosen from the form, the grid and the profile alone: each sample is its own
 /// instant's value, so any span reads what one whole span reads there.
 pub struct Rows {
     row: Row,
-    rate: u32,
+    grid: Grid,
     width: usize,
     label: (Source, Detail),
 }
@@ -42,11 +41,21 @@ enum Row {
     Added(Vec<(Row, usize, Window)>),
 }
 
+impl std::fmt::Debug for Rows {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Rows")
+            .field("grid", &self.grid)
+            .field("width", &self.width)
+            .field("label", &self.label)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Rows {
-    pub fn of(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Rows, CollapseError> {
+    pub fn of(form: &ClosedForm, grid: Grid, profile: &Profile) -> Result<Rows, CollapseError> {
         match normalize_closed_form(form) {
-            Ok(sum) => Rows::of_spectral_sum_or_point(&sum, Some(form), (rate, profile), &Opaque),
-            Err(_) if form.var == Var::T => Ok(Rows::held(of_written(form, rate, profile)?, rate)),
+            Ok(sum) => Rows::of_spectral_sum_or_point(&sum, Some(form), (grid, profile), &Opaque),
+            Err(_) if form.var == Var::T => Ok(Rows::held(of_written(form, grid, profile)?, grid)),
             Err(left) => Err(CollapseError::LeftAlgebra(left.reason.clause())),
         }
     }
@@ -55,24 +64,24 @@ impl Rows {
     pub fn of_spectral_sum_or_point(
         sum: &SpectralSum,
         written: Option<&ClosedForm>,
-        (rate, profile): (u32, &Profile),
+        (grid, profile): (Grid, &Profile),
         reads: &dyn Reads,
     ) -> Result<Rows, CollapseError> {
-        let row = match of_sum(sum, rate, profile, reads) {
+        let row = match of_sum(sum, grid, profile, reads) {
             Err(e) if reaches_no_atom(&e) => match written.filter(|t| t.var == Var::T) {
-                Some(form) => of_written(form, rate, profile),
+                Some(form) => of_written(form, grid, profile),
                 None => Err(e),
             },
             other => other,
         }?;
-        Ok(Rows::held(row, rate))
+        Ok(Rows::held(row, grid))
     }
 
-    fn held((row, label): (Row, (Source, Detail)), rate: u32) -> Rows {
+    fn held((row, label): (Row, (Source, Detail)), grid: Grid) -> Rows {
         Rows {
             width: width(&row),
             row,
-            rate,
+            grid,
             label,
         }
     }
@@ -84,7 +93,7 @@ impl Rows {
     /// How exact these rows are, stated once for every sample they write.
     pub fn label(&self, profile: &Profile) -> Label {
         let (source, detail) = self.label.clone();
-        Label::new(source, profile.name, self.rate, detail)
+        Label::new(source, profile.name, self.grid.rate, detail)
     }
 
     /// The lines a row of lines sums, each lane's, as hertz; `None` for any other row.
@@ -98,33 +107,34 @@ impl Rows {
     /// `[from, to)` of every component, on the grid's own index.
     pub fn planes(&self, from: i64, to: i64) -> Result<Vec<Vec<f64>>, CollapseError> {
         (0..self.width)
-            .map(|c| values(&self.row, c, (from, to), self.rate))
+            .map(|c| values(&self.row, c, (from, to), self.grid))
             .collect()
+    }
+
+    /// One component at `t`, exactly a sample's value where `t` is that sample's instant.
+    pub fn at(&self, c: usize, t: f64) -> Result<f64, CollapseError> {
+        let c =
+            lane(self.width, c).ok_or(CollapseError::NotEvaluable("a component past the width"))?;
+        let landed = self.grid.step_at(t, Round::Even);
+        match landed.filter(|n| self.grid.instant(*n) == t) {
+            Some(n) => Ok(values(&self.row, c, (n, n + 1), self.grid)?[0]),
+            None => between(&self.row, c, t),
+        }
+    }
+
+    pub fn ops(&self) -> usize {
+        (0..self.width)
+            .map(|c| terms(&self.row, c))
+            .sum::<usize>()
+            .max(1)
     }
 
     /// What writing `[from, to)` of every component takes, as `(priced flops, waves)`.
     pub fn work(&self, from: i64, to: i64) -> (u128, u128) {
         (0..self.width).fold((0, 0), |held, c| {
-            let (priced, waves) = worked(&self.row, c, from, to, Grid::of(self.rate));
+            let (priced, waves) = worked(&self.row, c, from, to, self.grid);
             (held.0 + priced, held.1 + waves)
         })
-    }
-
-    /// Appends `[tape.end(), to)` of every component, on the grid's own index.
-    pub fn extend(&self, to: i64, tape: &mut Tape) -> Result<(), CollapseError> {
-        let from = tape.end();
-        if to <= from {
-            return Ok(());
-        }
-        let planes = (0..self.width)
-            .map(|c| values(&self.row, c, (from, to), self.rate))
-            .collect::<Result<Vec<_>, _>>()?;
-        for i in 0..(to - from) as usize {
-            for (c, plane) in planes.iter().enumerate() {
-                tape.push(c, plane[i]);
-            }
-        }
-        Ok(())
     }
 }
 
@@ -198,14 +208,15 @@ fn grouped(
 /// The rows in FORMAT 9.1's order; the first guard that holds decides.
 fn of_sum(
     sum: &SpectralSum,
-    rate: u32,
+    grid: Grid,
     profile: &Profile,
     reads: &dyn Reads,
 ) -> Result<Labelled, CollapseError> {
     if sum.var == Var::F {
         return Err(CollapseError::NoBlockRow);
     }
-    let ceiling = profile.ceiling(rate);
+    let band = Audible::on(profile, grid);
+    let ceiling = band.ceiling();
     if let Some(found) = lines::kept_lines(sum, profile, ceiling, reads)? {
         let (dropped, dropped_more) = lines::dropped_list(found.dropped());
         let summed = lines::distinct(&found.kept);
@@ -219,7 +230,7 @@ fn of_sum(
         let row = Row::Lines(found.kept.iter().map(|kept| Direct::of(kept)).collect());
         return Ok((row, (Source::Exact, detail)));
     }
-    let truncated = truncate::spectral_sum_read(sum, Audible::of(profile, rate), reads)?;
+    let truncated = truncate::spectral_sum_read(sum, band, reads)?;
     let label = match () {
         () if atoms::band_limited(&truncated, ceiling, profile) => (
             Source::Exact,
@@ -243,14 +254,13 @@ fn of_sum(
             },
         ),
     };
-    let grid = Grid::of(rate);
-    if let Some(lanes) = grouped(sum, (Audible::of(profile, rate), grid), reads) {
+    if let Some(lanes) = grouped(sum, (band, grid), reads) {
         return Ok((Row::Grouped(lanes), label));
     }
     let spans = truncated
         .lanes
         .iter()
-        .map(|lane| active::spans(lane, rate))
+        .map(|lane| active::spans(lane, grid))
         .collect();
     let windows = truncated
         .lanes
@@ -266,20 +276,20 @@ fn of_sum(
 }
 
 /// The row a closed form with no spectral sum takes: one per addend where they differ, else 4.
-fn of_written(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelled, CollapseError> {
+fn of_written(form: &ClosedForm, grid: Grid, profile: &Profile) -> Result<Labelled, CollapseError> {
     let Some(addends) = addends::addends(form) else {
-        return point(form, rate, profile);
+        return point(form, grid, profile);
     };
     let mut parts = Vec::with_capacity(addends.len());
     let mut labels: Vec<(Source, Detail)> = Vec::new();
     for addend in &addends {
-        match of_term(addend, rate, profile)? {
+        match of_term(addend, grid, profile)? {
             (Row::Added(inner), (source, Detail::Added { parts: details })) => {
                 parts.extend(inner);
                 labels.extend(details.into_iter().map(|d| (source, d)));
             }
             (part, (source, detail)) => {
-                let (held, reach) = (width(&part), reach(&part, rate));
+                let (held, reach) = (width(&part), reach(&part, grid));
                 parts.push((part, held, reach));
                 labels.push((source, detail));
             }
@@ -289,7 +299,7 @@ fn of_written(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelle
         .iter()
         .all(|(part, ..)| matches!(part, Row::Point { .. }))
     {
-        return point(form, rate, profile);
+        return point(form, grid, profile);
     }
     let source = match labels.iter().all(|(s, _)| *s == Source::Exact) {
         true => Source::Exact,
@@ -301,27 +311,26 @@ fn of_written(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelle
     Ok((Row::Added(parts), (source, detail)))
 }
 
-fn of_term(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelled, CollapseError> {
+fn of_term(form: &ClosedForm, grid: Grid, profile: &Profile) -> Result<Labelled, CollapseError> {
     let Ok(sum) = normalize_closed_form(form) else {
-        return of_written(form, rate, profile);
+        return of_written(form, grid, profile);
     };
-    match of_sum(&sum, rate, profile, &Opaque) {
+    match of_sum(&sum, grid, profile, &Opaque) {
         Err(nested @ CollapseError::NestedSeries { .. }) => Err(nested),
-        Err(_) => of_written(form, rate, profile),
+        Err(_) => of_written(form, grid, profile),
         held => held,
     }
 }
 
-fn point(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelled, CollapseError> {
+fn point(form: &ClosedForm, grid: Grid, profile: &Profile) -> Result<Labelled, CollapseError> {
     let written = ClosedForm {
-        body: truncate::written(&form.body, Audible::of(profile, rate))?,
+        body: truncate::written(&form.body, Audible::on(profile, grid))?,
         ..form.clone()
     };
     let tail_db = truncate::dropped_db(&written.body);
     let width = point::width_of(&written.body, &point::NoRefs).max(1);
-    let windows = addends::summed(&written.body).map_or_else(Vec::new, |parts| {
-        addends::addend_windows(&parts, Grid::of(rate))
-    });
+    let windows = addends::summed(&written.body)
+        .map_or_else(Vec::new, |parts| addends::addend_windows(&parts, grid));
     let row = Row::Point {
         written: Box::new(written),
         width,
@@ -347,7 +356,7 @@ fn width(row: &Row) -> usize {
 
 /// Outside it a row writes +0 at every sample: a line never ends, a sweep ends with its spans
 /// where every atom is windowed, a written form with its addends' crops.
-fn reach(row: &Row, rate: u32) -> Window {
+fn reach(row: &Row, grid: Grid) -> Window {
     let hull = |spans: &mut dyn Iterator<Item = Window>| {
         spans
             .filter(|(a, b)| a < b)
@@ -365,21 +374,20 @@ fn reach(row: &Row, rate: u32) -> Window {
             written, windows, ..
         } => match addends::summed(&written.body) {
             Some(_) => hull(&mut windows.iter().copied()),
-            None => addends::live_window(&written.body, Grid::of(rate)),
+            None => addends::live_window(&written.body, grid),
         },
         Row::Added(parts) => hull(&mut parts.iter().map(|(.., reach)| *reach)),
     }
 }
 
-fn values(row: &Row, c: usize, (from, to): Window, rate: u32) -> Result<Vec<f64>, CollapseError> {
-    let grid = Grid::of(rate);
+fn values(row: &Row, c: usize, (from, to): Window, grid: Grid) -> Result<Vec<f64>, CollapseError> {
     let n = (to - from) as usize;
     Ok(match row {
         Row::Lines(lanes) => (from..to)
             .map(|i| {
                 let mut held = 0.0;
                 if let Some(direct) = &lanes[c] {
-                    held += direct.at(i as f64 / f64::from(rate));
+                    held += direct.at(grid.instant(i));
                 }
                 held
             })
@@ -393,7 +401,7 @@ fn values(row: &Row, c: usize, (from, to): Window, rate: u32) -> Result<Vec<f64>
                     let summed = g
                         .direct
                         .as_ref()
-                        .map_or(0.0, |d| 0.0 + d.at(m as f64 / f64::from(rate)));
+                        .map_or(0.0, |d| 0.0 + d.at(grid.instant(m)));
                     out[(m - from) as usize] += summed
                         * point::eval_atom_on(&g.factor, grid.instant(m), Some((grid, m)))?.re;
                 }
@@ -422,7 +430,7 @@ fn values(row: &Row, c: usize, (from, to): Window, rate: u32) -> Result<Vec<f64>
                     && a < b
                 {
                     let at = (a - from) as usize;
-                    for (out, v) in sum[at..].iter_mut().zip(values(part, lane, (a, b), rate)?) {
+                    for (out, v) in sum[at..].iter_mut().zip(values(part, lane, (a, b), grid)?) {
                         *out += v;
                     }
                 }
@@ -430,6 +438,59 @@ fn values(row: &Row, c: usize, (from, to): Window, rate: u32) -> Result<Vec<f64>
             sum
         }
     })
+}
+
+/// `values` at an instant between samples, where no window of samples skips a term.
+fn between(row: &Row, c: usize, t: f64) -> Result<f64, CollapseError> {
+    Ok(match row {
+        Row::Lines(lanes) => {
+            let mut held = 0.0;
+            if let Some(direct) = &lanes[c] {
+                held += direct.at(t);
+            }
+            held
+        }
+        Row::Grouped(lanes) => {
+            let mut out = 0.0;
+            for g in &lanes[c] {
+                let summed = g.direct.as_ref().map_or(0.0, |d| 0.0 + d.at(t));
+                out += summed * point::eval_atom_on(&g.factor, t, None)?.re;
+            }
+            out
+        }
+        Row::Sweep { sum, .. } => point::eval_spectral_sum(sum, c, t)?.re,
+        Row::Point { written, .. } => {
+            point::eval_body_on(&written.body, c, point::At::Free(t), &point::NoRefs)?.re
+        }
+        Row::Added(parts) => {
+            let mut sum = 0.0;
+            for (part, held, _) in parts {
+                if let Some(lane) = lane(*held, c) {
+                    sum += between(part, lane, t)?;
+                }
+            }
+            sum
+        }
+    })
+}
+
+fn terms(row: &Row, c: usize) -> usize {
+    match row {
+        Row::Lines(lanes) => lanes[c]
+            .as_ref()
+            .map_or(0, |d| d.lines_priced_and_turned().0),
+        Row::Grouped(lanes) => lanes[c].iter().fold(0, |held, g| {
+            held + 1
+                + g.direct
+                    .as_ref()
+                    .map_or(0, |d| d.lines_priced_and_turned().0)
+        }),
+        Row::Sweep { sum, .. } => sum.lanes[c].atoms.len(),
+        Row::Point { written, .. } => point::terms(&written.body, &[]),
+        Row::Added(parts) => parts.iter().fold(0, |held, (part, width, _)| {
+            held + lane(*width, c).map_or(0, |lane| terms(part, lane))
+        }),
+    }
 }
 
 /// `[from, to)` met with a lane's spans, where every atom of it is windowed.

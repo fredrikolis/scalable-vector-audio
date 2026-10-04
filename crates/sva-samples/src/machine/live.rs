@@ -3,8 +3,8 @@
 use super::Program;
 use super::ops::{self, Layout, lowered};
 use super::renderer::{Formula, Index, NodeRenderer, Slot};
-use crate::collapse::Extent;
 use crate::error::SampleError;
+use crate::grid::Extent;
 
 #[derive(Clone)]
 pub struct Span {
@@ -47,7 +47,7 @@ impl Spanned {
         self.spans.iter().map(|(span, _)| span)
     }
 
-    pub(super) fn grid(&self) -> super::renderer::Grid {
+    pub(super) fn grid(&self) -> crate::grid::Grid {
         self.layout.grid
     }
 

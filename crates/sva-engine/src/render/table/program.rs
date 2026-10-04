@@ -1,11 +1,12 @@
 // Concern: lowers one node into the per-sample program that writes its value, each other value it reads a slot | Non-concern: holding or evaluating values (mod.rs) | IO: (NodeId) -> Program
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use sva_formula::{Body, ClosedForm, Fold, NodeId, Part, Through, Var};
 use sva_samples::{
     Audible, Binary, BufId, CollapseError, Formula, Grid, Index, Map, NodeRenderer, Site, SiteId,
-    Slot, Unary, Wrap, Written, truncate_spectral_sum_read, truncate_written_with,
+    Slot, Unary, Wrap, Written, truncate_written_with,
 };
 
 use super::support::{Supports, landed, placed, reach, shifted, window};
@@ -601,9 +602,9 @@ fn binary(op: Fold) -> Binary {
     }
 }
 
-/// What a read of `source` evaluates at an instant between its samples: the noise, or its
-/// closed form in `t` truncated to the band once, every ref it holds composed in exactly:
-/// a warp reads a formula at its own instant. `None` where it holds state.
+/// What a read of `source` evaluates at an instant: the noise, its closed form's own rows,
+/// which land an instant on a sample on that sample's bits, or a written form reading refs
+/// its rows cannot, each truncated to the band once. `None` where it holds state.
 fn warped(
     tys: &Typing,
     source: NodeId,
@@ -623,20 +624,21 @@ fn warped(
         Value::Cast(Cast::Sample, of) => *of,
         _ => source,
     };
-    let band = Audible::on(profile, grid);
     let truncated = |e: &sva_samples::CollapseError| collapse_refused(tys, form, e);
-    let summed = crate::refs::spectral_sum_of(tys, form, Var::T)
-        .ok()
-        .map(|sum| crate::refs::read_through(tys, |t| truncate_spectral_sum_read(&sum, band, t)));
-    let refused = match summed {
-        Some(Ok(sum)) => return Ok(Some(Formula::Sum(Box::new(sum)))),
+    let sum = crate::refs::spectral_sum_of(tys, form, Var::T).ok();
+    let written = match tys.value(form) {
+        Value::ClosedForm(written) if written.var == Var::T => Some(written),
+        _ => None,
+    };
+    let free = written.filter(|w| nodes_in(&w.body).is_empty());
+    let refused = match super::rows(tys, (sum.as_ref(), free), grid, profile) {
+        Some(Ok(rows)) => return Ok(Some(Formula::Rows(Arc::new(rows)))),
         Some(Err(e)) => Some(truncated(&e)),
         None => None,
     };
-    match tys.value(form) {
-        Value::ClosedForm(written)
-            if written.var == Var::T && crate::refs::reads_through(tys, &written.body, Var::T) =>
-        {
+    match written {
+        Some(written) if crate::refs::reads_through(tys, &written.body, Var::T) => {
+            let band = Audible::on(profile, grid);
             let shared = shared(tys, &written.body, band).map_err(|e| truncated(&e))?;
             Ok(Some(Formula::Written(Box::new(shared))))
         }

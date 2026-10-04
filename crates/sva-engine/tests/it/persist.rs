@@ -243,12 +243,12 @@ fn opening_a_store_reads_its_index_alone() {
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
-const PINNED: (u32, u64) = (40, 10108540755000823454);
+const PINNED: (u32, u64) = (41, 1452354991953776992);
 
 /// A change to how a value is encoded, or to what the engine computes for any construct here,
 /// fails this until `STORE_FORMAT` is bumped and the digest pinned again: rows, a filter, a
-/// shifted read, a loop, a solver under a min-and-max ramp, a pointwise form, noise and a
-/// filter's ringing.
+/// shifted read, a warped read, a loop, a solver under a min-and-max ramp, a pointwise form,
+/// noise and a filter's ringing.
 #[test]
 fn what_a_store_writes_changes_only_with_its_format() {
     let damped = "chaigne_askenfelt(261.63, damper_r=0.1*crop(max(0, min(1, (t - 0.02s)/0.03s)), \
@@ -262,6 +262,7 @@ fn what_a_store_writes_changes_only_with_its_format() {
                 "lowpass(sample(sin(2*pi*220*t)) + sample(sin(2*pi*3000*t))*0.3, cutoff=800)\n",
             ),
             ("echo", "@x + 0.5*self[idx(t - 0.01s)]\n"),
+            ("tone", "sin(2*pi*330*t)\n"),
             ("s", damped),
             (
                 "chirp",
@@ -274,7 +275,8 @@ fn what_a_store_writes_changes_only_with_its_format() {
             ),
             (
                 "master",
-                "@echo*0.5 + @f(t - 0.01s) + @s*0.25 + @chirp*0.2 + @hiss + @rung\n",
+                "@echo*0.5 + @f(t - 0.01s) + @s*0.25 + @chirp*0.2 + @hiss + @rung \
+                 + 0.1*@tone(t + 0.001*sin(2*pi*5*t))\n",
             ),
         ],
     );

@@ -4,7 +4,7 @@ use crate::helpers::part;
 use std::f64::consts::TAU;
 
 use sva_formula::{Body, C64, ClosedForm, Edge, Origin, Unary, Var};
-use sva_samples::{CollapseError, PSYCHOACOUSTIC_V1, Refs, Rows, Tape};
+use sva_samples::{CollapseError, Grid, PSYCHOACOUSTIC_V1, Refs, Rows};
 
 const RATE: u32 = 8_000;
 const LEN: usize = 4_000;
@@ -32,17 +32,19 @@ fn cosine(hz: f64, amp: f64) -> Body {
 
 /// Spans of `block` samples from grid sample `start` to the end.
 fn blocks(form: &ClosedForm, start: i64, block: i64) -> Vec<f64> {
-    let rows = Rows::of(form, RATE, &PSYCHOACOUSTIC_V1).expect("rows");
-    let mut tape = Tape::new(rows.width(), LEN, start);
-    while tape.end() < LEN as i64 {
-        let to = (tape.end() + block).min(LEN as i64);
-        rows.extend(to, &mut tape).expect("a span");
+    let rows = Rows::of(form, Grid::of(RATE), &PSYCHOACOUSTIC_V1).expect("rows");
+    let mut out = Vec::new();
+    let mut from = start;
+    while from < LEN as i64 {
+        let to = (from + block).min(LEN as i64);
+        out.extend(rows.planes(from, to).expect("a span").swap_remove(0));
+        from = to;
     }
-    tape.since(0, start).to_vec()
+    out
 }
 
 fn whole(form: &ClosedForm, start: i64) -> Vec<f64> {
-    let rows = Rows::of(form, RATE, &PSYCHOACOUSTIC_V1).expect("rows");
+    let rows = Rows::of(form, Grid::of(RATE), &PSYCHOACOUSTIC_V1).expect("rows");
     let mut planes = rows.planes(start, LEN as i64).expect("a whole read");
     planes.swap_remove(0)
 }
@@ -79,7 +81,7 @@ fn a_form_read_one_instant_at_a_time_is_the_same_in_any_span() {
 fn a_form_in_f_has_no_row_a_span_reads_alone() {
     let spectrum = form(Var::F, Body::Const(C64::real(1.0)));
     assert_eq!(
-        Rows::of(&spectrum, RATE, &PSYCHOACOUSTIC_V1).err(),
+        Rows::of(&spectrum, Grid::of(RATE), &PSYCHOACOUSTIC_V1).err(),
         Some(CollapseError::NoBlockRow)
     );
 }
@@ -124,7 +126,7 @@ fn a_point_sampled_sum_reads_each_term_only_inside_its_crop() {
     let rows = |terms: usize| {
         Rows::of(
             &form(Var::T, notes(terms, gap, width)),
-            RATE,
+            Grid::of(RATE),
             &PSYCHOACOUSTIC_V1,
         )
         .expect("rows")

@@ -9,8 +9,8 @@ use sva_formula::{C64, Lane, Line, Origin, Reads, Run, SpectralSum, Var, lines_r
 
 use super::active::{self, Window};
 use super::truncate::Audible;
-use crate::Grid;
 use crate::error::CollapseError;
+use crate::grid::Grid;
 use crate::label::Dropped;
 use crate::profile::Profile;
 

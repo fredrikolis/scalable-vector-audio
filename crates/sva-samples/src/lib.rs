@@ -7,6 +7,7 @@ pub mod error;
 pub mod fft;
 pub mod filters;
 pub mod frames;
+pub mod grid;
 pub mod label;
 pub mod machine;
 pub mod measure;
@@ -17,17 +18,18 @@ pub mod stft;
 pub use biquad::Coeffs;
 pub use buffer::Buffer;
 pub use collapse::{
-    At, Audible, Extent, Refs, Rows, crop_gain, dropped_db, eval_spectral_sum_at, eval_written_at,
-    lane_of, truncate_spectral_sum, truncate_spectral_sum_read, truncate_written,
-    truncate_written_with, unary,
+    At, Audible, Refs, Rows, crop_gain, dropped_db, eval_spectral_sum_at, eval_written_at, lane_of,
+    truncate_spectral_sum, truncate_spectral_sum_read, truncate_written, truncate_written_with,
+    unary,
 };
 pub use error::{CollapseError, SampleError};
 pub use filters::{Automation, AutomationFrame, FilterSite, FilterTrace};
 pub use frames::Frames;
+pub use grid::{Extent, Grid, Round};
 pub use label::{Cost, Detail, Dropped, Label, Pruned, Rule, Source};
 pub use machine::renderer::{
-    Between, Binary, BufId, Formula, Grid, Index, Map, NodeRenderer, Round, Site, SiteId, Slot,
-    Unary, Wrap, Written,
+    Between, Binary, BufId, Formula, Index, Map, NodeRenderer, Site, SiteId, Slot, Unary, Wrap,
+    Written,
 };
 pub use machine::tape::{Tape, Window};
 pub use machine::{Machine, MachineState, Span, Spanned};

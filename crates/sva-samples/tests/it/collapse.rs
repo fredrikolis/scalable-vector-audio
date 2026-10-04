@@ -121,7 +121,8 @@ fn dense_series_and_direct_sum_agree() {
         })),
     );
     let (rate, len) = (44_100u32, 441_000);
-    let rows = Rows::of(&law, rate, &PSYCHOACOUSTIC_V1).expect("a dense series");
+    let rows =
+        Rows::of(&law, sva_samples::Grid::of(rate), &PSYCHOACOUSTIC_V1).expect("a dense series");
     let label = rows.label(&PSYCHOACOUSTIC_V1);
     assert_eq!(label.rule(), Rule::LineSpectrumSummed);
     let Detail::Lines {

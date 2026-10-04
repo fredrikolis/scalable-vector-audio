@@ -9,10 +9,11 @@ pub mod tape;
 
 use crate::error::SampleError;
 use crate::filters::FilterSite;
+use crate::grid::Grid;
 use crate::physics::{Solver, site};
 use block::{BLOCK, Block, Here};
 use ops::{Layout, Op, lowered};
-use renderer::{Formula, Grid, Index, NodeRenderer, Site, Slot};
+use renderer::{Formula, Index, NodeRenderer, Site, Slot};
 use tape::{Tape, Window};
 
 pub use live::{Span, Spanned};
@@ -339,9 +340,9 @@ mod counts {
 #[cfg(test)]
 mod tests {
     use super::counts::{FILLS, PASSES, READS};
-    use super::renderer::{BufId, Grid, Index, Map, NodeRenderer, Round, Slot, WIDE};
+    use super::renderer::{BufId, Index, Map, NodeRenderer, Slot};
     use super::*;
-    use crate::collapse::Extent;
+    use crate::grid::{Extent, Round, WIDE};
 
     const LONG: [i64; 2] = [1489, 1721];
 

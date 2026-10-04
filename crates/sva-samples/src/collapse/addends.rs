@@ -5,7 +5,7 @@ use sva_formula::{Body, ClosedForm};
 
 use super::active::{self, Window};
 use super::point;
-use crate::Grid;
+use crate::grid::Grid;
 
 pub(super) fn addends(form: &ClosedForm) -> Option<Vec<ClosedForm>> {
     if let Body::Add(parts) = &form.body {

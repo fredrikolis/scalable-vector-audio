@@ -1,7 +1,7 @@
 // Concern: one node's output over a trailing span of the grid, and a view of any span | Non-concern: what writes it, how far back a reader reaches | IO: (component, index) -> f64
 
 use crate::buffer::Buffer;
-use crate::collapse::Extent;
+use crate::grid::Extent;
 
 /// Samples `[base, end)` of one node's output; it is silent before `origin`.
 #[derive(Clone, Debug, PartialEq)]

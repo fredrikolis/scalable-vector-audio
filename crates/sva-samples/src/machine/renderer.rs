@@ -1,9 +1,12 @@
 // Concern: the node renderer sva-engine hands this crate | Non-concern: building it (sva-engine lower.rs), running it (mod.rs, ops.rs) | IO: none
 
-use sva_formula::{Body, C64, Shape, SpectralSum};
+use std::sync::Arc;
 
-use crate::collapse::Extent;
+use sva_formula::{Body, Shape};
+
+use crate::collapse::Rows;
 use crate::error::CollapseError;
+use crate::grid::{Extent, Grid, Round};
 use crate::physics::Params;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -201,7 +204,7 @@ impl Map {
 
     fn index_at(self, n: i128) -> i128 {
         #[cfg(test)]
-        WIDE.with(|w| w.set(w.get() + 1));
+        crate::grid::WIDE.with(|w| w.set(w.get() + 1));
         let num = self.a.saturating_mul(n).saturating_add(self.b);
         let (floor, rem) = (num.div_euclid(self.d), num.rem_euclid(self.d));
         match self.between {
@@ -248,199 +251,6 @@ fn extent(lo: Option<i128>, hi: Option<i128>) -> Extent {
         true => Extent::new(start, end),
         false => Extent::NOWHERE,
     }
-}
-
-/// Sample `n` stands at `a*n/d` samples of `rate`, in lowest terms, `a, d > 0`: every grid
-/// starts at t = 0, so a sample index is the one clock every read and key counts in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Grid {
-    pub rate: u32,
-    pub a: i128,
-    pub d: i128,
-}
-
-impl Grid {
-    pub const fn of(rate: u32) -> Grid {
-        Grid { rate, a: 1, d: 1 }
-    }
-
-    /// `scale` samples to each of `rate`'s, as an alias reference reads it.
-    pub fn finer(rate: u32, scale: usize) -> Grid {
-        Grid {
-            rate,
-            a: 1,
-            d: scale as i128,
-        }
-    }
-
-    pub fn is_rate(&self) -> bool {
-        (self.a, self.d) == (1, 1)
-    }
-
-    fn exact(&self, n: i64) -> Option<(i128, i128)> {
-        let num = self.a.checked_mul(i128::from(n))?;
-        Some((num, self.d.checked_mul(i128::from(self.rate))?))
-    }
-
-    /// One quotient: correctly rounded while both integers are under 2^53; past that each
-    /// integer rounds once converting and the quotient once more.
-    pub fn instant(&self, n: i64) -> f64 {
-        if self.is_rate() {
-            return n as f64 / f64::from(self.rate);
-        }
-        let num = self.a.saturating_mul(i128::from(n));
-        num as f64 / self.d.saturating_mul(i128::from(self.rate)) as f64
-    }
-
-    /// The first sample whose exact instant is at or past `edge` read as the decimal it prints
-    /// as: the one rule every crop and indicator edge meets the grid by.
-    pub fn first_at(&self, edge: f64) -> i64 {
-        let beyond = if edge < 0.0 { i64::MIN } else { i64::MAX };
-        if !edge.is_finite() {
-            return beyond;
-        }
-        match self.decimal_steps(edge) {
-            Some(n) => i64::try_from(n).unwrap_or(beyond),
-            None => self.step_at(edge, Round::Ceil).unwrap_or(beyond),
-        }
-    }
-
-    /// An edge `first_at` meets at sample `n` exactly, beside `n`'s instant.
-    pub fn edge_at(&self, n: i64) -> Option<f64> {
-        let t = self.instant(n);
-        [t, t.next_down(), t.next_up()]
-            .into_iter()
-            .find(|edge| self.first_at(*edge) == n)
-    }
-
-    /// `ceil(edge * d * rate / a)`, `edge` as the shortest decimal that prints it.
-    fn decimal_steps(&self, edge: f64) -> Option<i128> {
-        const LIMIT: i128 = 1 << 120;
-        let text = format!("{edge:e}");
-        let (mantissa, exp) = text.split_once('e')?;
-        let (whole, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-        let digits: i128 = format!("{whole}{frac}").parse().ok()?;
-        let shift = exp.parse::<i32>().ok()? - frac.len() as i32;
-        let ten = 10i128
-            .checked_pow(shift.unsigned_abs())
-            .filter(|p| *p < LIMIT)?;
-        let (num, den) = match shift >= 0 {
-            true => (digits.checked_mul(ten)?, 1),
-            false => (digits, ten),
-        };
-        let top = num.checked_mul(self.d.checked_mul(i128::from(self.rate))?)?;
-        let bottom = den.checked_mul(self.a)?;
-        Some(top.div_euclid(bottom) + i128::from(top.rem_euclid(bottom) != 0))
-    }
-
-    /// Whether sample `n` lies in `[l, r)` by `first_at`, which only a tie of its instant needs.
-    pub(crate) fn inside(&self, n: i64, l: f64, r: f64) -> bool {
-        let t = self.instant(n);
-        let reached = |edge: f64| match t == edge {
-            true => n >= self.first_at(edge),
-            false => t > edge,
-        };
-        reached(l) && !reached(r)
-    }
-
-    pub fn position(&self, n: i64) -> f64 {
-        self.a.saturating_mul(i128::from(n)) as f64 / self.d as f64
-    }
-
-    pub fn sr(&self) -> f64 {
-        f64::from(self.rate) * self.d as f64 / self.a as f64
-    }
-
-    pub fn count(&self, t: f64) -> f64 {
-        t * f64::from(self.rate) * self.d as f64 / self.a as f64
-    }
-
-    /// The step `t` falls nearest, rounded exactly from `t`'s own binary value; `None` where
-    /// that is past what the integers hold.
-    pub fn step_at(&self, t: f64, round: Round) -> Option<i64> {
-        match self.is_rate() {
-            true => rated(t, self.rate, round).or_else(|| self.wide(t, round)),
-            false => self.wide(t, round),
-        }
-    }
-
-    fn wide(&self, t: f64, round: Round) -> Option<i64> {
-        #[cfg(test)]
-        WIDE.with(|w| w.set(w.get() + 1));
-        if !t.is_finite() {
-            return None;
-        }
-        let bits = t.abs().to_bits();
-        let (exp, frac) = ((bits >> 52) as i32, (bits & ((1 << 52) - 1)) as i128);
-        let (mantissa, shift) = match exp {
-            0 => (frac, 1074),
-            e => (frac | (1 << 52), 1075 - e),
-        };
-        let zeros = mantissa.trailing_zeros().min(127) as i32;
-        let (mantissa, shift) = match mantissa {
-            0 => (0, 0),
-            m => (m >> zeros, shift - zeros),
-        };
-        let mantissa = if t < 0.0 { -mantissa } else { mantissa };
-        let (num, den) = match shift {
-            s if s <= 0 => (mantissa.checked_mul(1i128.checked_shl((-s) as u32)?)?, 1),
-            s if s < 127 => (mantissa, 1i128 << s),
-            _ => return None,
-        };
-        let top = num.checked_mul(self.d.checked_mul(i128::from(self.rate))?)?;
-        let bottom = self.a.checked_mul(den)?;
-        let (floor, rem) = (top.div_euclid(bottom), top.rem_euclid(bottom));
-        let k = match round {
-            Round::Floor => floor,
-            Round::Ceil => floor + i128::from(rem != 0),
-            Round::Even => match (2 * rem).cmp(&bottom) {
-                std::cmp::Ordering::Less => floor,
-                std::cmp::Ordering::Greater => floor + 1,
-                std::cmp::Ordering::Equal => floor + floor.rem_euclid(2),
-            },
-        };
-        i64::try_from(k).ok()
-    }
-}
-
-/// `t*rate` rounded from the double nearest it and its exact error: halves of `t` times `rate`
-/// exactly, summed exactly; the error decides only a sum on a whole or half step. `None` where
-/// `wide` may refuse or a product could round.
-fn rated(t: f64, rate: u32, round: Round) -> Option<i64> {
-    let held = t == 0.0 || (2f64.powi(-74)..2f64.powi(51)).contains(&t.abs());
-    if !held || rate >= 1 << 26 {
-        return None;
-    }
-    let r = f64::from(rate);
-    let split = 134_217_729.0 * t;
-    let hi = split - (split - t);
-    let (x, y) = (hi * r, (t - hi) * r);
-    let p = x + y;
-    let back = p - x;
-    let e = (x - (p - back)) + (y - back);
-    if p.abs() >= 2f64.powi(51) {
-        return None;
-    }
-    let f = p.floor();
-    let k = match round {
-        Round::Floor if p == f && e < 0.0 => f - 1.0,
-        Round::Floor => f,
-        Round::Ceil if p == p.ceil() && e > 0.0 => p + 1.0,
-        Round::Ceil => p.ceil(),
-        Round::Even => match (p - f).total_cmp(&0.5) {
-            std::cmp::Ordering::Less => f,
-            std::cmp::Ordering::Greater => f + 1.0,
-            std::cmp::Ordering::Equal if e > 0.0 => f + 1.0,
-            std::cmp::Ordering::Equal if e < 0.0 => f,
-            std::cmp::Ordering::Equal => f + f.rem_euclid(2.0),
-        },
-    };
-    Some(k as i64)
-}
-
-#[cfg(test)]
-thread_local! {
-    pub(super) static WIDE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// `scale*t + shift + gain*((inner_scale*t + inner_shift) mod period)` at sample `n`'s
@@ -527,13 +337,6 @@ fn lcm(a: i128, b: i128) -> Option<i128> {
     (a / gcd(a, b)).checked_mul(b)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Round {
-    Even,
-    Floor,
-    Ceil,
-}
-
 /// An integer every sample evaluates exactly, `None` past `i64`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Index<T = Box<NodeRenderer>> {
@@ -617,13 +420,26 @@ pub enum Binary {
     Mod,
 }
 
-/// What the machine evaluates at an instant it computes, a closed form truncated to the band
-/// or the noise.
-#[derive(Clone, Debug, PartialEq)]
+/// What the machine evaluates at an instant it computes: a closed form's own rows, a written
+/// form reading other forms, or the noise.
+#[derive(Clone, Debug)]
 pub enum Formula {
-    Sum(Box<SpectralSum>),
+    Rows(Arc<Rows>),
     Written(Box<Written>),
     Drawn { seed: u64, rate: u32 },
+}
+
+impl PartialEq for Formula {
+    fn eq(&self, other: &Formula) -> bool {
+        match (self, other) {
+            (Formula::Rows(a), Formula::Rows(b)) => Arc::ptr_eq(a, b),
+            (Formula::Written(a), Formula::Written(b)) => a == b,
+            (Formula::Drawn { seed, rate }, Formula::Drawn { seed: s, rate: r }) => {
+                (seed, rate) == (s, r)
+            }
+            _ => false,
+        }
+    }
 }
 
 /// A written form and each form it reads, `Body::Node(k)` in either naming `refs[k]`.
@@ -634,46 +450,40 @@ pub struct Written {
 }
 
 impl Formula {
-    pub fn at(&self, component: usize, at: crate::collapse::At) -> Result<f64, CollapseError> {
-        let value: C64 = match self {
+    /// One component at `t`, read as a sample of `grid` where it is one; rows use their own.
+    pub fn at(&self, component: usize, t: f64, grid: Grid) -> Result<f64, CollapseError> {
+        match self {
             Formula::Drawn { seed, rate } => {
-                let step = Grid::of(*rate).step_at(at.t(), Round::Even).ok_or(
-                    CollapseError::NotEvaluable("a draw at an instant past any step"),
-                )?;
-                return Ok(sva_formula::draw(*seed, step));
+                let step =
+                    Grid::of(*rate)
+                        .step_at(t, Round::Even)
+                        .ok_or(CollapseError::NotEvaluable(
+                            "a draw at an instant past any step",
+                        ))?;
+                Ok(sva_formula::draw(*seed, step))
             }
-            Formula::Sum(sum) => crate::collapse::eval_spectral_sum_at(sum, component, at)?,
-            Formula::Written(written) => crate::collapse::eval_written_at(
-                &written.body,
-                component,
-                at,
-                &crate::collapse::Shared::new(&written.refs),
-            )?,
-        };
-        Ok(value.re)
-    }
-
-    /// One operation per atom or written subterm, each read of a ref counting its form's.
-    pub fn ops(&self) -> usize {
-        fn terms(body: &Body, refs: &[usize]) -> usize {
-            match body {
-                Body::Node(id) => refs[id.0 as usize],
-                Body::Banded(b) => (b.widest.max(0) as usize)
-                    .saturating_mul(terms(&b.series.term.body, refs))
-                    .saturating_add(2),
-                _ => sva_formula::closed_form::children(body)
-                    .iter()
-                    .fold(1usize, |held, p| held.saturating_add(terms(&p.body, refs))),
+            Formula::Rows(rows) => rows.at(component, t),
+            Formula::Written(written) => {
+                let landed = grid.step_at(t, Round::Even);
+                let at = match landed.filter(|n| grid.instant(*n) == t) {
+                    Some(n) => crate::collapse::At::Sample(grid, n),
+                    None => crate::collapse::At::Free(t),
+                };
+                let refs = crate::collapse::Shared::new(&written.refs);
+                Ok(crate::collapse::eval_written_at(&written.body, component, at, &refs)?.re)
             }
         }
+    }
+
+    pub fn ops(&self) -> usize {
         match self {
-            Formula::Sum(sum) => sum.atoms().count().max(1),
+            Formula::Rows(rows) => rows.ops(),
             Formula::Written(written) => {
                 let mut counted = Vec::with_capacity(written.refs.len());
                 for body in &written.refs {
-                    counted.push(terms(body, &counted));
+                    counted.push(crate::collapse::terms(body, &counted));
                 }
-                terms(&written.body, &counted)
+                crate::collapse::terms(&written.body, &counted)
             }
             Formula::Drawn { .. } => 1,
         }
@@ -848,63 +658,7 @@ impl Binary {
 
 #[cfg(test)]
 mod tests {
-    use super::{Grid, Map, Round, rated};
-
-    /// An edge in seconds: 0.8333333333333334 s lies past 5/6 s, sample 40000's at 48 kHz,
-    /// though the doubles tie.
-    #[test]
-    fn an_edge_in_seconds_tying_an_instant_is_decided_by_its_decimal() {
-        let cd = Grid::of(44_100);
-        assert_eq!(cd.first_at(0.1), 4410);
-        assert!(cd.inside(4410, 0.1, 1.0));
-        let grid = Grid::of(48_000);
-        let edge = 60.0 / 72.0;
-        assert_eq!(grid.instant(40_000), edge);
-        assert_eq!(grid.first_at(edge), 40_001);
-        assert!(!grid.inside(40_000, edge, 2.0));
-        assert!(grid.inside(40_000, 0.0, edge));
-    }
-
-    /// Doubles at, near and far from whole and half steps.
-    fn instants(rate: u32) -> Vec<f64> {
-        let r = f64::from(rate);
-        let mut out = vec![0.0, -0.0, 1e-300, -1e-300, 1e300, f64::MIN_POSITIVE];
-        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
-        for k in -2_000i64..2_000 {
-            for half in [0.0, 0.5] {
-                let at = (k as f64 + half) / r;
-                let mut near = at;
-                for _ in 0..3 {
-                    near = near.next_up();
-                    out.push(near);
-                }
-                near = at;
-                for _ in 0..3 {
-                    near = near.next_down();
-                    out.push(near);
-                }
-                out.push(at);
-                out.push(at * 1e9);
-            }
-            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-            out.push(f64::from_bits(seed >> 2) * if seed & 1 == 0 { 1.0 } else { -1.0 });
-        }
-        out
-    }
-
-    #[test]
-    fn a_step_rounds_alike_in_doubles_and_in_wide_integers() {
-        for rate in [1, 8_000, 44_100, 48_000, 88_200, 96_000, 192_000] {
-            let grid = Grid::of(rate);
-            for t in instants(rate) {
-                for round in [Round::Floor, Round::Ceil, Round::Even] {
-                    if let Some(k) = rated(t, rate, round) {
-                        assert_eq!(Some(k), grid.wide(t, round), "{t:e} at {rate} {round:?}");
-                    }
-                }
-            }
-        }
-    }
+    use super::Map;
 
     #[test]
     fn a_rounded_map_reads_alike_narrow_and_wide() {

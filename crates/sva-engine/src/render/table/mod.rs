@@ -19,7 +19,6 @@ use std::sync::Arc;
 use sva_formula::{ClosedForm, Hash, Held as Representation, NodeId, Var};
 use sva_samples::{
     Buffer, Extent, Formula, Grid, Label, NodeRenderer, Profile, Rows, Slot, Spanned, Tape,
-    Written, truncate_spectral_sum_read, truncate_written,
 };
 
 pub(crate) use demand::Need;
@@ -1083,7 +1082,7 @@ impl Building<'_> {
         self.formula(value, Some(sum), None)
     }
 
-    /// Its rows where its step makes a whole rate, else its formula at each instant.
+    /// Its rows, else its written form, which reads refs, at each instant.
     fn formula(
         &mut self,
         mut value: Value,
@@ -1094,65 +1093,40 @@ impl Building<'_> {
         let tys = self.tys;
         let reads = written.is_some_and(|form| !refs::nodes_in(&form.body).is_empty());
         let free = written.filter(|_| !reads);
-        let rows = whole_rate(grid).and_then(|rate| match (&sum, free) {
-            (Some(sum), free) => {
-                let rows = refs::read_through(tys, |t| {
-                    Rows::of_spectral_sum_or_point(sum, free, (rate, self.profile), t)
-                });
-                (rows.is_ok() || !reads).then_some(rows)
-            }
-            (None, Some(form)) => Some(Rows::of(form, rate, self.profile)),
-            (None, None) if reads => None,
-            (None, None) => unreachable!("a formula is a sum or a written form"),
-        });
-        match rows {
-            Some(Ok(rows)) => {
+        let rows = rows(tys, (sum.as_ref(), free), grid, self.profile);
+        let refused = |e: &sva_samples::CollapseError| eval::collapse_refused(&value.name, e);
+        let form = match (rows, written.filter(|_| reads)) {
+            (Some(Ok(rows)), _) => {
                 value.width = rows.width();
                 value.period = period::period(free, &rows, grid);
                 value.label = Some(rows.label(self.profile));
                 value.kind = Kind::Rows(Arc::new(rows));
-                Ok(value)
+                return Ok(value);
             }
-            Some(Err(e)) => Err(eval::collapse_refused(&value.name, &e)),
-            None => {
-                let band = sva_samples::Audible::on(self.profile, grid);
-                let refused =
-                    |e: &sva_samples::CollapseError| eval::collapse_refused(&value.name, e);
-                let summed = sum.as_ref().map(|sum| {
-                    refs::read_through(tys, |t| truncate_spectral_sum_read(sum, band, t))
-                });
-                let formula = match (summed, written) {
-                    (Some(Ok(sum)), _) => Formula::Sum(Box::new(sum)),
-                    (_, Some(form)) if reads => Formula::Written(Box::new(
-                        program::shared(tys, &form.body, band).map_err(|e| refused(&e))?,
-                    )),
-                    (_, Some(form)) => Formula::Written(Box::new(Written {
-                        body: truncate_written(&form.body, band).map_err(|e| refused(&e))?,
-                        refs: Vec::new(),
-                    })),
-                    (Some(Err(e)), None) => return Err(refused(&e)),
-                    (None, None) => unreachable!("a formula is a sum or a written form"),
-                };
-                let renderer = NodeRenderer::Formula {
-                    formula,
-                    width: value.width,
-                    time: Box::new(NodeRenderer::Time),
-                };
-                if let Some(tail_db) = dropped_db(&renderer) {
-                    value.label = Some(Label::new(
-                        sva_samples::Source::Measured,
-                        self.profile.name,
-                        grid.rate,
-                        sva_samples::Detail::Point {
-                            rule: sva_samples::Rule::PointSampled,
-                            alias_db: None,
-                            tail_db: Some(tail_db),
-                        },
-                    ));
-                }
-                self.running(value, renderer, (Vec::new(), Vec::new()), Vec::new(), None)
-            }
+            (Some(Err(e)), None) => return Err(refused(&e)),
+            (_, Some(form)) => form,
+            (None, None) => unreachable!("a formula is a sum or a written form"),
+        };
+        let band = sva_samples::Audible::on(self.profile, grid);
+        let shared = program::shared(tys, &form.body, band).map_err(|e| refused(&e))?;
+        let renderer = NodeRenderer::Formula {
+            formula: Formula::Written(Box::new(shared)),
+            width: value.width,
+            time: Box::new(NodeRenderer::Time),
+        };
+        if let Some(tail_db) = dropped_db(&renderer) {
+            value.label = Some(Label::new(
+                sva_samples::Source::Measured,
+                self.profile.name,
+                grid.rate,
+                sva_samples::Detail::Point {
+                    rule: sva_samples::Rule::PointSampled,
+                    alias_db: None,
+                    tail_db: Some(tail_db),
+                },
+            ));
         }
+        self.running(value, renderer, (Vec::new(), Vec::new()), Vec::new(), None)
     }
 
     /// A closed form's program point-samples it; any other program is a reading of samples.
@@ -1454,6 +1428,24 @@ const PREFIX: u64 = 0x70_72_65_66_69_78_00_01;
 
 fn step(grid: Grid) -> (i128, i128) {
     (grid.a, grid.d)
+}
+
+/// A closed form's rows on `grid`, which its samples and every warp of it read; `None` for a
+/// written form reading refs with no sum.
+pub(super) fn rows(
+    tys: &Typing,
+    (sum, free): (Option<&sva_formula::SpectralSum>, Option<&ClosedForm>),
+    grid: Grid,
+    profile: &Profile,
+) -> Option<Result<Rows, sva_samples::CollapseError>> {
+    let on = whole_rate(grid).map_or(grid, Grid::of);
+    match (sum, free) {
+        (Some(sum), free) => Some(refs::read_through(tys, |t| {
+            Rows::of_spectral_sum_or_point(sum, free, (on, profile), t)
+        })),
+        (None, Some(form)) => Some(Rows::of(form, on, profile)),
+        (None, None) => None,
+    }
 }
 
 /// The rate a grid's step makes, where it is a whole one.

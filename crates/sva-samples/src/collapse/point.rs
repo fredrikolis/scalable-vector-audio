@@ -6,8 +6,8 @@ use sva_formula::closed_form::{Fold, Unary, children};
 use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
 use sva_formula::{Banded, Body, C64, IndexId, Lane, NodeId, SpectralSum};
 
-use crate::Grid;
 use crate::error::CollapseError;
+use crate::grid::Grid;
 
 /// How a `Body::Node` reaches a value at one instant, and how many components it holds: a
 /// closed form on its own holds no node, so the caller holding the graph answers both.
@@ -406,6 +406,19 @@ fn banded(b: &Banded, component: usize, t: f64, at: Bound) -> Result<C64, Collap
 /// How fast a carrier's angle turns at `t`, in radians a second.
 pub(crate) fn turning(rate: &SpectralSum, t: f64) -> Result<f64, CollapseError> {
     Ok(eval_spectral_sum(rate, 0, t)?.re)
+}
+
+/// One operation per written subterm, each read of `refs[k]` counting that form's.
+pub(crate) fn terms(body: &Body, refs: &[usize]) -> usize {
+    match body {
+        Body::Node(id) => refs[id.0 as usize],
+        Body::Banded(b) => (b.widest.max(0) as usize)
+            .saturating_mul(terms(&b.series.term.body, refs))
+            .saturating_add(2),
+        _ => children(body)
+            .iter()
+            .fold(1usize, |held, p| held.saturating_add(terms(&p.body, refs))),
+    }
 }
 
 fn sketch(f: &Body) -> &'static str {

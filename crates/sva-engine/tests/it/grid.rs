@@ -143,6 +143,51 @@ fn a_formula_read_at_any_instant_is_exact() {
     }
 }
 
+/// A form read through a warp whose instant is one of the form's own samples reads that
+/// sample's bits, whichever row the form takes: one arithmetic per form.
+#[test]
+fn a_warp_landing_on_a_sample_reads_its_bits() {
+    let forms = [
+        ("lines", "sin(2*pi*220*t) + 0.3*cos(2*pi*331*t)"),
+        (
+            "grouped",
+            "exp(-1000*(t - 0.02)*(t - 0.02))*sin(2*pi*220*t)",
+        ),
+        (
+            "swept",
+            "exp(-30*t)*sin(2*pi*220*t) + exp(-7*t)*cos(2*pi*97*t)",
+        ),
+        ("pointed", "tanh(3*sin(2*pi*220*t))"),
+        ("added", "tanh(3*sin(2*pi*220*t)) + sin(2*pi*110*t)"),
+        ("cropped", "crop(sin(2*pi*440*t), 60/72*0.01s, 0.03s)"),
+    ];
+    for (name, form) in forms {
+        let g = graph_of(
+            "grid-landing",
+            &[("x", &format!("{form}\n")), ("y", "@x(max(2*t, 0s))\n")],
+        );
+        for rate in RATES {
+            let whole = render(&g, "x", RenderConfig::seconds(rate, 0.04), &Tier::default())
+                .unwrap_or_else(|e| panic!("{name} at {rate}: {e}"));
+            let read = render(&g, "y", RenderConfig::seconds(rate, 0.02), &Tier::default())
+                .unwrap_or_else(|e| panic!("{name} at {rate}: {e}"));
+            let (whole, read) = (plane(&whole, "x"), plane(&read, "y"));
+            assert!(
+                read.iter().any(|v| *v != 0.0),
+                "{name}: silence tests nothing"
+            );
+            for (n, v) in read.iter().enumerate() {
+                assert_eq!(
+                    v.to_bits(),
+                    whole[2 * n].to_bits(),
+                    "{name} at {rate}: sample {n} reads {v}, its landing holds {}",
+                    whole[2 * n]
+                );
+            }
+        }
+    }
+}
+
 fn close(got: &[f64], want: &[f64], at: &str) {
     assert!(got.iter().any(|v| *v != 0.0), "{at}: silence tests nothing");
     assert_eq!(got.len(), want.len(), "{at}");

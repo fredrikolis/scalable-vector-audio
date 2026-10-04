@@ -4,8 +4,8 @@ use sva_formula::spectral_sum::atom::{Gauss, SpectralAtom};
 use sva_formula::{Lane, exp_zero_at};
 
 use super::point;
-use crate::Grid;
 use crate::error::CollapseError;
+use crate::grid::Grid;
 
 pub(crate) type Window = (i64, i64);
 
@@ -183,11 +183,10 @@ pub(crate) fn evaluated(windows: &[Window], spans: &[Window]) -> u128 {
 }
 
 /// Where every atom of a lane is windowed, the lane is zero outside their union.
-pub(crate) fn spans(lane: &Lane, rate: u32) -> Option<Vec<(i64, i64)>> {
+pub(crate) fn spans(lane: &Lane, grid: Grid) -> Option<Vec<(i64, i64)>> {
     if !lane.is_finite_sum() || lane.atoms.iter().any(|a| a.ind.is_none()) {
         return None;
     }
-    let grid = Grid::of(rate);
     let mut spans: Vec<(i64, i64)> = lane
         .atoms
         .iter()

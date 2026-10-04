@@ -6,9 +6,13 @@ use sva_samples::{Extent, PSYCHOACOUSTIC_V1, Rows};
 
 /// The first component of a spectral sum's rows over `extent`.
 fn sampled(sum: &sva_formula::SpectralSum, rate: u32, extent: Extent) -> Vec<f64> {
-    let rows =
-        Rows::of_spectral_sum_or_point(sum, None, (rate, &PSYCHOACOUSTIC_V1), &sva_formula::Opaque)
-            .expect("the sum has rows");
+    let rows = Rows::of_spectral_sum_or_point(
+        sum,
+        None,
+        (sva_samples::Grid::of(rate), &PSYCHOACOUSTIC_V1),
+        &sva_formula::Opaque,
+    )
+    .expect("the sum has rows");
     let mut planes = rows.planes(extent.start, extent.end).expect("samples");
     planes.swap_remove(0)
 }

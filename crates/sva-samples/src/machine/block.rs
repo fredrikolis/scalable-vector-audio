@@ -2,10 +2,11 @@
 
 use super::ops::Op;
 use super::read::{Fresh, Source};
-use super::renderer::{Grid, Slot};
+use super::renderer::Slot;
 use super::tape::Window;
 use super::{Program, State, part};
 use crate::error::SampleError;
+use crate::grid::Grid;
 
 pub(super) const BLOCK: usize = 128;
 
@@ -263,13 +264,8 @@ fn fill(
         }
         Op::Formula { at } => each(out, (from, start, w), &mut |i, n, s| {
             for (c, v) in s.iter_mut().enumerate() {
-                let t = part(arg(0, i), c);
-                let when = match t == times[i] {
-                    true => crate::collapse::At::Sample(here.grid, n),
-                    false => crate::collapse::At::Free(t),
-                };
                 *v = p.formulas[*at]
-                    .at(c, when)
+                    .at(c, part(arg(0, i), c), here.grid)
                     .map_err(|_| SampleError::FormulaUnevaluable { at: n })?;
             }
             Ok(())

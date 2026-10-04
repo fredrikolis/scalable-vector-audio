@@ -16,7 +16,7 @@ pub fn render(
     profile: &Profile,
 ) -> Result<(Buffer, Label), CollapseError> {
     let extent = Extent::secs(rate, secs.0, secs.1);
-    let rows = Rows::of(form, rate, profile)?;
+    let rows = Rows::of(form, sva_samples::Grid::of(rate), profile)?;
     let mut buffer = Buffer::of_planes(rate, rows.planes(extent.start, extent.end)?);
     buffer.start = extent.start;
     Ok((buffer, rows.label(profile)))
