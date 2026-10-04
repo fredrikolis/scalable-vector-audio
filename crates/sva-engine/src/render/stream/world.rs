@@ -43,7 +43,6 @@ struct Known {
     pinned: bool,
     reads_notes: bool,
     looked: bool,
-    stored: Option<Arc<Stored>>,
 }
 
 /// The nodes a change wants the stream to play.
@@ -170,18 +169,10 @@ impl World {
             fresh: &fresh,
             found,
         };
-        let walked = walk.walked();
-        let (mut found_known, visited, hits, asks) = walked;
+        let (found_known, visited, hits, asks, prefixes) = walk.walked();
         if !asks.is_empty() {
             return Ok(Walked::Asks(asks));
         }
-        let prefixes = hits
-            .iter()
-            .filter_map(|hit| {
-                let known = found_known.get_mut(&hit.node)?;
-                Some((hit.node.clone(), Arc::clone(known.stored.as_ref()?)))
-            })
-            .collect();
         Ok(Walked::Planned(Plan {
             adopted,
             named: named.len(),
@@ -291,7 +282,6 @@ impl World {
                     pinned,
                     reads_notes,
                     looked: old.is_some_and(|old| old.looked),
-                    stored: old.and_then(|old| old.stored.clone()),
                 };
                 found.insert(path.clone(), known);
             }
@@ -346,7 +336,13 @@ struct Walk<'w> {
     found: Found<'w>,
 }
 
-type WalkedOut = (BTreeMap<String, Known>, usize, Vec<Lookup>, Vec<Hash>);
+type WalkedOut = (
+    BTreeMap<String, Known>,
+    usize,
+    Vec<Lookup>,
+    Vec<Hash>,
+    BTreeMap<String, Arc<Stored>>,
+);
 
 impl Walk<'_> {
     fn known(&self, path: &str) -> Known {
@@ -359,11 +355,12 @@ impl Walk<'_> {
 
     fn walked(mut self) -> WalkedOut {
         let (mut visited, mut hits, mut asks) = (BTreeSet::new(), Vec::new(), Vec::new());
+        let mut held: BTreeMap<String, Arc<Stored>> = BTreeMap::new();
         let mut stack = vec![(STREAMED.to_string(), false)];
         while let Some((path, anew)) = stack.pop() {
             let mut known = self.known(&path);
             if visited.contains(&path) {
-                let asked = anew && !known.pinned && known.stored.is_none();
+                let asked = anew && !known.pinned && !held.contains_key(&path);
                 if let Some(key) = known.key.filter(|_| asked)
                     && matches!((self.found)(key), Answer::Unknown)
                 {
@@ -390,9 +387,9 @@ impl Walk<'_> {
             let config = &self.world.config;
             let stored = stored.filter(|hit| answers(hit, false, config));
             known.looked = true;
-            known.stored = stored.clone();
-            if let (Some(_), Some(key)) = (&stored, known.key) {
+            if let (Some(stored), Some(key)) = (stored, known.key) {
                 hits.push(noted(&path, key, Outcome::Hit));
+                held.insert(path.clone(), stored);
             } else {
                 let fresh = self.fresh.get(path.as_str());
                 for read in self.world.instances.deps(&path).iter().rev() {
@@ -404,6 +401,6 @@ impl Walk<'_> {
         }
         asks.sort();
         asks.dedup();
-        (self.found_known, visited.len(), hits, asks)
+        (self.found_known, visited.len(), hits, asks, held)
     }
 }
