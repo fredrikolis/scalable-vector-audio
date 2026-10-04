@@ -153,6 +153,9 @@ impl Build<'_> {
         if nodes_in(body).is_empty() {
             return Ok(self.formula(body.clone()));
         }
+        if is_one_value(self.tys, body) {
+            return Ok(self.formula(body.clone()));
+        }
         let each = |build: &mut Self, parts: &[Part]| -> Result<Vec<NodeRenderer>, EngineError> {
             parts.iter().map(|p| build.body(&p.body)).collect()
         };
@@ -233,12 +236,10 @@ impl Build<'_> {
                 }
             }
             // A finite sum is its terms; an infinite one over an opaque node never ends.
-            Body::Series(_) if one_value(self.tys, body) => self.formula(body.clone()),
             Body::Series(_) => match written_out(body) {
                 Some(written) => self.body(&written)?,
                 None => return Err(unsummed(self.tys, self.owner)),
             },
-            other if one_value(self.tys, other) => self.formula(other.clone()),
             _ => return Err(unevaluated(self.tys, self.owner, "a construct")),
         })
     }
@@ -523,6 +524,28 @@ impl Build<'_> {
             },
         })
     }
+}
+
+/// Whether a program lowers `body` whole as one value of its own rather than part by part: a
+/// construct no program splits, every node it reads a closed form reading none. A node whose
+/// whole body is one is that value, so it is built as that formula is, never as a program
+/// reading itself.
+pub(crate) fn is_one_value(tys: &Typing, body: &Body) -> bool {
+    let split = match body {
+        Body::Shift { of, .. } | Body::Warp { of, .. } => matches!(&*of.body, Body::Node(_)),
+        Body::Node(_)
+        | Body::Add(_)
+        | Body::Mul(_)
+        | Body::Div(..)
+        | Body::Pow(..)
+        | Body::Apply(..)
+        | Body::Fold(..)
+        | Body::Join(_)
+        | Body::Channel(..)
+        | Body::Crop { .. } => true,
+        _ => false,
+    };
+    !split && !nodes_in(body).is_empty() && one_value(tys, body)
 }
 
 /// A construct no sample evaluates part by part, every node it reads a closed form reading

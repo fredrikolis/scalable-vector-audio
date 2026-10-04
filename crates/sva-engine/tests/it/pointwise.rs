@@ -375,7 +375,7 @@ fn a_finite_sum_over_a_ref_is_its_terms_written_out() {
             .collect::<Vec<_>>()
             .join(" + ")
     };
-    for read in ["@ramp(t)", "sample(@ramp(t))"] {
+    for read in ["@ramp(t)", "sample(@ramp(t))", "@edge(t)"] {
         let written = summed("sum-hand", &by_hand(read)).expect("terms written out");
         let sum = format!("sum(k, 1, 4, {read}*sin(2*pi*k*165*t)/k)");
         let got = summed("sum-ref", &sum).unwrap_or_else(|e| panic!("{sum}: {e}"));

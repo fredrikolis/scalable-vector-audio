@@ -1001,13 +1001,7 @@ impl Building<'_> {
             let Source::Formula(form) = source else {
                 unreachable!("a node or a formula");
             };
-            let sum = match refs::nodes_in(&form.body).is_empty() {
-                true => sva_formula::normalize_closed_form(form).ok(),
-                false => refs::read_through(tys, |t| {
-                    sva_formula::normalize_read(&form.body, form.var, t).ok()
-                }),
-            };
-            return none(self.formula(value, sum, Some(form))?);
+            return none(self.written(value, form)?);
         };
         let id = *id;
         match (tys.ty(id).held, tys.value(id)) {
@@ -1048,8 +1042,25 @@ impl Building<'_> {
                 let sum = refs::spectral_sum_of(tys, id, Var::T)?;
                 none(self.formula(value, Some(sum), None)?)
             }
+            (_, Typed::ClosedForm(form))
+                if form.var == Var::T && program::is_one_value(tys, &form.body) =>
+            {
+                none(self.written(value, form)?)
+            }
             _ => self.program(value, id),
         }
+    }
+
+    /// A closed form written in a body: its spectral sum where it has one, else its form, each
+    /// ref it reads read as the form it names.
+    fn written(&mut self, value: Value, form: &ClosedForm) -> Result<Value, EngineError> {
+        let sum = match refs::nodes_in(&form.body).is_empty() {
+            true => sva_formula::normalize_closed_form(form).ok(),
+            false => refs::read_through(self.tys, |t| {
+                sva_formula::normalize_read(&form.body, form.var, t).ok()
+            }),
+        };
+        self.formula(value, sum, Some(form))
     }
 
     /// A form in `f` is, on the grid, the form in `t` its dual is; one with no dual is its
