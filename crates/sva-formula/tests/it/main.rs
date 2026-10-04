@@ -11,3 +11,4 @@ mod note;
 mod refusals;
 mod series;
 mod spectral_sum;
+mod sup;
