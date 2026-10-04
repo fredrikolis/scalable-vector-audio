@@ -1,4 +1,4 @@
-// Concern: what a stream plays across its changes: graph, instances, keys, memory's answers, typing | Non-concern: the table, the blocks (stream.rs) | IO: (wanted nodes) -> a plan; commit, abort
+// Concern: the version a render or stream plays, advanced per edit: graph, instances, typing, identities | Non-concern: the table, the blocks | IO: (an edit) -> a version, a walk; commit, abort
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -6,63 +6,86 @@ use std::sync::Arc;
 use sva_ast::{Expr, Graph, Held};
 use sva_formula::Hash;
 
-use super::super::RenderConfig;
-use super::super::frontier::{answers, noted};
-use super::super::terms::{Handle, NOTES, Terms, is_term};
-use super::STREAMED;
+use super::RenderConfig;
+use super::frontier::{answers, noted};
+use super::terms::{Handle, NOTES, Terms, is_term};
 use crate::cache::{Known as Answer, Lookup, Outcome, Stored};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::Instances;
 use crate::schedule;
 use crate::typing::Typing;
 
+pub const STREAMED: &str = "streamed";
+
 /// What memory answers a key with this round.
 pub(super) type Found<'f> = &'f dyn Fn(Hash) -> Answer;
 
-/// What a stream plays, each part changed in place and held once a change lands.
 pub(super) struct World {
     pub(super) graph: Graph,
     pub(super) instances: Instances,
     pub(super) typing: Typing,
     known: BTreeMap<String, Known>,
-    /// Each graph node the change tried set, and what it held before.
     edits: Vec<(String, Option<Held>)>,
-    pub(super) own_notes: bool,
-    config: RenderConfig,
-    /// The instances a change tried in place of these, whole, set aside until it lands.
+    /// Whether it writes `@notes` as the sum of its terms: a stream's, over a composition that
+    /// defines none.
+    pub(super) notes: bool,
     replaced: Option<Instances>,
 }
 
-/// What one instance was last named and found as.
 #[derive(Clone)]
-struct Known {
-    /// What it computes at the stream's rate and profile; none where its identity refuses.
-    key: Option<Hash>,
+pub(super) struct Known {
+    /// What it computes; none where its identity refuses.
+    identity: Option<Hash>,
     group: Arc<[String]>,
-    /// A loop's member, a term, a reader of the note sum or one with no key: never looked up.
+    /// A loop's member, a term, a reader of the note sum or one with no identity: never looked up.
     pinned: bool,
     reads_notes: bool,
     looked: bool,
 }
 
-/// The nodes a change wants the stream to play.
+impl Known {
+    fn key(&self, config: &RenderConfig) -> Option<Hash> {
+        let identity = self.identity?;
+        Some(crate::cache::node_key(
+            identity,
+            config.rate,
+            &config.profile,
+        ))
+    }
+}
+
+/// The node a version plays: a stream's expression, held as its own node, or a node of the graph.
+pub(super) enum Root<'a> {
+    Streamed(&'a Expr),
+    Node(&'a str),
+}
+
 pub(super) struct Wanted<'a> {
-    pub(super) target: &'a Expr,
+    pub(super) root: Root<'a>,
     pub(super) terms: &'a Terms,
     /// The term it adds, replaces or cuts, as it now stands.
     pub(super) term: Option<(Handle, &'a Expr)>,
     /// A graph reaching what it reads, and its reads.
     pub(super) from: Option<(&'a Graph, Vec<String>)>,
+    /// Whether `from` holds all there is, so a node it lacks is gone.
+    pub(super) whole: bool,
 }
 
-/// What a change named, typed and found.
+pub(super) struct Advance {
+    adopted: usize,
+    named: Vec<String>,
+    found: BTreeMap<String, Known>,
+    changed: BTreeSet<String>,
+    fresh: BTreeMap<String, BTreeSet<String>>,
+}
+
 pub(super) struct Plan {
     pub(super) adopted: usize,
     pub(super) named: usize,
     pub(super) visited: usize,
     pub(super) hits: Vec<Lookup>,
     pub(super) prefixes: BTreeMap<String, Arc<Stored>>,
-    found: BTreeMap<String, Known>,
+    pub(super) found: BTreeMap<String, Known>,
 }
 
 /// A plan, or the keys a walk has to look up before it can finish one.
@@ -72,29 +95,64 @@ pub(super) enum Walked {
 }
 
 impl World {
-    pub(super) fn new(graph: &Graph, config: &RenderConfig) -> Result<World, EngineError> {
-        if graph.defines(STREAMED) {
-            return Err(super::refusal(format!(
-                "this composition already has a node named `{STREAMED}`"
-            )));
-        }
-        Ok(World {
+    /// `graph` as it stands, played at `rate`; `notes` where it writes `@notes` from its terms.
+    pub(super) fn over(graph: &Graph, rate: u32, notes: bool) -> World {
+        World {
             graph: graph.clone(),
-            instances: Instances::new(config.rate),
+            instances: Instances::new(rate),
             typing: Typing::default(),
             known: BTreeMap::new(),
             edits: Vec::new(),
-            own_notes: graph.defines(NOTES),
-            config: config.clone(),
+            notes,
             replaced: None,
-        })
+        }
+    }
+
+    /// `target` of `graph`, at `rate`, the version in `world` advanced to it and held: only
+    /// what changed since, and its readers, typed anew. Its root instance; on a refusal the
+    /// version is as it was.
+    pub(super) fn rendered<'w>(
+        world: &'w mut Option<World>,
+        graph: &Graph,
+        target: &str,
+        rate: u32,
+    ) -> Result<(&'w World, String), EngineError> {
+        let world = match world.take() {
+            Some(held) if held.instances.rate() == rate => world.insert(held),
+            _ => world.insert(World::over(graph, rate, false)),
+        };
+        let wanted = Wanted {
+            root: Root::Node(target),
+            terms: &Terms::default(),
+            term: None,
+            from: Some((graph, vec![target.to_string()])),
+            whole: true,
+        };
+        match world.advanced(&wanted) {
+            Ok(advance) => {
+                world.commit(advance.found);
+                let root = world.instances.instance_of(target)?;
+                Ok((world, root))
+            }
+            Err(refused) => {
+                world.abort();
+                Err(refused)
+            }
+        }
     }
 
     /// The graph set to what `wanted` plays, what changed named, scanned and typed, each
-    /// instance it may rename keyed by what it computes, and a walk to what the store answers
+    /// instance it may rename named by what it computes, and a walk to what the store answers
     /// of each changed or newly read. Undone on a refusal or keys to look up.
-    pub(super) fn plan(&mut self, wanted: &Wanted, found: Found) -> Result<Walked, EngineError> {
-        let planned = self.planned(wanted, found);
+    pub(super) fn plan(
+        &mut self,
+        wanted: &Wanted,
+        config: &RenderConfig,
+        found: Found,
+    ) -> Result<Walked, EngineError> {
+        let planned = self
+            .advanced(wanted)
+            .map(|advance| self.walked(advance, config, found));
         match &planned {
             Ok(Walked::Planned(_)) => {}
             _ => {
@@ -104,17 +162,25 @@ impl World {
         planned
     }
 
-    fn planned(&mut self, wanted: &Wanted, found: Found) -> Result<Walked, EngineError> {
+    fn advanced(&mut self, wanted: &Wanted) -> Result<Advance, EngineError> {
+        let root = match wanted.root {
+            Root::Streamed(_) => STREAMED,
+            Root::Node(path) => path,
+        };
+        let held: Vec<&String> = self.instances.own_terms.keys().collect();
+        let moved = !held.is_empty() && held != [root];
         let adopted = match &wanted.from {
             Some((graph, roots)) => {
-                self.renew(graph, roots);
+                self.renew(graph, roots, (moved, wanted.whole));
                 self.adopt(graph, roots)
             }
             None => 0,
         };
         let mut rewritten = Vec::new();
-        self.set(STREAMED, wanted.target, &mut rewritten);
-        if !wanted.terms.is_empty() && self.own_notes {
+        if let Root::Streamed(target) = wanted.root {
+            self.set(STREAMED, target, &mut rewritten);
+        }
+        if !wanted.terms.is_empty() && !self.notes {
             return Err(EngineError::refused(Diagnostic {
                 code: "engine.no_stream".to_string(),
                 message: format!(
@@ -126,17 +192,17 @@ impl World {
                 ),
             }));
         }
-        let first = !self.instances.holds(STREAMED);
+        let first = !self.instances.own_terms.contains_key(root);
         if let Some((handle, term)) = wanted.term {
             self.set(&handle.node(), term, &mut rewritten);
         }
-        if !self.own_notes {
+        if self.notes {
             self.set(NOTES, &wanted.terms.sum(), &mut rewritten);
         }
         match first {
             true => self
                 .instances
-                .hold(&self.graph, &[STREAMED.to_string()])
+                .hold(&self.graph, &[root.to_string()])
                 .map(|_| ())?,
             false => self.instances.rewrite(&self.graph, &rewritten)?,
         }
@@ -149,41 +215,57 @@ impl World {
             named.retain(|path| !held(path));
         }
         let region = self.region(&named, &rescanned);
-        self.typing.lower(&self.instances, &region.groups)?;
-        wanted.terms.name(&mut self.typing);
-        let (found_known, changed) = self.named(&region);
-        let mut fresh: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        self.typing.lower(&self.instances, &region)?;
+        if let Root::Streamed(_) = wanted.root {
+            wanted.terms.name(&mut self.typing);
+        }
+        let (found, changed) = self.named(&region);
+        let mut fresh: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for name in &named {
-            let deps = self.instances.deps(name).iter().map(String::as_str);
-            fresh.insert(name, deps.collect());
+            let deps = self.instances.deps(name).iter().cloned();
+            fresh.insert(name.clone(), deps.collect());
         }
         for (name, before) in &rescanned {
             let deps = self.instances.deps(name).iter();
-            let new = deps.filter(|d| !before.contains(d)).map(String::as_str);
-            fresh.insert(name, new.collect());
+            let new = deps.filter(|d| !before.contains(d)).cloned();
+            fresh.insert(name.clone(), new.collect());
         }
+        Ok(Advance {
+            adopted,
+            named,
+            found,
+            changed,
+            fresh,
+        })
+    }
+
+    fn walked(&self, advance: Advance, config: &RenderConfig, found: Found) -> Walked {
         let walk = Walk {
             world: self,
-            found_known,
-            changed: &changed,
-            fresh: &fresh,
+            found_known: advance.found,
+            changed: &advance.changed,
+            fresh: &advance.fresh,
+            config,
             found,
         };
         let (found_known, visited, hits, asks, prefixes) = walk.walked();
         if !asks.is_empty() {
-            return Ok(Walked::Asks(asks));
+            return Walked::Asks(asks);
         }
-        Ok(Walked::Planned(Plan {
-            adopted,
-            named: named.len(),
+        Walked::Planned(Plan {
+            adopted: advance.adopted,
+            named: advance.named.len(),
             visited,
             hits,
             prefixes,
             found: found_known,
-        }))
+        })
     }
 
-    /// `path` defined as `expr` where the graph holds it otherwise.
+    pub(super) fn key(&self, path: &str, config: &RenderConfig) -> Option<Hash> {
+        self.known.get(path)?.key(config)
+    }
+
     fn set(&mut self, path: &str, expr: &Expr, rewritten: &mut Vec<String>) {
         if self.graph.expr(path) == Some(expr) {
             return;
@@ -195,22 +277,25 @@ impl World {
     }
 
     /// Each node played or read anew that `from` holds otherwise than the graph, taken into
-    /// it; where a text moved, the instances are named anew, whole, beside the ones set aside.
-    fn renew(&mut self, from: &Graph, roots: &[String]) {
+    /// it; where a parse moved, or the root `moved`, the instances are named anew, whole,
+    /// beside the ones set aside.
+    fn renew(&mut self, from: &Graph, roots: &[String], (moved, whole): (bool, bool)) {
         let read = from.reaching(roots);
         let played = |p: &str| self.instances.instances_of(p).next().is_some() || read.contains(p);
-        let paths = from.paths().filter(|p| self.graph.defines(p) && played(p));
+        let gone = self.graph.paths().filter(|p| whole && !from.defines(p));
+        let paths = from.paths().filter(|p| self.graph.defines(p)).chain(gone);
         let held = |p: &&str| self.graph.holds_as(p, from) && self.graph.read_as(p, from);
-        let taken: Vec<String> = paths.filter(|p| !held(p)).map(str::to_string).collect();
-        let rewritten = taken.iter().any(|p| !self.graph.holds_as(p, from));
+        let paths = paths.filter(|p| played(p) && !held(p));
+        let taken: Vec<String> = paths.map(str::to_string).collect();
+        let reparsed = taken.iter().any(|p| !self.graph.holds_as(p, from));
         for path in taken {
             let before = self.graph.set(&path, from.held(&path));
             self.edits.push((path, before));
         }
-        if !rewritten {
+        if !reparsed && !moved {
             return;
         }
-        let fresh = Instances::new(self.config.rate);
+        let fresh = Instances::new(self.instances.rate());
         self.replaced = Some(std::mem::replace(&mut self.instances, fresh));
     }
 
@@ -224,7 +309,7 @@ impl World {
 
     /// What a change may rename: what it named and scanned again, their old groups and all
     /// reading them, grouped dependencies first.
-    fn region(&self, named: &[String], rescanned: &[(String, Vec<String>)]) -> Region {
+    fn region(&self, named: &[String], rescanned: &[(String, Vec<String>)]) -> Vec<Vec<String>> {
         let mut region: BTreeSet<String> = named.iter().cloned().collect();
         for (name, _) in rescanned {
             region.insert(name.clone());
@@ -241,17 +326,17 @@ impl World {
             }
         }
         let starts: Vec<String> = region.iter().cloned().collect();
-        let groups = schedule::grouped(&self.instances, &starts, &|path| region.contains(path));
-        Region { groups }
+        schedule::grouped(&self.instances, &starts, &|path| region.contains(path))
     }
 
-    /// Each member of the region named by what its typing computes, and those whose key moved.
-    fn named(&self, region: &Region) -> (BTreeMap<String, Known>, BTreeSet<String>) {
+    /// Each member of the region named by what its typing computes, and those whose identity
+    /// moved.
+    fn named(&self, region: &[Vec<String>]) -> (BTreeMap<String, Known>, BTreeSet<String>) {
         let mut found: BTreeMap<String, Known> = BTreeMap::new();
         let mut changed = BTreeSet::new();
-        for group in &region.groups {
+        for group in region {
             let looped = schedule::is_loop(&self.instances, group);
-            let reads_notes = !self.own_notes
+            let reads_notes = self.notes
                 && group.iter().any(|path| {
                     path == NOTES
                         || self.instances.deps(path).iter().any(|read| {
@@ -263,20 +348,17 @@ impl World {
             for path in group {
                 let typed = self.typing.id(path);
                 let identity = typed.and_then(|id| crate::refs::identity(&self.typing, id).ok());
-                let key = identity.map(|held| {
-                    crate::cache::node_key(held, self.config.rate, &self.config.profile)
-                });
                 let old = self
                     .known
                     .get(path)
-                    .filter(|old| key.is_some() && old.key == key);
+                    .filter(|old| identity.is_some() && old.identity == identity);
                 if old.is_none() {
                     changed.insert(path.clone());
                 }
                 let pinned =
-                    key.is_none() || reads_notes || looped || (!self.own_notes && is_term(path));
+                    identity.is_none() || reads_notes || looped || (self.notes && is_term(path));
                 let known = Known {
-                    key,
+                    identity,
                     group: Arc::clone(&members),
                     pinned,
                     reads_notes,
@@ -288,8 +370,8 @@ impl World {
         (found, changed)
     }
 
-    /// The plan held, what nothing reads let go; the typing's freed ids.
-    pub(super) fn commit(&mut self, plan: &mut Plan) -> Vec<sva_formula::NodeId> {
+    /// What nothing reads let go; the typing's freed ids.
+    pub(super) fn commit(&mut self, found: BTreeMap<String, Known>) -> Vec<sva_formula::NodeId> {
         let mut removed = self.instances.commit();
         if let Some(old) = self.replaced.take() {
             let gone = old.paths().filter(|p| !self.instances.holds(p));
@@ -297,10 +379,10 @@ impl World {
         }
         self.typing.hide(removed.iter().cloned());
         let freed = self.typing.commit(&self.instances);
-        self.known.extend(std::mem::take(&mut plan.found));
+        self.known.extend(found);
         for path in &removed {
             self.known.remove(path);
-            if is_term(path) && !self.own_notes {
+            if is_term(path) && self.notes {
                 self.graph.set(path, None);
             }
         }
@@ -322,16 +404,12 @@ impl World {
     }
 }
 
-struct Region {
-    groups: Vec<Vec<String>>,
-}
-
-/// A walk down through the store's misses to each node changed or newly read.
 struct Walk<'w> {
     world: &'w World,
     found_known: BTreeMap<String, Known>,
     changed: &'w BTreeSet<String>,
-    fresh: &'w BTreeMap<&'w str, BTreeSet<&'w str>>,
+    fresh: &'w BTreeMap<String, BTreeSet<String>>,
+    config: &'w RenderConfig,
     found: Found<'w>,
 }
 
@@ -356,11 +434,12 @@ impl Walk<'_> {
         let (mut visited, mut hits, mut asks) = (BTreeSet::new(), Vec::new(), Vec::new());
         let mut held: BTreeMap<String, Arc<Stored>> = BTreeMap::new();
         let mut stack = vec![(STREAMED.to_string(), false)];
+        let key = |known: &Known| known.key(self.config).filter(|_| !known.pinned);
         while let Some((path, anew)) = stack.pop() {
             let mut known = self.known(&path);
             if visited.contains(&path) {
-                let asked = anew && !known.pinned && !held.contains_key(&path);
-                if let Some(key) = known.key.filter(|_| asked)
+                let asked = anew && !held.contains_key(&path);
+                if let Some(key) = key(&known).filter(|_| asked)
                     && matches!((self.found)(key), Answer::Unknown)
                 {
                     asks.push(key);
@@ -372,10 +451,10 @@ impl Walk<'_> {
                 continue;
             }
             visited.insert(path.clone());
-            let stored = match known.key.filter(|_| !known.pinned) {
+            let stored = match key(&known) {
                 None => None,
                 Some(key) => match (self.found)(key) {
-                    Answer::Hit(hit) => Some(hit),
+                    Answer::Hit(hit) => Some((key, hit)),
                     Answer::Miss => None,
                     Answer::Unknown => {
                         asks.push(key);
@@ -383,16 +462,15 @@ impl Walk<'_> {
                     }
                 },
             };
-            let config = &self.world.config;
-            let stored = stored.filter(|hit| answers(hit, false, config));
+            let stored = stored.filter(|(_, hit)| answers(hit, false, self.config));
             known.looked = true;
-            if let (Some(stored), Some(key)) = (stored, known.key) {
+            if let Some((key, stored)) = stored {
                 hits.push(noted(&path, key, Outcome::Hit));
                 held.insert(path.clone(), stored);
             } else {
-                let fresh = self.fresh.get(path.as_str());
+                let fresh = self.fresh.get(&path);
                 for read in self.world.instances.deps(&path).iter().rev() {
-                    let anew = fresh.is_some_and(|f| f.contains(read.as_str()));
+                    let anew = fresh.is_some_and(|f| f.contains(read));
                     stack.push((read.clone(), anew));
                 }
             }

@@ -8,7 +8,7 @@ use sva_formula::{Hash, NodeId};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::{Instances, ScopeId};
 use crate::render::Render;
-use crate::render::session::Typed;
+use crate::render::world::World;
 use crate::typing::{Typing, Value};
 
 /// The base of each volatile node's slot; a node absent here keeps every value it stores.
@@ -33,7 +33,7 @@ impl Volatile {
 pub(super) fn mark(
     (graph, inst): (&Graph, &Instances),
     held: &Render,
-    (target, stand_in): (&str, &mut Typed),
+    (target, stand_in): (&str, &mut Option<World>),
 ) -> Result<Volatile, EngineError> {
     let (tys, config) = (&held.tys, &held.config);
     if config.volatile.is_empty() {
@@ -82,7 +82,7 @@ pub(super) fn mark(
 fn at_stand_in<'t>(
     graph: &Graph,
     target: &str,
-    (config, stand_in): (&super::RenderConfig, &'t mut Typed),
+    (config, stand_in): (&super::RenderConfig, &'t mut Option<World>),
 ) -> Result<(&'t Typing, NodeId), EngineError> {
     let names = &config.volatile;
     let held = |name: &str| {
@@ -90,10 +90,8 @@ fn at_stand_in<'t>(
         Some(Expr::Lit(Literal::Num(STAND_IN + at as f64)))
     };
     let rebound = graph.rebound(&held);
-    let inst = crate::instantiate::instantiate(&rebound, target, config.rate)?;
-    let root = inst.instance_of(target)?;
-    let order = crate::schedule::schedule_from(&inst, std::slice::from_ref(&root))?;
-    let tys = stand_in.typed(&inst, &order)?;
+    let (world, root) = World::rendered(stand_in, &rebound, target, config.rate)?;
+    let tys = &world.typing;
     let at = tys.id(&root).ok_or(EngineError::UnknownNode(root))?;
     Ok((tys, at))
 }

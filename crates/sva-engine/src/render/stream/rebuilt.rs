@@ -2,11 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use super::world::{Walked, Wanted, World};
-use super::{STREAMED, Stream};
+use super::Stream;
 use crate::refs;
 use crate::render::table::{Kind, Table, Value};
 use crate::render::terms::{NOTES, is_term};
+use crate::render::world::{Root, STREAMED, Walked, Wanted, World};
 use crate::typing::Typing;
 
 impl Stream {
@@ -20,18 +20,20 @@ impl Stream {
         }
         let mut graph = self.world.graph.clone();
         graph.set(STREAMED, None);
-        if !self.world.own_notes {
+        if self.world.notes {
             graph.set(NOTES, None);
         }
-        let mut fresh = World::new(&graph, &self.config.render).expect("a world");
+        let render = &self.config.render;
+        let mut fresh = World::over(&graph, render.rate, self.world.notes);
         let wanted = Wanted {
-            target: &self.expr,
+            root: Root::Streamed(&self.expr),
             terms: &self.terms,
             term: None,
             from: None,
+            whole: false,
         };
         let missed = |_| crate::cache::Known::Miss;
-        match fresh.plan(&wanted, &missed) {
+        match fresh.plan(&wanted, render, &missed) {
             Ok(Walked::Planned(_)) => {}
             Ok(Walked::Asks(_)) => unreachable!("every key a miss"),
             Err(e) => panic!("what a stream plays plans: {e}"),

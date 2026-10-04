@@ -12,18 +12,15 @@ use super::drive::{Block, Driver};
 use super::table::Table;
 use super::table::support::Supports;
 use super::terms::{Handle, NOTES, Terms, cut, placed};
+use super::world::{Plan, Root, STREAMED, Walked, Wanted, World};
 use super::{Ends, RenderConfig, range_over};
 use crate::cache::{Backend, CacheStats, Counters, Memory, Recording, Stored, Tier};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::flops::Work;
 use crate::recent::Recent;
-use world::{Plan, Walked, Wanted, World};
 
 #[cfg(test)]
 mod rebuilt;
-mod world;
-
-pub const STREAMED: &str = "streamed";
 
 /// The lookups, and the names started silent, a stream keeps of all it made.
 pub const LATEST: usize = 256;
@@ -91,7 +88,12 @@ impl Stream {
         tier: &Tier<B>,
     ) -> Result<Stream, EngineError> {
         let render = blocked(&config)?.render.clone();
-        let world = World::new(graph, &render)?;
+        if graph.defines(STREAMED) {
+            return Err(refusal(format!(
+                "this composition already has a node named `{STREAMED}`"
+            )));
+        }
+        let world = World::over(graph, render.rate, !graph.defines(NOTES));
         let recording = Recording::over(tier.memory()).latest(LATEST);
         let table = Table::new(&render.profile);
         let driver = Driver::new(table, Extent::new(0, 0), config.block, &render, recording);
@@ -223,13 +225,14 @@ impl Stream {
             return Ok(Attempt::Moved);
         }
         let wanted = Wanted {
-            target: &prospect.target,
+            root: Root::Streamed(&prospect.target),
             terms: &prospect.terms,
             term: prospect.term.as_ref().map(|(h, e)| (*h, e)),
             from: prospect.from.as_ref().map(|(g, roots)| (g, roots.clone())),
+            whole: false,
         };
         let found = |key: Hash| memory.answer(key, round);
-        let walked = self.world.plan(&wanted, &found)?;
+        let walked = self.world.plan(&wanted, &self.config.render, &found)?;
         let mut plan = match walked {
             Walked::Asks(keys) => return Ok(Attempt::Asks(keys)),
             Walked::Planned(plan) => plan,
@@ -299,7 +302,7 @@ impl Stream {
         (mut plan, root, range): (Plan, usize, Extent),
         local: &mut Local,
     ) -> Changed {
-        let freed = self.world.commit(&mut plan);
+        let freed = self.world.commit(std::mem::take(&mut plan.found));
         let now = self.driver.at;
         let carried = self.driver.table.settled(root, &freed, (now, self.live));
         for (key, parts) in &local.fetched {

@@ -8,14 +8,12 @@ use sva_ast::Graph;
 use sva_formula::{Hash, NodeId};
 
 use super::offer::{Offers, readable};
-use super::session::Session;
 use super::table::{self, Table};
+use super::world::World;
 use super::{Render, RenderConfig, closed, driving, dropped, drove, frontier, planned_over};
 use crate::cache::{Backend, Recording, Stored, Tier};
 use crate::error::EngineError;
-use crate::instantiate;
 use crate::schedule;
-use crate::typing::Typing;
 
 /// Whether a render's caller let it go, asked between blocks.
 pub trait Abandon {
@@ -23,6 +21,14 @@ pub trait Abandon {
 }
 
 pub struct Never;
+
+/// Renders made in turn, each advancing the version the last held.
+#[derive(Default)]
+pub struct Session {
+    own: Option<World>,
+    /// The composition with every volatile parameter at its stand-in.
+    pub(super) stand_in: Option<World>,
+}
 
 impl Abandon for Never {
     fn abandoned(&self) -> Pin<Box<dyn Future<Output = bool> + '_>> {
@@ -54,14 +60,13 @@ pub async fn render_in<B: Backend>(
 ) -> Result<Render, EngineError> {
     let round = tier.begin();
     let mut recording = Recording::over(tier.memory());
-    let instances = instantiate::instantiate(graph, target, config.rate)?;
-    let root = instances.instance_of(target)?;
-    let order = schedule::schedule_from(&instances, std::slice::from_ref(&root))?;
     let Session { own, stand_in } = session;
-    let typed = own.typed(&instances, &order)?;
+    let (world, root) = World::rendered(own, graph, target, config.rate)?;
+    let (instances, typed) = (&world.instances, &world.typing);
+    let order = schedule::schedule_from(instances, std::slice::from_ref(&root))?;
     let lowered = typed.lowered().to_vec();
-    let keys = keys(typed, &order, &config);
-    let mut found = frontier::Frontier::from((&instances, &order), &keys, &root, &config);
+    let keys = keys(world, &order, &config);
+    let mut found = frontier::Frontier::from((instances, &order), &keys, &root, &config);
     found.walked(tier, round).await;
     let stood = |stored: &BTreeMap<String, Arc<Stored>>| {
         let mut tys = typed.clone();
@@ -92,7 +97,7 @@ pub async fn render_in<B: Backend>(
             .filter(|id| readable(&tys, *id))
             .collect();
         let mut held = planned_over(
-            (graph, target, &instances),
+            (graph, target, instances),
             (tys, id),
             (config.clone(), &mut *stand_in),
             &bounds,
@@ -156,19 +161,10 @@ pub async fn render_in<B: Backend>(
     Ok(held)
 }
 
-/// Each instance's node key: what it computes, at the render's rate and profile; an instance
-/// whose identity refuses is never looked up.
-pub(crate) fn keys(
-    tys: &Typing,
-    order: &schedule::Order,
-    config: &RenderConfig,
-) -> BTreeMap<String, Hash> {
+/// Each instance's node key; an instance whose identity refuses is never looked up.
+fn keys(world: &World, order: &schedule::Order, config: &RenderConfig) -> BTreeMap<String, Hash> {
     let paths = order.groups.iter().flatten();
-    let named = paths.filter_map(|path| {
-        let identity = crate::refs::identity(tys, tys.id(path)?).ok()?;
-        let key = crate::cache::node_key(identity, config.rate, &config.profile);
-        Some((path.clone(), key))
-    });
+    let named = paths.filter_map(|path| Some((path.clone(), world.key(path, config)?)));
     named.collect()
 }
 

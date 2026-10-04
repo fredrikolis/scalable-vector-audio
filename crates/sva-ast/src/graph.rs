@@ -303,19 +303,19 @@ impl Graph {
         before
     }
 
-    /// Whether `other` holds `path` as this graph does: the same text under the same name.
+    /// Whether `other` holds `path` with the same body and defaults.
     pub fn holds_as(&self, path: &str, other: &Graph) -> bool {
         match (self.nodes.get(path), other.nodes.get(path)) {
-            (Some(a), Some(b)) if Arc::ptr_eq(a, b) => true,
-            (Some(_), Some(_)) => self.texts.get(path) == other.texts.get(path),
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a == b,
             (None, None) => true,
             _ => false,
         }
     }
 
-    /// Whether `other` read `path` at the same edit of its source.
+    /// Whether `other` read `path` as the same text, at the same edit of its source.
     pub fn read_as(&self, path: &str, other: &Graph) -> bool {
-        self.generations.get(path) == other.generations.get(path)
+        self.texts.get(path) == other.texts.get(path)
+            && self.generations.get(path) == other.generations.get(path)
     }
 
     /// Each node `path` reads directly, by its body or a default.

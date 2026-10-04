@@ -6,13 +6,13 @@ mod drive;
 mod frontier;
 mod offer;
 mod run;
-mod session;
 mod slots;
 mod stream;
 pub(crate) mod table;
 mod terms;
 pub mod until;
 mod volatile;
+mod world;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -100,13 +100,13 @@ impl RenderConfig {
 
 pub use answer::{answer, answer_buffer, sketch_atom};
 pub use drive::Block;
-pub use run::{Abandon, Never, render_in, render_over};
-pub use session::Session;
+pub use run::{Abandon, Never, Session, render_in, render_over};
 pub use stream::{
-    Built, Change, Changed, Counts, LATEST, Placed, STREAMED, Stream, StreamConfig, change, fetch,
+    Built, Change, Changed, Counts, LATEST, Placed, Stream, StreamConfig, change, fetch,
 };
 pub use terms::{Handle, NOTES};
 pub use until::Until;
+pub use world::STREAMED;
 
 /// Samples a whole render pulls at once; any size writes the same bits.
 const BLOCK: usize = 1 << 12;
@@ -272,14 +272,14 @@ fn planned(
         tys,
         root,
     } = prepared;
-    let config = (config, &mut session::Typed::default());
+    let config = (config, &mut None);
     planned_over((graph, target, &instances), (tys, root), config, bounds)
 }
 
 fn planned_over(
     (graph, target, instances): (&Graph, &str, &instantiate::Instances),
     (tys, root): (Typing, NodeId),
-    (config, stand_in): (RenderConfig, &mut session::Typed),
+    (config, stand_in): (RenderConfig, &mut Option<world::World>),
     bounds: &BTreeSet<NodeId>,
 ) -> Result<Render, EngineError> {
     let schedule = schedule::plan(&tys, root, &config.asks);
