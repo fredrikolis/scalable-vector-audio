@@ -3,9 +3,9 @@
 use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
 use sva_formula::{Line, SpectralSum, Var, d_dt, envelope_read, line_atoms_read};
 use sva_samples::{
-    AliasScore, Buffer, Consumes, Extent, Peak, PitchFrame, Profile, Source, measure::bands,
-    measure::crest, measure::envelope, measure::formants, measure::loudness, measure::onsets,
-    measure::pitch, measure::spectrum, measure::stereo, measure_alias,
+    Buffer, Consumes, Extent, Peak, PitchFrame, Profile, Source, measure::bands, measure::crest,
+    measure::envelope, measure::formants, measure::loudness, measure::onsets, measure::pitch,
+    measure::spectrum, measure::stereo, measure_alias,
 };
 
 use crate::error::{Diagnostic, EngineError, Located};
@@ -649,8 +649,7 @@ fn behind(render: &Render, node: sva_formula::NodeId) -> Result<sva_formula::Nod
     }
 }
 
-/// The score a point sampling's label carries where a reading asks for one: the node against
-/// its own closed form oversampled.
+/// The score a point sampling's label carries where a reading asks for one.
 pub(super) fn alias_db(
     render: &Render,
     node: sva_formula::NodeId,
@@ -661,7 +660,7 @@ pub(super) fn alias_db(
     Ok(worst_alias(buffer, &reference, oversample).asr_db)
 }
 
-/// Each component scored against its own reference, and `worst` says which one answers.
+/// Each component scored against its own reference; the worst answers.
 fn worst_alias(buffer: &Buffer, reference: &Buffer, oversample: u32) -> sva_samples::Alias {
     debug_assert_eq!(
         buffer.width, reference.width,
@@ -681,36 +680,16 @@ fn worst_alias(buffer: &Buffer, reference: &Buffer, oversample: u32) -> sva_samp
     .expect("a buffer holds at least one component")
 }
 
-/// The same closed form read at a multiple of the rate, which is what an alias score is against.
+/// The node read at a multiple of the rate by its own route: what an alias score is against.
 fn oversampled(
     render: &Render,
     node: sva_formula::NodeId,
     oversample: u32,
 ) -> Result<Buffer, EngineError> {
-    let rate = render.config.rate * oversample;
     let range = render.range.expect("an alias score reads a decided range");
     let k = i64::from(oversample);
     let extent = Extent::new(range.start * k, range.end * k);
-    let taken = match refs::spectral_sum_of(&render.tys, node, Var::T) {
-        Ok(sum) => refs::read_through(&render.tys, |t| {
-            sva_samples::of_spectral_sum_read(
-                &sum,
-                (rate, extent),
-                &render.config.profile,
-                AliasScore::NotAsked,
-                t,
-            )
-        }),
-        Err(_) => return super::finer(render, node, oversample, extent),
-    };
-    taken.map(|(buffer, _)| buffer).map_err(|e| {
-        EngineError::refused(Diagnostic {
-            code: e.code().to_string(),
-            message: e.to_string(),
-            location: Located::at(render.tys.name(node), None),
-            help: "an alias score needs a closed form to oversample".to_string(),
-        })
-    })
+    super::finer(render, node, oversample, extent)
 }
 
 /// A first difference on the grid, which is what a derivative is once the closed form is gone.

@@ -178,6 +178,21 @@ fn alias_scores_a_collapse_and_refuses_where_no_law_is_behind_it() {
     assert_eq!(refused.code(), "engine.alias_needs_a_closed_form");
 }
 
+/// The reference a score is against is the same node read on a finer grid by the route the
+/// node itself takes: a cropped vibrato sum the rows cannot place, which a render point samples,
+/// is scored rather than refused.
+#[test]
+fn an_alias_score_reads_its_reference_the_way_the_node_renders() {
+    let vibrato = "crop(sum(k, 1, 40, sin(2*pi*110*k*t + 0.5*k*sin(2*pi*5*t))/k), 0s, 0.5s)\n";
+    let held = rendered("vibrato-alias", vibrato, vec!["alias"]);
+    let id = held.id("node").expect("the root");
+    let found = answer(&held, id, Representation::Alias { oversample: 4 }).expect("a score");
+    let Output::Alias(score) = found.value else {
+        panic!("an alias reading answers a score");
+    };
+    assert!(score.asr_db.is_finite(), "{score:?}");
+}
+
 /// One score stands for the whole node, so it has to be the component that aliases worst: the
 /// first alone calls a joined pair clean whenever its quiet half is written first.
 #[test]
