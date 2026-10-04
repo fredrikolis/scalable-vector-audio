@@ -4,14 +4,12 @@ mod draft;
 mod folds;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 use sva_formula::filter::Shape;
 use sva_formula::{ClosedForm, Codomain, Env, Held, NodeId, Origin, ParamId, Ty, Var, infer};
 use sva_samples::Params;
 
 use crate::arguments::{Arguments, Called, Chosen};
-use crate::cache::Stored;
 use crate::cast::Cast;
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::Instances;
@@ -51,8 +49,6 @@ pub enum Value {
         params: Box<Params>,
         varying: Vec<(&'static str, NodeId)>,
     },
-    /// Samples the store answered in place of the node's own source, which is never typed.
-    Stored(Arc<Stored>),
 }
 
 /// A read's instant: the exact time `k*t + s` written; a closed form of `t` held as a node;
@@ -225,7 +221,7 @@ impl Typing {
                 x, cutoff, q, gain, ..
             } => vec![*x, *cutoff, *q, *gain],
             Value::Solver { varying, .. } => varying.iter().map(|(_, a)| *a).collect(),
-            Value::SelfAt { .. } | Value::Noise(_) | Value::Stored(_) => Vec::new(),
+            Value::SelfAt { .. } | Value::Noise(_) => Vec::new(),
         }
     }
 
@@ -621,39 +617,6 @@ impl Typing {
             }
         }
         Ok(())
-    }
-
-    /// Each node `stored` names stands as the samples memory answered it with: what it
-    /// computes is what it was, so its readers read it as they would have.
-    pub(crate) fn stand(&mut self, stored: &BTreeMap<String, Arc<Stored>>) {
-        let mut stood = Vec::new();
-        for (path, held) in stored {
-            let Some(id) = self.id(path) else {
-                continue;
-            };
-            let grid = self.grid(id);
-            let node = Node {
-                grid,
-                ..standing(path, held)
-            };
-            self.place(id, Some(node));
-            stood.push(id);
-        }
-        self.forget(stood);
-    }
-}
-
-fn standing(path: &str, held: &Arc<Stored>) -> Node {
-    Node {
-        name: path.to_string(),
-        ty: Ty {
-            width: held.width,
-            rate: held.rate,
-            ..Ty::discrete(Held::Sampled, held.codomain)
-        },
-        var: Var::T,
-        value: Value::Stored(Arc::clone(held)),
-        grid: held.grid,
     }
 }
 

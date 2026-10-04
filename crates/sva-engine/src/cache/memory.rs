@@ -472,15 +472,19 @@ impl State {
     }
 
     /// The node `stored` names, as `offered` says, in place of the last one under its key, and,
-    /// `sole`, with no samples to keep, under its slot; whether memory writes it to the disk.
+    /// `sole`, with no samples to keep, under its slot; whether memory writes it to the disk. A
+    /// node the disk holds stays as the disk holds it.
     fn noded(
         &mut self,
         stored: Stored,
         offered: Offered,
         (slot, sole, facts): (Option<Hash>, bool, Facts),
     ) -> bool {
-        let bound = self.disk && writes(&stored, facts);
         let key = stored.key;
+        if self.node(key).is_some_and(|node| node.head().is_some()) {
+            return true;
+        }
+        let bound = self.disk && writes(&stored, facts);
         let read = self.tick();
         let same = self.node(key).is_some_and(|node| match &node.source {
             Source::Offered {

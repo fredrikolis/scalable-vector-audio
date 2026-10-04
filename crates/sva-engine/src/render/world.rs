@@ -75,7 +75,7 @@ pub(super) struct Plan {
     pub(super) named: usize,
     pub(super) visited: usize,
     pub(super) hits: Vec<Lookup>,
-    pub(super) prefixes: BTreeMap<String, Arc<Stored>>,
+    pub(super) stored: BTreeMap<String, Arc<Stored>>,
     pub(super) found: BTreeMap<String, Known>,
 }
 
@@ -235,7 +235,6 @@ impl World {
             root: STREAMED,
             config,
             whole: false,
-            opened: &BTreeSet::new(),
         };
         let reached = match self.reach(&walking, Some(&advance), found) {
             Reach::Asks(keys) => return Walked::Asks(keys),
@@ -247,7 +246,7 @@ impl World {
             named: advance.named.len(),
             visited: reached.visited.len(),
             hits: hits.filter(|l| l.outcome == Outcome::Hit).collect(),
-            prefixes: reached.held,
+            stored: reached.held,
             found: reached.known,
         })
     }
@@ -427,8 +426,6 @@ pub(super) struct Walking<'w> {
     pub(super) config: &'w RenderConfig,
     /// A render's: every node from the root looked up anew, the root answering over its range.
     pub(super) whole: bool,
-    /// Hits short of what their readers ask, walked into as misses.
-    pub(super) opened: &'w BTreeSet<String>,
 }
 
 /// What a walk reached: each node visited, each lookup in walk order, each hit's samples.
@@ -538,8 +535,7 @@ impl Walk<'_> {
                 continue;
             }
             visited.insert(path.clone());
-            let looked = key.filter(|_| !self.walking.opened.contains(&path));
-            let stored = match looked {
+            let stored = match key {
                 None => None,
                 Some(key) => match (self.found)(key) {
                     Answer::Hit(hit) => Some((key, hit)),

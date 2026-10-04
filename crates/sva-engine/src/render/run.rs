@@ -1,12 +1,13 @@
 // Concern: renders a target over memory, from the root down to what it answers | Non-concern: what memory keeps or writes, computing a value | IO: (&Graph, target, Tier) -> Render
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use sva_ast::Graph;
+use sva_formula::NodeId;
 
-use super::table::{self, Table};
+use super::table;
 use super::world::{Reach, Reached, Walking, World};
 use super::{Render, RenderConfig, closed, driving, dropped, drove, ended, planned_over};
 use crate::cache::{Backend, Recording, Stored, Tier};
@@ -44,10 +45,9 @@ pub async fn render_over<B: Backend>(
     render_in(&mut Session::default(), graph, target, config, tier, &Never).await
 }
 
-/// `target` over `tier`, from the root down: every node is named by what it computes, typed
-/// anew only where `session` typed it otherwise, and a node memory answers stands as its
-/// samples, nothing under it planned or computed; with `out` dropped and no reading, a root it
-/// answers ends the render unread. Abandoned, it stops before its next block.
+/// `target` over `tier`, from the root down, typed anew only where `session` typed it
+/// otherwise; a node memory answers stands as its samples. With `out` dropped and no reading,
+/// a root it answers ends the render unread. Abandoned, it stops before its next block.
 pub async fn render_in<B: Backend>(
     session: &mut Session,
     graph: &Graph,
@@ -66,17 +66,10 @@ pub async fn render_in<B: Backend>(
         .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;
     let (config, decided) = ended(typed, id, config);
     let lowered = typed.lowered().to_vec();
-    let mut opened = BTreeSet::new();
-    let mut found = walked(world, (&root, &config, &opened), (tier, round)).await;
-    let stood = |stored: &BTreeMap<String, Arc<Stored>>| {
-        let mut tys = typed.clone();
-        tys.stand(stored);
-        tys
-    };
+    let mut found = walked(world, (&root, &config), (tier, round)).await;
+    recording.found(std::mem::take(&mut found.lookups));
+    let tys = typed.clone();
     if dropped(&config) && found.held.contains_key(&root) {
-        recording.found(std::mem::take(&mut found.lookups));
-        let tys = stood(&found.held);
-        let id = tys.id(&root).ok_or(EngineError::UnknownNode(root))?;
         let schedule = schedule::plan(&tys, id, &config.asks);
         let mut held = Render::shell(tys, id, config, schedule);
         let mut stats = recording.stats();
@@ -84,43 +77,41 @@ pub async fn render_in<B: Backend>(
         held.cache_stats = Some(stats);
         return Ok(held);
     }
+    let hits: BTreeMap<NodeId, Arc<Stored>> = found
+        .held
+        .iter()
+        .filter_map(|(path, stored)| Some((tys.id(path)?, Arc::clone(stored))))
+        .collect();
+    let mut held = planned_over(
+        (graph, target, instances),
+        (tys, id),
+        (config, &mut *stand_in),
+        (decided, &hits),
+    )?;
     let mut retyped = lowered;
-    let mut held = loop {
-        let tys = stood(&found.held);
-        let id = tys
-            .id(&root)
-            .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;
-        let mut held = planned_over(
-            (graph, target, instances),
-            (tys, id),
-            (config.clone(), &mut *stand_in),
-            decided,
-        )?;
-        retyped.append(&mut held.stand_in_typed);
-        let short = match (&mut held.table, held.range) {
-            (Some(table), Some(range)) => {
-                let mut needs = table.needs(range);
-                while !needs.is_empty() {
-                    let fetched = tier.fetch(&needs).await;
-                    for (key, parts) in fetched.handed {
-                        table.took(key, &parts);
-                    }
-                    needs = fetched.left;
-                }
-                short(table, range)
-            }
-            _ => Vec::new(),
-        };
-        if short.is_empty() {
-            break held;
-        }
-        opened.extend(short);
-        found = walked(world, (&root, &config, &opened), (tier, round)).await;
-    };
+    retyped.append(&mut held.stand_in_typed);
     if let (Some(table), Some(range)) = (&mut held.table, held.range) {
+        loop {
+            let mut needs = table.needs(range);
+            while !needs.is_empty() {
+                let fetched = tier.fetch(&needs).await;
+                for (key, parts) in fetched.handed {
+                    table.took(key, &parts);
+                }
+                needs = fetched.left;
+            }
+            let short = table.short((table.root, range, table::Past::Held));
+            if short.is_empty() {
+                break;
+            }
+            for at in short {
+                table.read_on(&held.tys, at)?;
+            }
+            table.settled(table.root, &[], (range.start, false));
+            table.plan(range)?;
+        }
         table.offers(&held.tys, range);
     }
-    recording.found(std::mem::take(&mut found.lookups));
     let walked = recording.stats();
     match driving(&mut held, recording)? {
         Some(mut driver) => {
@@ -157,14 +148,13 @@ pub async fn render_in<B: Backend>(
 /// What memory answers from `root` down, each key it cannot answer looked up this round.
 async fn walked<B: Backend>(
     world: &World,
-    (root, config, opened): (&str, &RenderConfig, &BTreeSet<String>),
+    (root, config): (&str, &RenderConfig),
     (tier, round): (&Tier<B>, u64),
 ) -> Reached {
     let walking = Walking {
         root,
         config,
         whole: true,
-        opened,
     };
     loop {
         let memory = tier.memory();
@@ -177,17 +167,4 @@ async fn walked<B: Backend>(
             }
         }
     }
-}
-
-/// Each node memory answered whose samples miss some its readers ask over `range`.
-fn short(table: &Table, range: sva_samples::Extent) -> Vec<String> {
-    let needs = table.demand(range);
-    table
-        .values
-        .iter()
-        .filter(|(at, value)| {
-            matches!(value.kind, table::Kind::Resident { .. }) && !needs[*at].compute.is_empty()
-        })
-        .map(|(_, value)| value.name.clone())
-        .collect()
 }

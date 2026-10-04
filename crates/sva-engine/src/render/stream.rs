@@ -10,8 +10,8 @@ use sva_samples::{Buffer, Extent};
 
 use super::drive::{Block, Driver};
 use super::end::{Ending, Fading, Heard, under};
-use super::table::Table;
 use super::table::support::Supports;
+use super::table::{Past, Table};
 use super::terms::{Handle, NOTES, Terms, cut, placed};
 use super::world::{Plan, Root, STREAMED, Walked, Wanted, World};
 use super::{Ends, RenderConfig, range_over};
@@ -258,7 +258,19 @@ impl Stream {
                 return Err(e);
             }
         };
-        let window = ahead(self.driver.at.max(range.start), self.config.render.rate);
+        let from = self.driver.at.max(range.start);
+        let future = Extent::new(from, self.last(range.end).max(from));
+        let table = &mut self.driver.table;
+        let short = table.short((root, future, Past::Stored));
+        let opened = short
+            .into_iter()
+            .try_for_each(|at| table.read_on(&self.world.typing, at));
+        if let Err(e) = opened {
+            let freed = self.world.abort();
+            self.driver.table.abort(&freed);
+            return Err(e);
+        }
+        let window = ahead(from, self.config.render.rate);
         let wants = self.driver.table.needs_made(root, window);
         let wants: Vec<(Hash, Extent)> = wants
             .into_iter()
@@ -283,13 +295,13 @@ impl Stream {
         let id = typing
             .id(STREAMED)
             .ok_or_else(|| EngineError::UnknownNode(STREAMED.to_string()))?;
-        let prefixes: BTreeMap<NodeId, Arc<Stored>> = plan
-            .prefixes
+        let hits: BTreeMap<NodeId, Arc<Stored>> = plan
+            .stored
             .iter()
             .filter_map(|(path, stored)| Some((typing.id(path)?, Arc::clone(stored))))
             .collect();
         let table = &mut self.driver.table;
-        let root = table.grow(typing, id, &prefixes)?;
+        let root = table.grow(typing, id, &hits)?;
         let plays = table.values[root].width;
         let mut render = self.config.render.clone();
         match self.width {
@@ -419,6 +431,7 @@ impl Stream {
                 let block = self.config.block;
                 while self.driver.at < at {
                     let step = block.min((at - self.driver.at) as usize);
+                    self.reads_on(step)?;
                     if !self.driver.pulled(step)? {
                         return Ok(None);
                     }
@@ -426,9 +439,35 @@ impl Stream {
                 }
             }
         }
+        self.reads_on(n)?;
         let block = self.driver.read(n)?;
         self.prune();
         Ok(block.map(|b| b.widened(self.width)))
+    }
+
+    /// Each node memory answered that the next `n` samples ask past what it holds reads on from
+    /// its own value, made as the change that made it would have: live, a stateful one already
+    /// sounding then starts silent.
+    fn reads_on(&mut self, n: usize) -> Result<(), EngineError> {
+        let at = self.driver.at;
+        let range = Extent::new(self.driver.start, self.driver.last());
+        let window = Extent::new(at, at.saturating_add(n as i64).min(range.end).max(at));
+        let table = &mut self.driver.table;
+        if window.is_empty() {
+            return Ok(());
+        }
+        for short in table.short((table.root, window, Past::Held)) {
+            table.read_on(&self.world.typing, short)?;
+            let made = table.made().to_vec();
+            let landed = table.landed(short);
+            let carried = table.settled(table.root, &[], (landed, self.live));
+            for silent in carried.silent {
+                self.dropped.push(table.values[silent].name.clone());
+            }
+            table.priced(range, &made);
+            table.offers(&self.world.typing, range);
+        }
+        Ok(())
     }
 
     /// An edited node with no state, or one a read skips past, starts silent, never computing

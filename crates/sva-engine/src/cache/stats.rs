@@ -1,6 +1,9 @@
 // Concern: what one render asked of its values and memory, how far its output got, and what each lookup came to | Non-concern: what memory evicts (memory.rs) | IO: (loads, stores) -> CacheStats
 
+use std::sync::Arc;
+
 use sva_formula::Hash;
+use sva_samples::{Buffer, Extent};
 
 use super::memory::{Counters, Keep, Kept, Memory};
 use super::{Entry, Expected, PayloadKind};
@@ -173,6 +176,11 @@ impl Recording {
             outcome,
             store: None,
         })
+    }
+
+    /// What memory holds of a node over `over`, read unnoted.
+    pub(crate) fn resident(&self, key: Hash, over: Extent) -> Vec<Arc<Buffer>> {
+        self.memory.resident(key, over).0
     }
 
     /// Read unnoted; its value notes one lookup.

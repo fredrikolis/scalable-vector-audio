@@ -109,7 +109,6 @@ impl Build<'_> {
             Value::Read { source, at, .. } => self.read(source, at),
             Value::SelfAt { at } => self.own(at),
             Value::Noise(seed) => Ok(NodeRenderer::Noise(seed)),
-            Value::Stored(_) => Ok(self.slot(Source::Node(id), Map::shift(0))),
             Value::Solver { .. } if id != self.owner => {
                 Ok(self.slot(Source::Node(id), Map::shift(0)))
             }

@@ -251,7 +251,7 @@ pub(crate) fn holds_self(typing: &Typing, id: NodeId, seen: &mut BTreeSet<NodeId
             .into_iter()
             .any(|operand| holds_self(typing, *operand, seen)),
         Value::Solver { varying, .. } => varying.iter().any(|(_, a)| holds_self(typing, *a, seen)),
-        Value::ClosedForm(_) | Value::Noise(_) | Value::Stored(_) => false,
+        Value::ClosedForm(_) | Value::Noise(_) => false,
     }
 }
 
@@ -276,7 +276,7 @@ pub(crate) fn materialized_operands(typing: &Typing, id: NodeId) -> Vec<NodeId> 
         out
     };
     match typing.value(id) {
-        Value::ClosedForm(_) | Value::Noise(_) | Value::Stored(_) => Vec::new(),
+        Value::ClosedForm(_) | Value::Noise(_) => Vec::new(),
         Value::SelfAt { at, .. } => sampled(at.moving()),
         Value::Solver { varying, .. } => sampled(varying.iter().map(|(_, a)| *a).collect()),
         Value::Cast(Cast::Sample, source) => vec![*source],
@@ -346,7 +346,7 @@ fn reads_under(typing: &Typing, id: NodeId, seen: &mut BTreeSet<NodeId>, out: &m
                 read_through(typing, *arg, seen, out);
             }
         }
-        Value::SelfAt { .. } | Value::Noise(_) | Value::Stored(_) => {}
+        Value::SelfAt { .. } | Value::Noise(_) => {}
     }
 }
 

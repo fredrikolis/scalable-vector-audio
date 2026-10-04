@@ -36,6 +36,8 @@ pub(crate) struct Place {
     pub(crate) offer: Option<Offer>,
     /// Whether memory was told of that node.
     pub(crate) told: bool,
+    /// The sample the change that made it landed at.
+    pub(crate) landed: i64,
 }
 
 /// The node a value's samples answer, as the table named it.
@@ -77,12 +79,23 @@ impl Place {
 }
 
 /// What memory holds of `value`, laid in beside what it holds itself; `false` where memory
-/// answered nothing.
-pub(crate) fn load(value: &mut Value, place: &mut Place, recording: &Recording) -> bool {
-    place.looked = true;
-    if matches!(value.kind, Kind::Resident { .. }) {
-        return false;
+/// answered nothing. A node memory answered takes what `hold` asks that it lacks, each time.
+pub(crate) fn load(
+    value: &mut Value,
+    place: &mut Place,
+    hold: &Segments,
+    recording: &Recording,
+) -> bool {
+    if let Kind::Resident(stored) = &value.kind {
+        let (stored_over, lacks) = (value.covers(), hold.minus(&value.holding()));
+        let lacks = stored_over.minus(&stored_over.minus(&lacks));
+        if lacks.is_empty() {
+            return false;
+        }
+        let parts = recording.resident(stored.key, lacks.hull());
+        return laid(value, &parts);
     }
+    place.looked = true;
     let kind = Place::kind(value);
     let (rate, width) = (value.grid.rate, value.width);
     if kind == PayloadKind::Run {
@@ -298,6 +311,23 @@ fn samples(value: &mut Value, place: &Place, computed: &[Extent]) -> Vec<(Hash, 
     vec![(place.key, payload)]
 }
 
+/// `parts` laid into a value standing on memory's samples wherever it lacks them, shared
+/// wherever one falls whole within; whether any was.
+fn laid(value: &mut Value, parts: &[Arc<Buffer>]) -> bool {
+    let mut any = false;
+    for part in parts {
+        let lacks = value.covers().minus(&value.holding());
+        for e in lacks.intersect(part.extent()).iter() {
+            any = true;
+            match e == part.extent() {
+                true => value.hold_shared(Arc::clone(part)),
+                false => value.hold(part.over(e, part.extent())),
+            }
+        }
+    }
+    any
+}
+
 fn over(buffer: &Arc<Buffer>, e: Extent) -> Option<Arc<Buffer>> {
     let held = buffer.extent();
     if e.is_empty() || e.start < held.start || held.end < e.end {
@@ -396,6 +426,10 @@ impl Table {
         let under = Under::of(self);
         let mut named: BTreeMap<usize, Stored> = BTreeMap::new();
         for (id, at) in self.nodes.clone() {
+            let at = match (&self.values[at].kind, &self.values[at].reads[..]) {
+                (Kind::Resident(_), [live]) => *live,
+                _ => at,
+            };
             if named.contains_key(&at) {
                 continue;
             }
@@ -521,15 +555,7 @@ impl Table {
             if stored.key != key {
                 continue;
             }
-            for part in parts {
-                let lacks = value.covers().minus(&value.holding());
-                for e in lacks.intersect(part.extent()).iter() {
-                    match e == part.extent() {
-                        true => value.hold_shared(Arc::clone(part)),
-                        false => value.hold(part.over(e, part.extent())),
-                    }
-                }
-            }
+            laid(value, parts);
         }
     }
 }

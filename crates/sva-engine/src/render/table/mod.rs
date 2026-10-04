@@ -55,6 +55,7 @@ pub(crate) struct Table {
     silenced: Vec<usize>,
     /// What a build made and named, until settled or let go.
     draft: Draft,
+    slotted: BTreeMap<NodeId, Hash>,
 }
 
 #[derive(Default)]
@@ -64,7 +65,7 @@ struct Draft {
 }
 
 /// How much finer than its own step each value is, whether a node a reader may take as its
-/// samples alone is a value of its own, and the samples the store holds of each.
+/// samples alone is a value of its own, and the nodes memory answers.
 type Bounds<'b> = (i128, bool, &'b BTreeMap<NodeId, Arc<Stored>>);
 
 impl Table {
@@ -81,6 +82,7 @@ impl Table {
             rooted: false,
             silenced: Vec::new(),
             draft: Draft::default(),
+            slotted: BTreeMap::new(),
         }
     }
 
@@ -102,11 +104,11 @@ impl Table {
         tys: &Typing,
         (root, wanted): (NodeId, &[NodeId]),
         profile: &Profile,
-        found: Memo,
+        (found, hits): (Memo, &BTreeMap<NodeId, Arc<Stored>>),
     ) -> Result<Table, EngineError> {
         let mut table = Table::new(profile);
         table.supports = found;
-        table.built(tys, (root, wanted), (1, true, &BTreeMap::new()), false)
+        table.built(tys, (root, wanted), (1, true, hits), false)
     }
 
     /// Every read its own value, as if each were written out where it is read.
@@ -142,31 +144,71 @@ impl Table {
     ) -> Result<Table, EngineError> {
         let mut held = Vec::with_capacity(wanted.len() + 1);
         for id in std::iter::once(&root).chain(wanted) {
-            held.push(self.grown(tys, *id, (bounds, apart))?);
+            held.push(self.grown(tys, Start::Node(*id), (bounds, apart))?);
         }
         self.draft = Draft::default();
         self.held_as(held[0], held[1..].to_vec());
         Ok(self)
     }
 
-    /// The value for `id` and each it reads the table lacks, built as `bounded` builds them; a
-    /// node `prefixes` names stands on the store's samples, its live value continuing past.
+    /// The value for `id` and each it reads the table lacks, built as `bounded` builds them,
+    /// each node in `hits` standing on the samples memory answered it with.
     pub(crate) fn grow(
         &mut self,
         tys: &Typing,
         id: NodeId,
-        prefixes: &BTreeMap<NodeId, Arc<Stored>>,
+        hits: &BTreeMap<NodeId, Arc<Stored>>,
     ) -> Result<usize, EngineError> {
         self.built = 0;
-        let bounds = (1, true, prefixes);
-        self.grown(tys, id, (bounds, false))
+        let bounds = (1, true, hits);
+        self.grown(tys, Start::Node(id), (bounds, false))
+    }
+
+    /// Each value standing on memory's samples, reading nothing yet, that `window` of `root`
+    /// asks `past` them.
+    pub(crate) fn short(&self, (root, window, past): (usize, Extent, Past)) -> Vec<usize> {
+        let lazy =
+            |value: &Value| matches!(value.kind, Kind::Resident(_)) && value.reads.is_empty();
+        if !self.values.iter().any(|(_, value)| lazy(value)) {
+            return Vec::new();
+        }
+        let mut asked = self.asked(window);
+        asked[0].0 = root;
+        let needs = demand::demand(&self.values, &asked);
+        let past = |at: usize, value: &Value| match past {
+            Past::Held => !needs[at].compute.is_empty(),
+            Past::Stored => {
+                self.draft.made.contains(&at) && !needs[at].hold.minus(&value.covers()).is_empty()
+            }
+        };
+        let values = self.values.iter();
+        values
+            .filter(|(at, value)| lazy(value) && past(*at, value))
+            .map(|(at, _)| at)
+            .collect()
+    }
+
+    pub(crate) fn read_on(&mut self, tys: &Typing, at: usize) -> Result<(), EngineError> {
+        let id = self.values[at].node.expect("a node memory answered");
+        let none = (1, true, &BTreeMap::new());
+        let live = self.grown(tys, Start::Own(id), (none, false))?;
+        self.values.hold(live);
+        self.values[at].reads = vec![live];
+        self.values.behind(at);
+        let unread = leaf_reads(&self.values, &self.values[at]);
+        self.values.place_mut(at).unread = unread;
+        Ok(())
+    }
+
+    pub(crate) fn landed(&self, at: usize) -> i64 {
+        self.values.place(at).landed
     }
 
     fn grown(
         &mut self,
         tys: &Typing,
-        id: NodeId,
-        ((fine, alone, prefixes), apart): (Bounds<'_>, bool),
+        start: Start,
+        ((fine, alone, hits), apart): (Bounds<'_>, bool),
     ) -> Result<usize, EngineError> {
         let memo = std::mem::take(&mut self.supports);
         let profile = self.profile;
@@ -177,13 +219,13 @@ impl Table {
             profile: &profile,
             fine,
             alone,
-            prefixes,
+            hits,
             apart,
             reading: Vec::new(),
             open: Vec::new(),
             table: self,
         };
-        let built = building.node(id);
+        let built = building.node(start);
         let more = supports.into_memo();
         self.supports = memo;
         self.supports.extend(more);
@@ -205,10 +247,11 @@ impl Table {
         }
     }
 
-    /// Each value a volatile parameter reaches keeps one entry, its last, under its slot.
-    pub(crate) fn slots(&mut self, slot: impl Fn(NodeId) -> Option<Hash>) {
+    /// Each value a volatile parameter reaches, built now or later, keeps its last entry alone.
+    pub(crate) fn slots(&mut self, slots: &BTreeMap<NodeId, Hash>) {
+        self.slotted.clone_from(slots);
         for at in self.values.ordered().collect::<Vec<_>>() {
-            let held = self.values[at].node.and_then(&slot);
+            let held = self.values[at].node.and_then(|id| slots.get(&id).copied());
             self.values.place_mut(at).slot = held;
         }
     }
@@ -383,10 +426,11 @@ impl Table {
             let mut loaded = false;
             for at in order.iter().copied() {
                 let (value, place) = self.values.placed(at);
-                if needs[at].hold.is_empty() || place.looked || !value.pure {
+                let stored = matches!(value.kind, Kind::Resident(_));
+                if needs[at].hold.is_empty() || (place.looked && !stored) || !value.pure {
                     continue;
                 }
-                loaded |= store::load(value, place, recording);
+                loaded |= store::load(value, place, &needs[at].hold, recording);
             }
             if !loaded {
                 break;
@@ -481,8 +525,7 @@ impl Table {
             let need = std::mem::take(&mut needs[at]);
             let whole = wholes.contains(&at) && !(output && at == root);
             let value = &self.values[at];
-            let stored = matches!(value.kind, Kind::Resident { .. }) && value.reads.is_empty();
-            if value.alias().is_some() || whole || stored {
+            if value.alias().is_some() || whole {
                 continue;
             }
             let mut kept = need.hold;
@@ -562,7 +605,8 @@ impl Table {
 
     /// A value made, holding what it reads.
     fn make(&mut self, value: Value) -> usize {
-        let place = place(&self.values, &value, &self.profile);
+        let mut place = place(&self.values, &value, &self.profile);
+        place.slot = value.node.and_then(|id| self.slotted.get(&id).copied());
         let at = self.values.push(value, place);
         if self.planned.len() < self.values.span() {
             self.planned.resize(self.values.span(), 0);
@@ -636,11 +680,15 @@ impl Table {
         self.values.hold(root);
         (self.root, self.rooted) = (root, true);
         let going = self.unheld(dropped);
-        let made: Vec<usize> = draft
+        let mut made: Vec<usize> = draft
             .made
             .into_iter()
             .filter(|at| self.values.held(*at))
             .collect();
+        made.sort_by_key(|at| self.values.seq(*at));
+        for at in &made {
+            self.values.place_mut(*at).landed = now;
+        }
         let carried = edit::carried(&mut self.values, (&made, &going), (old, root), (now, live));
         self.silenced.extend(carried.silent.iter().copied());
         self.freed(going);
@@ -692,7 +740,7 @@ struct Building<'a> {
     profile: &'a Profile,
     fine: i128,
     alone: bool,
-    prefixes: &'a BTreeMap<NodeId, Arc<Stored>>,
+    hits: &'a BTreeMap<NodeId, Arc<Stored>>,
     /// Every read its own value rather than one per identity.
     apart: bool,
     /// The nodes whose reads are being built, apart.
@@ -723,6 +771,21 @@ struct Open {
     reads: usize,
 }
 
+/// What a value standing on memory's samples is opened past: what it holds now, or, for one
+/// the latest build made, all memory holds of it.
+#[derive(Clone, Copy)]
+pub(crate) enum Past {
+    Held,
+    Stored,
+}
+
+/// Where a build starts: a node, or a node's own value, never the samples memory answered.
+#[derive(Clone, Copy)]
+enum Start {
+    Node(NodeId),
+    Own(NodeId),
+}
+
 /// What completes a value once its reads are resolved.
 enum Then {
     Done,
@@ -732,9 +795,15 @@ enum Then {
 }
 
 impl Building<'_> {
-    /// `id`'s value, each value it reads built before it.
-    fn node(&mut self, id: NodeId) -> Result<usize, EngineError> {
-        let mut steps = vec![Step::Node(id)];
+    /// `start`'s value, each value it reads built before it.
+    fn node(&mut self, start: Start) -> Result<usize, EngineError> {
+        let mut steps = match start {
+            Start::Node(id) => vec![Step::Node(id)],
+            Start::Own(id) => {
+                let (key, grid, name) = self.own(id)?;
+                vec![Step::Value(key, Source::Node(id), grid, name)]
+            }
+        };
         let mut resolved: Vec<usize> = Vec::new();
         while let Some(next) = steps.pop() {
             match next {
@@ -744,12 +813,8 @@ impl Building<'_> {
                     self.table.name(id, at);
                 }
                 Step::Own(id) => {
-                    let mut at = resolved.pop().expect("the node's value");
-                    if let Some(stored) = self.prefixes.get(&id) {
-                        at = self.prefix(at, stored);
-                    }
+                    let at = *resolved.last().expect("the node's value");
                     self.table.name(id, at);
-                    resolved.push(at);
                 }
                 Step::Source(source, grid, name) => {
                     steps.extend(self.source(source, grid, name)?);
@@ -800,16 +865,21 @@ impl Building<'_> {
             resolved.push(*at);
             return Ok(());
         }
+        let grid = self.grid(id);
+        let hit = self.hits.get(&id).filter(|stored| {
+            stored.grid == grid && usize::from(stored.width) == width(self.tys, id)
+        });
+        if let Some(stored) = hit {
+            let at = self.resident(id, self.own(id)?, stored);
+            self.table.name(id, at);
+            resolved.push(at);
+            return Ok(());
+        }
         if let Some(source) = refs::passes(self.tys, id) {
             steps.extend([Step::Pass(id), Step::Node(source)]);
             return Ok(());
         }
-        let grid = self.grid(id);
-        let key = Key {
-            identity: refs::identity(self.tys, id)?,
-            step: step(grid),
-        };
-        let name = self.tys.name(id).to_string();
+        let (key, grid, name) = self.own(id)?;
         steps.extend([
             Step::Own(id),
             Step::Value(key, Source::Node(id), grid, name),
@@ -817,31 +887,41 @@ impl Building<'_> {
         Ok(())
     }
 
-    /// The stored samples of `live`'s node, reading `live` for all they miss; none where they
-    /// were written on another grid or width.
-    fn prefix(&mut self, live: usize, stored: &Arc<Stored>) -> usize {
-        let of = &self.table.values[live];
-        if stored.grid != of.grid || usize::from(stored.width) != of.width {
-            return live;
-        }
+    fn own(&self, id: NodeId) -> Result<(Key, Grid, String), EngineError> {
+        let grid = self.grid(id);
         let key = Key {
-            identity: crate::cache::mixed(of.key.identity, &[PREFIX]),
-            step: of.key.step,
+            identity: refs::identity(self.tys, id)?,
+            step: step(grid),
+        };
+        Ok((key, grid, self.tys.name(id).to_string()))
+    }
+
+    /// The samples memory answered node `id` with, reading nothing until a reader asks past
+    /// them; its own value's key set apart.
+    fn resident(
+        &mut self,
+        id: NodeId,
+        (key, grid, name): (Key, Grid, String),
+        stored: &Arc<Stored>,
+    ) -> usize {
+        let key = Key {
+            identity: crate::cache::mixed(key.identity, &[PREFIX]),
+            step: key.step,
         };
         if let Some(at) = self.table.values.of(&key) {
             return at;
         }
-        let mut value = Value {
+        let value = Value {
             key,
-            node: of.node,
-            name: of.name.clone(),
-            grid: of.grid,
-            width: of.width,
-            whole: of.support(),
+            node: Some(id),
+            name,
+            grid,
+            width: usize::from(stored.width),
+            whole: self.support(id),
             silent: None,
             period: None,
             kind: Kind::Resident(Arc::clone(stored)),
-            reads: vec![live],
+            reads: Vec::new(),
             held: Held::Segments(Vec::new()),
             evaluated: Vec::new(),
             label: Some(stored.label.clone()),
@@ -849,7 +929,6 @@ impl Building<'_> {
             moved: stored.moved,
             pure: true,
         };
-        value.evaluated = value.covers().iter().collect();
         self.table.make(value)
     }
 
@@ -955,12 +1034,6 @@ impl Building<'_> {
         };
         let id = *id;
         match (tys.ty(id).held, tys.value(id)) {
-            (_, Typed::Stored(held)) => {
-                value.moved = held.moved;
-                value.label = Some(held.label.clone());
-                value.kind = Kind::Resident(Arc::clone(held));
-                none(value)
-            }
             (Representation::Frames, Typed::Cast(Cast::Stft { window, hop }, of)) => {
                 value.kind = Kind::Frames {
                     window: *window,
@@ -1285,6 +1358,7 @@ fn place(values: &Values, value: &Value, profile: &Profile) -> store::Place {
         noted: None,
         offer: None,
         told: false,
+        landed: i64::MIN,
     }
 }
 

@@ -292,7 +292,7 @@ fn what_a_store_writes_changes_only_with_its_format() {
 }
 
 #[test]
-fn a_truncated_entry_is_a_miss_and_is_written_again() {
+fn a_truncated_entry_is_computed_and_written_again() {
     let memory = Memory::default();
     let graph = two_voices("truncated", 330);
     let store = opened(&memory, u64::MAX);
@@ -309,11 +309,10 @@ fn a_truncated_entry_is_a_miss_and_is_written_again() {
     memory.set(&name, whole[..whole.len() / 2].to_vec());
     let store = opened(&memory, u64::MAX);
     let warm = rendered(&graph, &store);
-    let missed = stats(&warm).lookups.iter().find(|l| l.key == root);
-    assert_eq!(
-        missed.and_then(|l| l.store),
-        Some(false),
-        "the root was a miss"
+    assert!(
+        stats(&warm).planned.iter().any(|n| n == "master"),
+        "the root computed what the entry could not answer: {:?}",
+        stats(&warm)
     );
     assert_eq!(samples(&cold), samples(&warm));
     now(store.persist()).expect("persisted");
@@ -988,6 +987,59 @@ fn a_node_a_stream_computed_is_answered_by_another_store_after_its_persist() {
     let found = stats(&warm);
     assert!(found.tier.disk_reads > 0, "{found:?}");
     assert_eq!(found.planned, Vec::<String>::new(), "{found:?}");
+}
+
+/// A note memory holds, read again by a later term after the stream let its first samples go,
+/// is read again off memory: the stream computes none of it, and plays a cold stream's bits.
+#[test]
+fn a_note_memory_holds_is_read_again_and_never_computed_by_a_later_term() {
+    let graph = graph_of(
+        "read-again",
+        &[
+            (
+                "blip",
+                "crop(lowpass(sample(sin(2*pi*f0*t)), cutoff=2000, q=0.7), 0s, 0.1s)\n",
+            ),
+            ("warm", "@blip(t, f0=200)\n"),
+        ],
+    );
+    let memory = Memory::default();
+    let player = opened(&memory, u64::MAX);
+    now(render_over(
+        &graph,
+        "warm",
+        RenderConfig::seconds(RATE, 0.1),
+        &player,
+    ))
+    .expect("warmed");
+    let mut heard = Vec::new();
+    for store in [None, Some(&player)] {
+        let stream = match store {
+            Some(store) => notes(&graph, 4_000, store),
+            None => notes(&graph, 4_000, &Tier::default()),
+        };
+        let mut played = Vec::new();
+        for onset in [0, 1_100] {
+            let note = term(&format!("@blip(t - {onset}sp, f0=200)"));
+            match store {
+                Some(store) => now(added(&stream, &graph, &note, store)),
+                None => now(added(&stream, &graph, &note, &Tier::default())),
+            }
+            .expect("added");
+            for _ in 0..5 {
+                let block = next(&mut stream.borrow_mut()).expect("a block");
+                played.extend(block.expect("a block").plane(0).iter().map(|v| v.to_bits()));
+            }
+        }
+        heard.push((played, stream.borrow().evaluated("blip(f0=200)")));
+    }
+    assert!(heard[0].0.iter().any(|b| *b != 0), "silence tests nothing");
+    assert_eq!(heard[1].0, heard[0].0);
+    assert_eq!(
+        heard[1].1,
+        Vec::<sva_samples::Extent>::new(),
+        "memory answers every sample"
+    );
 }
 
 /// A string held until `release`, never released here.

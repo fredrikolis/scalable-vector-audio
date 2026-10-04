@@ -1,5 +1,5 @@
 // Concern: a table's values, each in a slot while held, with its memory place, holds and where its moves end | Non-concern: what a value holds (value.rs), when one goes (mod.rs) | IO: (Value) -> slot
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::{Index, IndexMut};
 
 use super::store::Place;
@@ -104,6 +104,28 @@ impl Values {
             }
         }
         feet
+    }
+
+    /// `at` and each value reading it, in their order, after every value made so far.
+    pub(crate) fn behind(&mut self, at: usize) {
+        let from = self.slot(at).seq;
+        let later: Vec<usize> = self.order.range(from..).map(|(_, a)| *a).collect();
+        let mut moved = HashSet::new();
+        for a in later {
+            if a != at && !self[a].reads.iter().any(|r| moved.contains(r)) {
+                continue;
+            }
+            moved.insert(a);
+            let slot = self.slots[a].as_mut().expect("a held value");
+            self.order.remove(&slot.seq);
+            slot.seq = self.next;
+            self.order.insert(self.next, a);
+            self.next += 1;
+        }
+    }
+
+    pub(crate) fn seq(&self, at: usize) -> u64 {
+        self.slot(at).seq
     }
 
     pub(crate) fn ordered(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {

@@ -22,8 +22,8 @@ pub(super) struct Volatile {
 }
 
 impl Volatile {
-    pub(super) fn slot(&self, id: NodeId) -> Option<Hash> {
-        self.slots.get(&id).copied()
+    pub(super) fn slots(&self) -> &BTreeMap<NodeId, Hash> {
+        &self.slots
     }
 }
 

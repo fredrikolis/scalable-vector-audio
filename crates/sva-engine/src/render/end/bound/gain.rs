@@ -68,9 +68,7 @@ fn loops(tys: &Typing, id: NodeId, held: &mut BTreeMap<NodeId, bool>) -> bool {
 fn program(tys: &Typing, id: NodeId) -> Vec<NodeId> {
     match tys.value(id) {
         Value::Cast(Cast::Sample, _) | Value::Read { .. } => Vec::new(),
-        Value::ClosedForm(_) | Value::Noise(_) | Value::Stored(_) | Value::SelfAt { .. } => {
-            Vec::new()
-        }
+        Value::ClosedForm(_) | Value::Noise(_) | Value::SelfAt { .. } => Vec::new(),
         _ => tys.operands(id),
     }
 }

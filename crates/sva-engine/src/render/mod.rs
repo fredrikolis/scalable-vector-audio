@@ -13,13 +13,14 @@ mod volatile;
 mod world;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use sva_ast::Graph;
 use sva_formula::{NodeId, SpectralSum};
 use sva_samples::{Buffer, Extent, FilterTrace, Frames, Label, PSYCHOACOUSTIC_V1, Profile};
 
 use crate::bindings::Binding;
-use crate::cache::{CacheStats, Memory, Recording, Tier, now};
+use crate::cache::{CacheStats, Memory, Recording, Stored, Tier, now};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate;
 use crate::query::Ask;
@@ -273,14 +274,15 @@ fn planned(
         root,
     } = prepared;
     let config = (config, &mut None);
-    planned_over((graph, target, &instances), (tys, root), config, None)
+    let none = (None, &BTreeMap::new());
+    planned_over((graph, target, &instances), (tys, root), config, none)
 }
 
 fn planned_over(
     (graph, target, instances): (&Graph, &str, &instantiate::Instances),
     (tys, root): (Typing, NodeId),
     (config, stand_in): (RenderConfig, &mut Option<world::World>),
-    decided: Option<end::End>,
+    (decided, hits): (Option<end::End>, &BTreeMap<NodeId, Arc<Stored>>),
 ) -> Result<Render, EngineError> {
     let schedule = schedule::plan(&tys, root, &config.asks);
     let bindings = tys
@@ -289,10 +291,10 @@ fn planned_over(
         .collect();
     let mut held = Render::shell(tys, root, config, schedule);
     held.bindings = bindings;
-    ranged(&mut held, decided)?;
+    ranged(&mut held, (decided, hits))?;
     let volatile = volatile::mark((graph, instances), &held, (target, stand_in))?;
     if let Some(table) = &mut held.table {
-        table.slots(|id| volatile.slot(id));
+        table.slots(volatile.slots());
     }
     held.unslotted = volatile.unslotted.clone();
     held.stand_in_typed = volatile.typed;
@@ -347,7 +349,10 @@ pub(crate) fn ended(
 
 /// A reading of samples or of their cost needs the range; lines and structure never do.
 /// `decided`: where an open render's root ends, found before it was planned.
-fn ranged(held: &mut Render, decided: Option<end::End>) -> Result<(), EngineError> {
+fn ranged(
+    held: &mut Render,
+    (decided, hits): (Option<end::End>, &BTreeMap<NodeId, Arc<Stored>>),
+) -> Result<(), EngineError> {
     let counts = counts(&held.config.asks);
     let envelope = held.config.asks.iter().any(|ask| {
         matches!(
@@ -383,7 +388,7 @@ fn ranged(held: &mut Render, decided: Option<end::End>) -> Result<(), EngineErro
     let found = supports.into_memo();
     let wanted: Vec<NodeId> = held.schedule.wanted.clone();
     let root = (held.root, wanted.as_slice());
-    let mut table = Table::bounded(&held.tys, root, &held.config.profile, found)?;
+    let mut table = Table::bounded(&held.tys, root, &held.config.profile, (found, hits))?;
     table.plan(held.range.expect("a range was decided"))?;
     held.table = Some(table);
     Ok(())

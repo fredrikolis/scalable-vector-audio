@@ -129,7 +129,6 @@ fn shape(typing: &Typing, node: NodeId, open: &mut Vec<NodeId>) -> Result<Hash, 
             sink.text("noise");
             sink.word(*seed);
         }
-        Value::Stored(held) => return Ok(held.identity),
         Value::Solver { params, varying } => {
             let mut read = Vec::with_capacity(varying.len());
             for (key, arg) in varying {
