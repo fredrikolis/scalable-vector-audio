@@ -4,10 +4,10 @@ use crate::affine::{Axis, Coeff};
 use crate::closed_form::Unary;
 use crate::table::class::{AtomClass, Factors, Growth, dual_class};
 
-/// The atom classes `normalize` would reach, abstracted from their parameters.
+/// The atom classes `normalize` would reach, abstracted from their parameters, each held once.
 #[derive(Clone, Debug)]
 pub struct Alg {
-    pub classes: Vec<AtomClass>,
+    classes: Vec<AtomClass>,
     pub constant: bool,
     pub escaped: bool,
 }
@@ -42,8 +42,12 @@ impl Alg {
     }
 
     pub fn union(self, other: Alg) -> Alg {
+        let mut classes = self.classes;
+        for c in other.classes {
+            insert(&mut classes, c);
+        }
         Alg {
-            classes: [self.classes, other.classes].concat(),
+            classes,
             constant: self.constant && other.constant,
             escaped: self.escaped || other.escaped,
         }
@@ -54,20 +58,23 @@ impl Alg {
         let mut classes = Vec::new();
         for a in &self.classes {
             for b in &other.classes {
-                classes.push(AtomClass {
-                    factors: Factors {
-                        poly: a.factors.poly || b.factors.poly,
-                        exp: a.factors.exp || b.factors.exp,
-                        gauss: a.factors.gauss || b.factors.gauss,
-                        ind: a.factors.ind || b.factors.ind,
-                        pole: a.factors.pole || b.factors.pole,
-                        pv: a.factors.pv || b.factors.pv,
-                        delta: a.factors.delta || b.factors.delta,
+                insert(
+                    &mut classes,
+                    AtomClass {
+                        factors: Factors {
+                            poly: a.factors.poly || b.factors.poly,
+                            exp: a.factors.exp || b.factors.exp,
+                            gauss: a.factors.gauss || b.factors.gauss,
+                            ind: a.factors.ind || b.factors.ind,
+                            pole: a.factors.pole || b.factors.pole,
+                            pv: a.factors.pv || b.factors.pv,
+                            delta: a.factors.delta || b.factors.delta,
+                        },
+                        growth: a.growth.join(b.growth),
+                        bounded: (a.bounded.0 || b.bounded.0, a.bounded.1 || b.bounded.1),
+                        pole_order: a.pole_order + b.pole_order,
                     },
-                    growth: a.growth.join(b.growth),
-                    bounded: (a.bounded.0 || b.bounded.0, a.bounded.1 || b.bounded.1),
-                    pole_order: a.pole_order + b.pole_order,
-                });
+                );
             }
         }
         Alg {
@@ -77,12 +84,28 @@ impl Alg {
         }
     }
 
-    pub fn bound(mut self, left: bool, right: bool) -> Alg {
-        for c in &mut self.classes {
-            c.factors.ind = true;
-            c.bounded = (c.bounded.0 || left, c.bounded.1 || right);
+    pub fn bound(self, left: bool, right: bool) -> Alg {
+        let mut classes = Vec::new();
+        for c in self.classes {
+            insert(
+                &mut classes,
+                AtomClass {
+                    factors: Factors {
+                        ind: true,
+                        ..c.factors
+                    },
+                    bounded: (c.bounded.0 || left, c.bounded.1 || right),
+                    ..c
+                },
+            );
         }
-        self
+        Alg { classes, ..self }
+    }
+}
+
+fn insert(classes: &mut Vec<AtomClass>, c: AtomClass) {
+    if !classes.contains(&c) {
+        classes.push(c);
     }
 }
 

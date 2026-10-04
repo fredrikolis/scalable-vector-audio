@@ -242,23 +242,25 @@ fn power(base: &Part, n: i32, var: Var, env: &dyn Env) -> Result<Info, Refusal> 
     }
     let alg = match n {
         0 => Alg::scalar(),
-        n if n < 0 && inner.alg.constant => Alg {
-            escaped: inner.alg.escaped,
-            ..Alg::scalar()
-        },
+        n if n < 0 && inner.alg.constant => {
+            let mut scalar = Alg::scalar();
+            scalar.escaped = inner.alg.escaped;
+            scalar
+        }
         n if n > 0 => (1..n).fold(inner.alg.clone(), |acc, _| acc.product(inner.alg.clone())),
-        n => Alg {
-            classes: vec![AtomClass {
+        n => {
+            let mut pole = Alg::atom(AtomClass {
                 factors: Factors {
                     pole: true,
                     ..Factors::default()
                 },
                 pole_order: u16::try_from(n.unsigned_abs()).unwrap_or(u16::MAX),
                 ..AtomClass::regular()
-            }],
-            constant: inner.alg.constant,
-            escaped: inner.alg.escaped,
-        },
+            });
+            pole.constant = inner.alg.constant;
+            pole.escaped = inner.alg.escaped;
+            pole
+        }
     };
     Ok(closed_form(alg, var, inner.ty.width, inner.ty.codomain))
 }
