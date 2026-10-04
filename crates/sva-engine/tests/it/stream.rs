@@ -451,3 +451,24 @@ fn a_streamed_read_backwards_in_time_is_the_whole_render() {
     sounds(&want);
     assert_eq!(streamed_at(&g, "reversed", RATE, 512, samples), want);
 }
+
+/// A composition's own `notes` is an ordinary node: two that define it otherwise each stream
+/// their own over one tier.
+#[test]
+fn a_composition_s_own_notes_streams_as_it_is_written() {
+    let tier = Tier::default();
+    for hz in [220, 330] {
+        let g = graph_of(
+            &format!("own-notes-{hz}"),
+            &[
+                ("notes", &format!("sample(0.1*sin(2*pi*{hz}*t))\n")),
+                ("master", "@notes*0.5\n"),
+            ],
+        );
+        let mut stream = Stream::open(&g, &at("master"), config(64, four()), &tier)
+            .now()
+            .unwrap_or_else(|e| panic!("{e}"));
+        let block = next(&mut stream).expect("a block").expect("samples");
+        assert_eq!(block.plane(0), &whole(&g, "master", 64)[..], "{hz} Hz");
+    }
+}

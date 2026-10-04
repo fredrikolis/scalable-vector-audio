@@ -216,7 +216,7 @@ impl World {
         }
         let region = self.region(&named, &rescanned);
         self.typing.lower(&self.instances, &region)?;
-        if let Root::Streamed(_) = wanted.root {
+        if self.notes {
             wanted.terms.name(&mut self.typing);
         }
         let (found, changed) = self.named(&region);
