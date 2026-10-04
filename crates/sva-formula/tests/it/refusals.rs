@@ -185,6 +185,22 @@ fn a_pole_times_an_indicator_names_the_exponential_integral() {
 }
 
 #[test]
+fn a_pole_order_past_its_width_refuses_and_never_wraps() {
+    let overflowing = Body::Mul(vec![
+        part(Body::Pow(part(line()), -i32::from(u16::MAX))),
+        part(Body::Pow(part(line()), -1)),
+    ]);
+    let left = normalize(&overflowing, Var::T).expect_err("the order passes u16");
+    assert_eq!(left.reason, LeftReason::PoleOrder(u16::MAX));
+    assert!(
+        !infer(&term(Var::T, overflowing), &Fixed::holding(DUAL, false))
+            .unwrap()
+            .has_dual(),
+        "inference reaches the same verdict without normalizing"
+    );
+}
+
+#[test]
 fn a_growing_exponential_names_temperedness() {
     let growing = Body::Mul(vec![
         part(sine(440.0)),

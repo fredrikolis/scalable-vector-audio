@@ -72,7 +72,7 @@ impl Alg {
                         },
                         growth: a.growth.join(b.growth),
                         bounded: (a.bounded.0 || b.bounded.0, a.bounded.1 || b.bounded.1),
-                        pole_order: a.pole_order + b.pole_order,
+                        pole_order: a.pole_order.saturating_add(b.pole_order),
                     },
                 );
             }

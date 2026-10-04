@@ -131,7 +131,13 @@ fn smooth_times(a: &SpectralAtom, b: &SpectralAtom, poly: Poly) -> Result<Vec<Sp
             Factors {
                 pole: Some(Pole {
                     at: p.at,
-                    order: p.order + q.order,
+                    order: p.order.checked_add(q.order).ok_or_else(|| {
+                        Left::new(
+                            a.origin,
+                            AtomSketch::pair(Factor::Pole, Factor::Pole),
+                            LeftReason::PoleOrder(u16::MAX),
+                        )
+                    })?,
                     pv: p.pv || q.pv,
                 }),
                 ..base
