@@ -209,3 +209,18 @@ fn a_crop_starts_on_the_first_sample_past_its_edge_on_every_route() {
         assert_ne!(samples[11], 0.25, "{target}: sample 40001 is past it");
     }
 }
+
+/// A step at 100 Hz in a form in `f` is a band edge, never a window from 100 s on: its inverse
+/// sounds from the first sample.
+#[test]
+fn a_form_in_f_reads_its_band_edges_as_hertz() {
+    let g = graph_of(
+        "band",
+        &[
+            ("band", "step(f - 100)*exp(0 - f/300)\n"),
+            ("heard", "sample(@band)\n"),
+        ],
+    );
+    let samples = over(&g, "heard", 0, secs(0.01));
+    assert_ne!(samples[0], 0.0, "the band's inverse sounds at t = 0");
+}

@@ -265,13 +265,16 @@ impl<'a> Supports<'a> {
 
     /// A closed form a node wrote inside its own body, as a value of its own on `grid`.
     pub(crate) fn formula(&self, body: &Body, grid: Grid) -> Extent {
-        self.body(body, true, grid)
+        self.body(body, grid)
     }
 
     fn fresh(&self, id: NodeId) -> Extent {
         let grid = self.grid(id);
         match self.tys.value(id) {
-            Value::ClosedForm(form) => self.body(&form.body, form.var == sva_formula::Var::T, grid),
+            Value::ClosedForm(form) => match form.var {
+                sva_formula::Var::T => self.body(&form.body, grid),
+                sva_formula::Var::F => self.spectrum(&form.body),
+            },
             Value::Cast(Cast::Fourier | Cast::IFourier, _) => Extent::EVERYWHERE,
             Value::Cast(_, source) => self.of(*source),
             Value::Op { name, args } => self.operation(name, args, grid, &|arg| self.of(arg)),
@@ -356,13 +359,10 @@ impl<'a> Supports<'a> {
         }
     }
 
-    /// `timed` where the form is in `t`: only there is a factor's zero a zero in time.
-    fn body(&self, body: &Body, timed: bool, grid: Grid) -> Extent {
+    /// A form in `t`, where a factor's zero is a zero in time.
+    fn body(&self, body: &Body, grid: Grid) -> Extent {
         let each = |parts: &[sva_formula::Part]| -> Vec<Extent> {
-            parts
-                .iter()
-                .map(|p| self.body(&p.body, timed, grid))
-                .collect()
+            parts.iter().map(|p| self.body(&p.body, grid)).collect()
         };
         match body {
             Body::Const(c) if *c == C64::ZERO => Extent::NOWHERE,
@@ -374,27 +374,43 @@ impl<'a> Supports<'a> {
                 let held = each(parts)
                     .into_iter()
                     .fold(Extent::EVERYWHERE, Extent::intersect);
-                match timed {
-                    true => held.intersect(self.underflows(&factors(body), grid)),
-                    false => held,
-                }
+                held.intersect(self.underflows(&factors(body), grid))
             }
-            Body::Apply(Unary::Exp, _) if timed => self.underflows(&[body], grid),
-            Body::Fold(Fold::Max, parts) if timed => ramp(grid, parts),
+            Body::Apply(Unary::Exp, _) => self.underflows(&[body], grid),
+            Body::Fold(Fold::Max, parts) => ramp(grid, parts),
             Body::Div(num, den) if matches!(*den.body, Body::Const(c) if c != C64::ZERO) => {
-                self.body(&num.body, timed, grid)
+                self.body(&num.body, grid)
             }
-            Body::Pow(base, n) if *n > 0 => self.body(&base.body, timed, grid),
-            Body::Apply(op, arg) if keeps_zero(*op) => self.body(&arg.body, timed, grid),
+            Body::Pow(base, n) if *n > 0 => self.body(&base.body, grid),
+            Body::Apply(op, arg) if keeps_zero(*op) => self.body(&arg.body, grid),
             Body::Shift { by, of } => match (&*of.body, placed(*by, grid)) {
                 (Body::Node(id), Some(map)) => map.preimage(self.of(*id)),
-                _ => moved(self.body(&of.body, timed, grid), by * grid.sr()),
+                _ => moved(self.body(&of.body, grid), by * grid.sr()),
             },
             Body::Crop { of, l, r, .. } => {
-                self.body(&of.body, timed, grid)
+                self.body(&of.body, grid)
                     .intersect(window(grid, l.value(), r.value()))
             }
-            Body::Channel(of, _) => self.body(&of.body, timed, grid),
+            Body::Channel(of, _) => self.body(&of.body, grid),
+            _ => Extent::EVERYWHERE,
+        }
+    }
+
+    /// Where a form in `f` is nonzero in `t`: a product there is a convolution here, a shift a
+    /// modulation, a constant an impulse at 0; any other shape in `f` spreads everywhere.
+    fn spectrum(&self, body: &Body) -> Extent {
+        let of = |part: &sva_formula::Part| self.spectrum(&part.body);
+        match body {
+            Body::Const(c) if *c == C64::ZERO => Extent::NOWHERE,
+            Body::Const(_) => Extent::new(0, 1),
+            Body::Node(id) => self.of(*id),
+            Body::Add(parts) | Body::Join(parts) => {
+                parts.iter().map(of).fold(Extent::NOWHERE, Extent::hull)
+            }
+            Body::Mul(parts) => parts.iter().map(of).fold(Extent::new(0, 1), spread),
+            Body::Div(num, den) if matches!(*den.body, Body::Const(c) if c != C64::ZERO) => of(num),
+            Body::Pow(base, n) if *n > 0 => spread_times(of(base), i64::from(*n)),
+            Body::Shift { of: inner, .. } | Body::Channel(inner, _) => of(inner),
             _ => Extent::EVERYWHERE,
         }
     }
@@ -731,6 +747,38 @@ fn stateful(input: Extent) -> Extent {
     }
 }
 
+/// Where `n` convolutions of a value nonzero over `a` with itself can be.
+fn spread_times(a: Extent, n: i64) -> Extent {
+    if a.is_empty() {
+        return Extent::NOWHERE;
+    }
+    let start = match a.start {
+        i64::MIN => i64::MIN,
+        x => x.saturating_mul(n),
+    };
+    let end = match a.end {
+        i64::MAX => i64::MAX,
+        x => (x - 1).saturating_mul(n).saturating_add(1),
+    };
+    Extent::new(start, end.max(start))
+}
+
+/// Where a convolution of values nonzero over `a` and `b` can be.
+fn spread(a: Extent, b: Extent) -> Extent {
+    if a.is_empty() || b.is_empty() {
+        return Extent::NOWHERE;
+    }
+    let start = match (a.start, b.start) {
+        (i64::MIN, _) | (_, i64::MIN) => i64::MIN,
+        (x, y) => x.saturating_add(y),
+    };
+    let end = match (a.end, b.end) {
+        (i64::MAX, _) | (_, i64::MAX) => i64::MAX,
+        (x, y) => x.saturating_add(y - 1),
+    };
+    Extent::new(start, end.max(start))
+}
+
 /// `sin`, `tanh`, `abs`, `sqrt` and `sat` hold zero at zero; the rest move it.
 fn keeps_zero(op: Unary) -> bool {
     matches!(
@@ -957,4 +1005,31 @@ fn moved(support: Extent, count: f64) -> Extent {
     let start = support.shifted(early).start;
     let end = support.shifted(late).end;
     Extent::new(start, end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{spread, spread_times};
+    use sva_samples::Extent;
+
+    /// Values nonzero over samples 0..=9 and 5..=6 convolve to 5..=15; three copies of -3..=1
+    /// to -9..=3; an endless side stays endless and a silent one silences the product.
+    #[test]
+    fn a_convolution_is_nonzero_over_the_sum_of_its_supports() {
+        assert_eq!(
+            spread(Extent::new(0, 10), Extent::new(5, 7)),
+            Extent::new(5, 16)
+        );
+        assert_eq!(spread_times(Extent::new(-3, 2), 3), Extent::new(-9, 4));
+        assert_eq!(
+            spread_times(Extent::new(-3, 2), 3),
+            spread(
+                spread(Extent::new(-3, 2), Extent::new(-3, 2)),
+                Extent::new(-3, 2)
+            )
+        );
+        let endless = spread(Extent::new(0, 10), Extent::new(4, i64::MAX));
+        assert_eq!(endless, Extent::new(4, i64::MAX));
+        assert!(spread(Extent::NOWHERE, Extent::EVERYWHERE).is_empty());
+    }
 }
