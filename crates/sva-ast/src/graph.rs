@@ -276,7 +276,6 @@ impl Graph {
         })
     }
 
-    /// What `path` held before.
     pub fn set(&mut self, path: &str, held: Option<Held>) -> Option<Held> {
         let before = self.held(path);
         match held {
@@ -314,6 +313,11 @@ impl Graph {
         }
     }
 
+    /// Whether `other` read `path` at the same edit of its source.
+    pub fn read_as(&self, path: &str, other: &Graph) -> bool {
+        self.generations.get(path) == other.generations.get(path)
+    }
+
     /// Each node `path` reads directly, by its body or a default.
     fn reaching_from(&self, path: &str) -> Vec<String> {
         let Some(defined) = self.nodes.get(path) else {
@@ -326,7 +330,6 @@ impl Graph {
         out
     }
 
-    /// Each node `roots` reach here, following each one's reads.
     pub fn reaching(&self, roots: &[String]) -> BTreeSet<String> {
         let (mut seen, mut open) = (BTreeSet::new(), roots.to_vec());
         while let Some(path) = open.pop() {

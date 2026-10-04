@@ -25,6 +25,10 @@ impl Source for Counted {
         }
         Ok(text)
     }
+
+    fn generation(&self, path: &str) -> Option<u64> {
+        self.held.generation(path)
+    }
 }
 
 /// A future over no store: one poll finishes it.
@@ -78,6 +82,21 @@ fn an_add_reads_off_its_source_only_what_the_stream_lacks() {
     }
     assert_eq!(
         add(&stream, &source, "@tone(t - 9sp)"),
+        Vec::<String>::new()
+    );
+}
+
+/// A node written again as it was is read once more, at the next change, and not after.
+#[test]
+fn a_node_written_again_as_it_was_is_read_at_the_next_change_alone() {
+    let mut source = source();
+    let job = Job::over(&source, "@notes + @bed");
+    let stream = now(sva_core::stream(&job, (64, None), &Tier::default())).expect("a stream");
+    let stream = RefCell::new(stream);
+    source.held.insert("tone", "0.1*sin(2*pi*220*t)\n");
+    assert_eq!(add(&stream, &source, "@tone(t - 9sp)"), ["tone"]);
+    assert_eq!(
+        add(&stream, &source, "@tone(t - 18sp)"),
         Vec::<String>::new()
     );
 }

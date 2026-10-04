@@ -195,21 +195,20 @@ impl World {
     }
 
     /// Each node played or read anew that `from` holds otherwise than the graph, taken into
-    /// it; the instances are then named anew, whole, beside the ones set aside.
+    /// it; where a text moved, the instances are named anew, whole, beside the ones set aside.
     fn renew(&mut self, from: &Graph, roots: &[String]) {
         let read = from.reaching(roots);
         let played = |p: &str| self.instances.instances_of(p).next().is_some() || read.contains(p);
         let paths = from.paths().filter(|p| self.graph.defines(p) && played(p));
-        let changed: Vec<String> = paths
-            .filter(|p| !self.graph.holds_as(p, from))
-            .map(str::to_string)
-            .collect();
-        if changed.is_empty() {
-            return;
-        }
-        for path in changed {
+        let held = |p: &&str| self.graph.holds_as(p, from) && self.graph.read_as(p, from);
+        let taken: Vec<String> = paths.filter(|p| !held(p)).map(str::to_string).collect();
+        let rewritten = taken.iter().any(|p| !self.graph.holds_as(p, from));
+        for path in taken {
             let before = self.graph.set(&path, from.held(&path));
             self.edits.push((path, before));
+        }
+        if !rewritten {
+            return;
         }
         let fresh = Instances::new(self.config.rate);
         self.replaced = Some(std::mem::replace(&mut self.instances, fresh));
