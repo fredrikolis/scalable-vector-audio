@@ -1,4 +1,4 @@
-// Concern: the memory tier: every resident value and node under one cap, what it evicts and writes back, the misses it keeps | Non-concern: the disk | IO: (key) -> held, answered; offers -> kept
+// Concern: the memory tier: each resident value and its node under one cap, what it evicts and writes back, its misses | Non-concern: the disk | IO: (key) -> held, answered; offers -> kept
 
 #[cfg(test)]
 mod chains;
@@ -68,12 +68,6 @@ pub(crate) struct Facts {
 /// quarter for a new entry to earn its first hit in.
 const PROTECTED: (u64, u64) = (3, 4);
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Stamp {
-    /// A volatile node's value replaces the last one stored under the same slot.
-    pub slot: Option<Hash>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kept {
     Held,
@@ -89,14 +83,11 @@ pub(crate) enum Known {
     Unknown,
 }
 
-/// Where an offered node's sample `n` is: sample `n + by` of the values memory holds, a value's
-/// segments or a run's, each under its key from its start on, or of another node.
+/// Where an offered node's sample `n` is.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Offered {
-    Values {
-        keys: Vec<(i64, Hash)>,
-        by: i64,
-    },
+    /// The value held under the node's own key: a run's through each segment before it.
+    Own,
     Moves {
         of: Hash,
         by: i64,
@@ -111,20 +102,20 @@ pub(crate) struct Writeback {
     pub(crate) parts: Vec<Arc<Buffer>>,
 }
 
-enum Item {
-    Value {
-        payload: Payload,
-        label: Option<Label>,
-        slot: Option<Hash>,
-    },
-    Node {
-        source: Source,
-        slot: Option<Hash>,
-        /// Holds what the disk may lack: a node a render still computes always does.
-        dirty: bool,
-        settled: bool,
-        bound: bool,
-    },
+/// A value's samples, and the node they were offered or read off the disk as.
+struct Item {
+    payload: Option<Payload>,
+    label: Option<Label>,
+    slot: Option<Hash>,
+    node: Option<Node>,
+}
+
+struct Node {
+    source: Source,
+    /// Holds what the disk may lack: a node a render still computes always does.
+    dirty: bool,
+    settled: bool,
+    bound: bool,
 }
 
 enum Source {
@@ -138,11 +129,36 @@ enum Source {
     },
 }
 
-impl Source {
+impl Node {
     fn stored(&self) -> &Stored {
-        match self {
+        match &self.source {
             Source::Disk { head, .. } => head.stored(),
             Source::Offered { stored, .. } => stored,
+        }
+    }
+
+    fn offered(&self) -> Option<&Offered> {
+        match &self.source {
+            Source::Offered { offered, .. } => Some(offered),
+            Source::Disk { .. } => None,
+        }
+    }
+
+    fn head(&self) -> Option<&Header> {
+        match &self.source {
+            Source::Disk { head, .. } => Some(head),
+            Source::Offered { .. } => None,
+        }
+    }
+
+    fn chunks(&self) -> &[Arc<Buffer>] {
+        match &self.source {
+            Source::Disk { chunks, .. }
+            | Source::Offered {
+                offered: Offered::Held(chunks),
+                ..
+            } => chunks,
+            Source::Offered { .. } => &[],
         }
     }
 }
@@ -165,34 +181,16 @@ impl Held {
             protected: false,
         }
     }
+
+    fn bytes(&self) -> u64 {
+        let value = self.item.payload.as_ref().map_or(0, |p| p.bytes() as u64);
+        let node = self.item.node.as_ref().map_or(&[][..], Node::chunks);
+        value + node.iter().map(|c| planes(c)).sum::<u64>()
+    }
 }
 
 fn planes(b: &Buffer) -> u64 {
     (b.len() * b.width * size_of::<f64>()) as u64
-}
-
-impl Held {
-    fn bytes(&self) -> u64 {
-        match &self.item {
-            Item::Value { payload, .. } => payload.bytes() as u64,
-            Item::Node {
-                source:
-                    Source::Disk { chunks, .. }
-                    | Source::Offered {
-                        offered: Offered::Held(chunks),
-                        ..
-                    },
-                ..
-            } => chunks.iter().map(|c| planes(c)).sum(),
-            Item::Node { .. } => 0,
-        }
-    }
-
-    fn slot(&self) -> Option<Hash> {
-        match &self.item {
-            Item::Value { slot, .. } | Item::Node { slot, .. } => *slot,
-        }
-    }
 }
 
 #[derive(Default)]
@@ -260,44 +258,73 @@ impl State {
         self.clock
     }
 
+    fn node(&self, key: Hash) -> Option<&Node> {
+        self.entries.get(&key)?.item.node.as_ref()
+    }
+
     fn stands(&self, key: Hash) -> bool {
-        let bound = |at: &Hash| {
-            let held = self.entries.get(at).map(|held| &held.item);
-            matches!(held, Some(Item::Node { bound: true, .. }))
+        let bound = |at: &Hash| self.node(*at).is_some_and(|node| node.bound);
+        self.doomed(key).iter().any(bound)
+    }
+
+    fn on_disk(&self, key: Hash, payload: &Payload) -> bool {
+        let Some(head) = self.node(key).and_then(Node::head) else {
+            return false;
         };
-        self.doomed(key).iter().skip(1).any(bound)
+        let stored = head.stored();
+        match payload {
+            Payload::Segments(parts) => parts.iter().all(|part| stored.holds(part.extent())),
+            Payload::Run(run) => stored.holds(run.samples.extent()),
+            Payload::Frames(_) => false,
+        }
     }
 
     fn unsettled(&self, key: Hash) -> bool {
-        matches!(
-            self.entries.get(&key),
-            Some(Held {
-                item: Item::Node { settled: false, .. },
-                ..
-            })
-        )
+        self.node(key).is_some_and(|node| !node.settled)
     }
 
-    /// The values and nodes reading `key`'s samples, and theirs, `key` first.
+    /// A run's segment, then each before it, ending where the one after it starts.
+    fn segments(&self, key: Hash) -> Vec<(Hash, Extent)> {
+        let (mut out, mut at, mut end) = (Vec::new(), Some(key), i64::MAX);
+        while let Some(k) = at {
+            out.push((k, Extent::new(i64::MIN, end)));
+            let held = self
+                .entries
+                .get(&k)
+                .and_then(|held| held.item.payload.as_ref());
+            let Some(Payload::Run(run)) = held else {
+                break;
+            };
+            (at, end) = (run.parent, run.samples.start);
+        }
+        out
+    }
+
+    fn reads(&self, key: Hash) -> Vec<Hash> {
+        match self.node(key).and_then(Node::offered) {
+            None | Some(Offered::Held(_)) => Vec::new(),
+            Some(Offered::Own) => self
+                .segments(key)
+                .into_iter()
+                .skip(1)
+                .map(|(k, _)| k)
+                .collect(),
+            Some(Offered::Moves { of, .. }) => vec![*of],
+        }
+    }
+
     fn doomed(&self, key: Hash) -> Vec<Hash> {
+        let mut readers: HashMap<Hash, Vec<Hash>> = HashMap::new();
+        for at in self.entries.keys() {
+            for read in self.reads(*at) {
+                readers.entry(read).or_default().push(*at);
+            }
+        }
         let mut out = vec![key];
         let mut k = 0;
         while k < out.len() {
-            let gone = out[k];
-            for (at, held) in &self.entries {
-                let Item::Node {
-                    source: Source::Offered { offered, .. },
-                    ..
-                } = &held.item
-                else {
-                    continue;
-                };
-                let reads = match offered {
-                    Offered::Values { keys, .. } => keys.iter().any(|(_, key)| *key == gone),
-                    Offered::Moves { of, .. } => *of == gone,
-                    Offered::Held(_) => false,
-                };
-                if reads && !out.contains(at) {
+            for at in readers.get(&out[k]).into_iter().flatten() {
+                if !out.contains(at) {
                     out.push(*at);
                 }
             }
@@ -306,9 +333,18 @@ impl State {
         out
     }
 
-    /// `key` and everything reading its samples gone, each dirty node flushed first; a node a
+    /// `key` and every node reading its samples gone, each dirty node flushed first; a node a
     /// render still computes stays, to send the rest.
     fn remove(&mut self, key: Hash) -> bool {
+        self.removed(key, true)
+    }
+
+    /// As `remove`, its own node staying while a render computes it.
+    fn release(&mut self, key: Hash) -> bool {
+        self.removed(key, false)
+    }
+
+    fn removed(&mut self, key: Hash, whole: bool) -> bool {
         if !self.entries.contains_key(&key) {
             return false;
         }
@@ -317,8 +353,10 @@ impl State {
             self.flush(*at);
         }
         for at in doomed {
-            if at == key || !self.unsettled(at) {
-                self.discard(at);
+            match (at == key, self.unsettled(at)) {
+                (true, true) if !whole => self.unvalued(at),
+                (true, _) | (false, false) => self.discard(at),
+                (false, true) => {}
             }
         }
         true
@@ -330,26 +368,46 @@ impl State {
         };
         self.links.get_mut().evict(key);
         self.bytes -= gone.bytes();
-        let value = matches!(gone.item, Item::Value { .. });
-        if let Some(slot) = gone.slot().filter(|_| value)
+        if let Some(slot) = gone.item.slot
             && self.slots.get(&slot) == Some(&key)
         {
             self.slots.remove(&slot);
         }
     }
 
+    fn unvalued(&mut self, key: Hash) {
+        let Some(held) = self.entries.get_mut(&key) else {
+            return;
+        };
+        let before = held.bytes();
+        held.item.payload = None;
+        self.bytes = self.bytes - before + held.bytes();
+    }
+
+    fn unnoded(&mut self, key: Hash) {
+        let Some(held) = self.entries.get_mut(&key) else {
+            return;
+        };
+        if held.item.payload.is_none() {
+            return self.discard(key);
+        }
+        let before = held.bytes();
+        held.item.node = None;
+        self.bytes = self.bytes - before + held.bytes();
+        self.links.get_mut().evict(key);
+    }
+
     /// A dirty node's header and what memory holds of it, on their way to the disk; a node a
     /// render still computes stays dirty, for the samples it has yet to send.
     fn flush(&mut self, key: Hash) {
-        let Some(Held {
-            item:
-                Item::Node {
-                    dirty: dirty @ true,
-                    settled,
-                    ..
-                },
+        let Some(Node {
+            dirty: dirty @ true,
+            settled,
             ..
-        }) = self.entries.get_mut(&key)
+        }) = self
+            .entries
+            .get_mut(&key)
+            .and_then(|held| held.item.node.as_mut())
         else {
             return;
         };
@@ -360,10 +418,10 @@ impl State {
     }
 
     fn written(&self, key: Hash) -> Option<Writeback> {
-        let Item::Node {
+        let Some(Node {
             source: Source::Offered { stored, offered },
             ..
-        } = &self.entries.get(&key)?.item
+        }) = self.node(key)
         else {
             return None;
         };
@@ -386,23 +444,16 @@ impl State {
                 key,
                 head: head(Samples::None),
                 parts: self
-                    .offered_parts(offered, Extent::EVERYWHERE)
+                    .offered_parts(key, offered, Extent::EVERYWHERE)
                     .unwrap_or_default(),
             },
         })
     }
 
     fn moving(&self, key: Hash) -> Option<(Hash, i64, bool)> {
-        match &self.entries.get(&key)?.item {
-            Item::Node {
-                source:
-                    Source::Offered {
-                        offered: Offered::Moves { of, by },
-                        ..
-                    },
-                bound,
-                ..
-            } => Some((*of, *by, *bound)),
+        let node = self.node(key)?;
+        match node.offered()? {
+            Offered::Moves { of, by } => Some((*of, *by, node.bound)),
             _ => None,
         }
     }
@@ -452,10 +503,11 @@ impl State {
         (!link.looped).then_some((link.end, link.by))
     }
 
+    /// A link or its end is no node the disk is written, or is only a value.
     fn unbound(&self, key: Hash) -> bool {
         let link = self.link(key);
-        let end = self.entries.get(&link.end).map(|held| &held.item);
-        link.unbound || matches!(end, Some(Item::Node { bound: false, .. }))
+        let end = self.entries.get(&link.end).map(|held| &held.item.node);
+        link.unbound || matches!(end, Some(None | Some(Node { bound: false, .. })))
     }
 
     fn referred(&self, of: Hash, by: i64) -> Option<(Hash, i64)> {
@@ -464,36 +516,27 @@ impl State {
             return None;
         }
         let more = link.by;
-        match &self.entries.get(&link.end)?.item {
-            Item::Node {
-                source: Source::Disk { head, .. },
-                ..
-            } => match head.samples() {
-                Samples::Entry { file, shift, .. } | Samples::Staged { file, shift, .. } => {
-                    Some((*file, by + more - shift))
-                }
-                _ => None,
-            },
-            Item::Node { bound: false, .. } | Item::Value { .. } => None,
-            Item::Node { .. } => Some((link.end, by + more)),
+        let node = self.node(link.end)?;
+        match (node.head().map(Header::samples), node.bound) {
+            (Some(Samples::Entry { file, shift, .. } | Samples::Staged { file, shift, .. }), _) => {
+                Some((*file, by + more - shift))
+            }
+            (Some(_), _) | (None, false) => None,
+            (None, true) => Some((link.end, by + more)),
         }
     }
 
-    /// Each part the values under `keys` hold, with the stretch of it that is the node's.
-    fn shares(&self, keys: &[(i64, Hash)]) -> Option<Vec<(Arc<Buffer>, Extent)>> {
+    fn parts(&self, key: Hash) -> Option<Vec<(Arc<Buffer>, Extent)>> {
+        self.entries.get(&key)?;
         let mut out = Vec::new();
-        for (k, (start, key)) in keys.iter().enumerate() {
-            let end = keys.get(k + 1).map_or(i64::MAX, |(next, _)| *next);
-            let within = Extent::new(*start, end);
-            let parts = match &self.entries.get(key).map(|held| &held.item) {
-                Some(Item::Value {
-                    payload: Payload::Segments(parts),
-                    ..
-                }) => parts.clone(),
-                Some(Item::Value {
-                    payload: Payload::Run(run),
-                    ..
-                }) => vec![Arc::clone(&run.samples)],
+        for (k, within) in self.segments(key) {
+            let parts = match self
+                .entries
+                .get(&k)
+                .and_then(|held| held.item.payload.as_ref())
+            {
+                Some(Payload::Segments(parts)) => parts.clone(),
+                Some(Payload::Run(run)) => vec![Arc::clone(&run.samples)],
                 _ => Vec::new(),
             };
             let met = |part: Arc<Buffer>| {
@@ -502,18 +545,23 @@ impl State {
             };
             out.extend(parts.into_iter().filter_map(met));
         }
-        let held = keys.iter().any(|(_, key)| self.entries.contains_key(key));
-        held.then_some(out)
+        Some(out)
     }
 
-    fn offered_parts(&self, offered: &Offered, over: Extent) -> Option<Vec<Arc<Buffer>>> {
+    fn own(&self, key: Hash, over: Extent) -> Option<Vec<Arc<Buffer>>> {
+        let met = self.parts(key)?.into_iter();
+        let met = met.filter(|(_, held)| !held.intersect(over).is_empty());
+        Some(met.map(|(part, held)| clipped(&part, held)).collect())
+    }
+
+    fn offered_parts(
+        &self,
+        key: Hash,
+        offered: &Offered,
+        over: Extent,
+    ) -> Option<Vec<Arc<Buffer>>> {
         let (parts, by): (Vec<Arc<Buffer>>, i64) = match offered {
-            Offered::Values { keys, by } => {
-                let within = over.shifted(*by);
-                let met = self.shares(keys)?.into_iter();
-                let met = met.filter(|(_, held)| !held.intersect(within).is_empty());
-                (met.map(|(part, held)| clipped(&part, held)).collect(), *by)
-            }
+            Offered::Own => (self.own(key, over)?, 0),
             Offered::Moves { of, by } => {
                 let (foot, more) = self.foot(*of)?;
                 (self.resident(foot, over.shifted(by + more))?.0, by + more)
@@ -528,11 +576,14 @@ impl State {
     /// What memory holds of `key` meeting `over`, and for a node off the disk, what of `over`
     /// the disk holds that memory lacks, with its layout.
     fn resident(&self, key: Hash, over: Extent) -> Option<Resident> {
-        let Item::Node { source, .. } = &self.entries.get(&key)?.item else {
-            return None;
+        let source = match &self.entries.get(&key)?.item.node {
+            None => return Some((self.own(key, over)?, None)),
+            Some(node) => &node.source,
         };
         match source {
-            Source::Offered { offered, .. } => Some((self.offered_parts(offered, over)?, None)),
+            Source::Offered { offered, .. } => {
+                Some((self.offered_parts(key, offered, over)?, None))
+            }
             Source::Disk { head, chunks } => {
                 let meets = |b: &&Arc<Buffer>| !b.extent().intersect(over).is_empty();
                 let parts: Vec<Arc<Buffer>> = chunks.iter().filter(meets).cloned().collect();
@@ -555,45 +606,34 @@ impl State {
 
     fn coverage(&self, key: Hash) -> Option<Vec<Extent>> {
         let (foot, by) = self.foot(key)?;
-        let Item::Node { source, .. } = &self.entries.get(&foot)?.item else {
-            return None;
-        };
-        let held = match source {
-            Source::Disk { head, .. } => head.stored().extents().to_vec(),
-            Source::Offered {
-                offered: Offered::Values { keys, by },
-                ..
-            } => {
-                let shares = self.shares(keys)?.into_iter();
-                shares.map(|(_, held)| held.shifted(-by)).collect()
+        let node = self.entries.get(&foot)?.item.node.as_ref();
+        let held = match (node.and_then(Node::head), node.and_then(Node::offered)) {
+            (Some(head), _) => head.stored().extents().to_vec(),
+            (None, None | Some(Offered::Own)) => {
+                let parts = self.parts(foot)?.into_iter();
+                parts.map(|(_, held)| held).collect()
             }
-            Source::Offered {
-                offered: Offered::Held(parts),
-                ..
-            } => parts.iter().map(|p| p.extent()).collect(),
-            Source::Offered {
-                offered: Offered::Moves { .. },
-                ..
-            } => return None,
+            (None, Some(Offered::Held(parts))) => parts.iter().map(|p| p.extent()).collect(),
+            (None, Some(Offered::Moves { .. })) => return None,
         };
         Some(held.into_iter().map(|e| e.shifted(-by)).collect())
     }
 
+    /// A node off the disk keeps its header.
     fn evict(&mut self, key: Hash) {
         let Some(held) = self.entries.get_mut(&key) else {
             return;
         };
         let protected = held.protected;
-        let gone = match &mut held.item {
-            Item::Node {
-                source: Source::Disk { chunks, .. },
-                ..
-            } => {
-                let freed: u64 = std::mem::take(chunks).iter().map(|c| planes(c)).sum();
-                self.bytes -= freed;
+        let before = held.bytes();
+        let gone = match held.item.node.as_mut().map(|node| &mut node.source) {
+            Some(Source::Disk { chunks, .. }) => {
+                chunks.clear();
+                held.item.payload = None;
+                self.bytes -= before;
                 true
             }
-            _ => self.remove(key),
+            _ => self.release(key),
         };
         match (gone, protected) {
             (false, _) => {}
@@ -628,20 +668,9 @@ impl State {
         let mut out = vec![key];
         let mut k = 0;
         while k < out.len() {
-            if let Some(Item::Node {
-                source: Source::Offered { offered, .. },
-                ..
-            }) = self.entries.get(&out[k]).map(|held| &held.item)
-            {
-                let more: Vec<Hash> = match offered {
-                    Offered::Values { keys, .. } => keys.iter().map(|(_, key)| *key).collect(),
-                    Offered::Moves { of, .. } => vec![*of],
-                    Offered::Held(_) => Vec::new(),
-                };
-                for at in more {
-                    if !out.contains(&at) {
-                        out.push(at);
-                    }
+            for at in self.reads(out[k]) {
+                if !out.contains(&at) {
+                    out.push(at);
                 }
             }
             k += 1;
@@ -826,28 +855,19 @@ impl Memory {
 
     pub(crate) fn answer(&self, key: Hash, round: u64) -> Known {
         let mut state = self.locked();
-        let covered = state.coverage(key);
-        if let Some(held) = covered.clone().filter(|held| !held.is_empty()) {
-            state.hit(key, Some(round));
-            let Some(Item::Node { source, .. }) = state.entries.get(&key).map(|held| &held.item)
-            else {
-                unreachable!("only a node covers");
-            };
-            return Known::Hit(Arc::new(source.stored().holding(held)));
-        }
-        let node = matches!(
-            state.entries.get(&key),
-            Some(Held {
-                item: Item::Node { .. },
-                ..
-            })
-        );
-        match (node, covered) {
-            (true, None) => {
-                state.remove(key);
+        if state.node(key).is_some() {
+            let covered = state.coverage(key);
+            if let Some(held) = covered.clone().filter(|held| !held.is_empty()) {
+                state.hit(key, Some(round));
+                let node = state.node(key).expect("a node held");
+                return Known::Hit(Arc::new(node.stored().holding(held)));
             }
-            (true, Some(_)) => return Known::Miss,
-            (false, _) => {}
+            match covered {
+                None => {
+                    state.remove(key);
+                }
+                Some(_) => return Known::Miss,
+            }
         }
         match state.misses.get(&key) {
             Some(met) if *met >= round => Known::Miss,
@@ -865,22 +885,33 @@ impl Memory {
     pub(crate) fn promote(&self, head: Header) {
         let mut state = self.locked();
         let (key, read) = (head.stored().key, state.tick());
-        if state.entries.contains_key(&key) {
+        if state.node(key).is_some() {
             return;
         }
         state.misses.remove(&key);
         state.counters.promotions += 1;
-        let item = Item::Node {
+        let node = Node {
             source: Source::Disk {
                 head: Box::new(head),
                 chunks: Vec::new(),
             },
-            slot: None,
             dirty: false,
             settled: true,
             bound: true,
         };
-        state.admit(key, Held::admitted(item, read));
+        match state.entries.get_mut(&key) {
+            Some(held) => held.item.node = Some(node),
+            None => {
+                let item = Item {
+                    payload: None,
+                    label: None,
+                    slot: None,
+                    node: Some(node),
+                };
+                state.admit(key, Held::admitted(item, read));
+            }
+        }
+        state.links.get_mut().evict(key);
     }
 
     pub(crate) fn promote_samples(&self, key: Hash, read: Vec<Buffer>) -> Vec<Arc<Buffer>> {
@@ -890,10 +921,10 @@ impl Memory {
         let Some(held) = state.entries.get_mut(&key) else {
             return read;
         };
-        let Item::Node {
+        let Some(Node {
             source: Source::Disk { chunks, .. },
             ..
-        } = &mut held.item
+        }) = &mut held.item.node
         else {
             return read;
         };
@@ -929,44 +960,56 @@ impl Memory {
         self.locked().remove(key);
     }
 
-    /// A node a render computes, standing on samples memory holds, in place of the last one
-    /// offered under `slot` or `key`, keeping the segment that one earned. Until `settled` it
-    /// holds what is computed so far, and each eviction sends that much to the disk; settled,
-    /// it goes where memory holds none of its samples and will write none to the disk.
+    /// A node a render computes, in place of the last one under `key`, keeping the segment
+    /// that one earned. Until `settled` it holds what is computed so far, each eviction
+    /// sending that much to the disk; settled, it replaces what its slot held, and goes where
+    /// memory holds none of its samples and will write none to the disk.
     pub(crate) fn offer(&self, stored: Stored, offered: Offered, facts: Facts) {
         let mut state = self.locked();
         let Facts { slot, settled, .. } = facts;
         let bound = state.disk && writes(&stored, facts);
         let key = stored.key;
         let read = state.tick();
-        let earned = state.entries.get(&key);
-        let (since, protected) = earned.map_or((read, false), |held| (held.since, held.protected));
-        state.discard(key);
-        let slot = slot.map(|slot| super::mixed(slot, &[0x6e_6f_64_65]));
-        let item = Item::Node {
+        let node = Node {
             source: Source::Offered {
                 stored: Box::new(stored),
                 offered,
             },
-            slot,
             dirty: bound,
             settled,
             bound,
         };
-        let held = Held {
-            since,
-            protected,
-            ..Held::admitted(item, read)
-        };
-        state.bytes += held.bytes();
-        state.admit(key, held);
+        match state.entries.get_mut(&key) {
+            Some(held) => {
+                let before = held.bytes();
+                held.item.node = Some(node);
+                held.item.slot = slot;
+                held.read = read;
+                let after = held.bytes();
+                state.bytes = state.bytes - before + after;
+                state.links.get_mut().evict(key);
+            }
+            None => {
+                let item = Item {
+                    payload: None,
+                    label: None,
+                    slot,
+                    node: Some(node),
+                };
+                let held = Held::admitted(item, read);
+                state.bytes += held.bytes();
+                state.admit(key, held);
+            }
+        }
         state.misses.remove(&key);
         let covered = state.coverage(key).is_some_and(|held| !held.is_empty());
         if settled && !covered && !bound {
-            state.discard(key);
+            state.unnoded(key);
             return;
         }
-        if let Some(last) = slot.and_then(|slot| state.slots.insert(slot, key))
+        if let Some(last) = slot
+            .filter(|_| settled)
+            .and_then(|slot| state.slots.insert(slot, key))
             && last != key
         {
             state.remove(last);
@@ -980,7 +1023,7 @@ impl Memory {
         let mut read: Vec<(u64, Hash)> = state
             .entries
             .iter()
-            .filter(|(_, held)| held.read > since && matches!(held.item, Item::Node { .. }))
+            .filter(|(_, held)| held.read > since && held.item.node.is_some())
             .map(|(key, held)| (held.read, *key))
             .collect();
         read.sort_unstable();
@@ -1036,37 +1079,28 @@ impl Memory {
             .entries
             .iter()
             .filter(|(_, held)| {
-                let Item::Node {
-                    source: Source::Disk { head, .. },
-                    ..
-                } = &held.item
-                else {
-                    return false;
-                };
-                matches!(head.samples(), Samples::Staged { .. })
+                let head = held.item.node.as_ref().and_then(Node::head);
+                head.is_some_and(|head| matches!(head.samples(), Samples::Staged { .. }))
             })
             .map(|(key, _)| *key)
             .collect();
         for key in staged {
-            state.discard(key);
+            state.unnoded(key);
         }
     }
 
     /// What `key` holds, shared, never copied: a hit.
     pub(crate) fn load(&self, key: Hash, expected: Expected) -> Option<Entry> {
         let mut state = self.locked();
-        let held = state.entries.get_mut(&key)?;
-        let Item::Value { payload, label, .. } = &held.item else {
-            return None;
+        let item = &state.entries.get(&key)?.item;
+        let entry = Entry {
+            payload: item.payload.clone()?,
+            label: item.label.clone(),
         };
-        if !payload.answers(expected) {
-            state.remove(key);
+        if !entry.payload.answers(expected) {
+            state.release(key);
             return None;
         }
-        let entry = Entry {
-            payload: payload.clone(),
-            label: label.clone(),
-        };
         state.hit(key, None);
         Some(entry)
     }
@@ -1078,16 +1112,14 @@ impl Memory {
         key: Hash,
         payload: Payload,
         label: Option<&Label>,
-        stamp: Stamp,
+        slot: Option<Hash>,
     ) -> Kept {
         let mut state = self.locked();
         let tick = state.tick();
-        let joined = match (state.entries.get_mut(&key), payload) {
-            (Some(held), payload) if held.slot() == stamp.slot => {
+        let joined = match state.entries.get_mut(&key) {
+            Some(held) if held.item.slot == slot && held.item.payload.is_some() => {
                 let before = held.bytes();
-                let Item::Value { payload: had, .. } = &mut held.item else {
-                    unreachable!("a value key holds a value");
-                };
+                let had = held.item.payload.as_mut().expect("a value held");
                 let payload = match (had, payload) {
                     (Payload::Segments(parts), Payload::Segments(more)) => {
                         joined(parts, more);
@@ -1115,7 +1147,7 @@ impl Memory {
                     Some(payload) => Err(payload),
                 }
             }
-            (_, payload) => Err(payload),
+            _ => Err(payload),
         };
         match joined {
             Ok((before, after)) => {
@@ -1125,40 +1157,63 @@ impl Memory {
             }
             Err(payload) => {
                 drop(state);
-                self.store(key, payload, label, stamp)
+                self.store(key, payload, label, slot)
             }
         }
     }
 
-    /// A value too large to stay is refused, unless a node over the disk stands on it: then
-    /// it is kept only to be evicted, and so written back.
+    /// A value the disk holds under `key` is held there alone. One too large to stay is
+    /// refused, unless a node over the disk stands on it: then it is kept only to be evicted,
+    /// and so written back.
     pub(crate) fn store(
         &self,
         key: Hash,
         payload: Payload,
         label: Option<&Label>,
-        stamp: Stamp,
+        slot: Option<Hash>,
     ) -> Kept {
         let mut state = self.locked();
+        if state.on_disk(key, &payload) {
+            return Kept::Held;
+        }
         let bytes = payload.bytes() as u64;
         if bytes > state.max_bytes && !state.stands(key) {
             return Kept::Refused;
         }
         let read = state.tick();
-        let replaced = match stamp.slot.and_then(|slot| state.slots.insert(slot, key)) {
-            Some(last) if last != key => state.remove(last),
+        let replaced = match slot.and_then(|slot| state.slots.insert(slot, key)) {
+            Some(last) if last != key => state.release(last),
             _ => false,
         };
-        let item = Item::Value {
-            payload,
-            label: label.cloned(),
-            slot: stamp.slot,
-        };
-        let held = Held::admitted(item, read);
-        if let Some(old) = state.admit(key, held) {
+        let old = state.entries.remove(&key);
+        if let Some(old) = &old {
             state.bytes -= old.bytes();
         }
-        state.bytes += bytes;
+        let (node, earned) = match old {
+            Some(old) => (
+                old.item.node,
+                Some((old.read, old.since, old.hit_round, old.protected)),
+            ),
+            None => (None, None),
+        };
+        let item = Item {
+            payload: Some(payload),
+            label: label.cloned(),
+            slot,
+            node,
+        };
+        let held = match earned {
+            Some((read, since, hit_round, protected)) if item.node.is_some() => Held {
+                item,
+                read,
+                since,
+                hit_round,
+                protected,
+            },
+            _ => Held::admitted(item, read),
+        };
+        state.bytes += held.bytes();
+        state.admit(key, held);
         state.bounded();
         match replaced {
             true => Kept::Replaced,
@@ -1189,10 +1244,9 @@ mod tests {
     fn an_entry_that_does_not_answer_what_was_asked_is_a_miss_and_goes() {
         let memory = Memory::default();
         let key = Hash(7, 11);
-        let stamp = Stamp { slot: None };
         let four = Payload::Segments(vec![Arc::new(Buffer::mono(8_000, vec![0.25; 4]))]);
         for (rate, width) in [(48_000, 1), (8_000, 2)] {
-            memory.store(key, four.clone(), None, stamp);
+            memory.store(key, four.clone(), None, None);
             let asked = Expected::Segments { rate, width };
             assert!(memory.load(key, asked).is_none());
             assert!(!memory.holds(key));
@@ -1204,9 +1258,8 @@ mod tests {
     fn a_load_shares_the_samples_it_holds() {
         let memory = Memory::default();
         let key = Hash(3, 5);
-        let stamp = Stamp { slot: None };
         let part = Arc::new(Buffer::mono(8_000, vec![0.5; 64]));
-        memory.store(key, Payload::Segments(vec![Arc::clone(&part)]), None, stamp);
+        memory.store(key, Payload::Segments(vec![Arc::clone(&part)]), None, None);
         let asked = Expected::Segments {
             rate: 8_000,
             width: 1,

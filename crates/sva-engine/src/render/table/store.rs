@@ -9,7 +9,7 @@ use sva_samples::{Buffer, Extent, Machine, MachineState, NodeRenderer, Tape};
 use super::Table;
 use super::segments::Segments;
 use super::value::{Held, Kind, Value};
-use crate::cache::{Expected, Offered, Outcome, Payload, PayloadKind, Recording, Run, frames_key};
+use crate::cache::{Expected, Offered, Outcome, Payload, PayloadKind, Recording, Run};
 
 /// Where a value sits in memory: its key, and the slot a volatile parameter gives it.
 #[derive(Clone, Debug)]
@@ -47,13 +47,6 @@ impl Place {
         }
     }
 
-    fn keyed(&self, value: &Value) -> Hash {
-        match value.kind {
-            Kind::Frames { window, hop } => frames_key(self.key, window, hop),
-            _ => self.key,
-        }
-    }
-
     fn end(&self, k: usize) -> i64 {
         self.segments
             .get(k + 1)
@@ -81,7 +74,7 @@ pub(crate) fn load(value: &mut Value, place: &mut Place, recording: &Recording) 
         PayloadKind::Frames => Expected::Frames,
         _ => Expected::Segments { rate, width },
     };
-    let Some(entry) = recording.load(place.keyed(value), expected) else {
+    let Some(entry) = recording.load(place.key, expected) else {
         return false;
     };
     if entry.label.is_some() {
@@ -176,7 +169,7 @@ pub(crate) fn noted(value: &Value, place: &mut Place, computes: bool, recording:
     if place.noted.is_some() || matches!(value.kind, Kind::Resident { .. }) {
         return;
     }
-    let (kind, key) = (Place::kind(value), place.keyed(value));
+    let (kind, key) = (Place::kind(value), place.key);
     let first = match (computes, place.prefixed) {
         (_, true) => Outcome::Prefix,
         (true, false) => Outcome::ComputedNotStored,
@@ -190,7 +183,7 @@ pub(crate) fn reread(value: &Value, place: &mut Place, count: usize, recording: 
     if place.noted.is_none() {
         return;
     }
-    let (kind, key) = (Place::kind(value), place.keyed(value));
+    let (kind, key) = (Place::kind(value), place.key);
     for _ in 0..count {
         if place.reached > 0 {
             recording.note(&value.name, key, kind, Outcome::Hit);
@@ -244,13 +237,12 @@ pub(crate) fn stored(
     computed: &[Extent],
     recording: &mut Recording,
 ) {
-    let kind = Place::kind(value);
     let stored = matches!(value.kind, Kind::Resident { .. });
     if computed.is_empty() || stored || !value.pure || !recording.keeps() {
         return;
     }
-    let stamp = recording.stamp(place.slot, kind);
-    let key = place.keyed(value);
+    let slot = place.slot;
+    let key = place.key;
     let label = value.label.clone();
     let payload = match &mut value.held {
         Held::Segments(parts) => Payload::Segments(
@@ -291,13 +283,13 @@ pub(crate) fn stored(
                     (*segment, place.noted),
                     Payload::Run(Arc::new(run)),
                     None,
-                    stamp,
+                    slot,
                 );
             }
             return;
         }
     };
-    recording.store((key, place.noted), payload, label.as_ref(), stamp);
+    recording.store((key, place.noted), payload, label.as_ref(), slot);
 }
 
 fn over(buffer: &Arc<Buffer>, e: Extent) -> Option<Arc<Buffer>> {
@@ -325,22 +317,25 @@ fn taped(tape: &Tape, rate: u32, e: Extent) -> Option<Buffer> {
 }
 
 impl Table {
-    /// Where memory finds the samples value `at` holds, `by` samples on, through each value it
-    /// only moves. None where they repeat a period.
-    pub(crate) fn offered(&mut self, mut at: usize) -> Option<Offered> {
-        let mut by = 0;
-        while let Some((read, shift)) = self.values[at].alias() {
-            (at, by) = (read, by + shift);
-        }
-        let (value, place) = self.values.placed(at);
+    /// Its own value's, or those of the value at the end of what it moves; none where they
+    /// repeat a period.
+    pub(crate) fn offered(
+        &mut self,
+        at: usize,
+        key: Hash,
+        foot: Option<(usize, i64)>,
+    ) -> Option<Offered> {
+        let (value, place) = self.values.placed(foot.map_or(at, |(foot, _)| foot));
         if value.period.is_some() {
             return None;
         }
-        let keys = match &value.held {
-            Held::Run(_) => place.segments.clone(),
-            _ => vec![(i64::MIN, place.keyed(value))],
-        };
-        Some(Offered::Values { keys, by })
+        Some(match (foot, place.key) {
+            (None, own) if own == key => Offered::Own,
+            (foot, of) => Offered::Moves {
+                of,
+                by: foot.map_or(0, |(_, by)| by),
+            },
+        })
     }
 
     pub(crate) fn slot(&mut self, at: usize) -> Option<Hash> {

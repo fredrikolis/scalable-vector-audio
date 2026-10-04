@@ -1,4 +1,4 @@
-// Concern: what the tier answers of a node, and where a disk entry lays its samples | Non-concern: reading them, the bytes (codec.rs) | IO: (identity, rate) -> key; Header -> extents
+// Concern: what the tier answers of a node, and where a disk entry lays its samples | Non-concern: reading them, the bytes (codec.rs) | IO: Header -> extents
 
 use sva_formula::{Codomain, Hash};
 use sva_samples::{Extent, Grid, Label};
@@ -127,13 +127,4 @@ impl Header {
     pub(crate) fn refers(&self) -> bool {
         matches!(self.samples, Samples::Of { .. })
     }
-}
-
-/// Keyed by what it computes, the rate and the profile.
-pub(crate) fn node_key(identity: Hash, rate: u32, profile: &sva_samples::Profile) -> Hash {
-    let tag = [0x6e_6f_64_65_00_00_00_01];
-    super::mixed(
-        identity,
-        &[&[u64::from(rate)][..], &profile.deciding(), &tag].concat(),
-    )
 }

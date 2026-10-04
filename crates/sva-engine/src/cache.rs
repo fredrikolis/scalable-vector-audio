@@ -1,4 +1,4 @@
-// Concern: declares what memory and a disk hold under a content hash and how a value's key is built | Non-concern: what memory keeps and evicts (memory.rs) | IO: (Hash) -> a payload
+// Concern: what memory and a disk hold, and the one key they hold it under | Non-concern: what memory keeps and evicts (memory.rs) | IO: (identity, Question) -> key; (Hash) -> a payload
 
 mod codec;
 mod index;
@@ -16,7 +16,6 @@ pub use persist::{Backend, DEFAULT_STORE_BYTES, INDEX_NAME, Persisted, Store};
 pub(crate) use stats::Recording;
 pub use stats::{CacheStats, Lookup, Outcome};
 pub use stored::Stored;
-pub(crate) use stored::node_key;
 pub use sva_formula::Hash;
 pub(crate) use tier::now;
 pub use tier::{FETCH_READS, Nothing, Tier};
@@ -24,7 +23,7 @@ pub use tier::{FETCH_READS, Nothing, Tier};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use sva_samples::{Buffer, Frames, Label, MachineState};
+use sva_samples::{Buffer, Frames, Grid, Label, MachineState, Profile};
 
 /// A value's segments, a stateful value's run, or one analysis of a value, each shared: a clone
 /// hands out the same samples, never a copy of them.
@@ -124,24 +123,43 @@ impl Payload {
     }
 }
 
-pub fn frames_key(value: Hash, window: usize, hop: usize) -> Hash {
-    mixed(
-        value,
-        &[window as u64, hop as u64, 0x66_72_61_6d_65_73_00_01],
-    )
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Question<'p> {
+    pub(crate) grid: Grid,
+    pub(crate) width: usize,
+    pub(crate) profile: &'p Profile,
+    pub(crate) shape: Shape,
 }
 
-/// One value at one rate, width and profile, never where a reader places it.
-pub fn value_key(
-    identity: Hash,
-    step: (i128, i128),
-    rate: u32,
-    width: usize,
-    profile: &sva_samples::Profile,
-) -> Hash {
-    let placed = [step.0 as u64, step.1 as u64, u64::from(rate), width as u64];
-    let tag = [0x76_61_6c_75_65_00_00_01];
-    mixed(identity, &[&placed[..], &profile.deciding(), &tag].concat())
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Shape {
+    Samples,
+    Frames { window: usize, hop: usize },
+}
+
+/// What a value computes and what is asked of it, never where a reader places it.
+pub(crate) fn key(identity: Hash, question: &Question) -> Hash {
+    let Question {
+        grid,
+        width,
+        profile,
+        shape,
+    } = *question;
+    let asked = [
+        grid.a as u64,
+        grid.d as u64,
+        u64::from(grid.rate),
+        width as u64,
+    ];
+    let shape = match shape {
+        Shape::Samples => [0, 0, 0],
+        Shape::Frames { window, hop } => [1, window as u64, hop as u64],
+    };
+    let tag = [0x6b_65_79_00_00_00_00_01];
+    mixed(
+        identity,
+        &[&asked[..], &profile.deciding(), &shape, &tag].concat(),
+    )
 }
 
 const ADDRESS_ROTATE: u32 = 17;

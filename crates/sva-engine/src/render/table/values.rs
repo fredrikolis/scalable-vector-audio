@@ -1,4 +1,4 @@
-// Concern: a table's values, each in a slot it keeps while held, with its place in memory and holds | Non-concern: what a value holds (value.rs), when one goes (mod.rs) | IO: (Value) -> slot
+// Concern: a table's values, each in a slot while held, with its memory place, holds and where its moves end | Non-concern: what a value holds (value.rs), when one goes (mod.rs) | IO: (Value) -> slot
 use std::collections::{BTreeMap, HashMap};
 use std::ops::{Index, IndexMut};
 
@@ -89,6 +89,21 @@ impl Values {
 
     pub(crate) fn held(&self, at: usize) -> bool {
         self.slot(at).held > 0
+    }
+
+    /// Each value that only moves another, mapped to the value at the end of what it moves
+    /// and the shift to it: one fold in order, readers after what they read.
+    pub(crate) fn feet(&self) -> HashMap<usize, (usize, i64)> {
+        let mut feet: HashMap<usize, (usize, i64)> = HashMap::new();
+        for at in self.ordered() {
+            if let Some((read, by)) = self[at].moves() {
+                let foot = feet
+                    .get(&read)
+                    .map_or((read, by), |(foot, more)| (*foot, by + more));
+                feet.insert(at, foot);
+            }
+        }
+        feet
     }
 
     pub(crate) fn ordered(&self) -> impl DoubleEndedIterator<Item = usize> + '_ {

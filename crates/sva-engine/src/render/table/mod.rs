@@ -26,7 +26,7 @@ pub(crate) use demand::Need;
 pub(crate) use value::{Held, Key, Kind, Value};
 pub(crate) use values::Values;
 
-use crate::cache::{Recording, Stored};
+use crate::cache::{Question, Recording, Shape, Stored};
 use crate::cast::Cast;
 use crate::error::EngineError;
 use crate::refs;
@@ -971,11 +971,7 @@ impl Building<'_> {
     ) -> Result<(Value, Then, Vec<Step>), EngineError> {
         let tys = self.tys;
         let (node, support, width) = match source {
-            Source::Node(id) => (
-                Some(*id),
-                self.support(*id),
-                usize::from(tys.ty(*id).width).max(1),
-            ),
+            Source::Node(id) => (Some(*id), self.support(*id), width(tys, *id)),
             Source::Formula(form) => (None, self.supports.formula(&form.body, grid), 1),
         };
         let mut value = Value {
@@ -1291,17 +1287,34 @@ fn aliased(values: &Values, mut at: usize) -> usize {
     at
 }
 
+fn width(tys: &Typing, id: NodeId) -> usize {
+    usize::from(tys.ty(id).width).max(1)
+}
+
+/// What memory holds node `id`'s own value under, its identity `identity`.
+pub(crate) fn node_key(tys: &Typing, id: NodeId, identity: Hash, profile: &Profile) -> Hash {
+    let question = Question {
+        grid: tys.grid(id),
+        width: width(tys, id),
+        profile,
+        shape: Shape::Samples,
+    };
+    crate::cache::key(identity, &question)
+}
+
 /// A value's place in the store, read by none yet.
 fn place(values: &Values, value: &Value, profile: &Profile) -> store::Place {
-    let key = |identity| {
-        crate::cache::value_key(
-            identity,
-            value.key.step,
-            value.grid.rate,
-            value.width,
-            profile,
-        )
+    let shape = match value.kind {
+        Kind::Frames { window, hop } => Shape::Frames { window, hop },
+        _ => Shape::Samples,
     };
+    let question = Question {
+        grid: value.grid,
+        width: value.width,
+        profile,
+        shape,
+    };
+    let key = |identity| crate::cache::key(identity, &question);
     store::Place {
         key: key(value.key.identity),
         segments: segments(&value.switches, key(value.key.identity), key),

@@ -78,10 +78,13 @@ impl Offers {
         }
         let keys: BTreeMap<usize, Hash> = pending.iter().map(|o| (o.at, o.stored.key)).collect();
         if let Some(table) = &mut held.table {
-            let feet = moves(table);
+            let feet = table.values.feet();
             for offer in &mut pending {
                 if moved(table, (offer.at, &feet), &keys).is_none() {
-                    offer.own = table.offered(offer.at).map_or(Own::Copies, Own::Shares);
+                    let foot = feet.get(&offer.at).copied();
+                    offer.own = table
+                        .offered(offer.at, offer.stored.key, foot)
+                        .map_or(Own::Copies, Own::Shares);
                 }
                 if let Own::Shares(source) = &offer.own {
                     let stored = offer.stored.clone();
@@ -125,7 +128,11 @@ impl Offers {
 
     fn offer(&mut self, offers: Vec<Offer>, table: &Table, memory: &Memory) {
         let moving = offers.iter().any(|offer| matches!(offer.own, Own::Moves));
-        let feet = if moving { moves(table) } else { HashMap::new() };
+        let feet = if moving {
+            table.values.feet()
+        } else {
+            HashMap::new()
+        };
         for mut offer in offers {
             offer.stored.label = table.label(offer.at);
             let source = match offer.own {
@@ -235,21 +242,6 @@ fn moved(
     };
     let of = offered.get(&moved).copied().or(resident)?;
     Some(Offered::Moves { of, by })
-}
-
-/// Each value that only moves another, mapped to the value at the end of what it moves and
-/// the shift to it: found in the table's order, readers after what they read, each once.
-fn moves(table: &Table) -> HashMap<usize, (usize, i64)> {
-    let mut feet: HashMap<usize, (usize, i64)> = HashMap::new();
-    for at in table.values.ordered() {
-        if let Some((read, by)) = table.values[at].moves() {
-            let foot = feet
-                .get(&read)
-                .map_or((read, by), |(foot, more)| (*foot, by + more));
-            feet.insert(at, foot);
-        }
-    }
-    feet
 }
 
 /// What each value and all under it cost, and the most any moved a read: a value one other

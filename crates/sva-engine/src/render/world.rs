@@ -45,17 +45,6 @@ pub(super) struct Known {
     looked: bool,
 }
 
-impl Known {
-    fn key(&self, config: &RenderConfig) -> Option<Hash> {
-        let identity = self.identity?;
-        Some(crate::cache::node_key(
-            identity,
-            config.rate,
-            &config.profile,
-        ))
-    }
-}
-
 /// The node a version plays: a stream's expression, held as its own node, or a node of the graph.
 pub(super) enum Root<'a> {
     Streamed(&'a Expr),
@@ -283,7 +272,19 @@ impl World {
     }
 
     pub(super) fn key(&self, path: &str, config: &RenderConfig) -> Option<Hash> {
-        self.known.get(path)?.key(config)
+        self.keyed(path, self.known.get(path)?, config)
+    }
+
+    /// What memory holds `known`'s own value under; none where its identity refuses.
+    fn keyed(&self, path: &str, known: &Known, config: &RenderConfig) -> Option<Hash> {
+        let id = self.typing.id(path)?;
+        let identity = known.identity?;
+        Some(super::table::node_key(
+            &self.typing,
+            id,
+            identity,
+            &config.profile,
+        ))
     }
 
     fn set(&mut self, path: &str, expr: &Expr, rewritten: &mut Vec<String>) {
@@ -526,7 +527,7 @@ impl Walk<'_> {
             };
             let mut known = self.known(&path);
             let pinned = known.pinned || self.pins.holds(&path);
-            let key = known.key(config).filter(|_| !pinned);
+            let key = self.world.keyed(&path, &known, config).filter(|_| !pinned);
             if visited.contains(&path) {
                 let asked = anew && !held.contains_key(&path);
                 if let Some(key) = key.filter(|_| asked)

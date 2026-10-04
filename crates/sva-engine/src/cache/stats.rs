@@ -3,7 +3,7 @@
 use sva_formula::Hash;
 use sva_samples::Label;
 
-use super::memory::{Counters, Kept, Memory, Stamp};
+use super::memory::{Counters, Kept, Memory};
 use super::{Entry, Expected, Payload, PayloadKind};
 use crate::recent::Recent;
 
@@ -160,13 +160,6 @@ impl Recording {
         self.memory.mark_every()
     }
 
-    /// `slot` where a volatile parameter reaches it.
-    pub(crate) fn stamp(&self, slot: Option<Hash>, kind: PayloadKind) -> Stamp {
-        Stamp {
-            slot: slot.map(|slot| super::mixed(slot, &[kind as u64, 0x73_6c_6f_74])),
-        }
-    }
-
     pub(crate) fn note(
         &mut self,
         node: &str,
@@ -194,9 +187,9 @@ impl Recording {
         (key, noted): (Hash, Option<usize>),
         payload: Payload,
         label: Option<&Label>,
-        stamp: Stamp,
+        slot: Option<Hash>,
     ) {
-        let outcome = match self.memory.merge(key, payload, label, stamp) {
+        let outcome = match self.memory.merge(key, payload, label, slot) {
             Kept::Held => Outcome::ComputedStored,
             Kept::Replaced => Outcome::ComputedReplaced,
             Kept::Refused => return,
