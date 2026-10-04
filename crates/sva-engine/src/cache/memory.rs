@@ -469,7 +469,9 @@ impl State {
                 source: Source::Disk { head, .. },
                 ..
             } => match head.samples() {
-                Samples::Entry { file, shift, .. } => Some((*file, by + more - shift)),
+                Samples::Entry { file, shift, .. } | Samples::Staged { file, shift, .. } => {
+                    Some((*file, by + more - shift))
+                }
                 _ => None,
             },
             Item::Node { bound: false, .. } | Item::Value { .. } => None,

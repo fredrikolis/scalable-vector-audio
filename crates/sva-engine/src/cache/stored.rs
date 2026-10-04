@@ -66,6 +66,7 @@ pub(crate) enum Samples {
         shift: i64,
     },
     Staged {
+        file: Hash,
         chunks: Vec<(String, Extent)>,
         shift: i64,
     },
@@ -98,7 +99,7 @@ impl Samples {
                 .iter()
                 .map(|run| run.extent().shifted(*shift))
                 .collect(),
-            Samples::Staged { chunks, shift } => {
+            Samples::Staged { chunks, shift, .. } => {
                 chunks.iter().map(|(_, e)| e.shifted(*shift)).collect()
             }
         }

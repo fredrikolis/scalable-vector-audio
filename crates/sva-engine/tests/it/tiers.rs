@@ -377,3 +377,27 @@ fn a_new_process_reuses_the_disk_for_each_node_an_edit_left_alone() {
     assert!(next.counters().disk_reads > 0, "{:?}", next.counters());
     assert_eq!(bits(&edited), bits(&cold));
 }
+
+/// A note evicted to the disk's staging and read back before any persist, then read shifted:
+/// the shifted read lands on the disk with the note, so the next process answers it whole.
+#[test]
+fn a_shifted_read_of_a_note_staged_before_a_persist_lands_on_the_disk() {
+    let memory = Memory::default();
+    let mut graph = blip("staged", 110);
+    assert!(graph.define("late", term("@blip(t - 80sp, f0=200)")));
+    let tier = opened(&memory, u64::MAX);
+    tier.set_max_bytes(800 * 8 / 2);
+    now(render_over(&graph, "warm", over(800), &tier)).expect("a render");
+    assert!(tier.counters().writebacks > 0, "{:?}", tier.counters());
+    now(render_over(&graph, "late", over(880), &tier)).expect("a render");
+    now(tier.persist()).expect("persisted");
+    let next = opened(&memory, u64::MAX);
+    let held = now(render_over(&graph, "late", over(880), &next)).expect("a render");
+    let stats = held.cache_stats.as_ref().expect("stats");
+    let late = stats.lookups.iter().filter(|l| l.node == "late");
+    assert_eq!(
+        late.map(|l| l.store).collect::<Vec<_>>(),
+        [Some(true)],
+        "{stats:?}"
+    );
+}

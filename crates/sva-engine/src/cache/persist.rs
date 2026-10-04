@@ -139,7 +139,11 @@ impl<B: Backend> Store<B> {
                 runs,
                 shift: -by,
             },
-            Samples::Staged { chunks, .. } => Samples::Staged { chunks, shift: -by },
+            Samples::Staged { file, chunks, .. } => Samples::Staged {
+                file,
+                chunks,
+                shift: -by,
+            },
             _ => return None,
         };
         Some(Header::new(found.into_parts().0, samples))
@@ -177,7 +181,14 @@ impl<B: Backend> Store<B> {
         let (found, _) = codec::read_head(&meta, key)?;
         Some(match found.refers() {
             true => found,
-            false => Header::new(found.into_parts().0, Samples::Staged { chunks, shift: 0 }),
+            false => {
+                let samples = Samples::Staged {
+                    file: key,
+                    chunks,
+                    shift: 0,
+                };
+                Header::new(found.into_parts().0, samples)
+            }
         })
     }
 
@@ -203,7 +214,7 @@ impl<B: Backend> Store<B> {
                     out.push(samples);
                 }
             }
-            Samples::Staged { chunks, shift } => {
+            Samples::Staged { chunks, shift, .. } => {
                 for (name, e) in chunks {
                     if !e.intersect(over.shifted(-shift)).is_empty() {
                         let bytes = self.staging.get(name).await.ok()??;
