@@ -1,4 +1,4 @@
-// Concern: proves a render writes the same bits shared or apart, whole or streamed, and a changed stream builds as anew, over random trees | Non-concern: one node's arithmetic | IO: (a seed) -> renders
+// Concern: proves a render is the same bits shared or apart, whole or in blocks, and a changed stream builds, plays as anew, on random trees | Non-concern: a node's arithmetic | IO: (a seed) -> renders
 
 use std::cell::RefCell;
 
@@ -227,11 +227,11 @@ fn expr(text: &str) -> sva_ast::Expr {
     sva_ast::parse_expr(text).expect("an expression")
 }
 
-/// One random change: an add, a replace or a remove of a term, an edit of the target, or one
-/// of a file it plays.
+/// One random change: an add, a replace or a remove of a term, an edit of the target, or,
+/// `rewrites`, one of a file it plays.
 fn changed(
     (stream, tier): (&RefCell<Stream>, &Tier),
-    g: &sva_ast::Graph,
+    (g, rewrites): (&sva_ast::Graph, bool),
     draw: &mut Draw,
     held: &mut Vec<Handle>,
 ) {
@@ -258,7 +258,7 @@ fn changed(
             placed,
         ),
         (2, n) if n > 0 => Change::Remove(held.remove(draw.below(n as u64) as usize)),
-        (3, _) => {
+        (3, _) if rewrites => {
             let (mut edited, path) = (g.clone(), draw.pick(&reads).to_string());
             let body = g.expr(&path).expect("a node").clone();
             let half = sva_ast::Expr::Lit(sva_ast::Literal::Num(0.5));
@@ -300,7 +300,7 @@ fn a_changed_stream_holds_what_a_build_of_all_it_plays_would() {
             stream.borrow_mut().go_live();
         }
         for _ in 0..16 {
-            changed((&stream, &tier), &g, &mut draw, &mut held);
+            changed((&stream, &tier), (&g, true), &mut draw, &mut held);
             for _ in 0..draw.below(4) {
                 let at = stream.borrow().position();
                 stream.borrow_mut().read(at, 100).expect("a block");
@@ -312,4 +312,64 @@ fn a_changed_stream_holds_what_a_build_of_all_it_plays_would() {
         }
     }
     assert!(checked >= 150, "only {checked} changes checked");
+}
+
+/// After a change that moves nothing before where an exact stream stands, it plays from there
+/// what a whole render of all it now plays writes. A rewritten file moves its past too, and a
+/// stateful value then carries its state on (edit.rs), so those changes are left out.
+#[test]
+fn a_changed_stream_plays_from_where_it_stands_what_a_render_of_it_writes() {
+    let (mut checked, mut sounded) = (0, 0);
+    for seed in 1..=12u64 {
+        let mut composition = sva_ast::Composition::new();
+        for (name, body) in &tree(seed) {
+            composition.insert(name, body);
+        }
+        let g = sva_ast::load(&composition).expect("a composition");
+        let config = StreamConfig {
+            block: 100,
+            channels: None,
+            render: RenderConfig::at(RATE),
+        };
+        let tier = Tier::default();
+        let Ok(stream) = now(Stream::open(&g, &expr("@notes + @root"), config, &tier)) else {
+            continue;
+        };
+        let (stream, mut draw, mut held) = (RefCell::new(stream), Draw(seed | 1), Vec::new());
+        for k in 0..16 {
+            changed((&stream, &tier), (&g, false), &mut draw, &mut held);
+            let at = stream.borrow().position();
+            let graph = stream.borrow().graph().clone();
+            let ahead = RenderConfig {
+                range: Range {
+                    start: Some(0),
+                    end: Some(at + 300),
+                },
+                ..RenderConfig::at(RATE)
+            };
+            let whole = render(&graph, crate::render::STREAMED, ahead, &Tier::default())
+                .unwrap_or_else(|e| panic!("{seed}/{k}: what the stream plays renders: {e}"));
+            let want = whole
+                .output(whole.root)
+                .expect("the root")
+                .plane(0)
+                .to_vec();
+            let mut heard = Vec::new();
+            while heard.len() < 300 {
+                let at = stream.borrow().position();
+                match stream.borrow_mut().read(at, 100).expect("a block") {
+                    Some(block) => heard.extend_from_slice(block.plane(0)),
+                    None => break,
+                }
+            }
+            let from = usize::try_from(at).expect("a position");
+            let (played, past) = want[from..from + 300].split_at(heard.len());
+            assert_eq!(bits(&heard), bits(played), "{seed}/{k} at {at}");
+            assert!(past.iter().all(|v| *v == 0.0), "{seed}/{k}: ended early");
+            sounded += usize::from(heard.iter().any(|v| *v != 0.0));
+            checked += 1;
+        }
+    }
+    assert!(checked >= 150, "only {checked} changes checked");
+    assert!(sounded > checked / 2, "only {sounded} of {checked} sounded");
 }
