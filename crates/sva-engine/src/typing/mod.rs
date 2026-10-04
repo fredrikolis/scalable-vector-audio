@@ -163,9 +163,13 @@ impl Typing {
         }
         let mut open: Vec<NodeId> = gone.iter().copied().collect();
         while let Some(at) = open.pop() {
-            for reader in self.readers.get(&at).into_iter().flatten() {
-                if gone.insert(*reader) {
-                    open.push(*reader);
+            let summed = self
+                .summed()
+                .filter(|(_, slots)| slots.contains(&SumSlot::Node(at)));
+            let held = self.readers.get(&at).into_iter().flatten().copied();
+            for reader in held.chain(summed.map(|(sum, _)| *sum)) {
+                if gone.insert(reader) {
+                    open.push(reader);
                 }
             }
         }
@@ -175,7 +179,7 @@ impl Typing {
     /// `node` held at `id` in place of what was, each edge it reads recorded.
     pub(super) fn place(&mut self, id: NodeId, node: Option<Node>) {
         if self.nodes[id.0 as usize].is_some() {
-            for read in self.operands(id) {
+            for read in self.own_edges(id) {
                 if let Some(held) = self.readers.get_mut(&read)
                     && held.remove(&id)
                     && held.is_empty()
@@ -186,7 +190,7 @@ impl Typing {
         }
         self.nodes[id.0 as usize] = node;
         if self.nodes[id.0 as usize].is_some() {
-            for read in self.operands(id) {
+            for read in self.own_edges(id) {
                 self.readers.entry(read).or_default().insert(id);
             }
         }
@@ -206,7 +210,7 @@ impl Typing {
         retired.then_some(*sum)
     }
 
-    /// The edges a node's identity is hashed over.
+    /// The values a node's own value is computed from.
     pub(crate) fn operands(&self, id: NodeId) -> Vec<NodeId> {
         match self.value(id) {
             Value::ClosedForm(form) => crate::refs::nodes_in(&form.body),
@@ -228,7 +232,7 @@ impl Typing {
                 return true;
             }
             if seen.insert(at) {
-                open.extend(self.operands(at));
+                open.extend(self.edges(at));
             }
         }
         false
@@ -263,12 +267,18 @@ impl Typing {
         order
     }
 
-    /// Its operands, the times it reads at and the note sum's terms.
-    fn edges(&self, id: NodeId) -> Vec<NodeId> {
+    /// Its operands and the times it reads at: the edges its own value holds.
+    fn own_edges(&self, id: NodeId) -> Vec<NodeId> {
         let mut out = self.operands(id);
         if let Value::Read { at, .. } | Value::SelfAt { at, .. } = self.value(id) {
             out.extend(at.moving());
         }
+        out
+    }
+
+    /// Every edge its identity is hashed over: its own and the note sum's terms.
+    fn edges(&self, id: NodeId) -> Vec<NodeId> {
+        let mut out = self.own_edges(id);
         let slots = self.sum_slots(id).unwrap_or_default().iter();
         out.extend(slots.filter_map(|slot| match slot {
             SumSlot::Node(read) if *read != id => Some(*read),
