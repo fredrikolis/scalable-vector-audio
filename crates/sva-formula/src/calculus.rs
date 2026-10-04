@@ -17,29 +17,29 @@ pub struct Envelope {
     pub squared: SpectralSum,
 }
 
-/// Total: A is closed under `d/dx`. A series differentiates termwise, lazily where its term
-/// is not one of the shapes the table reads.
-pub fn d_dt(n: &SpectralSum) -> SpectralSum {
+/// A is closed under `d/dx` up to an order or degree past `u16`, which refuses. A series
+/// differentiates termwise, lazily where its term is not one of the shapes the table reads.
+pub fn d_dt(n: &SpectralSum) -> Result<SpectralSum, Left> {
     let mut lanes = Vec::with_capacity(n.lanes.len());
     for lane in &n.lanes {
         let mut out = Lane {
-            atoms: lane
-                .atoms
-                .iter()
-                .flat_map(SpectralAtom::derivative)
-                .collect(),
+            atoms: Vec::new(),
             series: lane.series.iter().map(derive_series).collect(),
             modal: Vec::new(),
         };
+        for atom in &lane.atoms {
+            out.atoms.extend(atom.derivative()?);
+        }
         for bank in &lane.modal {
             let expanded = crate::modal::atoms(bank, crate::origin::Origin::UNKNOWN);
-            out.atoms
-                .extend(expanded.iter().flat_map(SpectralAtom::derivative));
+            for atom in &expanded {
+                out.atoms.extend(atom.derivative()?);
+            }
         }
         simplify(&mut out);
         lanes.push(out);
     }
-    SpectralSum::of(n.var, lanes)
+    Ok(SpectralSum::of(n.var, lanes))
 }
 
 /// At least `sup |f'(t)|` over every instant: each atom's own sup, summed. `None` where an
@@ -52,7 +52,7 @@ pub fn steepest(f: &Body) -> Option<f64> {
 pub fn steepest_read(f: &Body, reads: &dyn crate::through::Reads) -> Option<f64> {
     let normalized =
         crate::spectral_sum::build::normalize_read(f, crate::closed_form::Var::T, reads);
-    let slope = d_dt(&normalized.ok()?);
+    let slope = d_dt(&normalized.ok()?).ok()?;
     let mut held = 0.0;
     for lane in &slope.lanes {
         if !lane.series.is_empty() || !lane.modal.is_empty() {

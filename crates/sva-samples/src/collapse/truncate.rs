@@ -498,7 +498,8 @@ impl<'a> Terms<'a> {
             let [lane] = sum.lanes.as_slice() else {
                 return None;
             };
-            (lane.series.is_empty() && lane.modal.is_empty()).then(|| d_dt(&sum))
+            let plain = lane.series.is_empty() && lane.modal.is_empty();
+            plain.then(|| d_dt(&sum).ok()).flatten()
         };
         let (Some(slope), Some(offset)) = (turning(&per), turning(&still)) else {
             return Ok(None);

@@ -9,10 +9,37 @@ fn law(f: &Body) -> SpectralSum {
     normalize(f, Var::T).expect("the fixture stays in A")
 }
 
+/// An order or degree past `u16` refuses rather than wrapping to a lower one.
+#[test]
+fn an_order_or_degree_past_its_width_refuses() {
+    let pole = law(&Body::Pow(part(line()), -i32::from(u16::MAX)));
+    let left = d_dt(&pole).expect_err("the pole order passes u16");
+    assert_eq!(left.reason, LeftReason::PoleOrder(u16::MAX));
+
+    let highest = Body::Pow(part(line()), i32::from(u16::MAX));
+    assert!(
+        normalize(&highest, Var::T).is_ok(),
+        "degree u16::MAX itself is held"
+    );
+    let raised = Body::Mul(vec![
+        part(Body::Pow(part(line()), i32::from(u16::MAX))),
+        part(line()),
+    ]);
+    let left = normalize(&raised, Var::T).expect_err("the degree passes u16");
+    assert_eq!(left.reason, LeftReason::Overflow);
+
+    let delta = law(&Body::Delta {
+        at: part(line()),
+        order: u16::MAX,
+    });
+    let left = d_dt(&delta).expect_err("the delta's order passes u16");
+    assert_eq!(left.reason, LeftReason::Overflow);
+}
+
 #[test]
 fn d_dt_of_a_damped_sinusoid() {
     let ringing = causal(Body::Mul(vec![part(sine(3.0)), part(decay(-2.0))]));
-    let derived = d_dt(&law(&ringing));
+    let derived = d_dt(&law(&ringing)).expect("a derivative");
     let atoms = &derived.lanes[0].atoms;
     assert_eq!(atoms.len(), 2, "the edge deltas cancel at a zero crossing");
     for atom in atoms {
@@ -22,7 +49,7 @@ fn d_dt_of_a_damped_sinusoid() {
     }
 
     let shifted = causal(Body::Mul(vec![part(cosine(3.0)), part(decay(-2.0))]));
-    let with_edge = d_dt(&law(&shifted));
+    let with_edge = d_dt(&law(&shifted)).expect("a derivative");
     assert!(
         with_edge.lanes[0]
             .atoms
@@ -41,7 +68,7 @@ fn d_dt_of_an_indicator_is_two_deltas() {
         rise: 0.0,
         fall: 0.0,
     };
-    let derived = d_dt(&law(&window));
+    let derived = d_dt(&law(&window)).expect("a derivative");
     let atoms = &derived.lanes[0].atoms;
     assert_eq!(atoms.len(), 2);
     assert!(atoms.iter().all(sva_formula::SpectralAtom::is_delta));

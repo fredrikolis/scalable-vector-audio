@@ -10,7 +10,7 @@ use crate::spectral_sum::atom::{Exp, Factors, Gauss, Pole, Poly, Singular, Spect
 /// fraction, or where a delta derivative expands by Leibniz.
 pub fn times(a: &SpectralAtom, b: &SpectralAtom) -> Result<Vec<SpectralAtom>, Left> {
     match (a.sing, b.sing) {
-        (Singular::Regular, Singular::Regular) => match poly_times(a.poly, b.poly) {
+        (Singular::Regular, Singular::Regular) => match poly_times(a, a.poly, b.poly)? {
             Some(poly) => smooth_times(a, b, poly),
             None => {
                 let mut out = Vec::new();
@@ -19,7 +19,7 @@ pub fn times(a: &SpectralAtom, b: &SpectralAtom) -> Result<Vec<SpectralAtom>, Le
                         out.extend(smooth_times(
                             &x,
                             &y,
-                            poly_times(x.poly, y.poly).expect("both read from the origin"),
+                            poly_times(a, x.poly, y.poly)?.expect("both read from the origin"),
                         )?);
                     }
                 }
@@ -51,16 +51,21 @@ fn combine(x: Exp, y: Exp) -> Option<(Exp, C64)> {
     Some((Exp { sigma, omega, mu }, C64::ONE))
 }
 
-/// Two polynomials read from one instant are one; from two instants, neither is kept.
-fn poly_times(x: Poly, y: Poly) -> Option<Poly> {
-    match (x.is_one(), y.is_one()) {
+/// Two polynomials read from one instant are one; from two instants, neither is kept. A degree
+/// past `u16` refuses.
+fn poly_times(a: &SpectralAtom, x: Poly, y: Poly) -> Result<Option<Poly>, Left> {
+    Ok(match (x.is_one(), y.is_one()) {
         (true, _) => Some(y),
         (_, true) => Some(x),
-        _ => (x.at == y.at).then_some(Poly {
-            degree: x.degree + y.degree,
+        _ if x.at != y.at => None,
+        _ => Some(Poly {
+            degree: x.degree.checked_add(y.degree).ok_or_else(|| {
+                let sketch = AtomSketch::pair(Factor::Polynomial, Factor::Polynomial);
+                Left::new(a.origin, sketch, LeftReason::Overflow)
+            })?,
             at: x.at,
         }),
-    }
+    })
 }
 
 fn smooth_times(a: &SpectralAtom, b: &SpectralAtom, poly: Poly) -> Result<Vec<SpectralAtom>, Left> {
@@ -242,8 +247,12 @@ fn leibniz(
             },
             delta.origin,
         ));
-        binomial = binomial * i64::from(order - j) / i64::from(j + 1);
-        level = level.iter().flat_map(SpectralAtom::derivative).collect();
+        binomial = binomial * i64::from(order - j) / (i64::from(j) + 1);
+        let mut next = Vec::new();
+        for atom in &level {
+            next.extend(atom.derivative()?);
+        }
+        level = next;
     }
     Ok(out)
 }

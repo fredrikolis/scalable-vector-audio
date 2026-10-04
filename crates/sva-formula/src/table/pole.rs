@@ -23,7 +23,7 @@ pub(crate) fn row(a: &SpectralAtom) -> Result<Vec<SpectralAtom>, Left> {
         } else {
             out.extend(polynomial_row(weight, pole.at, j - m, f0, a.origin));
         }
-        binomial = binomial * f64::from(a.poly.degree - j) / f64::from(j + 1);
+        binomial = binomial * f64::from(a.poly.degree - j) / (f64::from(j) + 1.0);
     }
     Ok(out)
 }
@@ -102,7 +102,7 @@ fn residue_row(
                 origin,
             ));
         }
-        binomial = binomial * f64::from(degree - i) / f64::from(i + 1);
+        binomial = binomial * f64::from(degree - i) / (f64::from(i) + 1.0);
     }
     Ok(out)
 }
@@ -124,7 +124,7 @@ fn polynomial_row(w: C64, p: C64, d: u16, f0: f64, origin: Origin) -> Vec<Spectr
                 origin,
             )));
         }
-        binomial = binomial * f64::from(i) / f64::from(d - i + 1);
+        binomial = binomial * f64::from(i) / (f64::from(d - i) + 1.0);
     }
     out
 }

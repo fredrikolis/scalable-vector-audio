@@ -296,12 +296,11 @@ pub fn derive(n: SpectralSum) -> Result<SpectralSum, Left> {
                 LeftReason::SeriesNonUniform,
             ));
         }
-        let mut out = Lane::of(
-            lane.atoms
-                .iter()
-                .flat_map(SpectralAtom::derivative)
-                .collect(),
-        );
+        let mut atoms = Vec::new();
+        for atom in &lane.atoms {
+            atoms.extend(atom.derivative()?);
+        }
+        let mut out = Lane::of(atoms);
         simplify(&mut out);
         lanes.push(out);
     }

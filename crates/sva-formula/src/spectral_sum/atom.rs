@@ -3,7 +3,7 @@
 use crate::closed_form::Edge;
 use crate::complex::{C64, canonical};
 use crate::origin::Origin;
-use crate::refusal::Factor;
+use crate::refusal::{AtomSketch, Factor, Left, LeftReason};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Exp {
@@ -298,7 +298,7 @@ impl SpectralAtom {
                     ..self.factors()
                 },
             ));
-            binomial = binomial * f64::from(k) / f64::from(poly.degree - k + 1);
+            binomial = binomial * f64::from(k) / (f64::from(poly.degree - k) + 1.0);
         }
         out
     }
@@ -336,18 +336,23 @@ impl SpectralAtom {
         Some(v)
     }
 
-    /// The product rule over the six factors; the indicator's two terms are edge deltas.
-    pub fn derivative(&self) -> Vec<SpectralAtom> {
+    /// The product rule over the six factors; the indicator's two terms are edge deltas. An
+    /// order or degree past `u16` refuses.
+    pub fn derivative(&self) -> Result<Vec<SpectralAtom>, Left> {
+        let next = |order: u16, factor: Factor, reason: LeftReason| {
+            let left = Left::new(self.origin, AtomSketch::of(factor), reason);
+            order.checked_add(1).ok_or(left)
+        };
         if let Singular::Delta { at, order } = self.sing {
-            return vec![SpectralAtom::new(
+            return Ok(vec![SpectralAtom::new(
                 self.c,
                 Factors::NONE,
                 Singular::Delta {
                     at,
-                    order: order + 1,
+                    order: next(order, Factor::Delta, LeftReason::Overflow)?,
                 },
                 self.origin,
-            )];
+            )]);
         }
         let f = self.factors();
         let mut out = Vec::new();
@@ -369,7 +374,7 @@ impl SpectralAtom {
         }
         if let Some(g) = self.gauss {
             let raised = Poly {
-                degree: poly.degree + 1,
+                degree: next(poly.degree, Factor::Polynomial, LeftReason::Overflow)?,
                 at: match poly.degree {
                     0 => 0.0,
                     _ => poly.at,
@@ -383,7 +388,7 @@ impl SpectralAtom {
                 self.c.scale(-f64::from(p.order)),
                 Factors {
                     pole: Some(Pole {
-                        order: p.order + 1,
+                        order: next(p.order, Factor::Pole, LeftReason::PoleOrder(u16::MAX))?,
                         ..p
                     }),
                     ..f
@@ -411,7 +416,7 @@ impl SpectralAtom {
                 ));
             }
         }
-        out
+        Ok(out)
     }
 
     /// Every field but `c`, `origin` and the line frequency: atoms alike under this key are

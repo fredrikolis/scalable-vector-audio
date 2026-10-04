@@ -60,13 +60,17 @@ fn edge_terms(
             ));
         }
         if !c.is_zero() {
+            let order = k.checked_add(1).ok_or_else(|| {
+                let sketch = AtomSketch::pair(Factor::Polynomial, Factor::Indicator);
+                Left::new(a.origin, sketch, LeftReason::PoleOrder(u16::MAX))
+            })?;
             out.push(SpectralAtom::new(
                 c,
                 Factors {
                     exp: Some(Exp::at(0.0, -TAU * edge)),
                     pole: Some(Pole {
                         at: pole,
-                        order: k + 1,
+                        order,
                         pv: false,
                     }),
                     ..Factors::NONE

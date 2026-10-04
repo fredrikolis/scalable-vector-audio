@@ -218,7 +218,16 @@ fn exact(
             };
             (Output::Pitch(vec![frame]), listed)
         }
-        Representation::Derivative => (Output::Symbolic(Box::new(d_dt(sum))), Listed::NONE),
+        Representation::Derivative => {
+            let slope = d_dt(sum).map_err(|left| {
+                EngineError::of_closed_form(
+                    &left.refusal(),
+                    render.tys.locate(left.origin),
+                    "read the derivative of a lower order or degree",
+                )
+            })?;
+            (Output::Symbolic(Box::new(slope)), Listed::NONE)
+        }
         Representation::Envelope { .. } => {
             let held =
                 refs::read_through(&render.tys, |t| envelope_read(sum, t)).map_err(|left| {
