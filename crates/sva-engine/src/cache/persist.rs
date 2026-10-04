@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use sva_formula::Hash;
+use sva_formula::{Hash, TABLE_VERSION};
 use sva_samples::{Buffer, Extent};
 
 use super::codec::{self, STORE_FORMAT};
@@ -14,7 +14,7 @@ use super::stored::{Header, Samples};
 pub const DEFAULT_STORE_BYTES: u64 = 2 << 30;
 
 fn version() -> String {
-    format!("sva store format {STORE_FORMAT}")
+    format!("sva store format {STORE_FORMAT} table {TABLE_VERSION}")
 }
 
 pub const INDEX_NAME: &str = "index";

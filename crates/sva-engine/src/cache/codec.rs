@@ -5,17 +5,23 @@ use sva_samples::{
     Buffer, Cost, Detail, Dropped, Extent, Grid, Label, PSYCHOACOUSTIC_V1, Rule, Source,
 };
 
-use sva_formula::Hash;
+use sva_formula::{Hash, TABLE_VERSION};
 
 use super::Stored;
 use super::stored::{Header, Laid, Samples};
 
 /// Bumped by, and only by, a change to a stored value's bytes or to the key it is stored under.
-pub const STORE_FORMAT: u32 = 30;
+pub const STORE_FORMAT: u32 = 31;
 
-/// Every entry opens with its format, so one another format wrote is never read as a value.
+/// Every entry opens with its format and dual table, so one another format or table wrote is
+/// never read as a value.
 fn entry_tag() -> Vec<u8> {
-    [&b"SVAh"[..], &STORE_FORMAT.to_le_bytes()].concat()
+    [
+        &b"SVAh"[..],
+        &STORE_FORMAT.to_le_bytes(),
+        &TABLE_VERSION.to_le_bytes(),
+    ]
+    .concat()
 }
 
 const STAGED_RUN: &[u8; 4] = b"SVAc";

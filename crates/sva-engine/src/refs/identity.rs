@@ -215,12 +215,7 @@ pub(super) fn when(sink: &mut Sink, typing: &Typing, at: &When) -> Result<(), En
     match at {
         When::At(time) => {
             sink.text("time");
-            for q in [time.scale, time.shift] {
-                sink.word(q.num() as u64);
-                sink.word((q.num() >> 64) as u64);
-                sink.word(q.den() as u64);
-                sink.word((q.den() >> 64) as u64);
-            }
+            affine(sink, *time);
         }
         When::Moving(id) => sink.hash(identity(typing, *id)?),
         When::Index(index) => exact(sink, *index),
@@ -278,10 +273,12 @@ fn affine(sink: &mut Sink, time: crate::time::Affine) {
     }
 }
 
+/// Both words of each side: a denominator reaches past 64 bits.
 fn rational(sink: &mut Sink, q: crate::time::Q) {
-    sink.word(q.num() as u64);
-    sink.word((q.num() >> 64) as u64);
-    sink.word(q.den() as u64);
+    for side in [q.num(), q.den()] {
+        sink.word(side as u64);
+        sink.word((side >> 64) as u64);
+    }
 }
 
 const IDENTITY_ROTATE: u32 = 23;
@@ -311,5 +308,26 @@ impl Sink {
 
     pub(super) fn finish(&self) -> Hash {
         self.0.finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Sink, rational};
+    use crate::time::Q;
+
+    fn named(q: Q) -> sva_formula::Hash {
+        let mut sink = Sink::new();
+        rational(&mut sink, q);
+        sink.finish()
+    }
+
+    /// Two denominators alike in their low 64 bits name two rationals.
+    #[test]
+    fn a_rational_is_named_by_its_whole_denominator() {
+        let low = (1_i128 << 64) + 3;
+        let a = Q::new(1, 3).expect("a rational");
+        let b = Q::new(1, low).expect("a rational");
+        assert_ne!(named(a), named(b));
     }
 }

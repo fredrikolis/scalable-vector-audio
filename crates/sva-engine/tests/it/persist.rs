@@ -13,6 +13,7 @@ use sva_engine::{
     Persisted, Placed, Range, Render, RenderConfig, Representation, STORE_FORMAT, Store, Stream,
     StreamConfig, Tier, change, render, render_over,
 };
+use sva_formula::TABLE_VERSION;
 
 const SECONDS: f64 = 0.05;
 const RATE: u32 = 8_000;
@@ -141,10 +142,58 @@ fn opening_over_another_formats_store_never_touches_its_files() {
     assert_eq!(disk(&store).bytes(), 0);
 }
 
-/// The index as every build at this format writes it for an empty store, whatever its engine
-/// version or sources: the bytes a store in a user's browser keeps across releases.
+/// The index as every build at this format and table writes it for an empty store, whatever its
+/// engine version or sources: the bytes a store in a user's browser keeps across releases.
 fn format_only() -> Vec<u8> {
-    format!("sva store format {STORE_FORMAT}\n").into_bytes()
+    format!("sva store format {STORE_FORMAT} table {TABLE_VERSION}\n").into_bytes()
+}
+
+/// A store a build with another dual table wrote opens empty: its values were computed under
+/// duals this build no longer has, though their keys and bytes read alike.
+#[test]
+fn a_store_another_table_wrote_opens_empty() {
+    let memory = Memory::default();
+    let graph = two_voices("table", 330);
+    let store = opened(&memory, u64::MAX);
+    rendered(&graph, &store);
+    now(store.persist()).expect("persisted");
+    let index = String::from_utf8(memory.bytes(INDEX_NAME).expect("an index")).expect("text");
+    let ours = format!("sva store format {STORE_FORMAT} table {TABLE_VERSION}\n");
+    let theirs = format!(
+        "sva store format {STORE_FORMAT} table {}\n",
+        TABLE_VERSION - 1
+    );
+    let rest = index
+        .strip_prefix(&ours)
+        .expect("the index names its table");
+    memory.set(INDEX_NAME, (theirs + rest).into_bytes());
+    for name in memory.entries() {
+        if name != INDEX_NAME {
+            let entry = memory.bytes(&name).expect("an entry");
+            memory.set(&name, under_table(entry, TABLE_VERSION - 1));
+        }
+    }
+
+    let reopened = opened(&memory, u64::MAX);
+    assert_eq!(disk(&reopened).bytes(), 0);
+    let warm = rendered(&graph, &reopened);
+    assert!(stats(&warm).computed() > 0, "{:?}", stats(&warm));
+}
+
+/// An entry's bytes as a build with dual table `table` writes them: its header's tag names the
+/// table, and the header's checksum covers the tag.
+fn under_table(mut entry: Vec<u8>, table: u64) -> Vec<u8> {
+    let head = 8 + u64::from_le_bytes(entry[..8].try_into().expect("a length")) as usize;
+    let tag = 8 + 4 + 4;
+    assert_eq!(&entry[8..12], b"SVAh");
+    entry[tag..tag + 8].copy_from_slice(&table.to_le_bytes());
+    let sum = entry[8..head - 8]
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+        });
+    entry[head - 8..head].copy_from_slice(&sum.to_le_bytes());
+    entry
 }
 
 /// A store another build wrote at this format, as a release that changes no stored value
@@ -159,7 +208,7 @@ fn a_store_survives_a_build_change_that_keeps_its_format() {
     let index = memory.bytes(INDEX_NAME).expect("an index");
     assert!(
         index.starts_with(&format_only()),
-        "the version is the format alone"
+        "the version is the format and the table"
     );
     let entries = memory.entries();
 
@@ -189,7 +238,7 @@ fn opening_a_store_reads_its_index_alone() {
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
-const PINNED: (u32, u64) = (30, 2098341567294331936);
+const PINNED: (u32, u64) = (31, 16909651181748062891);
 
 /// A change to how a value is encoded, or to what the engine computes for any construct here,
 /// fails this until `STORE_FORMAT` is bumped and the digest pinned again: rows, a filter, a

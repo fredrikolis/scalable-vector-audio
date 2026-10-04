@@ -368,27 +368,27 @@ impl<'a> Sink<'a> {
     fn formula(&mut self, f: &Body) {
         match f {
             Body::Const(c) => {
-                self.byte(0x10);
+                self.byte(tag::CONST);
                 self.c64(*c);
             }
-            Body::Line => self.byte(0x11),
+            Body::Line => self.byte(tag::LINE),
             Body::Index(i) => match self.bound.iter().rev().position(|b| b == i) {
                 Some(depth) => {
-                    self.byte(0x12);
+                    self.byte(tag::BOUND_INDEX);
                     self.u64(depth as u64);
                 }
                 None => {
                     assert!(self.free, "an index inside the series binding it");
-                    self.byte(0x29);
+                    self.byte(tag::FREE_INDEX);
                     self.u64(u64::from(i.0));
                 }
             },
             Body::Param(p) => {
-                self.byte(0x13);
+                self.byte(tag::PARAM);
                 self.u64(u64::from(p.0));
             }
             Body::Node(n) => {
-                self.byte(0x14);
+                self.byte(tag::NODE);
                 match self.node.as_mut().map(|named| named(*n)) {
                     Some(held) => {
                         self.u64(held.0);
@@ -398,30 +398,30 @@ impl<'a> Sink<'a> {
                 }
             }
             Body::Add(parts) => {
-                self.byte(0x15);
+                self.byte(tag::ADD);
                 self.commuting(parts);
             }
             Body::Mul(parts) => {
-                self.byte(0x16);
+                self.byte(tag::MUL);
                 self.commuting(parts);
             }
             Body::Div(a, b) => {
-                self.byte(0x17);
+                self.byte(tag::DIV);
                 self.child(&a.body);
                 self.child(&b.body);
             }
             Body::Pow(base, n) => {
-                self.byte(0x18);
+                self.byte(tag::POW);
                 self.child(&base.body);
                 self.i64(i64::from(*n));
             }
             Body::Apply(op, arg) => {
-                self.byte(0x19);
+                self.byte(tag::APPLY);
                 self.byte(unary_tag(*op));
                 self.child(&arg.body);
             }
             Body::Fold(op, args) => {
-                self.byte(0x1a);
+                self.byte(tag::FOLD);
                 self.byte(match op {
                     Fold::Max => 0,
                     Fold::Min => 1,
@@ -430,26 +430,26 @@ impl<'a> Sink<'a> {
                 self.parts(args);
             }
             Body::Delta { at, order } => {
-                self.byte(0x1b);
+                self.byte(tag::DELTA);
                 self.child(&at.body);
                 self.u64(u64::from(*order));
             }
             Body::Pv(at) => {
-                self.byte(0x1c);
+                self.byte(tag::PV);
                 self.child(&at.body);
             }
             Body::Warp { at, of } => {
-                self.byte(0x27);
+                self.byte(tag::WARP);
                 self.child(&at.body);
                 self.child(&of.body);
             }
             Body::Shift { by, of } => {
-                self.byte(0x1d);
+                self.byte(tag::SHIFT);
                 self.f64(*by);
                 self.child(&of.body);
             }
             Body::Deriv { order, of } => {
-                self.byte(0x1e);
+                self.byte(tag::DERIV);
                 self.u64(u64::from(*order));
                 self.child(&of.body);
             }
@@ -460,7 +460,7 @@ impl<'a> Sink<'a> {
                 rise,
                 fall,
             } => {
-                self.byte(0x1f);
+                self.byte(tag::CROP);
                 self.child(&of.body);
                 self.edge(*l);
                 self.edge(*r);
@@ -468,28 +468,28 @@ impl<'a> Sink<'a> {
                 self.f64(*fall);
             }
             Body::Join(parts) => {
-                self.byte(0x21);
+                self.byte(tag::JOIN);
                 self.parts(parts);
             }
             Body::Channel(of, k) => {
-                self.byte(0x22);
+                self.byte(tag::CHANNEL);
                 self.child(&of.body);
                 self.byte(*k);
             }
             Body::Rational(r) => {
-                self.byte(0x23);
+                self.byte(tag::RATIONAL);
                 self.rational(r);
             }
             Body::Series(s) => {
-                self.byte(0x24);
+                self.byte(tag::SERIES);
                 self.series(s);
             }
             Body::Modal(m) => {
-                self.byte(0x25);
+                self.byte(tag::MODAL);
                 self.modal(m);
             }
             Body::Run(run) => {
-                self.byte(0x28);
+                self.byte(tag::RUN);
                 self.f64(run.offset);
                 self.f64(run.step);
                 self.i64(run.first);
@@ -504,7 +504,7 @@ impl<'a> Sink<'a> {
                 }
             }
             Body::Banded(b) => {
-                self.byte(0x29);
+                self.byte(tag::BANDED);
                 self.series(&b.series);
                 for sum in [&b.slope, &b.offset] {
                     self.u64(sum.lanes.len() as u64);
@@ -517,7 +517,7 @@ impl<'a> Sink<'a> {
                 self.i64(b.widest);
             }
             Body::Keyed { seed, of } => {
-                self.byte(0x26);
+                self.byte(tag::KEYED);
                 self.u64(*seed);
                 self.child(&of.body);
             }
@@ -549,4 +549,79 @@ fn mix(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     z ^ (z >> 31)
+}
+
+/// The byte each body opens with: one per meaning, so no two bodies share a prefix.
+mod tag {
+    pub const CONST: u8 = 0x10;
+    pub const LINE: u8 = 0x11;
+    pub const BOUND_INDEX: u8 = 0x12;
+    pub const PARAM: u8 = 0x13;
+    pub const NODE: u8 = 0x14;
+    pub const ADD: u8 = 0x15;
+    pub const MUL: u8 = 0x16;
+    pub const DIV: u8 = 0x17;
+    pub const POW: u8 = 0x18;
+    pub const APPLY: u8 = 0x19;
+    pub const FOLD: u8 = 0x1a;
+    pub const DELTA: u8 = 0x1b;
+    pub const PV: u8 = 0x1c;
+    pub const SHIFT: u8 = 0x1d;
+    pub const DERIV: u8 = 0x1e;
+    pub const CROP: u8 = 0x1f;
+    pub const JOIN: u8 = 0x21;
+    pub const CHANNEL: u8 = 0x22;
+    pub const RATIONAL: u8 = 0x23;
+    pub const SERIES: u8 = 0x24;
+    pub const MODAL: u8 = 0x25;
+    pub const KEYED: u8 = 0x26;
+    pub const WARP: u8 = 0x27;
+    pub const RUN: u8 = 0x28;
+    pub const FREE_INDEX: u8 = 0x29;
+    pub const BANDED: u8 = 0x2a;
+
+    #[cfg(test)]
+    pub const ALL: [u8; 26] = [
+        CONST,
+        LINE,
+        BOUND_INDEX,
+        PARAM,
+        NODE,
+        ADD,
+        MUL,
+        DIV,
+        POW,
+        APPLY,
+        FOLD,
+        DELTA,
+        PV,
+        SHIFT,
+        DERIV,
+        CROP,
+        JOIN,
+        CHANNEL,
+        RATIONAL,
+        SERIES,
+        MODAL,
+        KEYED,
+        WARP,
+        RUN,
+        FREE_INDEX,
+        BANDED,
+    ];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tag;
+
+    /// A tag two bodies share makes the encoding ambiguous: a free index and a banded series
+    /// once both opened with 0x29.
+    #[test]
+    fn every_body_has_its_own_tag() {
+        let mut tags = tag::ALL.to_vec();
+        tags.sort_unstable();
+        tags.dedup();
+        assert_eq!(tags.len(), tag::ALL.len());
+    }
 }
