@@ -178,6 +178,26 @@ fn alias_scores_a_collapse_and_refuses_where_no_law_is_behind_it() {
     assert_eq!(refused.code(), "engine.alias_needs_a_closed_form");
 }
 
+/// A reading's reference is a value like any other, kept in the memory the render read: asked
+/// again, memory answers it, the same bits.
+#[test]
+fn an_alias_score_asked_again_reads_its_reference_from_memory() {
+    let g = graph_of(
+        "alias-again",
+        &[("node", "sample(tanh(sin(2*pi*3000*t)*4))\n")],
+    );
+    let tier = Tier::default();
+    let config = RenderConfig::seconds(8_192, 1.0);
+    let held = render(&g, "node", config, &tier).expect("a render");
+    let id = held.id("node").expect("the root");
+    let asked = Representation::Alias { oversample: 4 };
+    let first = answer(&held, id, asked).expect("a score");
+    let before = tier.counters().hits;
+    let again = answer(&held, id, asked).expect("a score");
+    assert!(tier.counters().hits > before, "{:?}", tier.counters());
+    assert_eq!(first, again);
+}
+
 /// The reference a score is against is the same node read on a finer grid by the route the
 /// node itself takes: a cropped vibrato sum the rows cannot place, which a render point samples,
 /// is scored rather than refused.

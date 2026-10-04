@@ -136,14 +136,15 @@ pub struct Render {
     /// Each node typed with every volatile parameter at its stand-in.
     pub(crate) stand_in_typed: Vec<String>,
     pub(crate) cut: Option<i64>,
+    /// What its readings ask past the samples it holds.
+    pub(crate) memory: Memory,
 }
 
 impl Render {
     pub(crate) fn shell(
-        tys: Typing,
-        root: NodeId,
-        config: RenderConfig,
-        schedule: Schedule,
+        (tys, root): (Typing, NodeId),
+        (config, schedule): (RenderConfig, Schedule),
+        memory: Memory,
     ) -> Self {
         Render {
             root,
@@ -165,6 +166,7 @@ impl Render {
             unslotted: None,
             stand_in_typed: Vec::new(),
             cut: None,
+            memory,
         }
     }
 
@@ -266,14 +268,14 @@ pub(crate) fn prepared(graph: &Graph, target: &str, rate: u32) -> Result<Prepare
 fn planned(
     (graph, target): (&Graph, &str),
     prepared: Prepared,
-    config: RenderConfig,
+    (config, memory): (RenderConfig, Memory),
 ) -> Result<Render, EngineError> {
     let Prepared {
         instances,
         tys,
         root,
     } = prepared;
-    let config = (config, &mut None);
+    let config = (config, &mut None, memory);
     let none = (None, &BTreeMap::new());
     planned_over((graph, target, &instances), (tys, root), config, none)
 }
@@ -281,7 +283,7 @@ fn planned(
 fn planned_over(
     (graph, target, instances): (&Graph, &str, &instantiate::Instances),
     (tys, root): (Typing, NodeId),
-    (config, stand_in): (RenderConfig, &mut Option<world::World>),
+    (config, stand_in, memory): (RenderConfig, &mut Option<world::World>, Memory),
     (decided, hits): (Option<end::End>, &BTreeMap<NodeId, Arc<Stored>>),
 ) -> Result<Render, EngineError> {
     let schedule = schedule::plan(&tys, root, &config.asks);
@@ -289,7 +291,7 @@ fn planned_over(
         .paths()
         .filter_map(|(path, id)| Some((id, resolved(instances, path)?)))
         .collect();
-    let mut held = Render::shell(tys, root, config, schedule);
+    let mut held = Render::shell((tys, root), (config, schedule), memory);
     held.bindings = bindings;
     ranged(&mut held, (decided, hits))?;
     let volatile = volatile::mark((graph, instances), &held, (target, stand_in))?;
@@ -306,7 +308,7 @@ pub fn plan(graph: &Graph, target: &str, config: RenderConfig) -> Result<Render,
     planned(
         (graph, target),
         prepared(graph, target, config.rate)?,
-        config,
+        (config, Memory::holding(0)),
     )
 }
 
@@ -548,8 +550,8 @@ pub(crate) fn finer(
     let profile = &render.config.profile;
     let mut table = Table::finer(&render.tys, node, &[node], profile, i128::from(fine))?;
     let at = table.root;
-    let memory = Memory::holding(0);
-    table.pull(over, (&memory, &mut Recording::over(&memory)))?;
+    let memory = &render.memory;
+    table.pull(over, (memory, &mut Recording::over(memory)))?;
     let mut held = table.samples(at, over);
     held.rate = render.config.rate * fine;
     Ok(held)
@@ -584,7 +586,7 @@ fn scored(held: &mut Render) -> Result<(), EngineError> {
     Ok(())
 }
 
-/// `render` with every read its own value, as if each were written out where it is read.
+/// `render` with every read its own value, over a memory keeping none.
 #[cfg(test)]
 pub(crate) fn render_apart(
     graph: &Graph,
@@ -594,7 +596,7 @@ pub(crate) fn render_apart(
     let mut held = planned(
         (graph, target),
         prepared(graph, target, config.rate)?,
-        config,
+        (config, Memory::holding(0)),
     )?;
     if let (Some(range), Some(_)) = (held.range, &held.table) {
         let wanted = held.schedule.wanted.clone();
@@ -602,7 +604,7 @@ pub(crate) fn render_apart(
         table.plan(range)?;
         held.table = Some(table);
     }
-    let memory = Memory::holding(0);
+    let memory = held.memory.clone();
     pulled(&mut held, (&memory, Recording::over(&memory)))?;
     Ok(held)
 }
@@ -610,8 +612,8 @@ pub(crate) fn render_apart(
 pub(crate) fn sampled(render: &Render, node: NodeId, over: Extent) -> Result<Buffer, EngineError> {
     let mut table = Table::build(&render.tys, node, &[node], &render.config.profile)?;
     let at = table.root;
-    let memory = Memory::holding(0);
-    table.pull(over, (&memory, &mut Recording::over(&memory)))?;
+    let memory = &render.memory;
+    table.pull(over, (memory, &mut Recording::over(memory)))?;
     Ok(table.samples(at, over))
 }
 

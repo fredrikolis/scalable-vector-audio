@@ -71,7 +71,7 @@ pub async fn render_in<B: Backend>(
     let tys = typed.clone();
     if dropped(&config) && found.held.contains_key(&root) {
         let schedule = schedule::plan(&tys, id, &config.asks);
-        let mut held = Render::shell(tys, id, config, schedule);
+        let mut held = Render::shell((tys, id), (config, schedule), memory.clone());
         let mut stats = recording.stats(memory);
         stats.typed = lowered;
         held.cache_stats = Some(stats);
@@ -85,7 +85,7 @@ pub async fn render_in<B: Backend>(
     let mut held = planned_over(
         (graph, target, instances),
         (tys, id),
-        (config, &mut *stand_in),
+        (config, &mut *stand_in, memory.clone()),
         (decided, &hits),
     )?;
     let mut retyped = lowered;
