@@ -48,8 +48,6 @@ pub(crate) struct Table {
     /// What each value costs over the whole range, as a pull pays it.
     pub(crate) planned: Vec<u128>,
     profile: Profile,
-    /// Each node pruned under the profile's level, and the sample it is zero from.
-    cuts: BTreeMap<NodeId, i64>,
     pub(crate) built: usize,
     pub(crate) supports: Memo,
     rooted: bool,
@@ -82,7 +80,6 @@ impl Table {
             wanted: Vec::new(),
             planned: Vec::new(),
             profile: *profile,
-            cuts: BTreeMap::new(),
             built: 0,
             supports: Memo::default(),
             rooted: false,
@@ -177,7 +174,7 @@ impl Table {
     ) -> Result<usize, EngineError> {
         let memo = std::mem::take(&mut self.supports);
         let profile = self.profile;
-        let supports = Supports::over(tys, &profile, Some(&memo));
+        let supports = Supports::over(tys, Some(&memo));
         let mut building = Building {
             tys,
             supports: &supports,
@@ -191,11 +188,9 @@ impl Table {
             table: self,
         };
         let built = building.node(id);
-        let cuts = supports.cuts();
         let more = supports.into_memo();
         self.supports = memo;
         self.supports.extend(more);
-        self.cuts.extend(cuts);
         built
     }
 
@@ -239,62 +234,6 @@ impl Table {
     pub(crate) fn moved(&self) -> f64 {
         let moved = self.values.iter().map(|(_, value)| value.moved);
         moved.fold(0.0, f64::max)
-    }
-
-    /// Each node cut, by name: those this table cut, and each node named as a cut a stored one
-    /// carries names.
-    pub(crate) fn pruned(&self, tys: &Typing) -> sva_samples::Pruned {
-        let own = self
-            .cuts
-            .iter()
-            .map(|(id, at)| (tys.name(*id).to_string(), *at));
-        let carried: Vec<(Hash, i64)> = self.carried().flat_map(|(_, cuts)| cuts).collect();
-        let named: Vec<(Hash, NodeId)> = match carried.is_empty() {
-            true => Vec::new(),
-            false => {
-                let named = tys
-                    .ids()
-                    .filter_map(|id| Some((refs::identity(tys, id).ok()?, id)));
-                named.collect()
-            }
-        };
-        let carried = carried.into_iter().flat_map(|(cut, at)| {
-            let held = named.iter().filter(move |(identity, _)| *identity == cut);
-            held.map(move |(_, id)| (tys.name(*id).to_string(), at))
-        });
-        sva_samples::Pruned {
-            db: self.profile.prune_db,
-            cuts: own
-                .chain(carried)
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect(),
-        }
-    }
-
-    /// Each node's own cuts, by what the node computes, a stored one's those it carries.
-    pub(crate) fn cuts_by_name(&self, tys: &Typing) -> HashMap<String, Vec<(Hash, i64)>> {
-        let mut out: HashMap<String, Vec<(Hash, i64)>> = HashMap::new();
-        for (id, at) in &self.cuts {
-            if let Ok(identity) = refs::identity(tys, *id) {
-                let name = tys.name(*id).to_string();
-                out.entry(name).or_default().push((identity, *at));
-            }
-        }
-        for (name, cuts) in self.carried() {
-            out.entry(name.to_string()).or_default().extend(cuts);
-        }
-        out
-    }
-
-    /// Each stored value's name and the cuts it carries.
-    fn carried(&self) -> impl Iterator<Item = (&str, impl Iterator<Item = (Hash, i64)>)> {
-        self.values
-            .iter()
-            .filter_map(|(_, value)| match &value.kind {
-                Kind::Resident(stored) => Some((value.name.as_str(), stored.cuts.iter().copied())),
-                _ => None,
-            })
     }
 
     pub(crate) fn of(&self, node: NodeId) -> Option<usize> {
@@ -716,9 +655,6 @@ impl Table {
     }
 
     fn forget(&mut self, freed: &[NodeId]) {
-        for id in freed {
-            self.cuts.remove(id);
-        }
         self.supports.forget(freed);
     }
 }

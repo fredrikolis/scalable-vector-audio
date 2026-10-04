@@ -36,7 +36,7 @@ impl Profile {
     }
 
     /// Every setting a value or its label depends on.
-    pub fn deciding(&self) -> [u64; 6] {
+    pub fn deciding(&self) -> [u64; 5] {
         let Profile {
             name,
             floor_db,
@@ -44,7 +44,7 @@ impl Profile {
             ceiling_hz,
             flop_budget: _,
             precision_bits,
-            prune_db,
+            prune_db: _,
         } = *self;
         let named = name.bytes().fold(0xcbf2_9ce4_8422_2325u64, |held, b| {
             (held ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
@@ -55,7 +55,6 @@ impl Profile {
             floor_db_above_5k.to_bits(),
             ceiling_hz.to_bits(),
             precision_bits as u64,
-            prune_db.to_bits(),
         ]
     }
 

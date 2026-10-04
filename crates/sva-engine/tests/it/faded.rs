@@ -1,15 +1,10 @@
-// Concern: proves a term proven under the profile's prune level is zero from there, reported, whole or streamed | Non-concern: deriving a bound | IO: (a composition, a profile) -> samples, the cut
+// Concern: proves an open render ends where its root is proven under the profile's prune level, and reports it | Non-concern: deriving a bound | IO: (a composition, a profile) -> samples, the cut
 
-use std::cell::RefCell;
-
-use crate::fixtures::{Now, added, graph_of, next, replaced};
+use crate::fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{
-    PSYCHOACOUSTIC_V1, Profile, Range, Render, RenderConfig, Stream, StreamConfig, Tier,
-};
+use sva_engine::{PSYCHOACOUSTIC_V1, Profile, Render, RenderConfig, Tier};
 
 const RATE: u32 = 8_000;
-const BLOCK: usize = 256;
 
 fn fades() -> Graph {
     graph_of(
@@ -27,7 +22,7 @@ fn fades() -> Graph {
 fn rendered(g: &Graph, target: &str, profile: Profile) -> Render {
     let config = RenderConfig {
         profile,
-        ..RenderConfig::seconds(RATE, 4.0)
+        ..RenderConfig::at(RATE)
     };
     sva_engine::render(g, target, config, &Tier::default())
         .unwrap_or_else(|e| panic!("{target}: {e}"))
@@ -57,10 +52,10 @@ fn at(profile_db: f64) -> Profile {
     }
 }
 
-/// `exp(-t/0.15)` falls under -120 dBFS a little past 2.07 s: the fade is exactly zero from
-/// the sample its bound stays under, and a sum reading it is the other addend alone there.
+/// `exp(-t/0.15)` falls under -120 dBFS a little past 2.07 s: an open render of the fade ends
+/// at the sample its bound stays under, and says so.
 #[test]
-fn a_decayed_term_is_zero_from_where_its_bound_stays_under_the_level() {
+fn a_decayed_sound_ends_where_its_bound_stays_under_the_level() {
     let g = fades();
     let fade = rendered(&g, "fade", PSYCHOACOUSTIC_V1);
     let pruned = fade.labels[&fade.root]
@@ -72,44 +67,8 @@ fn a_decayed_term_is_zero_from_where_its_bound_stays_under_the_level() {
     let seconds = from as f64 / f64::from(RATE);
     assert!((2.07..2.2).contains(&seconds), "cut at {seconds} s");
     let samples = plane(&fade);
-    let from = usize::try_from(from).expect("a cut inside the render");
-    assert!(samples[..from].iter().rev().take(40).any(|v| *v != 0.0));
-    assert!(
-        samples[from..].iter().all(|v| v.to_bits() == 0),
-        "zero past the cut"
-    );
-
-    let mix = plane(&rendered(&g, "mix", PSYCHOACOUSTIC_V1));
-    let tone = plane(&rendered(&g, "tone", PSYCHOACOUSTIC_V1));
-    for n in from..mix.len() {
-        assert_eq!(mix[n].to_bits(), tone[n].to_bits(), "sample {n}");
-    }
-}
-
-/// A sustained tone's bound never falls, and a loop has none: neither is cut.
-#[test]
-fn a_term_with_no_falling_bound_is_never_pruned() {
-    let g = fades();
-    let tone = rendered(&g, "tone", PSYCHOACOUSTIC_V1);
-    assert_eq!(cut(&tone, "tone"), None);
-    assert!(
-        plane(&tone)[4 * RATE as usize - 40..]
-            .iter()
-            .any(|v| *v != 0.0)
-    );
-    let echoed = rendered(&g, "echoed", PSYCHOACOUSTIC_V1);
-    let pruned = echoed.labels[&echoed.root]
-        .pruned
-        .clone()
-        .expect("a stated level");
-    assert!(
-        pruned
-            .cuts
-            .iter()
-            .all(|(node, _)| !node.starts_with("echo")),
-        "{:?}",
-        pruned.cuts
-    );
+    assert_eq!(samples.len() as i64, from, "it ends at its cut");
+    assert!(samples.iter().rev().take(40).any(|v| *v != 0.0));
 }
 
 /// A profile pruning at -60 dBFS cuts the fade at about half the time -120 does.
@@ -129,7 +88,7 @@ fn the_profile_s_level_moves_the_cut() {
     let seconds = early as f64 / f64::from(RATE);
     assert!((1.03..1.15).contains(&seconds), "cut at {seconds} s");
     assert!(early < late, "{early} before {late}");
-    assert!(plane(&loud)[early as usize..].iter().all(|v| *v == 0.0));
+    assert_eq!(plane(&loud).len() as i64, early);
     assert!(
         plane(&quiet)[early as usize..late as usize]
             .iter()
@@ -137,48 +96,25 @@ fn the_profile_s_level_moves_the_cut() {
     );
 }
 
-/// A held note let up by a key-up fade leaves `@notes` once its fade stays under -120 dBFS,
-/// with no remove, while a note still held sounds on.
+/// A closed interval renders its whole length: no node is cut under it, however quiet.
 #[test]
-fn a_faded_key_up_leaves_the_stream_s_sum_with_no_remove() {
-    let g = graph_of("faded-stream", &[("pad", "sin(2*pi*f0*t)\n")]);
-    let config = StreamConfig {
-        block: BLOCK,
-        channels: None,
-        render: RenderConfig {
-            range: Range {
-                start: Some(0),
-                end: Some(60 * i64::from(RATE)),
-            },
-            ..RenderConfig::at(RATE)
-        },
+fn a_closed_interval_cuts_nothing() {
+    let g = fades();
+    let closed = RenderConfig {
+        profile: PSYCHOACOUSTIC_V1,
+        ..RenderConfig::seconds(RATE, 4.0)
     };
-    let expr = |text: &str| sva_ast::parse_expr(text).unwrap_or_else(|e| panic!("{}", e.message));
-    let stream = Stream::open(&g, &expr("@notes"), config, &Tier::default()).now();
-    let stream = RefCell::new(stream.expect("opens"));
-    let blocks = |count: usize| {
-        for _ in 0..count {
-            let block = next(&mut stream.borrow_mut()).unwrap_or_else(|e| panic!("{e}"));
-            assert!(block.is_some(), "the stream plays on");
-        }
+    let mix = sva_engine::render(&g, "mix", closed, &Tier::default()).expect("a render");
+    let pruned = mix.labels[&mix.root]
+        .pruned
+        .clone()
+        .expect("a stated level");
+    assert!(pruned.cuts.is_empty(), "{:?}", pruned.cuts);
+    let exact = RenderConfig {
+        profile: at(f64::NEG_INFINITY),
+        ..RenderConfig::seconds(RATE, 4.0)
     };
-    let add = |text: &str| {
-        added(&stream, &g, &expr(text), &Tier::default())
-            .now()
-            .unwrap_or_else(|e| panic!("{e}"))
-    };
-    add("@pad(t, f0=300)");
-    let note = add("@pad(t, f0=200)");
-    blocks(4);
-    let up = stream.borrow().position();
-    let fade = format!("@pad(t, f0=200)*(1 - step(t - {up}sp)*(1 - exp(-(t - {up}sp)/0.15)))");
-    let held = replaced(&stream, &g, (note, &expr(&fade)), &Tier::default()).now();
-    assert_eq!(held.ok(), Some(true), "the note is held");
-    let terms = || stream.borrow().counts().terms;
-    let per_second = RATE as usize / BLOCK;
-    blocks(per_second);
-    assert_eq!(terms(), 2, "fading, a second after its key-up");
-    blocks(per_second + per_second / 2);
-    assert_eq!(terms(), 1, "under the level, 2.5 s after its key-up");
-    assert_eq!(stream.borrow().pruned().db, -120.0);
+    let unpruned = sva_engine::render(&g, "mix", exact, &Tier::default()).expect("a render");
+    let (a, b) = (plane(&mix), plane(&unpruned));
+    assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
 }

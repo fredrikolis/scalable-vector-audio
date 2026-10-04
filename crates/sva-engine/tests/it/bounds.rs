@@ -1,8 +1,8 @@
-// Concern: proves each cut a magnitude bound makes zeroes only samples the unpruned node holds under the prune level | Non-concern: where a cut lands (faded.rs) | IO: (a composition) -> cuts, samples
+// Concern: proves where a bound ends an open render, the root unpruned holds only samples under the prune level | Non-concern: where a cut lands (faded.rs) | IO: (a composition) -> cuts, samples
 
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{PSYCHOACOUSTIC_V1, Profile, Render, RenderConfig, Tier};
+use sva_engine::{PSYCHOACOUSTIC_V1, Profile, Range, Render, RenderConfig, Tier};
 
 const RATE: u32 = 8_000;
 
@@ -48,48 +48,58 @@ fn graph() -> Graph {
 }
 
 fn rendered(g: &Graph, target: &str, prune_db: f64) -> Render {
+    over(g, target, prune_db, RenderConfig::seconds(RATE, 4.0))
+        .unwrap_or_else(|e| panic!("{target}: {e}"))
+}
+
+fn over(
+    g: &Graph,
+    target: &str,
+    prune_db: f64,
+    config: RenderConfig,
+) -> Result<Render, sva_engine::EngineError> {
     let config = RenderConfig {
         profile: Profile {
             prune_db,
             ..PSYCHOACOUSTIC_V1
         },
-        ..RenderConfig::seconds(RATE, 4.0)
+        ..config
     };
     sva_engine::render(g, target, config, &Tier::default())
-        .unwrap_or_else(|e| panic!("{target}: {e}"))
 }
 
 fn plane(r: &Render) -> Vec<f64> {
     r.output(r.root).expect("the root").plane(0).to_vec()
 }
 
-/// No profile level is under zero: nothing is cut.
-fn unpruned(g: &Graph, node: &str) -> Vec<f64> {
-    plane(&rendered(g, &format!("s_{node}"), f64::NEG_INFINITY))
-}
-
-/// Every cut any render makes holds: the node it zeroes, rendered with nothing cut, stays
-/// under the level from its cut on.
+/// Every open render a bound ends holds: its root, rendered a second past the cut with nothing
+/// cut, stays under the level from the cut on.
 #[test]
 fn every_cut_zeroes_only_samples_under_the_prune_level() {
     let g = graph();
     let level = PSYCHOACOUSTIC_V1.prune_level();
     let (mut checked, mut wrong) = (0, Vec::new());
     for (name, _) in NODES {
-        let r = rendered(&g, &format!("s_{name}"), PSYCHOACOUSTIC_V1.prune_db);
+        let open = RenderConfig::at(RATE);
+        let Ok(r) = over(&g, name, PSYCHOACOUSTIC_V1.prune_db, open) else {
+            continue;
+        };
         let pruned = r.labels[&r.root].pruned.clone().expect("a stated level");
         for (node, from) in pruned.cuts {
-            let truth = unpruned(&g, &node);
+            assert_eq!(node, *name, "only the root is cut");
+            let reference = RenderConfig {
+                range: Range {
+                    start: Some(0),
+                    end: Some(from.max(0) + i64::from(RATE)),
+                },
+                ..RenderConfig::at(RATE)
+            };
+            let truth = over(&g, name, f64::NEG_INFINITY, reference).expect("a render");
+            let truth = plane(&truth);
             let from = usize::try_from(from.max(0)).expect("a sample");
-            let peak = truth
-                .get(from..)
-                .unwrap_or_default()
-                .iter()
-                .fold(0.0f64, |m, v| m.max(v.abs()));
+            let peak = truth[from..].iter().fold(0.0f64, |m, v| m.max(v.abs()));
             if peak >= level {
-                wrong.push(format!(
-                    "{node} cut from {from} under {name}, reaching {peak:e}"
-                ));
+                wrong.push(format!("{name} cut from {from}, reaching {peak:e}"));
             }
             checked += 1;
         }

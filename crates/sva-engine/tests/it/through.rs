@@ -55,7 +55,7 @@ fn an_index_of_a_time_held_in_refs_reads_the_step_nearest_it() {
         ("when", "@late(t) - 0.002s\n"),
         ("top", "@x[idx(@when(t))]\n"),
     ];
-    assert_eq!(digest(&files, "top", 0.1), 0x7898_7b4c_b8f2_a322);
+    assert_eq!(digest(&files, "top", 0.1), 0x74d1_93fc_31d2_926a);
 }
 
 /// A dashpot ramped in through refs switches where the crop it reads opens.
@@ -88,7 +88,7 @@ fn a_closed_loop_reads_each_ref_its_body_reads_at_each_terms_time() {
         ("pair", "@tone(t)*0.5 + @tone(t)*0.5\n"),
         ("top", "@pair(t) + 0.5*self(t - 17ms)\n"),
     ];
-    assert_eq!(digest(&files, "top", 0.5), 0x451a_bb5d_2453_5915);
+    assert_eq!(digest(&files, "top", 0.5), 0xa753_8c22_efde_c177);
 }
 
 /// A series term reading a closed form at its own instant renders the bits it does with that

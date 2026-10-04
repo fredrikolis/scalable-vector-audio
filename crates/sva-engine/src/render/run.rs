@@ -10,7 +10,7 @@ use sva_formula::{Hash, NodeId};
 use super::offer::{Offers, readable};
 use super::table::{self, Table};
 use super::world::{Reach, Reached, Walking, World};
-use super::{Render, RenderConfig, closed, driving, dropped, drove, planned_over};
+use super::{Render, RenderConfig, closed, driving, dropped, drove, ended, planned_over};
 use crate::cache::{Backend, Recording, Stored, Tier};
 use crate::error::EngineError;
 use crate::schedule;
@@ -63,6 +63,10 @@ pub async fn render_in<B: Backend>(
     let Session { own, stand_in } = session;
     let (world, root) = World::rendered(own, graph, target, config.rate)?;
     let (instances, typed) = (&world.instances, &world.typing);
+    let id = typed
+        .id(&root)
+        .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;
+    let (config, decided) = ended(typed, id, config);
     let order = schedule::schedule_from(instances, std::slice::from_ref(&root))?;
     let lowered = typed.lowered().to_vec();
     let keys = keys(world, &order, &config);
@@ -99,7 +103,7 @@ pub async fn render_in<B: Backend>(
             (graph, target, instances),
             (tys, id),
             (config.clone(), &mut *stand_in),
-            &bounds,
+            (&bounds, decided),
         )?;
         retyped.append(&mut held.stand_in_typed);
         let short = match (&mut held.table, held.range) {
@@ -122,7 +126,7 @@ pub async fn render_in<B: Backend>(
         opened.extend(short);
         found = walked(world, (&root, &config, &opened), (tier, round)).await;
     };
-    let mut offers = Offers::of(&mut held, (&keys, &found, &order), tier.memory());
+    let mut offers = Offers::of(&mut held, (&keys, &found), tier.memory());
     recording.found(std::mem::take(&mut found.lookups));
     let walked = recording.stats();
     match driving(&mut held, recording)? {

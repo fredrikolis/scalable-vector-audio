@@ -9,12 +9,12 @@ use sva_formula::closed_form::{Bound, Series, children, map_children};
 use sva_formula::series::{falls, mentions, mentions_line_read, ratio, substitute};
 use sva_formula::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom};
 use sva_formula::spectral_sum::merge::simplify;
-use sva_formula::spectral_sum::sup::{Fate, fate, sup_from};
+use sva_formula::spectral_sum::sup::sup_from;
 use sva_formula::table::series::{Shape, read_with};
 use sva_formula::through::{Read, looked};
 use sva_formula::{
     Banded, Body, C64, Codomain, Env, IndexId, Lane, NodeId, Opaque, ParamId, Part, Reads, Run,
-    SpectralSum, Ty, Unary, Var, d_dt, leading_read, lines_read, normalize_read,
+    SpectralSum, Ty, Unary, Var, d_dt, lines_read, normalize_read,
 };
 
 use crate::error::CollapseError;
@@ -80,12 +80,6 @@ pub fn spectral_sum_read(
     reads: &dyn Reads,
 ) -> Result<SpectralSum, CollapseError> {
     Terms::new(reads).spectral_sum(n, band)
-}
-
-/// A steady atom's magnitude `n`'s truncation keeps, found listing no series; `None` where
-/// truncating may refuse.
-pub fn steady_read(n: &SpectralSum, band: Audible, reads: &dyn Reads) -> Option<f64> {
-    Terms::new(reads).steady(n, band)
 }
 
 /// The same truncation over a written closed form, whose series a spectral sum never reached.
@@ -250,36 +244,6 @@ impl<'a> Terms<'a> {
             Some(e) => Err(e),
             None => Ok(out),
         }
-    }
-
-    /// Only a line under the ceiling counts, so a direct sum over the kept lines has one.
-    fn steady(&self, n: &SpectralSum, band: Audible) -> Option<f64> {
-        let in_band =
-            |a: &SpectralAtom| (a.exp.map_or(0.0, |e| e.omega) / TAU).abs() < band.ceiling;
-        let mut most = 0.0f64;
-        for lane in &n.lanes {
-            let steady = lane
-                .atoms
-                .iter()
-                .filter(|a| fate(a) == Fate::Steady && in_band(a));
-            most = steady.map(|a| a.c.abs()).fold(most, f64::max);
-            for s in &lane.series {
-                let (body, window) = sva_formula::crop_peeled(&looked(&s.term.body, self.reads));
-                let bare = Series {
-                    term: Part::new(s.term.origin, body),
-                    ..s.clone()
-                };
-                let Some(Shape::Lines(_)) = read_with(&bare.term.body, self.reads) else {
-                    return None;
-                };
-                let held = (band.ceiling, band.floor_db, band.precision);
-                let first = leading_read(&bare, held, self.reads)?;
-                if window.is_none() {
-                    most = first.iter().map(|l| l.amp.abs()).fold(most, f64::max);
-                }
-            }
-        }
-        (most > 0.0).then_some(most)
     }
 
     fn windowed_lines(

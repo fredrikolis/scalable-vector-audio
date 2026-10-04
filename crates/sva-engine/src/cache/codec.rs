@@ -11,7 +11,7 @@ use super::Stored;
 use super::stored::{Header, Laid, Samples};
 
 /// Bumped by, and only by, a change to a stored value's bytes or to the key it is stored under.
-pub const STORE_FORMAT: u32 = 37;
+pub const STORE_FORMAT: u32 = 38;
 
 /// Every entry opens with its format and dual table, so one another format or table wrote is
 /// never read as a value.
@@ -89,12 +89,6 @@ fn header(head: &Header, laid: &[Laid]) -> Vec<u8> {
     word(&mut out, stored.moved.to_bits());
     out.push(u8::from(stored.readable));
     out.push(u8::from(stored.sampled));
-    word(&mut out, stored.cuts.len() as u64);
-    for (cut, at) in &stored.cuts {
-        word(&mut out, cut.0);
-        word(&mut out, cut.1);
-        word(&mut out, *at as u64);
-    }
     match head.samples() {
         &Samples::Of { key, by } => {
             out.push(1);
@@ -152,10 +146,6 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Header, u64)> {
     let moved = f64::from_bits(r.word()?);
     let readable = r.flag()?;
     let sampled = r.flag()?;
-    let mut cuts = Vec::new();
-    for _ in 0..r.word()?.min(r.0.len() as u64) {
-        cuts.push((Hash(r.word()?, r.word()?), r.word()? as i64));
-    }
     let of = match r.byte()? {
         0 => None,
         1 => Some(Samples::Of {
@@ -210,7 +200,6 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Header, u64)> {
         moved,
         readable,
         sampled,
-        cuts,
         held: Vec::new(),
     };
     let whole = runs_whole(count, &samples) && r.0.is_empty();

@@ -238,12 +238,12 @@ fn opening_a_store_reads_its_index_alone() {
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
-const PINNED: (u32, u64) = (37, 6136142437736207630);
+const PINNED: (u32, u64) = (38, 15195602917633387970);
 
 /// A change to how a value is encoded, or to what the engine computes for any construct here,
 /// fails this until `STORE_FORMAT` is bumped and the digest pinned again: rows, a filter, a
 /// shifted read, a loop, a solver under a min-and-max ramp, a pointwise form, noise and a
-/// filter's pruned ringing.
+/// filter's ringing.
 #[test]
 fn what_a_store_writes_changes_only_with_its_format() {
     let damped = "chaigne_askenfelt(261.63, damper_r=0.1*crop(max(0, min(1, (t - 0.02s)/0.03s)), \
@@ -1753,10 +1753,10 @@ fn a_moving_index_read_of_a_stored_value_drops_nothing() {
     assert_eq!(hits, ["looped"], "the store answers it");
 }
 
-/// A fade the profile's prune level cuts where its bound falls under it: the level decides its
-/// samples, so a node stored at one level never answers a render at another.
+/// A fade the prune level would end: the level decides only where an open render stops, never
+/// a value's samples, so a node stored at one level answers a render at another.
 #[test]
-fn a_node_stored_at_one_prune_level_never_answers_another() {
+fn a_node_stored_at_one_prune_level_answers_another() {
     let graph = graph_of(
         "prune-keyed",
         &[("master", "sample(sin(2*pi*200*t)*exp(-t/0.02))\n")],
@@ -1780,7 +1780,7 @@ fn a_node_stored_at_one_prune_level_never_answers_another() {
         &opened(&memory, u64::MAX),
     ))
     .expect("a render");
-    assert!(stats(&warm).computed() > 0, "{:?}", stats(&warm));
+    assert_eq!(stats(&warm).computed(), 0, "{:?}", stats(&warm));
     let fresh = render(&graph, "master", at(-60.0), &Tier::default()).expect("a render");
     assert_eq!(bits(&warm), bits(&fresh));
 }
@@ -1850,10 +1850,10 @@ fn a_stored_closed_form_asked_for_its_law_is_never_answered_by_its_samples() {
     assert_eq!(read_off(&warm, &envelope), read_off(&fresh, &envelope));
 }
 
-/// The fade under `master` falls under the prune level and is cut: a render answered by the
-/// stored `master` states that cut, as the render that computed it did.
+/// The fade `master` reads falls under the prune level, so an open render of it ends there: one
+/// answered by the store ends where the one that computed it did, and says so.
 #[test]
-fn a_hit_states_the_cuts_that_shaped_its_samples() {
+fn a_hit_ends_an_open_render_where_the_render_that_stored_it_did() {
     let graph = graph_of(
         "cut-carried",
         &[
@@ -1863,7 +1863,7 @@ fn a_hit_states_the_cuts_that_shaped_its_samples() {
     );
     let memory = Memory::default();
     let store = opened(&memory, u64::MAX);
-    let config = RenderConfig::seconds(RATE, 1.0);
+    let config = RenderConfig::at(RATE);
     let cold = now(render_over(&graph, "master", config.clone(), &store)).expect("a render");
     now(store.persist()).expect("persisted");
     let cut = cold.labels[&cold.root]
@@ -1881,6 +1881,7 @@ fn a_hit_states_the_cuts_that_shaped_its_samples() {
     let warm = warm.expect("a render");
     assert_eq!(stats(&warm).computed(), 0, "{:?}", stats(&warm));
     assert_eq!(warm.labels[&warm.root], cold.labels[&cold.root]);
+    assert_eq!(bits(&warm), bits(&cold));
 }
 
 fn reads(memory: &Memory) -> usize {

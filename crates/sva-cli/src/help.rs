@@ -41,16 +41,16 @@ RENDER:
   f0=C4))`, reads that ref's interval and binds and the same node values.
 
   Every node is computed over its support met with what reads it, and nowhere
-  else: outside its support a node is exactly zero. One exception: a node whose
-  proven magnitude bound stays under the profile's prune level (-120 dBFS) from
-  a sample on is zero from there, with every branch only it keeps alive, and
-  a stream's term leaves `@notes` there; a node with no such bound (a held
-  sine, a loop) never is. The label's `pruned` states the level as `db` and
-  each node cut, `from` the sample it is zero from. A closed interval renders
-  exactly its length; an open one ends where the root's support does, at a
-  crop's end, at the prune point, or at the exact underflow of an `exp` a crop
-  opens. An open interval over a root whose support never ends (a held
-  sine, a physical solver) refuses as `render.no_end`. A short-time transform
+  else: outside its support a node is exactly zero. A closed interval renders
+  exactly its length, nothing cut. An open one ends where the root's support
+  does: a crop's end, the exact underflow of an `exp`, a clamp holding a factor
+  at zero; or earlier, where a proven bound on the root's magnitude stays under
+  the profile's prune level (-120 dBFS) from a sample on. A root with no such
+  bound (a held sine, a loop) is never cut. The label's `pruned` states the
+  level as `db` and the root's cut, `from` the sample the render ends at. A
+  stream's term leaves `@notes` where its support ends. An open interval over
+  a root whose support never ends and is never cut (a held sine, a physical
+  solver) refuses as `render.no_end`. A short-time transform
   reads its input whole, and refuses one with no end as
   `engine.unbounded_extent`; so does a form in `f` with no dual in `t` whose
   inverse never ends, which over any window would repeat at its length.
@@ -183,8 +183,9 @@ LINT:
            parameter-has-no-default
                                  a node reads a parameter no `name = value` line
                                  binds, so a bare `@node` cannot play
-           support-never-ends    a node's support, pruned at the profile's
-                                 floor, has no end for a bare render to stop at
+           support-never-ends    a node's support, cut where its bound falls
+                                 under the prune level, has no end for a bare
+                                 render to stop at
 
 TRACE:
   sva-cli trace <node|expression>

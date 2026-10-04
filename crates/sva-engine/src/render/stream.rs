@@ -9,6 +9,7 @@ use sva_formula::{Hash, NodeId};
 use sva_samples::{Buffer, Extent};
 
 use super::drive::{Block, Driver};
+use super::end::Ending;
 use super::table::Table;
 use super::table::support::Supports;
 use super::terms::{Handle, NOTES, Terms, cut, placed};
@@ -45,6 +46,8 @@ pub struct Stream {
     supports: BTreeMap<Handle, Extent>,
     /// The first sounding term's end, which `supports` evicts.
     ending: Option<Option<i64>>,
+    /// The sample a silence cut ends the stream's root at.
+    cut: Option<i64>,
     generation: u64,
     live: bool,
     dropped: Recent<String>,
@@ -105,6 +108,7 @@ impl Stream {
             width: 0,
             supports: BTreeMap::new(),
             ending: None,
+            cut: None,
             generation: 0,
             live: false,
             dropped: Recent::keeping(LATEST),
@@ -238,7 +242,7 @@ impl Stream {
             Walked::Planned(plan) => plan,
         };
         let built = self.built(&mut plan);
-        let (root, range) = match built {
+        let (root, range, cut) = match built {
             Ok(held) => held,
             Err(e) => {
                 let freed = self.world.abort();
@@ -257,6 +261,7 @@ impl Stream {
             self.driver.table.abort(&freed);
             return Ok(Attempt::Reads(wants));
         }
+        self.cut = cut;
         Ok(Attempt::Landed(self.land(
             prospect,
             (plan, root, range),
@@ -264,8 +269,8 @@ impl Stream {
         )))
     }
 
-    /// The plan typed and built: the root's value and its range.
-    fn built(&mut self, plan: &mut Plan) -> Result<(usize, Extent), EngineError> {
+    /// The plan typed and built: the root's value, its range, and where a cut ends it.
+    fn built(&mut self, plan: &mut Plan) -> Result<(usize, Extent, Option<i64>), EngineError> {
         let typing = &mut self.world.typing;
         let id = typing
             .id(STREAMED)
@@ -289,10 +294,14 @@ impl Stream {
                 render.range.start = Some(self.driver.start);
             }
         }
-        let profile = &self.config.render.profile;
-        let support = Supports::over(typing, profile, Some(&table.supports)).of(id);
-        let range = range_over((&render, STREAMED), support, Ends::Pulled)?;
-        Ok((root, range))
+        let supports = Supports::over(typing, Some(&table.supports));
+        let ending = Ending::new(typing, &render.profile, &supports);
+        let end = match (render.range.end, self.live) {
+            (None, false) => ending.of(id),
+            _ => ending.exact(id),
+        };
+        let range = range_over((&render, STREAMED), end.support, Ends::Pulled)?;
+        Ok((root, range, end.cut))
     }
 
     /// The change held, each value it made carrying on what it continues.
@@ -356,8 +365,7 @@ impl Stream {
         let Some(id) = typing.id(&handle.node()) else {
             return;
         };
-        let profile = &self.config.render.profile;
-        let support = Supports::over(typing, profile, Some(&self.driver.table.supports)).of(id);
+        let support = Supports::over(typing, Some(&self.driver.table.supports)).of(id);
         self.supports.insert(handle, support);
     }
 
@@ -487,7 +495,14 @@ impl Stream {
     }
 
     pub fn pruned(&self) -> sva_samples::Pruned {
-        self.driver.table.pruned(&self.world.typing)
+        sva_samples::Pruned {
+            db: self.config.render.profile.prune_db,
+            cuts: self
+                .cut
+                .map(|at| (STREAMED.to_string(), at))
+                .into_iter()
+                .collect(),
+        }
     }
 
     pub fn landed(&self, handle: Handle) -> Option<i64> {

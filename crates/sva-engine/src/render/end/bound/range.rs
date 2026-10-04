@@ -135,48 +135,6 @@ impl Range {
         }
     }
 
-    /// Where its span is `[-m, m]` at every instant: a magnitude `m` never falls under, each
-    /// node's own read by `node`. Scaling repeats the span's own roundings, which are monotone.
-    pub(super) fn floor(&self, node: &dyn Fn(NodeId) -> f64) -> Option<f64> {
-        let most = |parts: &[Range]| parts.iter().map(|p| p.floor(node)).try_fold(0.0, max);
-        match self {
-            Range::Node(id) => Some(node(*id)),
-            Range::Atoms(atoms) => Some(super::steady(atoms)),
-            Range::Run(..) => Some(0.0),
-            Range::Add(parts) => most(parts),
-            Range::Wide(parts) => Some(
-                parts
-                    .iter()
-                    .filter_map(|p| p.floor(node))
-                    .fold(0.0, f64::max),
-            ),
-            Range::Crop(of, _, r) if *r == f64::INFINITY => of.floor(node),
-            Range::Crop(..) => Some(0.0),
-            Range::Shift(of, _) => of.floor(node),
-            Range::Div(num, den) => match **den {
-                Range::Real(c) if c != 0.0 && c.is_finite() => {
-                    Some(num.floor(node)? * (1.0 / c).abs())
-                }
-                _ => None,
-            },
-            Range::Mul(parts) => {
-                let (mut constant, mut floor) = (1.0f64, None);
-                for part in parts {
-                    match (part, floor) {
-                        (Range::Real(c), None) => constant *= c,
-                        (Range::Real(c), Some(f)) => floor = Some(f * c.abs()),
-                        (other, None) if constant != 0.0 && constant.is_finite() => {
-                            floor = Some(other.floor(node)? * constant.abs());
-                        }
-                        _ => return None,
-                    }
-                }
-                floor
-            }
-            _ => None,
-        }
-    }
-
     /// Whether its span is monotone in each node's magnitude and scales with all at once.
     pub(super) fn linear(&self) -> bool {
         match self {
@@ -414,15 +372,10 @@ fn polynomial(a: &SpectralAtom) -> bool {
     a.c.im == 0.0 && a.exp.is_none() && a.gauss.is_none() && a.ind.is_none() && a.pole.is_none()
 }
 
-fn max(held: f64, floor: Option<f64>) -> Option<f64> {
-    Some(held.max(floor?))
-}
-
 fn real(f: &Body) -> bool {
     sva_formula::affine::axis(f, &Unread) == sva_formula::affine::Axis::Real
 }
 
-/// A node's own type is not read here, so it counts as complex.
 struct Unread;
 
 impl sva_formula::Env for Unread {
@@ -505,7 +458,8 @@ fn times(a: Span, b: Span) -> Span {
     Span::new(lo, hi, err + OP * (reach + err))
 }
 
-/// Each map is Lipschitz over the span its argument can reach, rounding and all.
+/// Each map is Lipschitz over the span its argument can reach, rounding and all; one into
+/// `[-1, 1]` errs at most 2.
 fn mapped(op: Unary, s: Span) -> Option<Span> {
     let (lo, hi, err) = (s.lo, s.hi, s.err);
     let next = |lo: f64, hi: f64, slope: f64| {
@@ -514,9 +468,14 @@ fn mapped(op: Unary, s: Span) -> Option<Span> {
     };
     match op {
         Unary::Exp => next(lo.exp(), hi.exp(), (hi + err).exp()),
-        Unary::Tanh => next(lo.tanh(), hi.tanh(), 1.0),
-        Unary::Sat => next(lo.clamp(-1.0, 1.0), hi.clamp(-1.0, 1.0), 1.0),
-        Unary::Sin | Unary::Cos => next(-1.0, 1.0, 1.0),
+        Unary::Tanh | Unary::Sat | Unary::Sin | Unary::Cos => {
+            let (lo, hi) = match op {
+                Unary::Tanh => (lo.tanh(), hi.tanh()),
+                Unary::Sat => (lo.clamp(-1.0, 1.0), hi.clamp(-1.0, 1.0)),
+                _ => (-1.0, 1.0),
+            };
+            Some(Span::new(lo, hi, err.min(2.0) + OP))
+        }
         Unary::Abs if lo >= 0.0 => next(lo, hi, 1.0),
         Unary::Abs if hi <= 0.0 => next(-hi, -lo, 1.0),
         Unary::Abs => next(0.0, hi.max(-lo), 1.0),

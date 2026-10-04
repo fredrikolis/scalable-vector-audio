@@ -225,7 +225,8 @@ fn a_count_prices_the_render_it_names() {
 }
 
 /// With pruning off, an open range ends where its root is exactly zero from: a ramp past its
-/// foot, and a decay where the engine's own `exp` underflows it.
+/// foot, a sample later where its line ties it, and a decay where the engine's own `exp`
+/// underflows it.
 #[test]
 fn a_ramp_and_a_decay_end_where_they_are_exactly_zero() {
     let g = graph_of(
@@ -246,7 +247,9 @@ fn a_ramp_and_a_decay_end_where_they_are_exactly_zero() {
         render(&g, target, exact.clone(), &Tier::default()).unwrap_or_else(|e| panic!("{e}"))
     };
     let ramp = open("ramp");
-    assert_eq!(ramp.range.expect("a range").end, 2 * i64::from(RATE));
+    let foot = 2 * i64::from(RATE);
+    let end = ramp.range.expect("a range").end;
+    assert!((foot..=foot + 1).contains(&end), "{end}");
 
     let decay = open("decay");
     let end = decay.range.expect("a range").end;
@@ -265,21 +268,11 @@ fn a_ramp_and_a_decay_end_where_they_are_exactly_zero() {
     assert!((end..end + i64::from(RATE)).all(|n| at(n).is_zero()));
 }
 
-/// Where the render's own label says `node` was cut.
-fn cut(r: &Render, node: &str) -> Option<i64> {
-    let pruned = r.labels[&r.root].pruned.clone().expect("a stated level");
-    pruned
-        .cuts
-        .iter()
-        .find(|(n, _)| n == node)
-        .map(|(_, at)| *at)
-}
-
 /// Twenty levels, each reading the one below 10 ms late, under a window of the top: each
-/// level is computed exactly over the window moved back by its depth, from where it starts to
-/// where it or a reader above it is cut, and not one sample outside.
+/// level is computed exactly over the window moved back by its depth, from where it starts,
+/// and not one sample outside.
 #[test]
-fn a_chain_under_a_window_computes_each_level_only_where_the_window_and_its_cuts_ask() {
+fn a_chain_under_a_window_computes_each_level_only_where_the_window_asks() {
     let depth = 20;
     let mut files = vec![(
         "c0".to_string(),
@@ -305,12 +298,9 @@ fn a_chain_under_a_window_computes_each_level_only_where_the_window_and_its_cuts
     let r = render(&g, &top, config, &Tier::default()).unwrap_or_else(|e| panic!("{e}"));
     let late = i64::from(RATE / 100);
     let back = |k: usize| (depth - k) as i64 * late;
-    let mut to = end;
     for k in (0..=depth).rev() {
         let name = format!("c{k}");
-        let cut = cut(&r, &name).expect("each level decays under the level");
-        to = to.min(cut + back(k));
-        let asked = Extent::new((start - back(k)).max(k as i64 * late), to - back(k));
+        let asked = Extent::new((start - back(k)).max(k as i64 * late), end - back(k));
         let computed = r.evaluated(r.id(&name).expect("a level"));
         match k {
             0 => assert!(
@@ -320,4 +310,41 @@ fn a_chain_under_a_window_computes_each_level_only_where_the_window_and_its_cuts
             _ => assert_eq!(computed, vec![asked], "{name}"),
         }
     }
+}
+
+/// A raised-cosine edge clamped shut holds its factor at exactly zero once its line passes
+/// the clamp: the tone it shapes is computed only up to there, and renders the bits it does
+/// with nothing cut.
+#[test]
+fn a_clamped_edge_ends_what_it_shapes_where_it_holds_zero() {
+    let shut = "(1 - (0.5 - 0.5*cos(pi*min(1, max(0, (t - 0.1)/0.03)))))";
+    let g = graph_of(
+        "pruning-clamp",
+        &[
+            ("tone", &format!("crop({shut}*sin(2*pi*200*t), 0s, 2s)\n")),
+            ("top", "sample(@tone(t))\n"),
+        ],
+    );
+    let config = |prune_db| RenderConfig {
+        profile: sva_engine::Profile {
+            prune_db,
+            ..sva_engine::PSYCHOACOUSTIC_V1
+        },
+        ..RenderConfig::seconds(RATE, 2.0)
+    };
+    let held = render(&g, "top", config(-120.0), &Tier::default()).expect("a render");
+    let tone = held.id("tone").expect("the tone");
+    let shut_at = (0.13 * f64::from(RATE)) as i64;
+    let computed = held.evaluated(tone);
+    assert!(!computed.is_empty(), "the tone is a value of its own");
+    assert!(
+        computed.iter().all(|e| e.end <= shut_at + 2),
+        "{computed:?} past {shut_at}"
+    );
+    let exact = render(&g, "top", config(f64::NEG_INFINITY), &Tier::default()).expect("a render");
+    let bits = |r: &Render| -> Vec<u64> {
+        let out = r.output(r.root).expect("the root");
+        out.plane(0).iter().map(|v| v.to_bits()).collect()
+    };
+    assert_eq!(bits(&held), bits(&exact));
 }

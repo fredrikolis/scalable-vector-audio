@@ -125,8 +125,8 @@ sva-cli render '@master' --representation samples=/tmp/song.wav --rate 48000
 `flops` counts the render before running it, 1,243,620 operations here against the profile's
 1e10 budget; a render over that budget refuses, naming the node that dominates. The second
 line writes 48 kHz float over the two seconds `master`'s crop holds. `'@master([0, 1s])'`
-names an interval; with none, a render ends where `master`'s support does, a term proven
-under -120 dBFS for good being zero, as the label's `pruned` states.
+names an interval, rendered whole; with none, a render ends where `master`'s support does,
+or earlier where `master` is proven under -120 dBFS for good, as the label's `pruned` states.
 `--until 'envelope(t) < -60db'` stops the render at the first frame under -60 dB.
 `ledger` prints rms, peak and clipped per node.
 

@@ -1,14 +1,13 @@
-// Concern: where each node can be nonzero or is pruned, in whole samples of its own clock | Non-concern: where a reader asks for it, deriving a bound | IO: (NodeId) -> Extent, a state's start, cuts
+// Concern: where each node can be nonzero, exactly, in whole samples of its own clock | Non-concern: where a reader asks for it, where a sound ends | IO: (NodeId) -> Extent, a state's start
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 
 use sva_formula::{Body, C64, Fold, NodeId, Unary, exp_zero_at};
-use sva_samples::{Extent, Grid, Profile, Round};
+use sva_samples::{Extent, Grid, Round};
 
 use crate::cast::Cast;
 use crate::refs::{PerNode, written_form};
-use crate::render::bound::{Tail, Tails};
 use crate::schedule;
 use crate::time::{Affine, Lattice, Q};
 use crate::typing::{Step, SumSlot, Typing, Value, When};
@@ -17,15 +16,9 @@ use crate::typing::{Step, SumSlot, Typing, Value, When};
 /// zero. A node is its own clock: a read's shift moves it by whole samples.
 pub(crate) struct Supports<'a> {
     tys: &'a Typing,
-    profile: &'a Profile,
     base: Option<&'a Memo>,
-    held: RefCell<HashMap<NodeId, Found>>,
+    held: RefCell<HashMap<NodeId, Extent>>,
     open: RefCell<BTreeSet<NodeId>>,
-    /// What each support being found asked, innermost last.
-    asking: RefCell<Vec<Vec<NodeId>>>,
-    /// Each node asked, or that one asked was found from.
-    asked: RefCell<BTreeSet<NodeId>>,
-    tails: Tails,
     reaches: RefCell<HashMap<Reach, Option<f64>>>,
     steady: PerNode<bool>,
     priming: Cell<bool>,
@@ -44,16 +37,9 @@ const SHIFTED: f64 = 1e80;
 /// Past `STEADY` plus `1e19` refs' shifts of `SHIFTED`.
 const REACHED: f64 = 1e100;
 
-/// Each support found, with its cut and the supports it was found from.
+/// Each support found.
 #[derive(Default)]
-pub(crate) struct Memo(HashMap<NodeId, Found>);
-
-#[derive(Clone)]
-struct Found {
-    support: Extent,
-    cut: Option<i64>,
-    from: Vec<NodeId>,
-}
+pub(crate) struct Memo(HashMap<NodeId, Extent>);
 
 impl Memo {
     pub(crate) fn extend(&mut self, more: Memo) {
@@ -69,20 +55,16 @@ impl Memo {
 }
 
 impl<'a> Supports<'a> {
-    pub(crate) fn new(tys: &'a Typing, profile: &'a Profile) -> Supports<'a> {
-        Supports::over(tys, profile, None)
+    pub(crate) fn new(tys: &'a Typing) -> Supports<'a> {
+        Supports::over(tys, None)
     }
 
-    pub(crate) fn over(tys: &'a Typing, profile: &'a Profile, base: Option<&'a Memo>) -> Self {
+    pub(crate) fn over(tys: &'a Typing, base: Option<&'a Memo>) -> Self {
         Supports {
             tys,
-            profile,
             base,
             held: RefCell::default(),
             open: RefCell::default(),
-            asking: RefCell::default(),
-            asked: RefCell::default(),
-            tails: Tails::default(),
             reaches: RefCell::default(),
             steady: PerNode::new(),
             priming: Cell::new(false),
@@ -90,29 +72,13 @@ impl<'a> Supports<'a> {
         }
     }
 
-    /// Each node asked that was pruned under the profile's level.
-    pub(crate) fn cuts(&self) -> BTreeMap<NodeId, i64> {
-        let asked = self.asked.borrow();
-        let cut = |id: &NodeId| Some((*id, self.found(*id)?.cut?));
-        asked.iter().filter_map(cut).collect()
-    }
-
     pub(crate) fn into_memo(self) -> Memo {
         Memo(self.held.into_inner())
     }
 
-    fn found(&self, id: NodeId) -> Option<Found> {
-        let held = self.held.borrow().get(&id).cloned();
-        held.or_else(|| self.base?.0.get(&id).cloned())
-    }
-
-    fn ask(&self, id: NodeId) {
-        let mut open = vec![id];
-        while let Some(id) = open.pop() {
-            if self.asked.borrow_mut().insert(id) {
-                open.extend(self.found(id).map_or(Vec::new(), |found| found.from));
-            }
-        }
+    fn found(&self, id: NodeId) -> Option<Extent> {
+        let held = self.held.borrow().get(&id).copied();
+        held.or_else(|| self.base?.0.get(&id).copied())
     }
 
     fn grid(&self, id: NodeId) -> Grid {
@@ -122,21 +88,15 @@ impl<'a> Supports<'a> {
     pub(crate) fn of(&self, id: NodeId) -> Extent {
         if let Some(missing) = self.probing.borrow_mut().as_mut() {
             return match self.found(id) {
-                Some(found) => found.support,
+                Some(support) => support,
                 None => {
                     missing.push(id);
                     Extent::EVERYWHERE
                 }
             };
         }
-        if let Some(asking) = self.asking.borrow_mut().last_mut() {
-            asking.push(id);
-        }
-        if let Some(found) = self.found(id) {
-            if !self.priming.get() {
-                self.ask(id);
-            }
-            return found.support;
+        if let Some(support) = self.found(id) {
+            return support;
         }
         if !self.priming.replace(true) {
             self.prime(id);
@@ -146,7 +106,7 @@ impl<'a> Supports<'a> {
     }
 
     /// Finds what finding `root` asks for, readers after what they read, so it recurses one
-    /// ref deep; a node no support reads is never bounded.
+    /// ref deep.
     fn prime(&self, root: NodeId) {
         let mut seen = BTreeSet::new();
         let mut open = vec![(root, false)];
@@ -168,7 +128,7 @@ impl<'a> Supports<'a> {
         }
     }
 
-    /// Probed: nothing is found or bounded.
+    /// Probed: nothing is found.
     fn asks(&self, id: NodeId) -> Vec<NodeId> {
         *self.probing.borrow_mut() = Some(Vec::new());
         self.exact(id);
@@ -186,24 +146,13 @@ impl<'a> Supports<'a> {
         schedule::holds_self(self.tys, id, &mut BTreeSet::new())
     }
 
-    /// Primed, none is asked: its reader asks what it was found from.
     fn fresh_of(&self, id: NodeId) -> Extent {
         if !self.open.borrow_mut().insert(id) {
             return Extent::EVERYWHERE;
         }
-        self.asking.borrow_mut().push(Vec::new());
-        let (support, cut) = match self.looping(id) {
-            true => (self.looped(id), None),
-            false => self.pruned(id, self.fresh(id)),
-        };
-        let support = self.retired(id).fold(support, Extent::hull);
-        let from = self.asking.borrow_mut().pop().expect("its own asks");
+        let support = self.retired(id).fold(self.exact(id), Extent::hull);
         self.open.borrow_mut().remove(&id);
-        if !self.priming.get() {
-            self.asked.borrow_mut().insert(id);
-        }
-        let found = Found { support, cut, from };
-        self.held.borrow_mut().insert(id, found);
+        self.held.borrow_mut().insert(id, support);
         support
     }
 
@@ -215,52 +164,6 @@ impl<'a> Supports<'a> {
             SumSlot::Retired(support) => Some(*support),
             SumSlot::Node(_) => None,
         })
-    }
-
-    /// The approved exception to exact supports: zero from a sample where its bound over every
-    /// later instant is under the prune level; first such sample where the bound falls
-    /// monotonically. A node with no such bound keeps its exact support.
-    fn pruned(&self, id: NodeId, exact: Extent) -> (Extent, Option<i64>) {
-        if exact.is_empty() {
-            return (exact, None);
-        }
-        let grid = self.grid(id);
-        let ends = |n: NodeId| {
-            let found = self.found(n).is_some() || !self.open.borrow().contains(&n);
-            (self.of(n), found)
-        };
-        let level = self.profile.prune_level();
-        let tail = Tail::of(self.tys, (self.profile, grid.rate), id, &ends, &self.tails);
-        let Some(tail) = tail.filter(|tail| tail.floor < level) else {
-            return (exact, None);
-        };
-        let under = |n: i64| tail.from(grid.instant(n), (self.tys, self.profile)) < level;
-        let last = exact.end.saturating_sub(1);
-        let from = exact.start.max(0).min(last);
-        let probe = |k: i32| from.saturating_add(grid.count(2f64.powi(k)).ceil() as i64);
-        let far = match exact.end {
-            i64::MAX => (0..40).map(probe).find(|n| under(*n)),
-            _ => under(last).then_some(last),
-        };
-        let Some(far) = far else {
-            return (exact, None);
-        };
-        let (mut no, mut yes) = (from, far);
-        if under(from) {
-            yes = from;
-        }
-        while yes - no > 1 {
-            let mid = no + (yes - no) / 2;
-            match under(mid) {
-                true => yes = mid,
-                false => no = mid,
-            }
-        }
-        let support = match exact.start < yes {
-            true => Extent::new(exact.start, yes),
-            false => Extent::NOWHERE,
-        };
-        (support, Some(yes))
     }
 
     /// A closed form a node wrote inside its own body, as a value of its own on `grid`.
@@ -364,7 +267,7 @@ impl<'a> Supports<'a> {
         let each = |parts: &[sva_formula::Part]| -> Vec<Extent> {
             parts.iter().map(|p| self.body(&p.body, grid)).collect()
         };
-        match body {
+        let found = match body {
             Body::Const(c) if *c == C64::ZERO => Extent::NOWHERE,
             Body::Node(id) => self.of(*id),
             Body::Add(parts) | Body::Join(parts) => {
@@ -377,7 +280,6 @@ impl<'a> Supports<'a> {
                 held.intersect(self.underflows(&factors(body), grid))
             }
             Body::Apply(Unary::Exp, _) => self.underflows(&[body], grid),
-            Body::Fold(Fold::Max, parts) => ramp(grid, parts),
             Body::Div(num, den) if matches!(*den.body, Body::Const(c) if c != C64::ZERO) => {
                 self.body(&num.body, grid)
             }
@@ -393,7 +295,8 @@ impl<'a> Supports<'a> {
             }
             Body::Channel(of, _) => self.body(&of.body, grid),
             _ => Extent::EVERYWHERE,
-        }
+        };
+        found.intersect(saturated(body, grid))
     }
 
     /// Where a form in `f` is nonzero in `t`: a product there is a convolution here, a shift a
@@ -667,42 +570,205 @@ fn crossing(from: f64, to: f64, holds: impl Fn(f64) -> bool) -> Option<f64> {
     Some(yes)
 }
 
-/// `max(0, v)` with `v` falling in `t` is exactly zero from the first sample whose instant
-/// reads `v` at or below zero.
-fn ramp(grid: Grid, parts: &[sva_formula::Part]) -> Extent {
-    let v = match parts {
-        [a, b] if matches!(*a.body, Body::Const(c) if c.re.to_bits() == 0 && c.im == 0.0) => {
-            &*b.body
-        }
-        [a, b] if matches!(*b.body, Body::Const(c) if c.re.to_bits() == 0 && c.im == 0.0) => {
-            &*a.body
-        }
-        _ => return Extent::EVERYWHERE,
-    };
-    let falls = real_polynomial(v).is_some() && monotone(v, &mut false);
-    let slope = sva_formula::affine::exact_affine(v).map(|(a, _)| a.re);
-    if !falls || !slope.is_some_and(|a| a < 0.0) {
+/// A form reading `t` only through clamps of one monotone line each is constant on each side
+/// where every clamp holds its bound; where that constant is exactly zero, so is the form,
+/// from the first sample every clamp holds it.
+fn saturated(body: &Body, grid: Grid) -> Extent {
+    let mut chains = Vec::new();
+    if !clamped(body, &mut chains) || chains.is_empty() {
         return Extent::EVERYWHERE;
     }
-    let at = |t: f64| {
-        sva_samples::eval_written_at(v, 0, sva_samples::At::Free(t), &Unread).map(|x| x.re)
+    let at = |b: &Body, n: i64| {
+        sva_samples::eval_written_at(b, 0, sva_samples::At::Sample(grid, n), &Unread).ok()
     };
-    let zero = |n: i64| at(grid.instant(n)).is_ok_and(|x| x <= 0.0);
+    let zero = |n: i64| at(body, n).is_some_and(|x| x.re == 0.0 && x.im == 0.0);
     let reach = 1i64 << 62;
-    match zero(reach) {
-        false => Extent::EVERYWHERE,
-        true => {
-            let (mut no, mut yes) = (-reach, reach);
-            while i128::from(yes) - i128::from(no) > 1 {
-                let mid = ((i128::from(no) + i128::from(yes)) / 2) as i64;
-                match zero(mid) {
-                    true => yes = mid,
-                    false => no = mid,
-                }
+    let side = |later: bool| -> Option<i64> {
+        if !zero(if later { reach } else { -reach }) {
+            return None;
+        }
+        let held = chains.iter().map(|c| c.held(grid, later));
+        let held = held.collect::<Option<Vec<i64>>>()?.into_iter();
+        let n = match later {
+            true => held.max(),
+            false => held.min(),
+        };
+        n.filter(|n| zero(*n))
+    };
+    let (end, start) = (side(true), side(false));
+    let start = start.map_or(i64::MIN, |n| n.saturating_add(1));
+    let end = end.unwrap_or(i64::MAX);
+    match start < end {
+        true => Extent::new(start, end),
+        false => Extent::NOWHERE,
+    }
+}
+
+/// A `min` or `max` of constants and one operand, itself a clamp or a line monotone in `t`.
+struct Clamp<'b> {
+    body: &'b Body,
+    rising: bool,
+}
+
+/// `false` where `body` reads `t` other than through a clamp.
+fn clamped<'b>(body: &'b Body, chains: &mut Vec<Clamp<'b>>) -> bool {
+    match body {
+        Body::Const(_) => true,
+        Body::Fold(Fold::Min | Fold::Max, _) => match rising(body) {
+            Some(rising) => {
+                chains.push(Clamp { body, rising });
+                true
             }
-            Extent::new(i64::MIN, yes)
+            None => false,
+        },
+        Body::Add(parts) | Body::Mul(parts) => parts.iter().all(|p| clamped(&p.body, chains)),
+        Body::Div(num, den) => clamped(&num.body, chains) && clamped(&den.body, chains),
+        Body::Pow(base, _) | Body::Apply(_, base) => clamped(&base.body, chains),
+        _ => false,
+    }
+}
+
+fn rising(body: &Body) -> Option<bool> {
+    let (_, operand) = clamp_of(body)?;
+    match operand {
+        Body::Fold(Fold::Min | Fold::Max, _) => rising(operand),
+        line => {
+            let (slope, _) = sva_formula::affine::exact_affine(line)?;
+            let moving = real_polynomial(line).is_some() && monotone(line, &mut false);
+            (moving && slope.im == 0.0 && slope.re != 0.0).then_some(slope.re > 0.0)
         }
     }
+}
+
+fn clamp_of(body: &Body) -> Option<(Fold, &Body)> {
+    let Body::Fold(fold @ (Fold::Min | Fold::Max), parts) = body else {
+        return None;
+    };
+    let mut operands = parts
+        .iter()
+        .filter(|p| !matches!(*p.body, Body::Const(c) if c.im == 0.0));
+    let operand = operands.next()?;
+    operands.next().is_none().then_some((*fold, &*operand.body))
+}
+
+impl Clamp<'_> {
+    /// The value it holds once its line passes every bound it meets going `up`.
+    fn bound(body: &Body, up: bool) -> Option<f64> {
+        let (fold, operand) = clamp_of(body)?;
+        let Body::Fold(_, parts) = body else {
+            return None;
+        };
+        let constants = parts.iter().filter_map(|p| match *p.body {
+            Body::Const(c) if c.im == 0.0 => Some(c.re),
+            _ => None,
+        });
+        let inner = match operand {
+            Body::Fold(..) => Clamp::bound(operand, up),
+            _ => None,
+        };
+        match (fold, inner, up) {
+            (Fold::Min, None, true) => Some(constants.fold(f64::INFINITY, f64::min)),
+            (Fold::Max, None, false) => Some(constants.fold(f64::NEG_INFINITY, f64::max)),
+            (Fold::Min, Some(x), _) => Some(constants.fold(x, f64::min)),
+            (Fold::Max, Some(x), _) => Some(constants.fold(x, f64::max)),
+            _ => None,
+        }
+    }
+
+    /// Towards `later` time, the first sample from which it holds its bound, or towards earlier
+    /// time the last up to which it does.
+    fn held(&self, grid: Grid, later: bool) -> Option<i64> {
+        let bound = Clamp::bound(self.body, later == self.rising)?;
+        let at = |n: i64| {
+            let x = sva_samples::eval_written_at(
+                self.body,
+                0,
+                sva_samples::At::Sample(grid, n),
+                &Unread,
+            );
+            x.is_ok_and(|x| x.im == 0.0 && x.re == bound)
+        };
+        let reach = 1i64 << 62;
+        let (inside, outside) = match later {
+            true => (reach, -reach),
+            false => (-reach, reach),
+        };
+        if !at(inside) {
+            return None;
+        }
+        if at(outside) {
+            return Some(outside);
+        }
+        let (mut no, mut yes) = (outside, inside);
+        while (i128::from(yes) - i128::from(no)).abs() > 1 {
+            let mid = ((i128::from(no) + i128::from(yes)) / 2) as i64;
+            match at(mid) {
+                true => yes = mid,
+                false => no = mid,
+            }
+        }
+        let step = if later { 1 } else { -1 };
+        (0..4)
+            .map(|k| yes + k * step)
+            .find(|n| self.firmly(grid, *n, later, bound))
+    }
+
+    /// Held at `n` with its line moved back towards the bound by sixteen times what any
+    /// evaluator of it errs: `k` roundings over terms no larger than its absolute form `m`
+    /// err at most `k*2^-52*m`, and an evaluator rounds at most its operations and eight more.
+    fn firmly(&self, grid: Grid, n: i64, later: bool, bound: f64) -> bool {
+        let mut line = self.body;
+        while let Some((_, operand)) = clamp_of(line) {
+            line = operand;
+        }
+        let t = grid.instant(n);
+        let (Some((a, _)), Some((m, ops))) =
+            (sva_formula::affine::exact_affine(line), absolute(line, t))
+        else {
+            return false;
+        };
+        let margin = f64::from(ops + 8) * 2f64.powi(-48) * m / a.re.abs();
+        let moved = if later { t - margin } else { t + margin };
+        let x = sva_samples::eval_written_at(self.body, 0, sva_samples::At::Free(moved), &Unread);
+        x.is_ok_and(|x| x.im == 0.0 && x.re == bound) && margin.is_finite()
+    }
+}
+
+/// A line's value with every constant and `t` at its magnitude, and the operations it takes.
+fn absolute(body: &Body, t: f64) -> Option<(f64, u32)> {
+    let each = |parts: &[sva_formula::Part]| {
+        parts
+            .iter()
+            .try_fold((Vec::new(), 0u32), |(mut held, ops), p| {
+                let (m, k) = absolute(&p.body, t)?;
+                held.push(m);
+                Some((held, ops + k + 1))
+            })
+    };
+    Some(match body {
+        Body::Const(c) => (c.abs(), 0),
+        Body::Line => (t.abs(), 0),
+        Body::Add(parts) => {
+            let (held, ops) = each(parts)?;
+            (held.iter().sum(), ops)
+        }
+        Body::Mul(parts) => {
+            let (held, ops) = each(parts)?;
+            (held.iter().product(), ops)
+        }
+        Body::Div(num, den) => {
+            let (m, k) = absolute(&num.body, t)?;
+            let Body::Const(c) = *den.body else {
+                return None;
+            };
+            (m / c.abs(), k + 1)
+        }
+        Body::Shift { by, of } => {
+            let (m, k) = absolute(&of.body, t.abs() + by.abs())?;
+            (m, k + 1)
+        }
+        _ => return None,
+    })
 }
 
 /// Built of steps each rising or falling with `t` alone, so its rounded value does too.

@@ -1,8 +1,8 @@
 // Concern: holds a composition's decided types, the buffers a reading needed and each label | Non-concern: computing a value (table/), what a reading asks (schedule.rs) | IO: (&Graph, target) -> Render
 
 mod answer;
-pub(crate) mod bound;
 mod drive;
+mod end;
 mod offer;
 mod run;
 mod slots;
@@ -27,6 +27,7 @@ use crate::query::Ask;
 use crate::refs;
 use crate::schedule::{self, Schedule};
 use crate::typing::{self, Typing};
+use end::Ending;
 use table::Table;
 use table::support::Supports;
 
@@ -134,6 +135,7 @@ pub struct Render {
     pub(crate) unslotted: Option<String>,
     /// Each node typed with every volatile parameter at its stand-in.
     pub(crate) stand_in_typed: Vec<String>,
+    pub(crate) cut: Option<i64>,
 }
 
 impl Render {
@@ -162,6 +164,7 @@ impl Render {
             computed: 0,
             unslotted: None,
             stand_in_typed: Vec::new(),
+            cut: None,
         }
     }
 
@@ -272,14 +275,19 @@ fn planned(
         root,
     } = prepared;
     let config = (config, &mut None);
-    planned_over((graph, target, &instances), (tys, root), config, bounds)
+    planned_over(
+        (graph, target, &instances),
+        (tys, root),
+        config,
+        (bounds, None),
+    )
 }
 
 fn planned_over(
     (graph, target, instances): (&Graph, &str, &instantiate::Instances),
     (tys, root): (Typing, NodeId),
     (config, stand_in): (RenderConfig, &mut Option<world::World>),
-    bounds: &BTreeSet<NodeId>,
+    (bounds, decided): (&BTreeSet<NodeId>, Option<end::End>),
 ) -> Result<Render, EngineError> {
     let schedule = schedule::plan(&tys, root, &config.asks);
     let bindings = tys
@@ -288,7 +296,7 @@ fn planned_over(
         .collect();
     let mut held = Render::shell(tys, root, config, schedule);
     held.bindings = bindings;
-    ranged(&mut held, bounds)?;
+    ranged(&mut held, bounds, decided)?;
     let volatile = volatile::mark((graph, instances), &held, (target, stand_in))?;
     if let Some(table) = &mut held.table {
         table.slots(|id| volatile.slot(id));
@@ -317,20 +325,41 @@ pub fn ends(
     let (instances, named) = instantiate::from_roots(graph, roots, config.rate)?;
     let order = schedule::schedule_from(&instances, &named)?;
     let tys = typing::infer_all(&instances, &order)?;
-    let supports = Supports::new(&tys, &config.profile);
+    let supports = Supports::new(&tys);
+    let ending = Ending::new(&tys, &config.profile, &supports);
     named
         .iter()
         .map(|held| {
             let id = tys
                 .id(held)
                 .ok_or_else(|| EngineError::UnknownNode(held.clone()))?;
-            Ok(default_end(supports.of(id)))
+            Ok(default_end(ending.of(id).support))
         })
         .collect()
 }
 
+/// An open render's end, found on what each node computes, never on what memory answers.
+pub(crate) fn ended(
+    tys: &Typing,
+    root: NodeId,
+    mut config: RenderConfig,
+) -> (RenderConfig, Option<end::End>) {
+    if config.range.end.is_some() {
+        return (config, None);
+    }
+    let supports = Supports::new(tys);
+    let end = Ending::new(tys, &config.profile, &supports).of(root);
+    config.range.end = default_end(end.support);
+    (config, Some(end))
+}
+
 /// A reading of samples or of their cost needs the range; lines and structure never do.
-fn ranged(held: &mut Render, bounds: &BTreeSet<NodeId>) -> Result<(), EngineError> {
+/// `decided`: where an open render's root ends, found before it was planned.
+fn ranged(
+    held: &mut Render,
+    bounds: &BTreeSet<NodeId>,
+    decided: Option<end::End>,
+) -> Result<(), EngineError> {
     let counts = counts(&held.config.asks);
     let envelope = held.config.asks.iter().any(|ask| {
         matches!(
@@ -342,8 +371,14 @@ fn ranged(held: &mut Render, bounds: &BTreeSet<NodeId>) -> Result<(), EngineErro
     if !tabled && !envelope {
         return Ok(());
     }
-    let supports = Supports::new(&held.tys, &held.config.profile);
-    let support = supports.of(held.root);
+    let supports = Supports::new(&held.tys);
+    let end = match (held.config.range.end, decided) {
+        (_, Some(end)) => end,
+        (Some(_), None) => Ending::new(&held.tys, &held.config.profile, &supports).exact(held.root),
+        (None, None) => Ending::new(&held.tys, &held.config.profile, &supports).of(held.root),
+    };
+    held.cut = end.cut;
+    let support = end.support;
     let range = range_over(
         (&held.config, held.tys.name(held.root)),
         support,
@@ -589,10 +624,15 @@ fn stamp(held: &mut Render) {
         return;
     };
     let counted = crate::flops::total(held);
+    let cut = held.cut.map(|at| (held.tys.name(root).to_string(), at));
+    let pruned = sva_samples::Pruned {
+        db: held.config.profile.prune_db,
+        cuts: cut.into_iter().collect(),
+    };
     let label = sva_samples::Label {
         rate: held.config.rate,
         moved: held.table.as_ref().map(Table::moved),
-        pruned: held.table.as_ref().map(|table| table.pruned(&held.tys)),
+        pruned: Some(pruned),
         ..label.costing(counted, held.config.budget())
     };
     held.labels.insert(root, label);

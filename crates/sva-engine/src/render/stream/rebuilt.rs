@@ -79,23 +79,10 @@ fn tables(
     out: &mut Vec<String>,
 ) {
     let (mine, theirs) = (reached(a, a_root), reached(b, b_root));
-    let cuts = |table: &Table, tys: &Typing| {
-        let mut cuts = table.pruned(tys).cuts;
-        cuts.sort();
-        cuts
+    let shape = |table: &Table, held: &BTreeMap<_, usize>, root: usize| {
+        (held.len(), table.moved(), table.values[root].key)
     };
-    let shape = |table: &Table, tys: &Typing, held: &BTreeMap<_, usize>, root: usize| {
-        (
-            held.len(),
-            cuts(table, tys),
-            table.moved(),
-            table.values[root].key,
-        )
-    };
-    let (x, y) = (
-        shape(a, a_tys, &mine, a_root),
-        shape(b, b_tys, &theirs, b_root),
-    );
+    let (x, y) = (shape(a, &mine, a_root), shape(b, &theirs, b_root));
     if x != y {
         out.push(format!("a table of {x:?}, not {y:?}"));
         return;

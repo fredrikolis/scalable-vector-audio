@@ -19,7 +19,6 @@ pub struct Stored {
     pub moved: f64,
     pub readable: bool,
     pub sampled: bool,
-    pub cuts: Vec<(Hash, i64)>,
     pub(crate) held: Vec<Extent>,
 }
 
