@@ -1,10 +1,15 @@
-// Concern: proves an open render ends where its root is proven under the profile's prune level, and reports it | Non-concern: deriving a bound | IO: (a composition, a profile) -> samples, the cut
+// Concern: proves an open render, or a stream's term, ends where its bound at the root is under the prune level | Non-concern: deriving a bound | IO: (a composition, a profile) -> samples, the cut
 
-use crate::fixtures::graph_of;
+use std::cell::RefCell;
+
+use crate::fixtures::{Now, added, graph_of, next, replaced};
 use sva_ast::Graph;
-use sva_engine::{PSYCHOACOUSTIC_V1, Profile, Render, RenderConfig, Tier};
+use sva_engine::{
+    PSYCHOACOUSTIC_V1, Profile, Range, Render, RenderConfig, Stream, StreamConfig, Tier,
+};
 
 const RATE: u32 = 8_000;
+const BLOCK: usize = 256;
 
 fn fades() -> Graph {
     graph_of(
@@ -117,4 +122,101 @@ fn a_closed_interval_cuts_nothing() {
     let unpruned = sva_engine::render(&g, "mix", exact, &Tier::default()).expect("a render");
     let (a, b) = (plane(&mix), plane(&unpruned));
     assert!(a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits()));
+}
+
+/// A held note let up by a key-up fade leaves `@notes` once its fade, heard at the root, stays
+/// under -120 dBFS, with no remove, while a note still held sounds on: read bare, or through a
+/// filter whose gain the bound carries.
+#[test]
+fn a_faded_key_up_leaves_the_stream_s_sum_with_no_remove() {
+    for target in ["@notes", "2*lowpass(sample(@notes), cutoff=3000)"] {
+        let g = graph_of("faded-stream", &[("pad", "sin(2*pi*f0*t)\n")]);
+        let config = StreamConfig {
+            block: BLOCK,
+            channels: None,
+            render: RenderConfig {
+                range: Range {
+                    start: Some(0),
+                    end: Some(60 * i64::from(RATE)),
+                },
+                ..RenderConfig::at(RATE)
+            },
+        };
+        let expr =
+            |text: &str| sva_ast::parse_expr(text).unwrap_or_else(|e| panic!("{}", e.message));
+        let stream = Stream::open(&g, &expr(target), config, &Tier::default()).now();
+        let stream = RefCell::new(stream.expect("opens"));
+        let blocks = |count: usize| {
+            for _ in 0..count {
+                let block = next(&mut stream.borrow_mut()).unwrap_or_else(|e| panic!("{e}"));
+                assert!(block.is_some(), "the stream plays on");
+            }
+        };
+        let add = |text: &str| {
+            added(&stream, &g, &expr(text), &Tier::default())
+                .now()
+                .unwrap_or_else(|e| panic!("{e}"))
+        };
+        add("@pad(t, f0=300)");
+        let note = add("@pad(t, f0=200)");
+        blocks(4);
+        let up = stream.borrow().position();
+        let fade = format!("@pad(t, f0=200)*(1 - step(t - {up}sp)*(1 - exp(-(t - {up}sp)/0.15)))");
+        let held = replaced(&stream, &g, (note, &expr(&fade)), &Tier::default()).now();
+        assert_eq!(held.ok(), Some(true), "the note is held");
+        let terms = || stream.borrow().counts().terms;
+        let per_second = RATE as usize / BLOCK;
+        blocks(per_second);
+        assert_eq!(terms(), 2, "{target}: fading, a second after its key-up");
+        blocks(per_second + per_second / 2);
+        assert_eq!(
+            terms(),
+            1,
+            "{target}: under the level, 2.5 s after its key-up"
+        );
+        assert_eq!(stream.borrow().pruned().db, -120.0);
+    }
+}
+
+/// Notes each falling under the level leave the sum early only while all that left early,
+/// summed at the root, stay under it: decaying notes sounding as one, every 32nd of a second,
+/// differ from the stream with cuts off by less than the level, and few sound at once.
+#[test]
+fn notes_let_go_early_stay_under_the_level_together() {
+    let g = graph_of("faded-together", &[("pad", "sin(2*pi*f0*t)\n")]);
+    let played = |prune_db: f64| {
+        let config = StreamConfig {
+            block: 50,
+            channels: None,
+            render: RenderConfig {
+                profile: at(prune_db),
+                ..RenderConfig::at(RATE)
+            },
+        };
+        let expr =
+            |text: &str| sva_ast::parse_expr(text).unwrap_or_else(|e| panic!("{}", e.message));
+        let stream = Stream::open(&g, &expr("@notes"), config, &Tier::default()).now();
+        let stream = RefCell::new(stream.expect("opens"));
+        let (mut samples, mut most) = (Vec::new(), 0);
+        for _ in 0..160 {
+            let at = stream.borrow().position();
+            let note = expr(&format!("0.2*exp(-(t - {at}sp)/0.05)"));
+            added(&stream, &g, &note, &Tier::default())
+                .now()
+                .unwrap_or_else(|e| panic!("{e}"));
+            for _ in 0..5 {
+                let block = next(&mut stream.borrow_mut()).unwrap_or_else(|e| panic!("{e}"));
+                samples.extend_from_slice(block.expect("plays on").plane(0));
+            }
+            most = most.max(stream.borrow().counts().terms);
+        }
+        (samples, most, stream.borrow().counts().terms)
+    };
+    let (pruned, most, _) = played(-120.0);
+    let (exact, _, kept) = played(f64::NEG_INFINITY);
+    assert_eq!(kept, 160, "with cuts off every note stays");
+    assert!(most < 40, "{most} sound at once");
+    let moved = pruned.iter().zip(&exact).map(|(a, b)| (a - b).abs());
+    let moved = moved.fold(0.0f64, f64::max);
+    assert!(moved > 0.0 && moved < 1e-6, "the root moved {moved}");
 }

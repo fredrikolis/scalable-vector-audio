@@ -9,7 +9,7 @@ use sva_formula::{Hash, NodeId};
 use sva_samples::{Buffer, Extent};
 
 use super::drive::{Block, Driver};
-use super::end::Ending;
+use super::end::{Ending, Fading, Heard, under};
 use super::table::Table;
 use super::table::support::Supports;
 use super::terms::{Handle, NOTES, Terms, cut, placed};
@@ -43,8 +43,13 @@ pub struct Stream {
     expr: Expr,
     terms: Terms,
     width: usize,
-    supports: BTreeMap<Handle, Extent>,
-    /// The first sounding term's end, which `supports` evicts.
+    /// Each sounding term as heard at the root, through `gain` from the note sum.
+    heard: BTreeMap<Handle, Heard>,
+    gain: Option<f64>,
+    /// Each term retired before its support ended.
+    fading: Vec<Fading>,
+    faded: f64,
+    /// The first sounding term's end, which `heard` evicts.
     ending: Option<Option<i64>>,
     /// The sample a silence cut ends the stream's root at.
     cut: Option<i64>,
@@ -106,7 +111,10 @@ impl Stream {
             expr: target.clone(),
             terms: Terms::default(),
             width: 0,
-            supports: BTreeMap::new(),
+            heard: BTreeMap::new(),
+            gain: None,
+            fading: Vec::new(),
+            faded: 0.0,
             ending: None,
             cut: None,
             generation: 0,
@@ -337,9 +345,7 @@ impl Stream {
         if let Changed::Added(handle) = prospect.answer {
             self.terms.land(handle, self.driver.at);
         }
-        if let Some((handle, _)) = prospect.term {
-            self.supported(handle);
-        }
+        self.hear();
         self.built = Built {
             parsed: prospect.parsed + plan.adopted,
             instances: plan.named,
@@ -354,19 +360,26 @@ impl Stream {
         prospect.answer
     }
 
-    /// `handle`'s support, where it still sounds.
-    fn supported(&mut self, handle: Handle) {
-        self.supports.remove(&handle);
-        self.ending = None;
-        if !self.terms.handles().any(|h| h == handle) {
-            return;
-        }
+    /// A term is its own sound, judged at the root through the note sum's gain to it.
+    fn hear(&mut self) {
         let typing = &self.world.typing;
-        let Some(id) = typing.id(&handle.node()) else {
-            return;
+        let supports = Supports::over(typing, Some(&self.driver.table.supports));
+        let ending = Ending::new(typing, &self.config.render.profile, &supports);
+        let gain = match (typing.id(STREAMED), typing.id(NOTES)) {
+            (Some(root), Some(notes)) => ending.gain(root, notes),
+            _ => None,
         };
-        let support = Supports::over(typing, Some(&self.driver.table.supports)).of(id);
-        self.supports.insert(handle, support);
+        let moved = gain != std::mem::replace(&mut self.gain, gain);
+        let lowered: BTreeSet<&str> = typing.lowered().iter().map(String::as_str).collect();
+        for handle in self.terms.handles() {
+            let node = handle.node();
+            if !moved && !lowered.contains(node.as_str()) && self.heard.contains_key(&handle) {
+                continue;
+            }
+            let id = typing.id(&node).expect("a sounding term is typed");
+            self.heard.insert(handle, ending.heard(id, gain));
+        }
+        self.ending = None;
     }
 
     fn needs(&self) -> Vec<(Hash, Extent)> {
@@ -446,14 +459,14 @@ impl Stream {
         }
     }
 
-    /// Retires every term whose support ended by now and before the first sample of `notes`
-    /// the root asks from now on; nothing is worked out until a support can have ended.
+    /// Retires every term silent at the root by now and from the first sample of `notes` the
+    /// root asks, while all it retired early, summed through the gain, stay under the level.
     fn prune(&mut self) {
         let now = self.driver.at;
-        let supports = &self.supports;
+        let heard = &self.heard;
         let ending = *self
             .ending
-            .get_or_insert_with(|| supports.values().map(|s| s.end).min());
+            .get_or_insert_with(|| heard.values().map(|h| h.support.end).min());
         if ending.is_none_or(|end| end > now) {
             return;
         }
@@ -468,18 +481,53 @@ impl Stream {
             Some(_) => None,
             None => Some(i64::MIN),
         };
-        let supports = &self.supports;
-        let gone = |handle: Handle| {
-            let support = supports.get(&handle);
-            support.is_some_and(|s| s.end <= now && asked.is_none_or(|from| s.end <= from))
-        };
-        let support = |handle: Handle| supports.get(&handle).copied();
-        let went = self.terms.retire(&gone, &support);
+        let level = self.config.render.profile.prune_level();
+        let gain = self.gain.unwrap_or(f64::INFINITY);
+        if let Some(from) = asked {
+            // Far under the level, a bound joins one sum, so the list stays short.
+            let let_go = level * 2f64.powi(-30);
+            let mut faded = self.faded;
+            self.fading.retain(|f| match f.from(from) {
+                b if b <= let_go => {
+                    faded = (faded + b) * (1.0 + f64::EPSILON);
+                    false
+                }
+                _ => true,
+            });
+            self.faded = faded;
+        }
+        let mut gone = BTreeSet::new();
+        for (handle, h) in &self.heard {
+            let end = h.support.end;
+            if end > now || asked.is_some_and(|from| end > from) {
+                continue;
+            }
+            let (Some(from), Some(fading)) = (asked, &h.fading) else {
+                gone.insert(*handle);
+                continue;
+            };
+            let own = fading.from(from);
+            if own > 0.0 {
+                let left: f64 = self.fading.iter().map(|f| f.from(from)).sum();
+                let ops = self.fading.len() as f64 + 3.0;
+                let left = (self.faded + left + own) * (1.0 + ops * f64::EPSILON);
+                if !under(gain, left, level) {
+                    continue;
+                }
+                self.fading.push(fading.clone());
+            }
+            gone.insert(*handle);
+        }
+        let heard = &self.heard;
+        let support = |handle: Handle| heard.get(&handle).map(|h| h.support);
+        let went = self
+            .terms
+            .retire(&|handle| gone.contains(&handle), &support);
         if !went.is_empty() {
             self.generation += 1;
         }
         for handle in went {
-            self.supports.remove(&handle);
+            self.heard.remove(&handle);
             self.ending = None;
         }
     }

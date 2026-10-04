@@ -1,4 +1,4 @@
-// Concern: bounds a fixed biquad's output and its ringing as its input ends or falls | Non-concern: a moving parameter, the input's own bound | IO: (Coeffs, input bound, end) -> a bound per sample
+// Concern: bounds a fixed biquad's output, its ringing and its gain | Non-concern: a moving parameter, the input's own bound | IO: (Coeffs, input bound, end) -> a bound per sample, a gain
 
 use sva_samples::biquad::Coeffs;
 
@@ -111,6 +111,32 @@ impl Ringing {
     }
 }
 
+/// Bounds `sum|h|`: computed taps, then the envelope's tail. Each `g` errs `<= GAMMA*(|a1 g1| +
+/// |a2 g2|)`, so `sum|g - g'| <= carried*GAMMA*feedback*sum|g'|`; each `h` adds `GAMMA*sum|b g'|`.
+pub(super) fn moved(c: &Coeffs) -> Option<f64> {
+    let decay = Envelope::of(c.a1, c.a2)?;
+    let gain = c.b0.abs() + c.b1.abs() + c.b2.abs();
+    let feedback = c.a1.abs() + c.a2.abs();
+    let carried = decay.sum();
+    let (mut g1, mut g2, mut taps, mut held) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    let mut n: i64 = 0;
+    let tail = loop {
+        let g = if n == 0 { 1.0 } else { -c.a1 * g1 - c.a2 * g2 };
+        held += (c.b0 * g + c.b1 * g1 + c.b2 * g2).abs();
+        taps += g.abs();
+        (g2, g1) = (g1, g);
+        n += 1;
+        let tail = gain * decay.tail(n - 2);
+        if (n % 64 == 0 && tail <= held * 2f64.powi(-40)) || n >= 1 << 16 {
+            break tail;
+        }
+    };
+    let rounding = GAMMA * gain * taps * (1.0 + carried * feedback) + n as f64 * TINY * carried;
+    let summed = 1.0 + 2.0 * n as f64 * f64::EPSILON;
+    let bound = (held + rounding + tail) * summed * (1.0 + SLACK);
+    bound.is_finite().then_some(bound)
+}
+
 /// Bounds `sup_{j>=k}|g[j]|` off `(k+1)*rho^k`, a pair's `r^k/sin(theta)`, one pole's `rho^k`.
 #[derive(Clone, Copy)]
 struct Envelope {
@@ -197,5 +223,37 @@ impl Envelope {
             (false, None) => 1.0 / (open * open),
         };
         held * (1.0 + SLACK)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sva_samples::Shape;
+    use sva_samples::biquad::design;
+
+    /// Each filter's gain bound holds `sum|h|` summed directly over a million taps, and is
+    /// within a percent of it.
+    #[test]
+    fn a_biquad_s_gain_bounds_its_impulse_response_closely() {
+        let shapes = [
+            (Shape::Lowpass, 3_000.0, 0.707),
+            (Shape::Lowpass, 40.0, 4.0),
+            (Shape::Highpass, 20.0, 0.707),
+            (Shape::Bandpass, 1_000.0, 20.0),
+            (Shape::OnePole, 200.0, 0.707),
+        ];
+        for (shape, cutoff, q) in shapes {
+            let c = design(shape, cutoff, q, 0.0, 48_000.0);
+            let mut state = sva_samples::biquad::State::default();
+            let summed: f64 = (0..1_000_000)
+                .map(|n| state.step(&c, if n == 0 { 1.0 } else { 0.0 }).abs())
+                .sum();
+            let bound = super::moved(&c).expect("a stable filter");
+            assert!(summed <= bound, "{shape:?} {cutoff}: {summed} over {bound}");
+            assert!(
+                bound <= summed * 1.01,
+                "{shape:?} {cutoff}: {bound} for {summed}"
+            );
+        }
     }
 }

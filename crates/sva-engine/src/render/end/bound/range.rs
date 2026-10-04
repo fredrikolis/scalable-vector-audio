@@ -153,6 +153,54 @@ impl Range {
         }
     }
 
+    /// Bounds how far its value moves where each node moves at most `moved` at every instant.
+    pub(super) fn moved(&self, moved: &dyn Fn(NodeId) -> Option<f64>) -> Option<f64> {
+        let each = |parts: &[Range]| -> Option<Vec<f64>> {
+            parts.iter().map(|p| p.moved(moved)).collect()
+        };
+        let rounded = |m: f64, ops: usize| m * (1.0 + OP * ops as f64);
+        let still = || {
+            let mut nodes = Vec::new();
+            self.nodes(&mut nodes);
+            nodes.into_iter().all(|n| moved(n) == Some(0.0))
+        };
+        match self {
+            Range::Atoms(_) | Range::Run(..) | Range::Real(_) | Range::Line => Some(0.0),
+            Range::Node(id) => moved(*id),
+            Range::Add(parts) => Some(rounded(each(parts)?.iter().sum(), parts.len())),
+            Range::Wide(parts) | Range::Max(parts) | Range::Min(parts) => {
+                Some(each(parts)?.into_iter().fold(0.0, f64::max))
+            }
+            Range::Mul(parts) => {
+                let (mut moving, mut scale) = (None, 1.0);
+                for part in parts {
+                    match (part, part.moved(moved)?) {
+                        (Range::Real(c), _) => scale *= c.abs(),
+                        (_, 0.0) => return still().then_some(0.0),
+                        (_, m) if moving.is_none() => moving = Some(m),
+                        _ => return None,
+                    }
+                }
+                match moving {
+                    None => Some(0.0),
+                    Some(m) if scale.is_finite() => Some(rounded(m * scale, parts.len())),
+                    Some(_) => None,
+                }
+            }
+            Range::Div(num, den) => match **den {
+                Range::Real(c) if c != 0.0 && c.is_finite() => {
+                    Some(rounded(num.moved(moved)? / c.abs(), 1))
+                }
+                _ if still() => Some(0.0),
+                _ => None,
+            },
+            Range::Map(Unary::Tanh | Unary::Sat | Unary::Sin | Unary::Cos | Unary::Abs, of)
+            | Range::Crop(of, ..)
+            | Range::Shift(of, _) => Some(rounded(of.moved(moved)?, 1)),
+            Range::Pow(..) | Range::Map(..) | Range::Warp(..) => still().then_some(0.0),
+        }
+    }
+
     pub(super) fn nodes(&self, out: &mut Vec<NodeId>) {
         match self {
             Range::Node(id) => out.push(*id),

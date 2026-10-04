@@ -196,6 +196,11 @@ impl Typing {
         }
     }
 
+    /// Each node whose own value reads `id` one hop up.
+    pub(crate) fn readers_of(&self, id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        self.readers.get(&id).into_iter().flatten().copied()
+    }
+
     fn summed(&self) -> Option<&(NodeId, Vec<SumSlot>)> {
         match &self.draft.sum {
             Some(staged) => staged.as_ref(),

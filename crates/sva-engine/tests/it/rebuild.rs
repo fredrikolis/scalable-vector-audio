@@ -22,7 +22,7 @@ fn tuned(branches: usize, first: usize) -> Graph {
     let mut files = vec![
         (
             "pluck".to_string(),
-            "crop(lowpass(sample(crop(sin(2*pi*f0*t)*exp(-t/0.05), 0s, 0.2s)), cutoff=3000), 0s, 0.3s)\n"
+            "lowpass(sample(crop(sin(2*pi*f0*t)*exp(-t/0.05), 0s, 0.2s)), cutoff=3000)\n"
                 .to_string(),
         ),
         (

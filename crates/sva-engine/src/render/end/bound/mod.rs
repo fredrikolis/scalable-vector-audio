@@ -1,6 +1,7 @@
-// Concern: bounds a root's magnitude from an instant on, through what it reads | Non-concern: solvers, loops, where the sound ends | IO: (NodeId) -> a bound from each instant, or none
+// Concern: bounds a node's magnitude from an instant on, through what it reads | Non-concern: solvers, loops, where the sound ends | IO: (NodeId) -> a bound from each instant, or none
 
 mod filter;
+mod gain;
 mod range;
 
 use std::cell::{Cell, RefCell};
@@ -21,6 +22,7 @@ use crate::lower::number_of;
 use crate::refs::read_through;
 use crate::typing::{Typing, Value, When};
 use filter::Ringing;
+pub(super) use gain::gain;
 use range::{OP, Range, TRANSFORM_OPS};
 
 pub(super) struct Tail {
