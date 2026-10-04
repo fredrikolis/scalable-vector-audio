@@ -143,7 +143,6 @@ fn kind(kind: &Kind) -> String {
         ),
         Kind::Frames { window, hop } => format!("frames {window} {hop}"),
         Kind::Istft => "istft".to_string(),
-        Kind::Spectrum(_) => "spectrum".to_string(),
         Kind::Resident(stored) => format!("stored {}", stored.key),
     }
 }

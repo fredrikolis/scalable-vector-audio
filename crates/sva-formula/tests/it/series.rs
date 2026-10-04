@@ -3,8 +3,7 @@
 use crate::allocations::counted;
 use crate::fixtures::{DUAL, Fixed, constant, cosine, part, saw_series, sine, term};
 use sva_formula::{
-    Body, Bound, Code, IndexId, Series, Unary, Var, commensurate, infer, lines, noise,
-    normalize_closed_form,
+    Body, Bound, Code, IndexId, Series, Unary, Var, infer, lines, noise, normalize_closed_form,
 };
 
 fn enumerate(s: &Series, ceiling: f64) -> Option<sva_formula::Lines> {
@@ -204,30 +203,6 @@ fn noise_lines_are_conjugate_symmetric() {
             .unwrap_or_else(|| panic!("no mirror for {}", line.hz));
         assert!((mirror.amp - line.amp.conj()).abs() < 1e-12);
     }
-}
-
-#[test]
-fn periodic_noise_is_commensurate_with_its_own_horizon() {
-    for line in enumerate(&noise(3, 0.25, 0.0), 200.0)
-        .expect("noise lines")
-        .taken
-    {
-        assert!(
-            commensurate(line.hz, 0.25),
-            "{} does not close over its own period",
-            line.hz
-        );
-    }
-}
-
-#[test]
-fn commensurability_is_a_whole_turn_count_and_no_tolerance_widens_it() {
-    assert!(commensurate(440.0, 0.25), "110 whole turns");
-    assert!(!commensurate(10.03, 1.0), "a third of a turn short");
-    assert!(
-        !commensurate(440.01, 0.25),
-        "a hundredth of a turn short is a quarter of a cent, and still not commensurate"
-    );
 }
 
 /// A saw whose every line passes `depth` one-pole filters, each a factor of its term.

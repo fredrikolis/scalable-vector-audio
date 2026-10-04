@@ -1,4 +1,4 @@
-// Concern: holds one collapse's samples as planar f64 components on a rate and origin | Non-concern: producing them (collapse.rs), measuring one (measure/) | IO: (component, index) -> f64
+// Concern: holds one collapse's samples as planar f64 components on a rate and origin | Non-concern: producing them (collapse/, machine/), measuring one (measure/) | IO: (component, index) -> f64
 
 use std::borrow::Cow;
 use std::ops::Range;

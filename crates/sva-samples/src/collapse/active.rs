@@ -181,3 +181,32 @@ pub(crate) fn evaluated(windows: &[Window], spans: &[Window]) -> u128 {
         })
         .sum()
 }
+
+/// Where every atom of a lane is windowed, the lane is zero outside their union.
+pub(crate) fn spans(lane: &Lane, rate: u32) -> Option<Vec<(i64, i64)>> {
+    if !lane.is_finite_sum() || lane.atoms.iter().any(|a| a.ind.is_none()) {
+        return None;
+    }
+    let grid = Grid::of(rate);
+    let mut spans: Vec<(i64, i64)> = lane
+        .atoms
+        .iter()
+        .filter_map(|a| {
+            let window = a.ind?;
+            let (from, to) = (
+                grid.first_at(window.l.value()),
+                grid.first_at(window.r.value()),
+            );
+            (from < to).then_some((from, to))
+        })
+        .collect();
+    spans.sort_unstable();
+    let mut merged: Vec<(i64, i64)> = Vec::with_capacity(spans.len());
+    for (from, to) in spans {
+        match merged.last_mut() {
+            Some(held) if from <= held.1 => held.1 = held.1.max(to),
+            _ => merged.push((from, to)),
+        }
+    }
+    Some(merged)
+}

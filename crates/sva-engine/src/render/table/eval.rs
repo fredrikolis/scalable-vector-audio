@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use sva_samples::{Buffer, Extent, Label, Machine, Profile, Tape, Window, stft};
+use sva_samples::{Buffer, Extent, Machine, Profile, Tape, Window, stft};
 
 use super::demand::{Need, images};
 use super::segments::Segments;
@@ -23,7 +23,7 @@ pub(crate) fn compute(
         if let Kind::Rows(rows) = &value.kind {
             waves += rows.work(segment.start, segment.end).1;
         }
-        priced += cost(value, segment, done, profile)?;
+        priced += cost(value, segment, done);
         match &value.kind {
             Kind::Rows(_) => rows(value, segment)?,
             Kind::Program(program) if program.stateful() => {
@@ -32,7 +32,6 @@ pub(crate) fn compute(
             Kind::Program(_) => program(value, segment, done)?,
             Kind::Frames { .. } => frames(value, segment, done)?,
             Kind::Istft => istft(value, segment, done, profile)?,
-            Kind::Spectrum(_) => spectrum(value, segment, profile)?,
             Kind::Resident { .. } => {
                 let live = *value
                     .reads
@@ -48,13 +47,8 @@ pub(crate) fn compute(
 
 /// What computing `value` over `segment` costs: the one price both the budget and the count
 /// read.
-fn cost(
-    value: &Value,
-    segment: Extent,
-    values: &Values,
-    profile: &Profile,
-) -> Result<u128, EngineError> {
-    Ok(match &value.kind {
+fn cost(value: &Value, segment: Extent, values: &Values) -> u128 {
+    match &value.kind {
         Kind::Rows(rows) => rows.work(segment.start, segment.end).0,
         Kind::Program(program) if program.alias.is_some() => 0,
         Kind::Program(program) => program.spanned.ops(segment.start, segment.end),
@@ -63,14 +57,8 @@ fn cost(
             Kind::Frames { window, hop } => stft::flops(segment.len(), window, hop),
             _ => 0,
         },
-        Kind::Spectrum(sum) => {
-            let rate = value.grid.rate;
-            sva_samples::collapse::plan::of(sum, rate, segment, profile, segment.len())
-                .map_err(|e| collapse_refused(&value.name, &e))?
-                .flops(rate, segment)
-        }
         Kind::Resident { .. } => 0,
-    })
+    }
 }
 
 /// A segment continuing the last one computed extends it, so a value pulled block by block
@@ -259,24 +247,6 @@ fn istft(
     Ok(())
 }
 
-fn spectrum(value: &mut Value, segment: Extent, profile: &Profile) -> Result<(), EngineError> {
-    let Kind::Spectrum(sum) = &value.kind else {
-        unreachable!("a spectrum");
-    };
-    let (buffer, label): (Buffer, Label) = sva_samples::of_spectral_sum(
-        sum,
-        value.grid.rate,
-        segment,
-        profile,
-        sva_samples::AliasScore::NotAsked,
-    )
-    .map_err(|e| collapse_refused(&value.name, &e))?;
-    finite(&value.name, buffer.planes.iter().flatten())?;
-    value.hold(buffer);
-    value.label = Some(label);
-    Ok(())
-}
-
 /// `at`'s program with another renderer, over `over` from where its state starts: what a
 /// ledger reads of one slot, the others silenced.
 pub(crate) fn rerun(
@@ -332,14 +302,9 @@ pub(crate) fn samples_of(values: &Values, at: usize, over: Extent) -> Buffer {
 }
 
 /// What `need` would cost, priced as `compute` pays it.
-pub(crate) fn price(
-    value: &Value,
-    need: &Segments,
-    values: &Values,
-    profile: &Profile,
-) -> Result<u128, EngineError> {
+pub(crate) fn price(value: &Value, need: &Segments, values: &Values) -> u128 {
     need.iter()
-        .map(|segment| cost(value, segment, values, profile))
+        .map(|segment| cost(value, segment, values))
         .sum()
 }
 

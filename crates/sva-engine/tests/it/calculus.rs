@@ -2,7 +2,16 @@
 
 use crate::fixtures::graph_of;
 use sva_engine::{Ask, Output, RenderConfig, Representation, Source, Tier, answer, render};
-use sva_samples::{AliasScore, Extent, PSYCHOACOUSTIC_V1, of_spectral_sum};
+use sva_samples::{Extent, PSYCHOACOUSTIC_V1, Rows};
+
+/// The first component of a spectral sum's rows over `extent`.
+fn sampled(sum: &sva_formula::SpectralSum, rate: u32, extent: Extent) -> Vec<f64> {
+    let rows =
+        Rows::of_spectral_sum_or_point(sum, None, (rate, &PSYCHOACOUSTIC_V1), &sva_formula::Opaque)
+            .expect("the sum has rows");
+    let mut planes = rows.planes(extent.start, extent.end).expect("samples");
+    planes.swap_remove(0)
+}
 
 /// A four-times-oversampled five-point difference of the closed form itself is the reference, its
 /// own truncation error four orders below the tolerance being claimed.
@@ -28,31 +37,19 @@ fn a_symbolic_derivative_agrees_with_a_four_times_finite_difference() {
 
     let rate = 4 * 44_100;
     let horizon = Extent::secs(rate, 0.0, 0.05);
-    let (differentiated, _) = of_spectral_sum(
-        &slope,
-        rate,
-        horizon,
-        &PSYCHOACOUSTIC_V1,
-        AliasScore::NotAsked,
-    )
-    .expect("the slope collapses");
-    let (law, _) = of_spectral_sum(
+    let differentiated = sampled(&slope, rate, horizon);
+    let law = sampled(
         &sva_engine::spectral_sum_of(&held.tys, id, sva_engine::Var::T).expect("the law"),
         rate,
         horizon,
-        &PSYCHOACOUSTIC_V1,
-        AliasScore::NotAsked,
-    )
-    .expect("the law collapses");
+    );
 
     let step = f64::from(rate);
     let mut worst = 0.0f64;
     for i in 2..law.len() - 2 {
-        let five_point = (-law.at(0, i + 2) + 8.0 * law.at(0, i + 1) - 8.0 * law.at(0, i - 1)
-            + law.at(0, i - 2))
-            * step
-            / 12.0;
-        worst = worst.max((five_point - differentiated.at(0, i)).abs() / 1_600.0);
+        let five_point =
+            (-law[i + 2] + 8.0 * law[i + 1] - 8.0 * law[i - 1] + law[i - 2]) * step / 12.0;
+        worst = worst.max((five_point - differentiated[i]).abs() / 1_600.0);
     }
     assert!(worst < 1e-6, "symbolic against 4R difference: {worst}");
 }
@@ -72,19 +69,12 @@ fn a_laws_envelope_is_symbolic_and_positive() {
     let Output::Symbolic(squared) = found.value else {
         panic!("a law's envelope is symbolic");
     };
-    let (buffer, _) = of_spectral_sum(
-        &squared,
-        44_100,
-        Extent::secs(44_100, 0.0, 0.05),
-        &PSYCHOACOUSTIC_V1,
-        AliasScore::NotAsked,
-    )
-    .expect("the squared envelope collapses");
+    let buffer = sampled(&squared, 44_100, Extent::secs(44_100, 0.0, 0.05));
     for i in (0..buffer.len()).step_by(97) {
         assert!(
-            (buffer.at(0, i) - 1.0).abs() < 1e-9,
+            (buffer[i] - 1.0).abs() < 1e-9,
             "a unit sine's squared envelope is one: {}",
-            buffer.at(0, i)
+            buffer[i]
         );
     }
 }

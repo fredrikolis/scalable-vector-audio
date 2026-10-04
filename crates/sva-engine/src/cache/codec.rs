@@ -408,11 +408,6 @@ fn detailed(out: &mut Vec<u8>, detail: &Detail) {
             float(out, *alias_db);
             float(out, *tail_db);
         }
-        Detail::Spectrum { rule: r, wrap_db } => {
-            out.push(4);
-            rule(out, r);
-            word(out, wrap_db.to_bits());
-        }
         Detail::Roundtrip { rule: r, edited } => {
             out.push(5);
             rule(out, r);
@@ -585,10 +580,6 @@ impl Reader<'_> {
                 rule: self.rule()?,
                 alias_db: self.float()?,
                 tail_db: self.float()?,
-            },
-            4 => Detail::Spectrum {
-                rule: self.rule()?,
-                wrap_db: f64::from_bits(self.word()?),
             },
             5 => Detail::Roundtrip {
                 rule: self.rule()?,

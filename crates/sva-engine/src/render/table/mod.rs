@@ -260,7 +260,7 @@ impl Table {
     /// computing it did.
     pub(crate) fn plan(&mut self, range: Extent) -> Result<(), EngineError> {
         let needs = self.bounded_demand(range)?;
-        self.planned = self.price(&needs)?;
+        self.planned = self.price(&needs);
         self.stored_prices(self.values.ordered().collect());
         Ok(())
     }
@@ -276,8 +276,8 @@ impl Table {
         for at in &made {
             let (value, compute) = (&self.values[*at], &needs[*at].compute);
             let bounded = compute.is_empty() || compute.hull().is_bounded();
-            let price = bounded.then(|| eval::price(value, compute, &self.values, &self.profile));
-            self.planned[*at] = price.and_then(Result::ok).unwrap_or(0);
+            let price = bounded.then(|| eval::price(value, compute, &self.values));
+            self.planned[*at] = price.unwrap_or(0);
         }
         self.stored_prices(made);
     }
@@ -585,12 +585,12 @@ impl Table {
     }
 
     /// What `need` costs each value, as computing it pays.
-    pub(crate) fn price(&self, needs: &[Need]) -> Result<Vec<u128>, EngineError> {
+    pub(crate) fn price(&self, needs: &[Need]) -> Vec<u128> {
         let mut out = vec![0; self.values.span()];
         for (at, value) in self.values.iter() {
-            out[at] = eval::price(value, &needs[at].compute, &self.values, &self.profile)?;
+            out[at] = eval::price(value, &needs[at].compute, &self.values);
         }
-        Ok(out)
+        out
     }
 
     /// A value made, holding what it reads.
@@ -1076,18 +1076,11 @@ impl Building<'_> {
         self.formula(value, sum, Some(form))
     }
 
-    /// A form in `f` is, on the grid, the form in `t` its dual is; one with no dual is its
-    /// inverse spectrum over its whole extent, which must end: over a window it would repeat at
-    /// the window's length, so each asker would read other samples.
-    fn spectrum(&mut self, mut value: Value, id: NodeId) -> Result<Value, EngineError> {
-        if let Ok(sum) = refs::spectral_sum_of(self.tys, id, Var::T) {
-            return self.formula(value, Some(sum), None);
-        }
-        value.kind = Kind::Spectrum(Arc::new(refs::spectral_sum_of(self.tys, id, Var::F)?));
-        match value.support().is_bounded() {
-            true => Ok(value),
-            false => Err(endless_spectrum(&value.name)),
-        }
+    /// A form in `f` is, on the grid, the form in `t` its dual is; one with no dual refuses as
+    /// the table refuses its dual.
+    fn spectrum(&mut self, value: Value, id: NodeId) -> Result<Value, EngineError> {
+        let sum = refs::spectral_sum_of(self.tys, id, Var::T)?;
+        self.formula(value, Some(sum), None)
     }
 
     /// Its rows where its step makes a whole rate, else its formula at each instant.
@@ -1438,21 +1431,6 @@ fn unbounded(name: &str) -> EngineError {
         message: format!("`{name}` reads its input over every instant, and that input never ends"),
         location: crate::error::Located::at(name, None),
         help: "crop what a short-time transform takes to a window".to_string(),
-    })
-}
-
-/// An inverse spectrum computed over a window repeats at its length.
-fn endless_spectrum(name: &str) -> EngineError {
-    EngineError::refused(crate::error::Diagnostic {
-        code: "engine.unbounded_extent".to_string(),
-        message: format!(
-            "`{name}` is a form in `f` with no dual in `t`, and its inverse never ends: computed \
-             over any window, it would repeat at that window's length"
-        ),
-        location: crate::error::Located::at(name, None),
-        help: "write it as terms the table duals one by one, as a finite sum's terms written \
-               out, or as a form in `t`"
-            .to_string(),
     })
 }
 

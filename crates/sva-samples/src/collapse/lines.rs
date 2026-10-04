@@ -1,30 +1,30 @@
-// Concern: places a line spectrum on the grid, transformed or summed | Non-concern: deciding which (collapse.rs) | IO: (&Lane, ceiling) -> Found, planes, bounds
+// Concern: a sum's lines under the ceiling, grouped by common factor, summed at an instant, bounded | Non-concern: which row takes them (blocks.rs) | IO: (&SpectralSum, ceiling) -> lines, Direct, bounds
 
 use std::f64::consts::TAU;
 
 use std::collections::BTreeMap;
 
 use sva_formula::spectral_sum::atom::{Exp, Factors, Singular, SpectralAtom, SpectralAtomKey};
-use sva_formula::{
-    C64, Lane, Line, Origin, Reads, Run, commensurate, lines_read, modal, spacing_read,
-};
+use sva_formula::{C64, Lane, Line, Origin, Reads, Run, SpectralSum, Var, lines_read, modal};
 
-use crate::fft::idft;
+use super::active::{self, Window};
+use super::truncate::Audible;
+use crate::Grid;
+use crate::error::CollapseError;
 use crate::label::Dropped;
+use crate::profile::Profile;
 
-pub struct Found {
-    pub lines: Vec<Line>,
-    pub grids: Vec<f64>,
-    pub tail_db: Option<f64>,
+struct Found {
+    lines: Vec<Line>,
+    tail_db: Option<f64>,
 }
 
-pub fn of_lane(
+fn of_lane(
     lane: &Lane,
     (ceiling, floor_db, precision): (f64, f64, f64),
     reads: &dyn Reads,
 ) -> Option<Found> {
     let mut out = Vec::new();
-    let mut grids = Vec::new();
     let mut tail: Option<f64> = None;
     for atom in &lane.atoms {
         out.push(as_line(atom)?);
@@ -42,82 +42,112 @@ pub fn of_lane(
         if enumerated.tail_db.is_finite() {
             tail = Some(tail.map_or(enumerated.tail_db, |held: f64| held.max(enumerated.tail_db)));
         }
-        grids.extend(spacing_read(series, reads));
         out.extend(enumerated.taken);
         out.extend(enumerated.dropped);
     }
     Some(Found {
         lines: out,
-        grids,
         tail_db: tail,
     })
 }
 
-/// The longest inverse transform one collapse holds; past it the lines are summed.
-const MAX_TRANSFORM: usize = 1 << 21;
-
-/// The transform length placing the most lines on bin centres: a series closes over its own
-/// spacing, which the span need not hold whole.
-pub fn grid(kept: &[Vec<Line>], grids: &[f64], rate: u32, span: f64, len: usize) -> usize {
-    let mut best = bins(span, rate);
-    let mut placed = on_grid(kept, best, rate);
-    for step in grids {
-        let Some(n) = closing(*step, rate, len) else {
-            continue;
-        };
-        let found = on_grid(kept, n, rate);
-        if found > placed || (found == placed && n < best) {
-            best = n;
-            placed = found;
-        }
+/// Each direct sum a row takes over this form's lines, as its rounding bound and the factor it
+/// is read under: none on a line row, the group's own on a windowed one.
+pub fn summed_bounds(
+    sum: &SpectralSum,
+    (profile, rate): (&Profile, u32),
+    reads: &dyn Reads,
+) -> Result<Vec<(Option<SpectralAtom>, f64)>, CollapseError> {
+    if sum.var == Var::F {
+        return Ok(Vec::new());
     }
-    best
+    if let Some(found) = kept_lines(sum, profile, profile.ceiling(rate), reads)? {
+        let direct = found.kept.iter().filter_map(|kept| Direct::of(kept));
+        return Ok(direct.map(|d| (None, d.bound())).collect());
+    }
+    let band = Audible::of(profile, rate);
+    let groups = sum.lanes.iter().map(|lane| line_groups(lane, band, reads));
+    let Some(groups) = groups.collect::<Option<Vec<_>>>() else {
+        return Ok(Vec::new());
+    };
+    Ok(groups
+        .into_iter()
+        .flatten()
+        .filter_map(|(factor, held)| Some((Some(factor), Direct::of(&held)?.bound())))
+        .collect())
 }
 
-fn closing(step: f64, rate: u32, len: usize) -> Option<usize> {
-    let period = f64::from(rate) / step;
-    if !period.is_finite() || period <= 0.0 {
-        return None;
-    }
-    let bound = len.max(MAX_TRANSFORM) as f64;
-    let base = whole_periods(period, bound)?;
-    let n = base * (len as f64 / base).ceil().max(1.0);
-    (n <= bound).then_some(n.round() as usize)
+/// Each lane's lines under the ceiling and over it.
+pub(super) struct Kept {
+    pub(super) kept: Vec<Vec<Line>>,
+    dropped: Vec<Vec<Line>>,
+    tail: Option<f64>,
 }
 
-/// The fewest samples holding whole `period`-sample periods. Only a convergent denominator
-/// of `period`'s continued fraction closes it, and they arrive shortest first.
-fn whole_periods(period: f64, bound: f64) -> Option<f64> {
-    let (mut held, mut before) = (0.0f64, 1.0f64);
-    let mut x = period;
-    for _ in 0..MAX_CONVERGENTS {
-        let whole = x.floor();
-        let turns = whole * held + before;
-        let samples = period * turns;
-        if (samples.round() - samples).abs() <= TURN_EPSILON * samples.max(1.0) {
-            return (samples <= bound).then_some(samples.round());
-        }
-        let fraction = x - whole;
-        if samples > bound || fraction <= 0.0 {
-            return None;
-        }
-        x = 1.0 / fraction;
-        before = held;
-        held = turns;
+impl Kept {
+    pub(super) fn dropped(&self) -> &[Vec<Line>] {
+        &self.dropped
     }
-    None
+
+    pub(super) fn tail(&self) -> Option<f64> {
+        self.tail
+    }
 }
 
-const MAX_CONVERGENTS: usize = 64;
+pub(super) fn kept_lines(
+    sum: &SpectralSum,
+    profile: &Profile,
+    ceiling: f64,
+    reads: &dyn Reads,
+) -> Result<Option<Kept>, CollapseError> {
+    let mut per_lane = Vec::with_capacity(sum.lanes.len());
+    let mut tail: Option<f64> = None;
+    for lane in &sum.lanes {
+        let band = (ceiling, profile.floor(ceiling), profile.half_lsb());
+        match of_lane(lane, band, reads) {
+            Some(found) => {
+                if let Some(left) = found.tail_db {
+                    tail = Some(tail.map_or(left, |held: f64| held.max(left)));
+                }
+                per_lane.push(found.lines);
+            }
+            None => return Ok(None),
+        }
+    }
 
-const TURN_EPSILON: f64 = 1e-9;
+    let (mut kept, mut dropped): (Vec<Vec<Line>>, Vec<Vec<Line>>) = (Vec::new(), Vec::new());
+    for found in &per_lane {
+        let (here, gone): (Vec<Line>, Vec<Line>) = found.iter().partition(|l| l.hz.abs() < ceiling);
+        kept.push(here);
+        dropped.push(gone);
+    }
+    // A form with no line at all is silence, not a band every line sat above.
+    if kept.iter().all(Vec::is_empty) && !dropped.iter().all(Vec::is_empty) {
+        let lowest = dropped
+            .iter()
+            .flatten()
+            .map(|l| l.hz.abs())
+            .fold(f64::INFINITY, f64::min);
+        return Err(CollapseError::EmptyBand {
+            ceiling,
+            lowest,
+            by_rate: ceiling < profile.ceiling_hz,
+        });
+    }
+    Ok(Some(Kept {
+        kept,
+        dropped,
+        tail,
+    }))
+}
 
-fn on_grid(kept: &[Vec<Line>], n: usize, rate: u32) -> usize {
-    let span = n as f64 / f64::from(rate);
-    kept.iter()
-        .flat_map(|lane| lane.iter())
-        .filter(|l| commensurate(l.hz, span))
-        .count()
+/// Outside it the factor zeroes its lines' sum, where that sum is finite.
+pub(super) fn group_window(factor: &SpectralAtom, held: &[Line], grid: Grid) -> Window {
+    let reach: f64 = held.iter().map(|l| l.amp.re.abs() + l.amp.im.abs()).sum();
+    match reach < 1e300 {
+        true => active::window(factor, grid),
+        false => active::OPEN,
+    }
 }
 
 /// `c * exp(i*omega*t)` and nothing else; every other factor is another row.
@@ -137,7 +167,7 @@ fn as_line(a: &SpectralAtom) -> Option<Line> {
 }
 
 /// A lane's atoms as line spectra under their common real factors, one group per factor.
-pub fn grouped(lane: &Lane) -> Option<Vec<(SpectralAtom, Vec<Line>)>> {
+fn grouped(lane: &Lane) -> Option<Vec<(SpectralAtom, Vec<Line>)>> {
     if !lane.is_finite_sum() || lane.atoms.is_empty() {
         return None;
     }
@@ -206,14 +236,14 @@ fn ladders(
 }
 
 /// Kept lines summed at one instant: the constant lines folded to one level, the rest as runs.
-pub struct Direct {
+pub(crate) struct Direct {
     level: f64,
     runs: Vec<Run>,
     lines: usize,
 }
 
 impl Direct {
-    pub fn of(kept: &[Line]) -> Option<Direct> {
+    pub(crate) fn of(kept: &[Line]) -> Option<Direct> {
         if kept.is_empty() {
             return None;
         }
@@ -226,7 +256,7 @@ impl Direct {
     }
 
     /// Every moving line's frequency.
-    pub fn hz(&self) -> Vec<f64> {
+    pub(crate) fn hz(&self) -> Vec<f64> {
         self.runs
             .iter()
             .flat_map(Run::lines)
@@ -234,17 +264,17 @@ impl Direct {
             .collect()
     }
 
-    pub fn at(&self, t: f64) -> f64 {
+    pub(crate) fn at(&self, t: f64) -> f64 {
         let moving: f64 = self.runs.iter().map(|r| super::run::at(r, t).re).sum();
         self.level + moving
     }
 
-    pub fn lines_priced_and_turned(&self) -> (usize, usize) {
+    pub(crate) fn lines_priced_and_turned(&self) -> (usize, usize) {
         (self.lines, self.runs.iter().map(Run::len).sum())
     }
 
     /// How far `at` sits from the exact sum at any instant.
-    pub fn bound(&self) -> f64 {
+    pub(crate) fn bound(&self) -> f64 {
         let runs: f64 = self.runs.iter().map(super::run::bound).sum();
         let reach: f64 = self.runs.iter().map(super::run::reach).sum::<f64>() + self.level.abs();
         let adds = (self.runs.len() + 2) as f64 * f64::EPSILON;
@@ -252,57 +282,9 @@ impl Direct {
     }
 }
 
-pub fn add_direct(plane: &mut [f64], kept: &[Line], extent: super::Extent, rate: u32) {
-    let Some(direct) = Direct::of(kept) else {
-        return;
-    };
-    for (i, held) in plane.iter_mut().enumerate() {
-        *held += direct.at((extent.start + i as i64) as f64 / f64::from(rate));
-    }
-}
-
-/// Every kept line falls on a bin centre: no leakage for the exact label to hide.
-pub fn transformed(
-    kept: &[Line],
-    extent: super::Extent,
-    n: usize,
-    rate: u32,
-    len: usize,
-) -> Vec<f64> {
-    let start_secs = extent.start_secs(rate);
-    if kept.is_empty() {
-        return vec![0.0; len];
-    }
-    let span = n as f64 / f64::from(rate);
-    let mut re = vec![0.0; n];
-    let mut im = vec![0.0; n];
-    for l in kept {
-        let bin = (l.hz * span).round() as i64;
-        let k = bin.rem_euclid(n as i64) as usize;
-        let shifted = l.amp * C64::new(0.0, TAU * l.hz * start_secs).exp();
-        re[k] += shifted.re * n as f64;
-        im[k] += shifted.im * n as f64;
-    }
-    idft(&mut re, &mut im);
-    re.truncate(len);
-    re.resize(len, 0.0);
-    re
-}
-
-pub fn bins(span: f64, rate: u32) -> usize {
-    (span * f64::from(rate)).round().max(1.0) as usize
-}
-
-/// DC is never placed: it is a constant fill, not a line the transform rounds.
-pub fn split(kept: &[Line], n: usize, rate: u32) -> (Vec<Line>, Vec<Line>) {
-    let span = n as f64 / f64::from(rate);
-    kept.iter()
-        .partition(|l| l.hz != 0.0 && commensurate(l.hz, span))
-}
-
 /// Ascending by frequency, the 64 loudest kept; `db` against amplitude 1.0, unclamped.
 /// Across lanes the loudest channel reports, never the sum of the channels.
-pub fn dropped_list(per_lane: &[Vec<Line>]) -> (Vec<Dropped>, usize) {
+pub(crate) fn dropped_list(per_lane: &[Vec<Line>]) -> (Vec<Dropped>, usize) {
     let mut folded = merge(per_lane, f64::max);
     let total = folded.len();
     if total > 64 {
@@ -320,7 +302,7 @@ pub fn dropped_list(per_lane: &[Vec<Line>]) -> (Vec<Dropped>, usize) {
     (list, total.saturating_sub(64))
 }
 
-pub fn distinct(per_lane: &[Vec<Line>]) -> usize {
+pub(crate) fn distinct(per_lane: &[Vec<Line>]) -> usize {
     merge(per_lane, f64::max).len()
 }
 

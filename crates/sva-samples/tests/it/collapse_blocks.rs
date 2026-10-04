@@ -1,10 +1,9 @@
-// Concern: states that a closed form read span by span writes the samples one whole read writes | Non-concern: which rows an extent picks by cost | IO: (a ClosedForm) -> bit-equal samples
+// Concern: states that a closed form read span by span writes the samples one whole read writes | Non-concern: which row a form takes (collapse.rs) | IO: (a ClosedForm) -> bit-equal samples
 
 use crate::helpers::part;
 use std::f64::consts::TAU;
 
 use sva_formula::{Body, C64, ClosedForm, Edge, Origin, Unary, Var};
-use sva_samples::collapse::{self, AliasScore, Extent};
 use sva_samples::{CollapseError, PSYCHOACOUSTIC_V1, Refs, Rows, Tape};
 
 const RATE: u32 = 8_000;
@@ -43,18 +42,15 @@ fn blocks(form: &ClosedForm, start: i64, block: i64) -> Vec<f64> {
 }
 
 fn whole(form: &ClosedForm, start: i64) -> Vec<f64> {
-    let extent = Extent::new(start, LEN as i64);
-    let (buffer, _) =
-        collapse::render(form, RATE, extent, &PSYCHOACOUSTIC_V1, AliasScore::NotAsked)
-            .expect("a whole read");
-    buffer.plane(0).to_vec()
+    let rows = Rows::of(form, RATE, &PSYCHOACOUSTIC_V1).expect("rows");
+    let mut planes = rows.planes(start, LEN as i64).expect("a whole read");
+    planes.swap_remove(0)
 }
 
-/// Three lines are summed directly by a whole read too, and `tanh` is point-sampled there:
-/// both whole rows read one instant at a time, so the spans agree with them bit for bit,
-/// wherever on the grid either starts.
+/// Three summed lines and a point-sampled `tanh` each read one instant at a time, so spans
+/// agree with one whole read bit for bit, wherever on the grid either starts.
 #[test]
-fn a_form_whose_whole_row_reads_one_instant_at_a_time_is_the_same_in_any_span() {
+fn a_form_read_one_instant_at_a_time_is_the_same_in_any_span() {
     let chord = form(
         Var::T,
         Body::Add(vec![

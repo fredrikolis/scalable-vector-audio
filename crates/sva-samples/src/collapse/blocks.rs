@@ -1,4 +1,4 @@
-// Concern: reads a closed form onto any span of the grid by rows no extent chooses, priced | Non-concern: rows a whole render fits to its extent | IO: (form, rate) -> Rows; (Tape, to) -> samples, work
+// Concern: which row a closed form takes, read onto any span of the grid and priced | Non-concern: one instant's value (point.rs) | IO: (form, rate) -> Rows; (Tape, to) -> samples, work
 
 use sva_formula::spectral_sum::atom::SpectralAtom;
 use sva_formula::{ClosedForm, Lane, Opaque, Reads, SpectralSum, Var, normalize_closed_form};
@@ -6,7 +6,7 @@ use sva_formula::{ClosedForm, Lane, Opaque, Reads, SpectralSum, Var, normalize_c
 use super::active::{self, Window};
 use super::lines::{self, Direct};
 use super::truncate::{self, Audible};
-use super::{atoms, plan, point, reaches_no_atom, reading, span, tail};
+use super::{addends, atoms, point, reading, tail};
 use crate::Grid;
 use crate::error::CollapseError;
 use crate::label::{Detail, Label, Rule, Source};
@@ -43,7 +43,6 @@ enum Row {
 }
 
 impl Rows {
-    /// `collapse::render`'s dispatch.
     pub fn of(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Rows, CollapseError> {
         match normalize_closed_form(form) {
             Ok(sum) => Rows::of_spectral_sum_or_point(&sum, Some(form), (rate, profile), &Opaque),
@@ -130,7 +129,7 @@ impl Rows {
 }
 
 /// `(priced flops, waves)` one component's row takes over `[from, to)`: a line, a node walked
-/// or an atom inside its spans, a sample each, as a whole render prices them.
+/// or an atom inside its spans, a sample each.
 fn worked(row: &Row, c: usize, from: i64, to: i64, grid: Grid) -> (u128, u128) {
     let n = (to - from) as u128;
     let times = |(priced, waves): (usize, usize), n: u128| (priced as u128 * n, waves as u128 * n);
@@ -152,7 +151,7 @@ fn worked(row: &Row, c: usize, from: i64, to: i64, grid: Grid) -> (u128, u128) {
                 active::evaluated(&windows[c], &inside(spans[c].as_deref(), (from, to)));
             (evaluated, evaluated)
         }
-        Row::Point { written, .. } => plan::point_work(&written.body, c, grid, (from, to)),
+        Row::Point { written, .. } => addends::point_work(&written.body, c, grid, (from, to)),
         Row::Added(parts) => parts.iter().fold((0, 0), |held, (part, width, reach)| {
             match (lane(*width, c), active::meet((from, to), *reach)) {
                 (Some(lane), (a, b)) if a < b => {
@@ -174,7 +173,7 @@ struct Group {
     direct: Option<Direct>,
 }
 
-/// `plan::LanePlan::Grouped` with every line summed: `None` where a lane is no line sum
+/// Each lane's lines under their common factors, summed: `None` where a lane is no line sum
 /// under common factors.
 fn grouped(
     sum: &SpectralSum,
@@ -186,7 +185,7 @@ fn grouped(
         Some(
             groups
                 .map(|(factor, held)| Group {
-                    live: plan::group_window(&factor, &held, 1, grid),
+                    live: lines::group_window(&factor, &held, grid),
                     direct: Direct::of(&held),
                     factor,
                 })
@@ -196,7 +195,7 @@ fn grouped(
     sum.lanes.iter().map(lane).collect()
 }
 
-/// `plan::of` with each row an extent picks by cost replaced by the one summed per instant.
+/// The rows in FORMAT 9.1's order; the first guard that holds decides.
 fn of_sum(
     sum: &SpectralSum,
     rate: u32,
@@ -207,7 +206,7 @@ fn of_sum(
         return Err(CollapseError::NoBlockRow);
     }
     let ceiling = profile.ceiling(rate);
-    if let Some(found) = plan::kept_lines(sum, profile, ceiling, reads)? {
+    if let Some(found) = lines::kept_lines(sum, profile, ceiling, reads)? {
         let (dropped, dropped_more) = lines::dropped_list(found.dropped());
         let summed = lines::distinct(&found.kept);
         let detail = Detail::Lines {
@@ -253,7 +252,7 @@ fn of_sum(
     let spans = truncated
         .lanes
         .iter()
-        .map(|lane| span::windows(lane, rate))
+        .map(|lane| active::spans(lane, rate))
         .collect();
     let windows = truncated
         .lanes
@@ -268,9 +267,9 @@ fn of_sum(
     Ok((row, label))
 }
 
-/// `plan::of_written`'s split into addends.
+/// The row a closed form with no spectral sum takes: one per addend where they differ, else 4.
 fn of_written(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelled, CollapseError> {
-    let Some(addends) = plan::addends(form) else {
+    let Some(addends) = addends::addends(form) else {
         return point(form, rate, profile);
     };
     let mut parts = Vec::with_capacity(addends.len());
@@ -322,8 +321,8 @@ fn point(form: &ClosedForm, rate: u32, profile: &Profile) -> Result<Labelled, Co
     };
     let tail_db = truncate::dropped_db(&written.body);
     let width = point::width_of(&written.body, &point::NoRefs).max(1);
-    let windows = plan::summed(&written.body).map_or_else(Vec::new, |parts| {
-        plan::addend_windows(&parts, Grid::of(rate))
+    let windows = addends::summed(&written.body).map_or_else(Vec::new, |parts| {
+        addends::addend_windows(&parts, Grid::of(rate))
     });
     let row = Row::Point {
         written: Box::new(written),
@@ -366,15 +365,14 @@ fn reach(row: &Row, rate: u32) -> Window {
         Row::Sweep { .. } => active::OPEN,
         Row::Point {
             written, windows, ..
-        } => match plan::summed(&written.body) {
+        } => match addends::summed(&written.body) {
             Some(_) => hull(&mut windows.iter().copied()),
-            None => plan::live_window(&written.body, Grid::of(rate)),
+            None => addends::live_window(&written.body, Grid::of(rate)),
         },
         Row::Added(parts) => hull(&mut parts.iter().map(|(.., reach)| *reach)),
     }
 }
 
-/// Each row's arithmetic over `[from, to)`, in its whole-render row's order, so the bits agree.
 fn values(row: &Row, c: usize, (from, to): Window, rate: u32) -> Result<Vec<f64>, CollapseError> {
     let grid = Grid::of(rate);
     let n = (to - from) as usize;
@@ -388,7 +386,7 @@ fn values(row: &Row, c: usize, (from, to): Window, rate: u32) -> Result<Vec<f64>
                 held
             })
             .collect(),
-        // `reading::under_a_window`'s order: each group's sum from +0, times its factor.
+        // Each group's sum from +0, times its factor.
         Row::Grouped(lanes) => {
             let mut out = vec![0.0; n];
             for g in &lanes[c] {
@@ -452,4 +450,10 @@ fn inside(spans: Option<&[(i64, i64)]>, (from, to): Window) -> Vec<Window> {
 fn lane(width: usize, c: usize) -> Option<usize> {
     let lane = if width == 1 { 0 } else { c };
     (lane < width).then_some(lane)
+}
+
+/// A form no atom sum reaches still has a value at every instant. A nesting past the bound
+/// is not one of those: it has a form, priced, and too many terms to expand.
+fn reaches_no_atom(e: &CollapseError) -> bool {
+    matches!(e, CollapseError::NotEvaluable(_))
 }

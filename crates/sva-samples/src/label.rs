@@ -1,4 +1,4 @@
-// Concern: states how exact one sampled value is and what it cost | Non-concern: deciding that (collapse.rs), printing it | IO: none
+// Concern: states how exact one sampled value is and what it cost | Non-concern: deciding that (collapse/blocks.rs), printing it | IO: none
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -39,13 +39,10 @@ macro_rules! rules {
 }
 
 rules! {
-    LineSpectrumExact => "line spectrum, no crop",
     LineSpectrumSummed => "line spectrum, summed directly",
-    LineSpectrumMixed => "line spectrum, placed and summed",
     BandLimited => "band-limited projection",
     CroppedPair => "cropped pair, tail truncated",
     PointSampled => "point sampling",
-    InverseSpectrum => "inverse spectrum",
     Istft => "inverse short-time transform",
     Reading => "reading",
     Added => "sum, addend by addend",
@@ -55,7 +52,6 @@ rules! {
 pub enum Detail {
     Lines {
         rule: Rule,
-        /// Lines the transform placed; the rest were summed directly.
         placed: usize,
         summed: usize,
         dropped: Vec<Dropped>,
@@ -74,10 +70,6 @@ pub enum Detail {
         rule: Rule,
         alias_db: Option<f64>,
         tail_db: Option<f64>,
-    },
-    Spectrum {
-        rule: Rule,
-        wrap_db: f64,
     },
     Roundtrip {
         rule: Rule,
@@ -164,7 +156,6 @@ impl Detail {
             | Detail::Continuous { rule }
             | Detail::Cropped { rule, .. }
             | Detail::Point { rule, .. }
-            | Detail::Spectrum { rule, .. }
             | Detail::Roundtrip { rule, .. }
             | Detail::Reading { rule } => rule,
             Detail::Added { .. } => Rule::Added,

@@ -45,8 +45,7 @@ pub fn flops(samples: usize, window: usize, hop: usize) -> u128 {
     match hop == 0 || hop > window {
         true => 0,
         false => {
-            frame_count(samples, window, hop) as u128
-                * crate::collapse::transform_flops(window.max(1))
+            frame_count(samples, window, hop) as u128 * crate::fft::transform_flops(window.max(1))
         }
     }
 }

@@ -1,8 +1,8 @@
-// Concern: the complex transform at any length, and the real one every caller reads bins off | Non-concern: what a bin means (stft.rs, collapse/) | IO: (&mut [f64], &mut [f64]) -> ()
+// Concern: the radix-2 complex transform, its inverse from half the bins, what a transform costs | Non-concern: what a bin means (stft.rs, measure/) | IO: (&mut [f64], &mut [f64]) -> (); n -> flops
 
-use std::f64::consts::{PI, TAU};
+use std::f64::consts::TAU;
 
-/// Iterative radix-2 Cooley-Tukey, in place. One twiddle table serves every stage.
+/// One twiddle table serves every stage.
 pub fn fft(re: &mut [f64], im: &mut [f64]) {
     let n = re.len();
     assert_eq!(n, im.len(), "one real and one imaginary plane");
@@ -61,62 +61,6 @@ pub fn ifft(re: &mut [f64], im: &mut [f64]) {
     }
 }
 
-/// `exp(i*pi*k^2/n)`, `k^2` reduced mod `2n` so a large index keeps its digits.
-fn chirp(k: usize, n: usize) -> (f64, f64) {
-    let squared = (k as u128 * k as u128 % (2 * n as u128)) as f64;
-    let theta = PI * squared / n as f64;
-    (theta.cos(), theta.sin())
-}
-
-/// Bluestein's chirp-z: any length, so no extent is padded to a power of two.
-pub fn dft(re: &mut [f64], im: &mut [f64]) {
-    let n = re.len();
-    if n.is_power_of_two() {
-        fft(re, im);
-        return;
-    }
-    let m = (2 * n - 1).next_power_of_two();
-    let (mut ar, mut ai) = (vec![0.0; m], vec![0.0; m]);
-    let (mut br, mut bi) = (vec![0.0; m], vec![0.0; m]);
-    for k in 0..n {
-        let (c, s) = chirp(k, n);
-        ar[k] = re[k] * c + im[k] * s;
-        ai[k] = im[k] * c - re[k] * s;
-        br[k] = c;
-        bi[k] = s;
-        if k > 0 {
-            br[m - k] = c;
-            bi[m - k] = s;
-        }
-    }
-    fft(&mut ar, &mut ai);
-    fft(&mut br, &mut bi);
-    for i in 0..m {
-        let product = (ar[i] * br[i] - ai[i] * bi[i], ar[i] * bi[i] + ai[i] * br[i]);
-        (ar[i], ai[i]) = product;
-    }
-    ifft(&mut ar, &mut ai);
-    for k in 0..n {
-        let (c, s) = chirp(k, n);
-        re[k] = ar[k] * c + ai[k] * s;
-        im[k] = ai[k] * c - ar[k] * s;
-    }
-}
-
-pub fn idft(re: &mut [f64], im: &mut [f64]) {
-    for x in im.iter_mut() {
-        *x = -*x;
-    }
-    dft(re, im);
-    let scale = 1.0 / re.len() as f64;
-    for x in re.iter_mut() {
-        *x *= scale;
-    }
-    for x in im.iter_mut() {
-        *x = -*x * scale;
-    }
-}
-
 /// The caller fills `0..=n/2`; this mirrors the rest.
 pub fn irfft(bins_re: &[f64], bins_im: &[f64], n: usize) -> Vec<f64> {
     assert_eq!(bins_re.len(), n / 2 + 1);
@@ -135,12 +79,8 @@ pub fn irfft(bins_re: &[f64], bins_im: &[f64], n: usize) -> Vec<f64> {
     re
 }
 
-pub fn rfft(x: &[f64]) -> (Vec<f64>, Vec<f64>) {
-    let n = x.len();
-    let mut re = x.to_vec();
-    let mut im = vec![0.0; n];
-    fft(&mut re, &mut im);
-    re.truncate(n / 2 + 1);
-    im.truncate(n / 2 + 1);
-    (re, im)
+/// Other lengths price as the next power of two; the STFT refuses them.
+pub fn transform_flops(n: usize) -> u128 {
+    let m = n.next_power_of_two();
+    m as u128 * u128::from(m.max(2).trailing_zeros())
 }

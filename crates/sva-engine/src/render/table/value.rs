@@ -1,6 +1,6 @@
 // Concern: one value of the table and the samples it holds, merged, cut and viewed on its own clock | Non-concern: computing them (eval.rs), what is asked (demand.rs) | IO: (segment) -> samples
 
-use sva_formula::{Hash, NodeId, SpectralSum};
+use sva_formula::{Hash, NodeId};
 use sva_samples::machine::ops::Layout;
 use sva_samples::{
     Buffer, Extent, Frames, Grid, Label, Machine, NodeRenderer, Rows, Spanned, Tape, Window,
@@ -25,7 +25,6 @@ pub(crate) enum Kind {
         hop: usize,
     },
     Istft,
-    Spectrum(Arc<SpectralSum>),
     /// A node memory holds; a value it reads computes what its samples miss.
     Resident(Arc<crate::cache::Stored>),
 }

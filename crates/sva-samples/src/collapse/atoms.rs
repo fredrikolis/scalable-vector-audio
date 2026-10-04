@@ -8,13 +8,13 @@ use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
 use crate::profile::Profile;
 
 /// A Gaussian duals to `sqrt(pi/a) exp(-pi^2 f^2/a)`: this is that edge, in dB.
-pub fn edge_db(a: &SpectralAtom, ceiling: f64) -> f64 {
+pub(crate) fn edge_db(a: &SpectralAtom, ceiling: f64) -> f64 {
     a.gauss.map_or(0.0, |g| {
         -20.0 * PI * PI * ceiling * ceiling / g.a / std::f64::consts::LN_10
     })
 }
 
-pub fn band_limited(n: &SpectralSum, ceiling: f64, profile: &Profile) -> bool {
+pub(crate) fn band_limited(n: &SpectralSum, ceiling: f64, profile: &Profile) -> bool {
     n.lanes.iter().all(|lane| {
         lane.series.is_empty()
             && !lane.atoms.is_empty()
@@ -28,6 +28,6 @@ pub fn band_limited(n: &SpectralSum, ceiling: f64, profile: &Profile) -> bool {
     })
 }
 
-pub fn windowed(n: &SpectralSum) -> bool {
+pub(crate) fn windowed(n: &SpectralSum) -> bool {
     n.atoms().any(|a| a.ind.is_some())
 }

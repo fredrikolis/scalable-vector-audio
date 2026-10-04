@@ -392,6 +392,7 @@ fn the_count_is_what_computing_paid_on_every_route() {
     let frames = (samples + 2 * (256 - 64)).div_ceil(64) as u128;
     assert_eq!(
         inverse.own,
-        frames * sva_samples::collapse::transform_flops(256)
+        frames * 256 * 8,
+        "256 * log2(256) butterflies a frame"
     );
 }

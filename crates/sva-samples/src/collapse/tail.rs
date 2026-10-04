@@ -1,11 +1,11 @@
-// Concern: the energy a windowed atom's dual carries past the ceiling | Non-concern: which row that labels (collapse.rs) | IO: (&SpectralSum, ceiling) -> dB, or nothing where a window's dual is no sinc
+// Concern: the energy a windowed atom's dual carries past the ceiling | Non-concern: which row that labels (blocks.rs) | IO: (&SpectralSum, ceiling) -> dB, or nothing where a window's dual is no sinc
 
 use std::f64::consts::{PI, TAU};
 
 use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
 use sva_formula::{C64, SpectralSum};
 
-pub fn tail_db(n: &SpectralSum, ceiling: f64) -> Option<f64> {
+pub(crate) fn tail_db(n: &SpectralSum, ceiling: f64) -> Option<f64> {
     let mut held = 0.0f64;
     let mut gone = 0.0f64;
     for atom in n.atoms() {

@@ -1,1 +1,1 @@
-Concern: the collapse table: which row a closed form takes, and the row itself | Non-concern: running one over a whole node (collapse.rs), holding the result (buffer.rs) | IO: (&Normal) -> planes
+Concern: the collapse table: which row a closed form takes, and the row itself | Non-concern: holding the result (buffer.rs), running a sampled node (machine/) | IO: (&ClosedForm, rate) -> Rows

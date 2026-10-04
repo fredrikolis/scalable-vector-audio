@@ -145,11 +145,11 @@ fn fourier_types_form_t_to_form_f() {
     assert_eq!((back.held, back.dual), (Held::Form(Var::T), true));
 }
 
-/// An inverse spectrum that never ends would repeat at each asker's window, so both refuse it.
+/// A form in `f` is its dual on the grid, so one the table cannot dual refuses on every asker.
 #[test]
-fn an_endless_inverse_spectrum_refuses_on_every_asker() {
+fn a_form_in_f_with_no_dual_refuses_on_every_asker() {
     let g = graph_of(
-        "endless-spectrum",
+        "undualed-spectrum",
         &[
             ("bank", "sum(k, 1, 8, exp(0 - pow((f - 100*k)/10, 2)))\n"),
             ("master", "@bank\n"),
@@ -162,8 +162,8 @@ fn an_endless_inverse_spectrum_refuses_on_every_asker() {
         &Tier::default(),
     )
     .err()
-    .expect("an inverse spectrum with no end");
-    assert_eq!(refused.code(), "engine.unbounded_extent", "{refused}");
+    .expect("a form in f with no dual");
+    assert_eq!(refused.code(), "cast.left_algebra", "{refused}");
 
     let config = sva_engine::StreamConfig {
         block: 100,
@@ -178,5 +178,5 @@ fn an_endless_inverse_spectrum_refuses_on_every_asker() {
         &Tier::default(),
     ));
     let refused = opened.err().expect("a stream refuses it too");
-    assert_eq!(refused.code(), "engine.unbounded_extent", "{refused}");
+    assert_eq!(refused.code(), "cast.left_algebra", "{refused}");
 }

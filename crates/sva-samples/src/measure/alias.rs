@@ -25,6 +25,9 @@ pub const ALIAS_FRAME: usize = 1024;
 /// Under it a frame is fade or tail, its NMR two near-silences' ratio.
 const GATE_DB: f64 = -70.0;
 
+/// The multiple of the rate an alias score's reference is read at.
+pub const ALIAS_OVERSAMPLE: usize = 4;
+
 /// Above it the alias is audible (Brandenburg).
 pub const AUDIBLE_NMR_DB: f64 = -10.0;
 

@@ -17,10 +17,9 @@ pub mod stft;
 pub use biquad::Coeffs;
 pub use buffer::Buffer;
 pub use collapse::{
-    ALIAS_OVERSAMPLE, AliasScore, At, Audible, Extent, Refs, Rows, crop_gain, dropped_db,
-    eval_spectral_sum_at, eval_written_at, lane_of, of_spectral_sum, of_spectral_sum_or_point,
-    of_spectral_sum_read, render, render_written, truncate_spectral_sum,
-    truncate_spectral_sum_read, truncate_written, truncate_written_with, unary,
+    At, Audible, Extent, Refs, Rows, crop_gain, dropped_db, eval_spectral_sum_at, eval_written_at,
+    lane_of, truncate_spectral_sum, truncate_spectral_sum_read, truncate_written,
+    truncate_written_with, unary,
 };
 pub use error::{CollapseError, SampleError};
 pub use filters::{Automation, AutomationFrame, FilterSite, FilterTrace};
@@ -34,7 +33,8 @@ pub use machine::tape::{Tape, Window};
 pub use machine::{Machine, MachineState, Span, Spanned};
 pub use measure::Consumes;
 pub use measure::alias::{
-    AUDIBLE_NMR_DB, Alias, AliasBand, PLAYBACK_DB_SPL, measure_alias, worst as worst_alias,
+    ALIAS_OVERSAMPLE, AUDIBLE_NMR_DB, Alias, AliasBand, PLAYBACK_DB_SPL, measure_alias,
+    worst as worst_alias,
 };
 pub use measure::bands::{BAND_COUNT, BandFloor, BandTrack, Bands, DECIMATED_HZ, cam, erb_hz};
 pub use measure::crest::{BandCrest, Crest};

@@ -11,7 +11,7 @@ use std::rc::Rc;
 use sva_formula::spectral_sum::atom::SpectralAtom;
 use sva_formula::spectral_sum::sup::sup_from;
 use sva_formula::{Body, C64, Edge, Fold, Hash, NodeId, Part, SpectralSum, Through, Unary, Var};
-use sva_samples::collapse::plan::summed_bounds;
+use sva_samples::collapse::summed_bounds;
 use sva_samples::{
     Audible, CollapseError, Extent, Grid, Profile, truncate_spectral_sum_read,
     truncate_written_with,

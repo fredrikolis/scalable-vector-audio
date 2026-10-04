@@ -1,4 +1,4 @@
-// Concern: evaluates one closed form at one instant and routes the components it holds | Non-concern: what the samples are labelled (collapse.rs) | IO: (&SpectralSum or &Body, t, component) -> C64
+// Concern: evaluates one closed form at one instant and routes the components it holds | Non-concern: what the samples are labelled (blocks.rs) | IO: (&SpectralSum or &Body, t, component) -> C64
 
 use std::cell::RefCell;
 
@@ -122,10 +122,6 @@ pub(crate) fn eval_atom_on(a: &SpectralAtom, t: f64, on: On) -> Result<C64, Coll
     })
 }
 
-pub fn eval_lane(lane: &Lane, t: f64) -> Result<C64, CollapseError> {
-    eval_lane_on(lane, t, None)
-}
-
 fn eval_lane_on(lane: &Lane, t: f64, on: On) -> Result<C64, CollapseError> {
     let mut sum = C64::ZERO;
     for a in &lane.atoms {
@@ -157,7 +153,7 @@ fn with_modal(lane: &Lane, mut sum: C64, t: f64, on: On) -> Result<C64, Collapse
     Ok(sum)
 }
 
-pub fn eval_spectral_sum(n: &SpectralSum, c: usize, t: f64) -> Result<C64, CollapseError> {
+pub(crate) fn eval_spectral_sum(n: &SpectralSum, c: usize, t: f64) -> Result<C64, CollapseError> {
     eval_spectral_sum_on(n, c, At::Free(t))
 }
 

@@ -31,7 +31,7 @@ pub(crate) fn demand(values: &Values, asked: &[(usize, Extent)]) -> Vec<Need> {
         }
         let (compute, restart) = match &value.kind {
             Kind::Program(program) if program.stateful() => stateful(value, program, &hold),
-            Kind::Frames { .. } | Kind::Istft | Kind::Spectrum(_) => whole(value, &hold),
+            Kind::Frames { .. } | Kind::Istft => whole(value, &hold),
             _ => (hold.minus(&value.holding()), false),
         };
         match &value.kind {

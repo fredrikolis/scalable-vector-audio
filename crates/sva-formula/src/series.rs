@@ -1,4 +1,4 @@
-// Concern: decides a series' convergence in A and enumerates the lines it yields | Non-concern: placing them on a grid (sva-samples) | IO: (&Series, ceiling) -> bool, Lines, Enumerated, a spacing
+// Concern: decides a series' convergence in A and enumerates the lines it yields | Non-concern: placing them on a grid (sva-samples) | IO: (&Series, ceiling) -> bool, Lines, Enumerated
 
 use std::f64::consts::TAU;
 
@@ -403,35 +403,6 @@ fn ladder(place: &Body, k: IndexId, reads: &dyn Reads) -> Option<(f64, f64)> {
     (real && slope.re.is_finite() && offset.re.is_finite()).then_some((offset.re, slope.re))
 }
 
-/// The step a series' own frequency walks: every term lands on a multiple of it. A
-/// delta train's places are instants, not frequencies, and name no such step.
-pub fn spacing(s: &Series) -> Option<f64> {
-    spacing_read(s, &Opaque)
-}
-
-pub fn spacing_read(s: &Series, reads: &dyn Reads) -> Option<f64> {
-    let Some(shape @ Shape::Lines(_)) = read_with(&s.term.body, reads) else {
-        return None;
-    };
-    let mut held: Option<f64> = None;
-    for (place, _) in places(&shape) {
-        let (slope, offset) = affine_read(&place, Reading::Index(s.index), reads)?;
-        let (slope, offset) = (slope.exact()?.re, offset.exact()?.re);
-        if slope == 0.0 || !slope.is_finite() || !offset.is_finite() {
-            return None;
-        }
-        let steps = offset / slope;
-        if (steps.round() - steps).abs() > TURN_EPSILON * steps.abs().max(1.0) {
-            return None;
-        }
-        match held {
-            Some(step) if step != slope.abs() => return None,
-            _ => held = Some(slope.abs()),
-        }
-    }
-    held
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Enumerated {
     pub atoms: Vec<SpectralAtom>,
@@ -485,15 +456,6 @@ pub fn line_atoms_read(s: &Series, band: (f64, f64, f64), reads: &dyn Reads) -> 
         dropped: found.dropped,
     })
 }
-
-/// A whole turn count to floating precision: a tolerance would put a line on a neighbouring
-/// bin, which `exact` cannot carry.
-pub fn commensurate(hz: f64, horizon: f64) -> bool {
-    let turns = hz * horizon;
-    (turns.round() - turns).abs() <= TURN_EPSILON * turns.abs().max(1.0)
-}
-
-const TURN_EPSILON: f64 = 1e-9;
 
 fn places(shape: &Shape) -> Vec<(Body, Body)> {
     match shape {

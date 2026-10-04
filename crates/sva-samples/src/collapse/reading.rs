@@ -1,92 +1,15 @@
-// Concern: reads a lane or a written form onto the grid, one instant at a time | Non-concern: placing lines by transform (lines.rs), choosing this row (plan.rs) | IO: (a lane or a body, rate) -> a plane
+// Concern: reads a written form onto the grid an instant at a time, each addend inside its window | Non-concern: one instant's value (point.rs) | IO: (a body, span, grid) -> a plane
 
-use sva_formula::{Body, ClosedForm, SpectralSum};
+use sva_formula::Body;
 
 use crate::Grid;
 use crate::error::CollapseError;
 
 use super::active::{self, Window};
-use super::{Extent, lines, plan, point, span};
-
-pub(super) fn sampled_spectral_sum(
-    sum: &SpectralSum,
-    lanes: &[plan::LanePlan],
-    rate: u32,
-    extent: Extent,
-    len: usize,
-) -> Result<Vec<Vec<f64>>, CollapseError> {
-    let grid = Grid::of(rate);
-    let mut planes = Vec::with_capacity(sum.lanes.len());
-    for (lane, taken) in sum.lanes.iter().zip(lanes) {
-        if let plan::LanePlan::Grouped { groups, bins } = taken {
-            planes.push(under_a_window(groups, *bins, rate, extent, len)?);
-            continue;
-        }
-        let mut plane = vec![0.0; len];
-        let windows = active::windows(lane, grid);
-        for (from, to) in span::nonzero(lane, extent, rate) {
-            let over = (extent.start + from as i64, extent.start + to as i64);
-            active::sweep(lane, &windows, over, grid, &mut plane[from..to])?;
-        }
-        planes.push(plane);
-    }
-    Ok(planes)
-}
-
-/// Each group's lines are placed by FORMAT 9.2's routes and its factor is read once an
-/// instant, not once a term.
-fn under_a_window(
-    groups: &[plan::Group],
-    bins: usize,
-    rate: u32,
-    extent: Extent,
-    len: usize,
-) -> Result<Vec<f64>, CollapseError> {
-    let mut plane = vec![0.0; len];
-    let grid = Grid::of(rate);
-    for group in groups {
-        let mut held = lines::transformed(&group.placed, extent, bins, rate, len);
-        let live = extent.intersect(Extent::new(group.live.0, group.live.1));
-        let (from, to) = match live.is_empty() {
-            true => (0, 0),
-            false => (
-                (live.start - extent.start) as usize,
-                (live.end - extent.start) as usize,
-            ),
-        };
-        lines::add_direct(&mut held[from..to], &group.summed, live, rate);
-        for (at, value) in held.into_iter().enumerate().take(to).skip(from) {
-            let n = extent.start + at as i64;
-            let factor = point::eval_atom_on(&group.factor, grid.instant(n), Some((grid, n)))?;
-            plane[at] += value * factor.re;
-        }
-    }
-    Ok(plane)
-}
-
-pub(super) fn sampled_body(
-    form: &ClosedForm,
-    component: usize,
-    rate: u32,
-    extent: Extent,
-    len: usize,
-    scale: usize,
-) -> Result<Vec<f64>, CollapseError> {
-    let grid = Grid::finer(rate, scale);
-    let from = extent.start * scale as i64;
-    let windows =
-        plan::summed(&form.body).map_or_else(Vec::new, |parts| plan::addend_windows(&parts, grid));
-    written(
-        &form.body,
-        &windows,
-        component,
-        (from, from + len as i64),
-        grid,
-    )
-}
+use super::{addends, point};
 
 /// Samples `[from, to)` of `grid` of one component of a written form. A sum
-/// visits each addend only inside its window from `plan::addend_windows`.
+/// visits each addend only inside its window from `addends::addend_windows`.
 pub(super) fn written(
     body: &Body,
     windows: &[Window],
@@ -94,7 +17,7 @@ pub(super) fn written(
     (from, to): Window,
     grid: Grid,
 ) -> Result<Vec<f64>, CollapseError> {
-    let Some(parts) = plan::summed(body) else {
+    let Some(parts) = addends::summed(body) else {
         return (from..to)
             .map(|n| {
                 let at = point::At::Sample(grid, n);

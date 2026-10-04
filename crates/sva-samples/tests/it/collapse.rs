@@ -4,8 +4,7 @@ use crate::helpers::{part, render, whole_second};
 use std::f64::consts::{PI, TAU};
 
 use sva_formula::{Body, Bound, C64, ClosedForm, Edge, IndexId, Origin, Part, Series, Unary, Var};
-use sva_samples::collapse::Extent;
-use sva_samples::{CollapseError, Detail, PSYCHOACOUSTIC_V1, Rule, Source};
+use sva_samples::{CollapseError, Detail, PSYCHOACOUSTIC_V1, Rows, Rule, Source};
 
 const RATE: u32 = 8_192;
 
@@ -97,62 +96,9 @@ fn a_line_spectrum_collapse_is_exact_and_lists_dropped() {
     }
 }
 
-/// Forty partials on whole hertz: several times the count at which one transform costs less
-/// than evaluating them, so the transform places this spectrum with room to spare.
-fn bank() -> Body {
-    sum((1..=40)
-        .map(|k| cosine(f64::from(k) * 8.0, 1.0 / f64::from(k)))
-        .collect())
-}
-
-/// The two rows differ only in whether the lines close over the horizon, so a horizon none
-/// of them closes over is the summed row over the very same spectrum.
-#[test]
-fn commensurate_and_summed_rows_agree_on_a_commensurate_case() {
-    let law = form(Var::T, bank());
-    let (transformed, exact) =
-        render(&law, RATE, whole_second(), &PSYCHOACOUSTIC_V1).expect("lines");
-    assert_eq!(exact.rule(), Rule::LineSpectrumExact);
-
-    let awkward = (0.0, 0.9);
-    let (summed, label) = render(&law, RATE, awkward, &PSYCHOACOUSTIC_V1).expect("lines");
-    assert_eq!(label.rule(), Rule::LineSpectrumSummed);
-
-    for i in (0..summed.len()).step_by(97) {
-        assert!(
-            (transformed.at(0, i) - summed.at(0, i)).abs() < 1e-12,
-            "sample {i}: {} vs {}",
-            transformed.at(0, i),
-            summed.at(0, i)
-        );
-    }
-}
-
-/// 261.63 Hz lands 0.37 turns from whole over one second, which is well inside five cents of
-/// the nearest bin and still not commensurate: no tolerance widens the placement row. The
-/// bank beside it is what puts the spectrum on the transform in the first place.
-#[test]
-fn only_a_whole_turn_count_over_the_horizon_is_placed() {
-    let concert_c = form(Var::T, sum(vec![bank(), cosine(261.63, 1.0)]));
-    let (_, label) = render(&concert_c, RATE, whole_second(), &PSYCHOACOUSTIC_V1).expect("lines");
-    let Detail::Lines { placed, summed, .. } = &label.detail else {
-        panic!("expected a line label, got {:?}", label.detail);
-    };
-    assert_eq!(label.rule(), Rule::LineSpectrumMixed);
-    assert_eq!(*placed, 40, "the bank closes over the second");
-    assert_eq!(
-        *summed, 1,
-        "261.63 turns is not a whole number, and no tolerance makes it one"
-    );
-
-    let whole = form(Var::T, sum(vec![bank(), cosine(110.0, 1.0)]));
-    let (_, label) = render(&whole, RATE, whole_second(), &PSYCHOACOUSTIC_V1).expect("lines");
-    assert_eq!(label.rule(), Rule::LineSpectrumExact, "110 whole turns");
-}
-
 /// `sum(k, 1, 200000, sin(2*pi*0.1*k*t)/k)`: 0.1 Hz spacing reaches the 20 kHz ceiling at
-/// k = 200000, and every line closes over a ten-second horizon. The reference is the sum
-/// itself, evaluated at fifty instants rather than at every sample of the run.
+/// k = 200000. The reference is the sum itself, read at fifty instants rather than at every
+/// sample of the run.
 #[test]
 fn dense_series_and_direct_sum_agree() {
     let k = IndexId(0);
@@ -175,31 +121,35 @@ fn dense_series_and_direct_sum_agree() {
             )),
         })),
     );
-    let (rate, horizon) = (44_100u32, 10.0);
-    let (buffer, label) =
-        render(&law, rate, (0.0, horizon), &PSYCHOACOUSTIC_V1).expect("a dense series");
-    assert_eq!(label.rule(), Rule::LineSpectrumExact);
+    let (rate, len) = (44_100u32, 441_000);
+    let rows = Rows::of(&law, rate, &PSYCHOACOUSTIC_V1).expect("a dense series");
+    let label = rows.label(&PSYCHOACOUSTIC_V1);
+    assert_eq!(label.rule(), Rule::LineSpectrumSummed);
     let Detail::Lines {
-        placed, dropped, ..
+        summed, dropped, ..
     } = &label.detail
     else {
         panic!("expected a line label");
     };
-    assert_eq!(*placed, 199_999, "every line under the 20 kHz ceiling");
+    assert_eq!(*summed, 199_999, "every line under the 20 kHz ceiling");
     assert_eq!(dropped.len(), 1, "k = 200000 sits exactly on the ceiling");
 
     let mut worst = 0.0f64;
     let mut seed = 1u64;
     for _ in 0..50 {
         seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-        let i = (seed >> 33) as usize % buffer.len();
+        let i = (seed >> 33) as i64 % len;
+        let held = rows.planes(i, i + 1).expect("a sample")[0][0];
         let t = i as f64 / f64::from(rate);
         let direct: f64 = (1..=199_999u32)
             .map(|n| (TAU * 0.1 * f64::from(n) * t).sin() / f64::from(n))
             .sum();
-        worst = worst.max((buffer.at(0, i) - direct).abs());
+        worst = worst.max((held - direct).abs());
     }
-    assert!(worst < 1e-10, "iFFT and direct sum differ by {worst}");
+    assert!(
+        worst < 1e-10,
+        "the rows and the direct sum differ by {worst}"
+    );
 }
 
 #[test]
@@ -229,84 +179,14 @@ fn a_cropped_pair_is_measured_with_tail_energy() {
 }
 
 #[test]
-fn a_ct_collapse_reports_alias() {
+fn a_ct_collapse_is_point_sampled() {
     let law = form(Var::T, Body::Apply(Unary::Tanh, part(cosine(1000.0, 6.0))));
     let (buffer, label) =
         render(&law, RATE, whole_second(), &PSYCHOACOUSTIC_V1).expect("a closed form in t");
 
     assert_eq!(label.source, Source::Measured);
-    let Detail::Point { rule, alias_db, .. } = label.detail else {
-        panic!("expected a point label, got {:?}", label.detail);
-    };
-    assert_eq!(rule, Rule::PointSampled);
-    let alias_db = alias_db.expect("the score this suite asks for");
-    assert!(alias_db.is_finite(), "alias {alias_db}");
+    assert_eq!(label.rule(), Rule::PointSampled);
     assert!(buffer.plane(0).iter().all(|s| s.abs() <= 1.0));
-}
-
-/// One score stands for the whole node, so it has to be the component that aliases worst:
-/// reading the first alone calls a joined pair clean whenever its quiet half is written first.
-#[test]
-fn a_joined_collapse_scores_the_component_that_aliases_worst() {
-    let clean = Body::Apply(Unary::Tanh, part(cosine(100.0, 0.2)));
-    let aliasing = Body::Apply(Unary::Tanh, part(cosine(3000.0, 6.0)));
-    let scored = |body: Body| {
-        let (_, label) = render(
-            &form(Var::T, body),
-            RATE,
-            whole_second(),
-            &PSYCHOACOUSTIC_V1,
-        )
-        .expect("a closed form in t");
-        let Detail::Point { alias_db, .. } = label.detail else {
-            panic!("expected a point label, got {:?}", label.detail);
-        };
-        alias_db.expect("the score this suite asks for")
-    };
-
-    let alone = scored(aliasing.clone());
-    let quiet = scored(clean.clone());
-    assert!(
-        alone > quiet,
-        "the fixture only says something if one component aliases more: {alone} against {quiet}"
-    );
-
-    let quiet_first = scored(Body::Join(vec![
-        part(clean.clone()),
-        part(aliasing.clone()),
-    ]));
-    let loud_first = scored(Body::Join(vec![part(aliasing), part(clean)]));
-    assert_eq!(
-        quiet_first, loud_first,
-        "the score does not turn on which component was written first"
-    );
-    assert!(
-        (quiet_first - alone).abs() < 1e-9,
-        "a joined pair scores as loudly as its worst half: {quiet_first} against {alone}"
-    );
-}
-
-#[test]
-fn a_cs_collapse_takes_the_inverse_spectrum_row() {
-    let law = form(
-        Var::F,
-        Body::Apply(
-            Unary::Exp,
-            part(Body::Mul(vec![
-                part(constant(-1.0 / (200.0 * 200.0))),
-                part(Body::Pow(part(Body::Line), 2)),
-            ])),
-        ),
-    );
-    let (buffer, label) =
-        render(&law, RATE, whole_second(), &PSYCHOACOUSTIC_V1).expect("a closed form in f");
-    assert_eq!(label.source, Source::Measured);
-    let Detail::Spectrum { rule, wrap_db } = label.detail else {
-        panic!("expected a spectrum label, got {:?}", label.detail);
-    };
-    assert_eq!(rule, Rule::InverseSpectrum);
-    assert!(wrap_db < 0.0, "a narrow Gaussian wraps almost nothing");
-    assert!(buffer.plane(0).iter().any(|&s| s != 0.0));
 }
 
 #[test]
@@ -1053,25 +933,20 @@ fn two_windows_state_one_energy_weighted_tail() {
     );
 }
 
-/// The lines of a noise series sit on the reciprocal of its own period, a grid the horizon
-/// need not be a multiple of: FORMAT 9.2 still places them, over the window they do close.
+/// Every line of a noise series under the ceiling is summed at each instant.
 #[test]
-fn noise_alone_places_through_one_transform() {
+fn noise_alone_sums_its_lines() {
     let law = form(
         Var::T,
         Body::Series(Box::new(sva_formula::noise(1, 0.4, 0.0))),
     );
     let (buffer, label) =
         render(&law, RATE, whole_second(), &PSYCHOACOUSTIC_V1).expect("a noise series");
-    let Detail::Lines { placed, summed, .. } = &label.detail else {
+    let Detail::Lines { summed, .. } = &label.detail else {
         panic!("expected a line label, got {:?}", label.detail);
     };
-    assert_eq!(label.rule(), Rule::LineSpectrumExact);
-    assert_eq!(
-        *summed, 0,
-        "a 2.5 Hz grid closes; nothing is summed one by one"
-    );
-    assert!(*placed > 1_000, "{placed} lines under the ceiling");
+    assert_eq!(label.rule(), Rule::LineSpectrumSummed);
+    assert!(*summed > 1_000, "{summed} lines under the ceiling");
 
     let placed = sva_formula::lines(
         &sva_formula::noise(1, 0.4, 0.0),
@@ -1095,13 +970,13 @@ fn noise_alone_places_through_one_transform() {
     }
 }
 
-/// A line off the grid does not drag the ones on it off: the label states both counts and
-/// the buffer is what each route contributes, added.
+/// A line beside a noise series is one more line: the label counts it and the buffer is what
+/// each contributes, added.
 #[test]
-fn noise_plus_a_sine_costs_the_sum_of_its_parts() {
+fn noise_plus_a_sine_is_the_sum_of_its_parts() {
     let hiss = Body::Series(Box::new(sva_formula::noise(1, 0.4, 0.0)));
     let tone = cosine(554.365, 0.06);
-    let (alone, _) = render(
+    let (alone, alone_label) = render(
         &form(Var::T, hiss.clone()),
         RATE,
         whole_second(),
@@ -1115,11 +990,7 @@ fn noise_plus_a_sine_costs_the_sum_of_its_parts() {
         &PSYCHOACOUSTIC_V1,
     )
     .expect("one line");
-    assert_eq!(
-        sine_label.rule(),
-        Rule::LineSpectrumSummed,
-        "554.365 Hz is off the grid"
-    );
+    assert_eq!(sine_label.rule(), Rule::LineSpectrumSummed);
 
     let (both, label) = render(
         &form(Var::T, sum(vec![hiss, tone])),
@@ -1128,12 +999,16 @@ fn noise_plus_a_sine_costs_the_sum_of_its_parts() {
         &PSYCHOACOUSTIC_V1,
     )
     .expect("a noise series beside one line");
-    assert_eq!(label.rule(), Rule::LineSpectrumMixed);
-    let Detail::Lines { placed, summed, .. } = &label.detail else {
-        panic!("expected a line label, got {:?}", label.detail);
+    assert_eq!(label.rule(), Rule::LineSpectrumSummed);
+    let count = |label: &sva_samples::Label| match label.detail {
+        Detail::Lines { summed, .. } => summed,
+        _ => panic!("expected a line label, got {:?}", label.detail),
     };
-    assert_eq!(*summed, 1, "the sine alone is summed");
-    assert!(*placed > 1_000, "the series still places: {placed}");
+    assert_eq!(
+        count(&label),
+        count(&alone_label) + 1,
+        "the sine is one more line"
+    );
     for i in [0usize, 137, 4_001] {
         assert!(
             (both.at(0, i) - alone.at(0, i) - sine.at(0, i)).abs() < 1e-9,
@@ -1305,7 +1180,7 @@ fn a_gain_outside_a_cropped_series_keeps_the_window() {
 }
 
 /// A bound a composer wrote is a term count like the floor's own, so a nesting under one is
-/// priced and refused by the same name. Under the bound, the row is named, never switched.
+/// priced and refused by the same name. Under the bound, it collapses.
 #[test]
 fn a_nested_series_past_the_bound_refuses_or_labels() {
     let nested = |outer: i64| {
@@ -1373,55 +1248,7 @@ fn a_nested_series_past_the_bound_refuses_or_labels() {
         "collapse.series_nesting"
     );
 
-    let held = form(Var::T, nested(4));
-    let (_, label) = run(nested(4)).expect("the same nesting under the bound collapses");
-    let sum = sva_formula::normalize_closed_form(&held).expect("a form under the bound");
-    let extent = Extent::secs(RATE, horizon.0, horizon.1);
-    let planned =
-        sva_samples::collapse::plan::of(&sum, RATE, extent, &PSYCHOACOUSTIC_V1, extent.len())
-            .expect("a row")
-            .rule();
-    assert_eq!(
-        label.rule(),
-        planned,
-        "the row the label names is the row the plan named"
-    );
-}
-
-/// `exp(-((f - centre)/200)^2)`, one bump the wrap either counts or does not reach.
-fn bump(centre: f64) -> Part {
-    part(Body::Apply(
-        Unary::Exp,
-        part(Body::Mul(vec![
-            part(constant(-1.0 / (200.0 * 200.0))),
-            part(Body::Pow(
-                part(Body::Add(vec![part(Body::Line), part(constant(-centre))])),
-                2,
-            )),
-        ])),
-    ))
-}
-
-#[test]
-fn energy_further_out_than_the_counted_images_is_not_in_the_wrap() {
-    let wrap_at = |images: f64| {
-        let law = form(
-            Var::F,
-            Body::Add(vec![bump(0.0), bump(images * f64::from(RATE))]),
-        );
-        let (_, label) =
-            render(&law, RATE, whole_second(), &PSYCHOACOUSTIC_V1).expect("a closed form in f");
-        let Detail::Spectrum { wrap_db, .. } = label.detail else {
-            panic!("expected a spectrum label, got {:?}", label.detail);
-        };
-        wrap_db
-    };
-    let counted = wrap_at(3.0);
-    let past = wrap_at(4.0);
-    assert!(
-        counted > past + 100.0,
-        "three images out counts ({counted} dB), four does not ({past} dB)"
-    );
+    run(nested(4)).expect("the same nesting under the bound collapses");
 }
 
 /// `t + sin(2*pi*5*t)/(10*pi)` runs at most twice as fast as `t`, so a line series read there

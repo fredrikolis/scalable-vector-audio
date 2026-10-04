@@ -1,4 +1,4 @@
-// Concern: states which exact line route a spectrum takes, and that the direct one returns it unchanged | Non-concern: a non-line form's rows | IO: (a ClosedForm) -> Buffer and Label
+// Concern: states that a line spectrum summed at each instant returns a constant and a unit sine bit for bit | Non-concern: a non-line form's rows | IO: (a ClosedForm) -> Buffer and Label
 
 use crate::helpers::{part, render, whole_second};
 use std::f64::consts::TAU;
@@ -26,7 +26,7 @@ fn sine(hz: f64) -> Body {
     )
 }
 
-/// A constant's collapse is the constant: the transform rounds its last bit.
+/// A constant's collapse is the constant, to the last bit.
 #[test]
 fn a_constant_collapses_bit_exactly() {
     let (buffer, label) = render(
@@ -39,10 +39,10 @@ fn a_constant_collapses_bit_exactly() {
 
     assert_eq!(label.source, Source::Exact);
     assert_eq!(label.rule(), Rule::LineSpectrumSummed);
-    let Detail::Lines { placed, summed, .. } = &label.detail else {
+    let Detail::Lines { summed, .. } = &label.detail else {
         panic!("expected a line label, got {:?}", label.detail);
     };
-    assert_eq!((*placed, *summed), (0, 1), "one line, placed directly");
+    assert_eq!(*summed, 1, "one line");
     for i in 0..buffer.len() {
         assert_eq!(
             buffer.at(0, i),
@@ -52,8 +52,7 @@ fn a_constant_collapses_bit_exactly() {
     }
 }
 
-/// 441 Hz over 44100 samples puts a quarter turn on sample 25, where the sine is one, and
-/// two lines cost less than the transform.
+/// 441 Hz over 44100 samples puts a quarter turn on sample 25, where the sine is one.
 #[test]
 fn a_unit_sine_peaks_at_exactly_one() {
     let (buffer, label) =

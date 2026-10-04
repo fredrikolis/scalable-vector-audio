@@ -6,9 +6,9 @@ pub mod fd;
 pub mod partials;
 
 use sva_formula::{Body, ClosedForm, Part};
-use sva_samples::collapse::{self, AliasScore, Extent};
-use sva_samples::{Buffer, CollapseError, Label, Profile};
+use sva_samples::{Buffer, CollapseError, Extent, Label, Profile, Rows};
 
+/// The form's rows over `secs`, and the label they state.
 pub fn render(
     form: &ClosedForm,
     rate: u32,
@@ -16,7 +16,10 @@ pub fn render(
     profile: &Profile,
 ) -> Result<(Buffer, Label), CollapseError> {
     let extent = Extent::secs(rate, secs.0, secs.1);
-    collapse::render(form, rate, extent, profile, AliasScore::Asked)
+    let rows = Rows::of(form, rate, profile)?;
+    let mut buffer = Buffer::of_planes(rate, rows.planes(extent.start, extent.end)?);
+    buffer.start = extent.start;
+    Ok((buffer, rows.label(profile)))
 }
 
 pub fn part(body: Body) -> Part {
