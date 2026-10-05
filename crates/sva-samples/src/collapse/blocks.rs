@@ -1,4 +1,4 @@
-// Concern: which row a closed form takes, read on any span of its grid or at any instant, and priced | Non-concern: a form's arithmetic | IO: (form, grid) -> Rows; (span, t) -> samples
+// Concern: which row a closed form takes, read on any span of its grid or at any instant | Non-concern: a form's arithmetic | IO: (form, grid) -> Rows; (span, t) -> samples
 
 use sva_formula::spectral_sum::atom::SpectralAtom;
 use sva_formula::{ClosedForm, Lane, Opaque, Reads, SpectralSum, Var, normalize_closed_form};
@@ -123,59 +123,6 @@ impl Rows {
             Some(n) => Ok(values(&self.row, c, (n, n + 1), self.grid)?[0]),
             None => between(&self.row, c, t),
         }
-    }
-
-    pub fn ops(&self) -> usize {
-        (0..self.width)
-            .map(|c| terms(&self.row, c))
-            .sum::<usize>()
-            .max(1)
-    }
-
-    /// What writing `[from, to)` of every component takes, as `(priced flops, waves)`.
-    pub fn work(&self, from: i64, to: i64) -> (u128, u128) {
-        (0..self.width).fold((0, 0), |held, c| {
-            let (priced, waves) = worked(&self.row, c, from, to, self.grid);
-            (held.0 + priced, held.1 + waves)
-        })
-    }
-}
-
-/// `(priced flops, waves)` one component's row takes over `[from, to)`: a line, a node walked
-/// or an atom inside its spans, a sample each.
-fn worked(row: &Row, c: usize, from: i64, to: i64, grid: Grid) -> (u128, u128) {
-    let n = (to - from) as u128;
-    let times = |(priced, waves): (usize, usize), n: u128| (priced as u128 * n, waves as u128 * n);
-    match row {
-        Row::Lines(lanes) => lanes[c]
-            .as_ref()
-            .map_or((0, 0), |d| times(d.lines_priced_and_turned(), n)),
-        Row::Grouped(lanes) => lanes[c].iter().fold((0, 0), |held, g| {
-            let (from, to) = active::meet((from, to), g.live);
-            let (priced, waves) = g
-                .direct
-                .as_ref()
-                .map_or((0, 0), Direct::lines_priced_and_turned);
-            let (priced, waves) = times((priced + 1, waves), (to - from).max(0) as u128);
-            (held.0 + priced, held.1 + waves)
-        }),
-        Row::Sweep {
-            spans, intervals, ..
-        } => {
-            let evaluated =
-                active::evaluated(&intervals[c], &inside(spans[c].as_deref(), (from, to)));
-            (evaluated, evaluated)
-        }
-        Row::Point { written, .. } => addends::point_work(&written.body, c, grid, (from, to)),
-        Row::Added(parts) => parts.iter().fold((0, 0), |held, (part, width, reach)| {
-            match (lane(*width, c), active::meet((from, to), *reach)) {
-                (Some(lane), (a, b)) if a < b => {
-                    let (priced, waves) = worked(part, lane, a, b, grid);
-                    (held.0 + priced, held.1 + waves)
-                }
-                _ => held,
-            }
-        }),
     }
 }
 
@@ -558,25 +505,6 @@ fn between(row: &Row, c: usize, t: f64) -> Result<f64, CollapseError> {
     })
 }
 
-fn terms(row: &Row, c: usize) -> usize {
-    match row {
-        Row::Lines(lanes) => lanes[c]
-            .as_ref()
-            .map_or(0, |d| d.lines_priced_and_turned().0),
-        Row::Grouped(lanes) => lanes[c].iter().fold(0, |held, g| {
-            held + 1
-                + g.direct
-                    .as_ref()
-                    .map_or(0, |d| d.lines_priced_and_turned().0)
-        }),
-        Row::Sweep { sum, .. } => sum.lanes[c].atoms.len(),
-        Row::Point { written, .. } => addends::terms(&written.body, &[]),
-        Row::Added(parts) => parts.iter().fold(0, |held, (part, width, _)| {
-            held + lane(*width, c).map_or(0, |lane| terms(part, lane))
-        }),
-    }
-}
-
 /// `[from, to)` met with a lane's spans, where every atom of it is windowed.
 fn inside(spans: Option<&[SampleInterval]>, (from, to): SampleInterval) -> Vec<SampleInterval> {
     match spans {
@@ -596,7 +524,7 @@ fn lane(width: usize, c: usize) -> Option<usize> {
 }
 
 /// A form no atom sum reaches still has a value at every instant. A nesting past the bound
-/// is not one of those: it has a form, priced, and too many terms to expand.
+/// is not one of those: it has a form, and too many terms to expand.
 fn reaches_no_atom(e: &CollapseError) -> bool {
     matches!(e, CollapseError::NotEvaluable(_))
 }

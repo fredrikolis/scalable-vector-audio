@@ -1,10 +1,8 @@
-// Concern: proves a render skips only work that is exactly zero, writing the same bits | Non-concern: what any row computes (sva-samples) | IO: (a composition, a range) -> samples, priced work
+// Concern: proves a render that skips exactly-zero work writes the bits of the work done whole | Non-concern: what any row computes (sva-samples) | IO: (a composition, a range) -> samples
 
 use crate::fixtures::graph_of;
 use sva_ast::Graph;
-use sva_engine::{
-    Ask, Extent, Output, Range, Render, RenderConfig, Representation, Tier, answer, flops, render,
-};
+use sva_engine::{Extent, Range, Render, RenderConfig, Tier, render};
 
 const RATE: u32 = 8_000;
 
@@ -87,7 +85,7 @@ fn a_note_read_three_times_is_computed_once_and_added() {
 }
 
 /// A sum of sampled notes reads each only while it sounds: the bits are the notes added in
-/// order from +0, and the sum pays only for the notes sounding.
+/// order from +0.
 #[test]
 fn a_sampled_sum_reads_each_operand_only_where_it_is_nonzero() {
     let g = sampled_notes();
@@ -112,16 +110,11 @@ fn a_sampled_sum_reads_each_operand_only_where_it_is_nonzero() {
         let added = 0.0 + at(n) + at(n - gap) + at(n - 2 * gap);
         assert_eq!(sample.to_bits(), added.to_bits(), "sample {n}");
     }
-    // One sum: a read and an add while each note sounds, a zero while none does.
-    let note = u128::from(RATE / 2);
-    let silent = song.len() as u128 - 3 * note;
-    assert_eq!(flops::tree(&held).rows[0].own, 3 * 2 * note + silent);
 }
 
-/// Index reads of a closed form read its one value, as time reads do, and a long sum of them
-/// pays for each term only while it sounds: the cost is linear in the terms.
+/// Index reads of a closed form read its one value, as time reads do.
 #[test]
-fn a_long_sum_of_index_reads_shares_one_value_and_pays_each_term_only_where_it_sounds() {
+fn a_long_sum_of_index_reads_shares_one_value() {
     let terms = 12;
     let song: Vec<String> = (0..terms)
         .map(|k| format!("@note[idx(t - {}s)]", 2 * k))
@@ -147,18 +140,10 @@ fn a_long_sum_of_index_reads_shares_one_value_and_pays_each_term_only_where_it_s
         "each read looks up the note's one value: {stats:?}"
     );
     assert_eq!(stats.reused(), terms - 1, "{stats:?}");
-
-    let len = held.output(held.root).expect("the song").plane(0).len() as u128;
-    let note = u128::from(RATE / 2);
-    let sounding = terms as u128 * note;
-    assert_eq!(
-        flops::tree(&held).rows[0].own,
-        2 * sounding + (len - sounding)
-    );
 }
 
 /// A term scaled by constants is as zero as its read where that read is, so a sum of scaled
-/// notes, as a grid's rows are, also pays only for the notes sounding and writes the same bits.
+/// notes, as a grid's rows are, writes the same bits.
 #[test]
 fn a_scaled_sampled_term_is_read_only_where_it_is_nonzero() {
     let g = sampled_notes();
@@ -196,29 +181,6 @@ fn a_scaled_sampled_term_is_read_only_where_it_is_nonzero() {
         let added = 0.0 + at(n) * 0.5 + at(n - gap) * -0.75 + at(n - 2 * gap) * 0.25;
         assert_eq!(sample.to_bits(), added.to_bits(), "sample {n}");
     }
-    assert_eq!(
-        flops::tree(&held).rows[0].own,
-        flops::tree(&over(&g, "song", 4.5, &Tier::default())).rows[0].own,
-        "a note scaled by constants is priced only while it sounds, as an unscaled one is"
-    );
-}
-
-#[test]
-fn a_count_prices_the_render_it_names() {
-    let g = sampled_notes();
-    let held = over(&g, "song", 4.5, &Tier::default());
-    let asked = config(4.5).asking(vec![Ask {
-        node: "song".to_string(),
-        representation: Representation::Flops,
-    }]);
-    let counted = render(&g, "song", asked, &Tier::default()).expect("a count");
-    let Output::Flops(tree) = answer(&counted, counted.root, Representation::Flops)
-        .expect("a count")
-        .value
-    else {
-        panic!("a count");
-    };
-    assert_eq!(tree.total, held.work().priced_flops);
 }
 
 /// With no silence threshold, an open range ends where its root is exactly zero from: a ramp past its

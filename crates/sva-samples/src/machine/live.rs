@@ -1,7 +1,7 @@
 // Concern: cuts one renderer into spans, each compiled without the reads and crops zero there | Non-concern: where a read is zero, running a span | IO: (NodeRenderer, supports) -> Spanned
 
 use super::CompiledOps;
-use super::ops::{self, Layout, lowered};
+use super::ops::{self, Layout};
 use super::renderer::{Index, NodeRenderer, Slot};
 use crate::error::SampleError;
 use crate::grid::Extent;
@@ -63,18 +63,6 @@ impl Spanned {
         };
         zero.compile(&self.layout)
     }
-
-    /// One per op over `[from, to)`, span by span, and each formula's own.
-    pub fn ops(&self, from: i64, to: i64) -> u128 {
-        self.spans
-            .iter()
-            .map(|(span, compiled_ops)| {
-                let n = (to.min(span.to) - from.max(span.from)).max(0) as u128;
-                let formulas: usize = compiled_ops.formulas.iter().map(|(f, _)| f.ops()).sum();
-                n * (compiled_ops.ops.len() + formulas) as u128
-            })
-            .sum()
-    }
 }
 
 impl NodeRenderer {
@@ -129,13 +117,6 @@ impl NodeRenderer {
             },
             other => rebuilt(other, &mut |p| p.stepwise(beside)),
         }
-    }
-
-    /// One per op, and a formula's own.
-    pub fn ops(&self, layout: &Layout) -> Result<usize, SampleError> {
-        let (lowered, _) = lowered(self, layout)?;
-        let formulas: usize = lowered.formulas.iter().map(|f| f.ops()).sum();
-        Ok(lowered.ops.len() + formulas)
     }
 }
 

@@ -148,8 +148,3 @@ pub fn unary(op: Unary, x: C64) -> C64 {
         Unary::Step => C64::real(sva_formula::affine::step(x.re)),
     }
 }
-
-/// How fast a carrier's angle turns at `t`, in radians a second.
-pub(crate) fn turning(rate: &SpectralSum, t: f64) -> Result<f64, CollapseError> {
-    Ok(eval_spectral_sum(rate, 0, t)?.re)
-}

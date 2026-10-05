@@ -33,14 +33,14 @@ fn file(body: &str) -> String {
     format!("{HEADER}{body}\n")
 }
 
-/// `x` and `y` under a sum `p`, which a master reading it at `gain` samples.
+/// `x` and `y` under a filtered sum `p`, which a master reading it at `gain` samples.
 fn mixed(name: &str, gain: f64) -> Graph {
     graph_of(
         name,
         &[
             ("x", &file("sample(crop(sin(2*pi*220*t), 0s, 0.05s))")),
             ("y", &file("sample(crop(sin(2*pi*330*t), 0s, 0.05s))")),
-            ("p", &file("@x*0.5 + @y")),
+            ("p", &file("lowpass(@x*0.5 + @y, cutoff=2000, q=0.7)")),
             ("master", &file(&format!("sample(@p*{gain})"))),
         ],
     )

@@ -15,7 +15,6 @@ use sva_formula::{Body, C64, SpectralSum};
 
 use crate::error::CollapseError;
 
-pub(crate) use addends::terms;
 pub use blocks::Rows;
 pub(crate) use column::Program;
 pub use lines::summed_bounds;

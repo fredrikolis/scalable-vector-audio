@@ -117,7 +117,7 @@ pub(crate) fn lowered(
 }
 
 impl Lowered {
-    /// `op`'s slot; an identical op already pushed is that slot, evaluated once as priced once.
+    /// `op`'s slot; an identical op already pushed is that slot, evaluated once.
     fn push(&mut self, op: Op, width: usize, args: Vec<usize>) -> usize {
         let key = self.key(&op, &args);
         if let Some(slot) = key.as_ref().and_then(|key| self.held.get(key)) {

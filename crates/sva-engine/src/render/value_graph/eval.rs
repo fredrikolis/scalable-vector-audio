@@ -1,29 +1,22 @@
-// Concern: computes one value over the segments asked of it, from the values it reads | Non-concern: choosing the segments, keeping them | IO: (value, segments, read values) -> priced flops
+// Concern: computes one value over the segments asked of it, from the values it reads | Non-concern: choosing the segments, keeping them | IO: (value, segments, read values) -> its samples
 
 use std::borrow::Cow;
 
 use sva_samples::{Buffer, Extent, Machine, Profile, SampleView, stft};
 
 use super::demand::{Need, images};
-use super::segments::Segments;
 use super::value::{Holding, Kind, MachineRun, Value, finite};
 use super::values::Values;
 use crate::error::{Diagnostic, EngineError, Located};
 
 /// `done` holds every value `value` reads; a run marks its state at each of `marks` it passes.
-/// What it cost, and the waves its rows turned.
 pub(crate) fn compute(
     value: &mut Value,
     need: &Need,
     (done, marks): (&Values, &Marks),
     profile: &Profile,
-) -> Result<(u128, u128), EngineError> {
-    let (mut priced, mut waves) = (0, 0);
+) -> Result<(), EngineError> {
     for segment in need.compute.iter() {
-        if let Kind::Rows(rows) = &value.kind {
-            waves += rows.work(segment.start, segment.end).1;
-        }
-        priced += cost(value, segment, done);
         match &value.kind {
             Kind::Rows(_) => rows(value, segment)?,
             Kind::MachineRun(machine_run) if machine_run.stateful() => {
@@ -42,23 +35,7 @@ pub(crate) fn compute(
         }
         evaluated(&mut value.evaluated, segment);
     }
-    Ok((priced, waves))
-}
-
-/// What computing `value` over `segment` costs: the one price both the budget and the count
-/// read.
-fn cost(value: &Value, segment: Extent, values: &Values) -> u128 {
-    match &value.kind {
-        Kind::Rows(rows) => rows.work(segment.start, segment.end).0,
-        Kind::MachineRun(machine_run) if machine_run.alias.is_some() => 0,
-        Kind::MachineRun(machine_run) => machine_run.spanned.ops(segment.start, segment.end),
-        Kind::Frames { window, hop } => stft::flops(segment.len(), *window, *hop),
-        Kind::Istft => match values[value.reads[0]].kind {
-            Kind::Frames { window, hop } => stft::flops(segment.len(), window, hop),
-            _ => 0,
-        },
-        Kind::Resident { .. } => 0,
-    }
+    Ok(())
 }
 
 /// A segment continuing the last one computed extends it, so a value pulled block by block
@@ -189,7 +166,7 @@ fn stepped(
     let from = samples.end();
     debug_assert_eq!(
         from, segment.start,
-        "demand asks a stateful value on from where its run ends, so `cost` prices what runs"
+        "demand asks a stateful value on from where its run ends"
     );
     let held: Vec<View> = images(machine_run, Extent::new(from, segment.end))
         .into_iter()
@@ -299,13 +276,6 @@ pub(crate) fn samples_of(values: &Values, at: usize, over: Extent) -> Buffer {
         }
         None => values[at].samples(over),
     }
-}
-
-/// What `need` would cost, priced as `compute` pays it.
-pub(crate) fn price(value: &Value, need: &Segments, values: &Values) -> u128 {
-    need.iter()
-        .map(|segment| cost(value, segment, values))
-        .sum()
 }
 
 pub(crate) fn sample_refused(name: &str, e: &sva_samples::SampleError) -> EngineError {

@@ -40,16 +40,6 @@ pub fn cola_ok(window: &[f64], hop: usize) -> bool {
             .all(|s| (s - first).abs() <= COLA_TOL * first.max(1.0))
 }
 
-/// What `forward` or `inverse` over `samples` costs: one transform per frame it cuts.
-pub fn flops(samples: usize, window: usize, hop: usize) -> u128 {
-    match hop == 0 || hop > window {
-        true => 0,
-        false => {
-            frame_count(samples, window, hop) as u128 * crate::fft::transform_flops(window.max(1))
-        }
-    }
-}
-
 fn frame_count(samples: usize, window: usize, hop: usize) -> usize {
     let span = samples + 2 * (window - hop);
     span.div_ceil(hop)

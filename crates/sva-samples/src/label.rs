@@ -1,4 +1,4 @@
-// Concern: states how exact one sampled value is and what it cost | Non-concern: deciding that (collapse/blocks.rs), printing it | IO: none
+// Concern: states how exact one sampled value is | Non-concern: deciding that (collapse/blocks.rs), printing it | IO: none
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -83,14 +83,6 @@ pub enum Detail {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Cost {
-    pub flops: u128,
-    pub budget: u128,
-}
-
-/// The silence threshold a render cuts below, and the sample each node it cut is treated as
-/// silent from.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CuttingBelowSilenceThreshold {
     pub silence_threshold_dbfs: f64,
@@ -103,7 +95,6 @@ pub struct Label {
     pub profile: &'static str,
     pub rate: u32,
     pub detail: Detail,
-    pub cost: Option<Cost>,
     /// The most seconds a read was moved to land on a whole sample.
     pub moved: Option<f64>,
     pub cutting_below_silence_threshold: Option<CuttingBelowSilenceThreshold>,
@@ -118,7 +109,6 @@ impl Label {
             detail: Detail::Reading {
                 rule: Rule::Reading,
             },
-            cost: None,
             moved: None,
             cutting_below_silence_threshold: None,
         }
@@ -130,16 +120,8 @@ impl Label {
             profile,
             rate,
             detail,
-            cost: None,
             moved: None,
             cutting_below_silence_threshold: None,
-        }
-    }
-
-    pub fn costing(self, flops: u128, budget: u128) -> Label {
-        Label {
-            cost: Some(Cost { flops, budget }),
-            ..self
         }
     }
 

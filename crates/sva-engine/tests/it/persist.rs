@@ -50,8 +50,14 @@ fn two_voices(name: &str, y: u32) -> Graph {
     graph_of(
         name,
         &[
-            ("x", "sample(sin(2*pi*220*t))*0.5\n"),
-            ("y", &format!("sample(sin(2*pi*{y}*t))*0.5\n")),
+            (
+                "x",
+                "lowpass(sample(sin(2*pi*220*t)), cutoff=2000, q=0.7)*0.5\n",
+            ),
+            (
+                "y",
+                &format!("lowpass(sample(sin(2*pi*{y}*t)), cutoff=2000, q=0.7)*0.5\n"),
+            ),
             ("master", "@x*0.5 + @y*0.25\n"),
         ],
     )
@@ -246,7 +252,7 @@ fn opening_a_store_reads_its_index_alone() {
 }
 
 /// The format a digest of these values' stored bytes was pinned under, and the digest.
-const PINNED: (u32, u64) = (43, 5466979741851859032);
+const PINNED: (u32, u64) = (44, 1197978596022117514);
 
 /// A change to how a value is encoded, or to what the engine computes for any construct here,
 /// fails this until `STORE_FORMAT` is bumped and the digest pinned again: rows, a filter, a
@@ -631,7 +637,7 @@ fn a_warm_render_whose_root_hits_visits_one_key_and_plans_nothing() {
     assert_eq!(stats.lookups[0].node, "master");
     assert_eq!(stats.lookups[0].outcome, Outcome::Hit);
     assert!(stats.planned.is_empty(), "planned {:?}", stats.planned);
-    assert_eq!(warm.work().priced_flops, 0, "nothing is computed");
+    assert_eq!(warm.work().computed_samples, 0, "nothing is computed");
     assert_eq!(bits(&cold), bits(&warm));
 }
 
@@ -640,9 +646,18 @@ fn nested(name: &str, hz: u32) -> Graph {
     graph_of(
         name,
         &[
-            ("e", &format!("sample(sin(2*pi*{hz}*t))*0.5\n")),
-            ("q", "sample(sin(2*pi*550*t))*0.25\n"),
-            ("s", "sample(sin(2*pi*330*t))*0.5\n"),
+            (
+                "e",
+                &format!("lowpass(sample(sin(2*pi*{hz}*t)), cutoff=2000, q=0.7)*0.5\n"),
+            ),
+            (
+                "q",
+                "lowpass(sample(sin(2*pi*550*t)), cutoff=2000, q=0.7)*0.25\n",
+            ),
+            (
+                "s",
+                "lowpass(sample(sin(2*pi*330*t)), cutoff=2000, q=0.7)*0.5\n",
+            ),
             ("p", "@e*0.5 + @q\n"),
             ("master", "@p + @s*0.5\n"),
         ],
@@ -786,8 +801,14 @@ fn a_comment_or_a_file_nothing_reads_changes_no_nodes_key() {
     let commented = graph_of(
         "comment-after",
         &[
-            ("x", "sample(sin(2*pi*220*t))*0.5\n"),
-            ("y", "sample(sin(2*pi*330*t))*0.5\n"),
+            (
+                "x",
+                "lowpass(sample(sin(2*pi*220*t)), cutoff=2000, q=0.7)*0.5\n",
+            ),
+            (
+                "y",
+                "lowpass(sample(sin(2*pi*330*t)), cutoff=2000, q=0.7)*0.5\n",
+            ),
             ("master", "; the mix\n@x*0.5 + @y*0.25\n"),
         ],
     );
@@ -798,8 +819,14 @@ fn a_comment_or_a_file_nothing_reads_changes_no_nodes_key() {
     let beside = graph_of(
         "unread-after",
         &[
-            ("x", "sample(sin(2*pi*220*t))*0.5\n"),
-            ("y", "sample(sin(2*pi*330*t))*0.5\n"),
+            (
+                "x",
+                "lowpass(sample(sin(2*pi*220*t)), cutoff=2000, q=0.7)*0.5\n",
+            ),
+            (
+                "y",
+                "lowpass(sample(sin(2*pi*330*t)), cutoff=2000, q=0.7)*0.5\n",
+            ),
             ("master", "@x*0.5 + @y*0.25\n"),
             ("unread", "sample(sin(2*pi*990*t))\n"),
         ],
@@ -1279,7 +1306,7 @@ fn an_exact_stream_computes_a_held_note_past_what_the_store_holds() {
         .expect("a block")
         .expect("a block");
     assert_eq!(
-        warm.borrow().work().priced_flops,
+        warm.borrow().work().computed_samples,
         0,
         "the first block is stored"
     );
@@ -1835,7 +1862,7 @@ fn a_render_with_its_out_dropped_holds_its_root_a_block_at_a_time() {
 }
 
 /// A second preparation over what a first one stored looks the root up, header alone, and
-/// computes, prices and stages nothing.
+/// computes and stages nothing.
 #[test]
 fn preparing_a_stored_target_computes_nothing() {
     let memory = Memory::default();
@@ -1847,7 +1874,7 @@ fn preparing_a_stored_target_computes_nothing() {
     memory.reads.lock().unwrap().clear();
 
     let again = prepared(&graph, &store);
-    assert_eq!(again.work().priced_flops, 0);
+    assert_eq!(again.work().computed_samples, 0);
     let again = stats(&again);
     assert_eq!(again.computed(), 0, "{again:?}");
     assert_eq!(again.lookups.len(), 1, "{again:?}");
@@ -2014,13 +2041,13 @@ fn a_sampled_target_measured_and_persisted_is_measured_again_off_the_disk() {
     let memory = Memory::default();
     let store = opened(&memory, u64::MAX);
     let cold = dropped(&bell("measured"), measuring(&readings), &store);
-    assert!(cold.work().priced_flops > 0);
+    assert!(cold.work().computed_samples > 0);
     now(store.persist()).expect("persisted");
     memory.reads.lock().unwrap().clear();
 
     let store = opened(&memory, u64::MAX);
     let warm = dropped(&bell("measured"), measuring(&readings), &store);
-    assert_eq!(warm.work().priced_flops, 0, "{:?}", stats(&warm));
+    assert_eq!(warm.work().computed_samples, 0, "{:?}", stats(&warm));
     assert!(store.counters().disk_reads >= 1);
     assert_eq!(read_off(&warm, &readings), read_off(&cold, &readings));
 }
@@ -2089,12 +2116,12 @@ fn a_periodic_closed_form_target_prepared_and_persisted_is_read_off_the_disk() {
     let memory = Memory::default();
     let store = opened(&memory, u64::MAX);
     let cold = prepared(&graph, &store);
-    assert!(cold.work().priced_flops > 0);
+    assert!(cold.work().computed_samples > 0);
     now(store.persist()).expect("persisted");
     memory.reads.lock().unwrap().clear();
 
     let again = prepared(&graph, &opened(&memory, u64::MAX));
-    assert_eq!(again.work().priced_flops, 0, "{:?}", stats(&again));
+    assert_eq!(again.work().computed_samples, 0, "{:?}", stats(&again));
     assert!(reads(&memory) >= 1);
     let warm = rendered(&graph, &opened(&memory, u64::MAX));
     let fresh = render(
@@ -2106,16 +2133,44 @@ fn a_periodic_closed_form_target_prepared_and_persisted_is_read_off_the_disk() {
     assert_eq!(bits(&warm), bits(&fresh.expect("a render")));
 }
 
-/// Memory writes no node computing costs under a flop per `BYTES_PER_FLOP` bytes it holds: a
-/// sine's period laid out over two seconds is computed again sooner than read back.
+/// Memory writes the target, a node two values read, and a stateful run's output; a node
+/// one value alone reads is computed again from what it reads rather than written.
 #[test]
-fn a_node_cheaper_to_compute_than_to_read_is_never_written() {
-    let graph = graph_of("cheap", &[("master", "sin(2*pi*200*t)\n")]);
+fn memory_writes_the_target_shared_and_stateful_nodes_and_no_lone_one() {
+    let graph = graph_of(
+        "admitted",
+        &[
+            ("lone", "sample(sin(2*pi*200*t))*0.5\n"),
+            ("shared", "sample(sin(2*pi*300*t))*0.5\n"),
+            ("left", "@shared*0.5 + @lone\n"),
+            ("right", "@shared*0.25\n"),
+            (
+                "ringing",
+                "lowpass(sample(sin(2*pi*400*t)), cutoff=1000, q=0.7)\n",
+            ),
+            ("master", "sample(@left) + sample(@right) + @ringing\n"),
+        ],
+    );
     let memory = Memory::default();
     let store = opened(&memory, u64::MAX);
-    let cold = dropped(&graph, RenderConfig::seconds(RATE, 2.0), &store);
-    let held = u128::from(RATE) * 2 * size_of::<f64>() as u128;
-    assert!(cold.work().priced_flops * sva_engine::BYTES_PER_FLOP < held);
-    assert_eq!(now(store.persist()).expect("persisted").written, 0);
-    assert!(memory.entries().is_empty());
+    rendered(&graph, &store);
+    now(store.persist()).expect("persisted");
+    let warm = |node: &str| {
+        let store = opened(&memory, u64::MAX);
+        let held = now(render_over(
+            &graph,
+            node,
+            RenderConfig::seconds(RATE, SECONDS),
+            &store,
+        ))
+        .expect("a render");
+        outcomes(stats(&held), node)
+    };
+    for node in ["master", "shared", "ringing"] {
+        assert!(warm(node).contains(&Outcome::Hit), "`{node}` was written");
+    }
+    assert!(
+        !warm("lone").contains(&Outcome::Hit),
+        "`lone` was not written"
+    );
 }

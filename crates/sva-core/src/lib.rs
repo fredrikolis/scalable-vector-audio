@@ -92,8 +92,6 @@ pub struct Job<'a> {
     pub rate: Option<u32>,
     pub bits: Option<i32>,
     pub asked: &'a [Asked],
-    /// The operation count the caller acknowledges paying; the profile's own where `None`.
-    pub flop_budget: Option<u128>,
     pub volatile: &'a [String],
     pub out: Out,
     pub abandon: &'a dyn Abandon,
@@ -108,7 +106,6 @@ impl<'a> Job<'a> {
             rate: None,
             bits: None,
             asked: &[],
-            flop_budget: None,
             volatile: &[],
             out: Out::Kept,
             abandon: &Never,
@@ -159,7 +156,6 @@ fn settle(job: &Job) -> Result<(Graph, RenderConfig), CliError> {
         until,
         ..RenderConfig::at(rate)
     };
-    config.flop_budget = job.flop_budget;
     if let Some(bits) = job.bits {
         config.profile.precision_bits = precision(bits)?;
     }

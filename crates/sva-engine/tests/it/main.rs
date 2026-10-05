@@ -14,7 +14,6 @@ mod edit;
 mod extents;
 mod faded;
 mod fixtures;
-mod flops;
 mod grid;
 mod index;
 mod instantiate;

@@ -48,7 +48,6 @@ fn answered(
         rate: args.rate,
         bits: args.bits,
         asked: &args.asked,
-        flop_budget: args.flop_budget,
         ..Job::over(&source, target)
     };
     let rendered = wait(execute_over(job, tier, &mut Session::default()))?;

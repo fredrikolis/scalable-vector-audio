@@ -292,18 +292,18 @@ fn a_fetch_makes_a_bounded_number_of_disk_reads() {
     assert!(reads[1] > 0, "the next fetch reads on: {reads:?}");
 }
 
-/// A render the store answers whole computes nothing, so it prices nothing; the cold one it
-/// stands on priced what it computed.
+/// A render the store answers whole computes nothing; the cold one it stands on counts what
+/// it computed.
 #[test]
-fn a_render_the_store_answers_whole_prices_nothing() {
+fn a_render_the_store_answers_whole_computes_nothing() {
     let memory = Memory::default();
-    let graph = blip("priced", 110);
+    let graph = blip("computed", 110);
     let cold = now(render_over(&graph, "warm", over(800), &Tier::default())).expect("a render");
     persisted(&memory, &graph, "warm", 800);
     let tier = opened(&memory, u64::MAX);
     let held = now(render_over(&graph, "warm", over(800), &tier)).expect("a render");
-    assert!(cold.work().priced_flops > 0, "{:?}", cold.work());
-    assert_eq!(held.work().priced_flops, 0, "{:?}", held.work());
+    assert!(cold.work().computed_samples > 0, "{:?}", cold.work());
+    assert_eq!(held.work().computed_samples, 0, "{:?}", held.work());
     assert_eq!(held.work().samples, cold.work().samples);
     assert_eq!(bits(&held), bits(&cold));
 }
@@ -331,7 +331,7 @@ fn a_node_larger_than_memory_lands_whole_on_the_disk() {
     let held = now(render_over(&graph, "long", over(end), &next)).expect("a render");
     let stats = held.cache_stats.as_ref().expect("stats");
     assert_eq!(stats.computed(), 0, "{stats:?}");
-    assert_eq!(held.work().priced_flops, 0);
+    assert_eq!(held.work().computed_samples, 0);
     assert_eq!(bits(&held), bits(&cold));
 }
 

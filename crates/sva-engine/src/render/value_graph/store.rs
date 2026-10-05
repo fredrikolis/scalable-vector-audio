@@ -1,7 +1,6 @@
 // Concern: what memory answers a value with before it computes, and what it keeps after, with its node | Non-concern: memory's cap and evictions | IO: (value) -> samples, needs; (value) -> kept
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::rc::Rc;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use sva_formula::{Hash, Held as Representation, NodeId};
@@ -405,16 +404,18 @@ impl ValueGraph {
         value.holding().covers(&asked)
     }
 
-    /// Each value an instance's own node holds named by that node, priced with all under it; a
-    /// value that only moves another is answered as what it moves.
+    /// Each value an instance's own node holds named by that node; a value that only moves
+    /// another is answered as what it moves.
     pub(crate) fn offers(&mut self, tys: &Typing, range: Extent) {
         let under = Under::of(self);
+        let live = |at: usize| match (&self.values[at].kind, &self.values[at].reads[..]) {
+            (Kind::Resident(_), [live]) => *live,
+            _ => at,
+        };
+        let root = live(self.root);
         let mut named: BTreeMap<usize, Stored> = BTreeMap::new();
         for (id, at) in self.nodes.clone() {
-            let at = match (&self.values[at].kind, &self.values[at].reads[..]) {
-                (Kind::Resident(_), [live]) => *live,
-                _ => at,
-            };
+            let at = live(at);
             if named.contains_key(&at) {
                 continue;
             }
@@ -442,13 +443,10 @@ impl ValueGraph {
                 }
             });
             let over = range.intersect(stored.support);
-            let samples = match over.is_bounded() {
-                true => over.len() as u64,
-                false => u64::MAX,
-            };
             let facts = Facts {
-                target: *at == self.root,
-                samples,
+                target: *at == root,
+                shared: under.readers[*at] >= 2,
+                stateful: matches!(&self.values[*at].kind, Kind::MachineRun(run) if run.stateful()),
             };
             let offer = Offer {
                 stored: stored.clone(),
@@ -469,7 +467,6 @@ impl ValueGraph {
             return None;
         }
         let identity = crate::refs::identity(tys, id).ok()?;
-        let (priced, moved) = under.of_value(at);
         let ty = tys.ty(id);
         Some(Stored {
             key: super::node_key(tys, id, identity, &self.profile),
@@ -480,8 +477,7 @@ impl ValueGraph {
             rate: ty.rate,
             grid: tys.grid(id),
             support: value.support(),
-            priced,
-            moved,
+            moved: under.moved[at],
             readable: super::readable(tys, id) && value.alias().is_none(),
             sampled: ty.held == Representation::Sampled,
             held: Vec::new(),
@@ -545,70 +541,38 @@ impl ValueGraph {
     }
 }
 
-/// What each value and all under it cost, and the most any moved a read: a value one other
-/// reads sums into its reader's own tree; one more read is summed once into each value over it.
+/// How many values read each value, a stored one's live value read as it is, and the most
+/// any read under each was moved.
 struct Under {
-    own: Vec<u128>,
-    apart: Vec<Rc<BTreeSet<usize>>>,
+    readers: Vec<u32>,
     moved: Vec<f64>,
 }
 
 impl Under {
     fn of(value_graph: &ValueGraph) -> Under {
         let span = value_graph.values.span();
-        let mut readers = vec![0u32; span];
-        let distinct = |at: usize| {
-            let mut reads = value_graph.values[at].reads.clone();
-            reads.sort_unstable();
-            reads.dedup();
-            reads
-        };
-        for at in value_graph.values.ordered() {
-            for read in distinct(at) {
-                readers[read] += 1;
-            }
-        }
         let mut under = Under {
-            own: vec![0; span],
-            apart: vec![Rc::default(); span],
+            readers: vec![0; span],
             moved: vec![0.0; span],
         };
         for at in value_graph.values.ordered() {
-            let (mut own, mut moved) = (value_graph.planned[at], value_graph.values[at].moved);
-            let mut sets: Vec<Rc<BTreeSet<usize>>> = Vec::new();
-            let mut more = Vec::new();
-            for read in distinct(at) {
+            let mut reads = value_graph.values[at].reads.clone();
+            reads.sort_unstable();
+            reads.dedup();
+            let mut moved = value_graph.values[at].moved;
+            for read in reads {
                 crate::steps::step(1);
+                under.readers[read] += 1;
                 moved = moved.max(under.moved[read]);
-                match readers[read] {
-                    1 => own += under.own[read],
-                    _ => more.push(read),
-                }
-                let held = &under.apart[read];
-                if !held.is_empty() && !sets.iter().any(|set| Rc::ptr_eq(set, held)) {
-                    sets.push(Rc::clone(held));
-                }
             }
-            under.apart[at] = match (sets.len(), more.is_empty()) {
-                (0, true) => Rc::default(),
-                (1, true) => Rc::clone(&sets[0]),
-                _ => Rc::new(
-                    sets.iter()
-                        .flat_map(|s| s.iter())
-                        .copied()
-                        .chain(more)
-                        .collect(),
-                ),
-            };
-            (under.own[at], under.moved[at]) = (own, moved);
+            under.moved[at] = moved;
+        }
+        for (at, value) in value_graph.values.iter() {
+            if let (Kind::Resident(_), [live]) = (&value.kind, &value.reads[..]) {
+                under.readers[*live] = under.readers[at];
+            }
         }
         under
-    }
-
-    fn of_value(&self, at: usize) -> (u128, f64) {
-        crate::steps::step(self.apart[at].len());
-        let apart = self.apart[at].iter().map(|s| self.own[*s]).sum::<u128>();
-        (self.own[at] + apart, self.moved[at])
     }
 }
 

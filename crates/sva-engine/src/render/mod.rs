@@ -47,8 +47,6 @@ pub struct RenderConfig {
     pub profile: Profile,
     /// What the caller means to read. An empty list is audio out, which collapses the root.
     pub asks: Vec<Ask>,
-    /// The operation count this render may pay in place of its profile's.
-    pub flop_budget: Option<u128>,
     /// What reads one of these keeps one value in memory, its last.
     pub volatile: Vec<String>,
     pub out: Out,
@@ -64,10 +62,6 @@ pub enum Out {
 }
 
 impl RenderConfig {
-    pub fn budget(&self) -> u128 {
-        self.flop_budget.unwrap_or(self.profile.flop_budget)
-    }
-
     pub fn at(rate: u32) -> RenderConfig {
         RenderConfig {
             rate,
@@ -75,7 +69,6 @@ impl RenderConfig {
             until: None,
             profile: PSYCHOACOUSTIC_V1,
             asks: Vec::new(),
-            flop_budget: None,
             volatile: Vec::new(),
             out: Out::Kept,
         }
@@ -99,6 +92,7 @@ impl RenderConfig {
 }
 
 pub use answer::{answer, answer_buffer, sketch_atom};
+pub use drive::Work;
 pub use run::{Abandon, Never, Session, render_in, render_over};
 pub use stream::{
     Built, Change, Changed, Counts, LATEST, Placed, Stream, StreamConfig, change, fetch,
@@ -126,8 +120,8 @@ pub struct Render {
     pub(crate) unranged: Option<EngineError>,
     /// Every value the render read, each over the segments it computed.
     pub(crate) value_graph: Option<ValueGraph>,
-    /// The price of what its pulls computed.
-    computed: u128,
+    /// The samples its pulls computed.
+    computed_samples: u64,
     pub(crate) unslotted: Option<String>,
     /// Each node typed with every volatile parameter at its stand-in.
     pub(crate) stand_in_typed: Vec<String>,
@@ -158,7 +152,7 @@ impl Render {
             range: None,
             unranged: None,
             value_graph: None,
-            computed: 0,
+            computed_samples: 0,
             unslotted: None,
             stand_in_typed: Vec::new(),
             treated_as_silent_from_sample: None,
@@ -166,12 +160,11 @@ impl Render {
         }
     }
 
-    /// What it computed: nothing memory answered is priced.
-    pub fn work(&self) -> crate::flops::Work {
-        crate::flops::Work {
+    /// What it computed: nothing memory answered counts.
+    pub fn work(&self) -> Work {
+        Work {
             samples: self.range.map_or(0, |range| range.len() as u64),
-            priced_flops: self.computed,
-            waves: None,
+            computed_samples: self.computed_samples,
         }
     }
 
@@ -345,20 +338,19 @@ pub(crate) fn ended(
     (config, Some(end))
 }
 
-/// A reading of samples or of their cost needs the range; lines and structure never do.
+/// A reading of samples needs the range; lines and structure never do.
 /// `decided`: where an open render's root ends, found before it was planned.
 fn ranged(
     held: &mut Render,
     (decided, hits): (Option<end::End>, &BTreeMap<NodeId, Arc<Stored>>),
 ) -> Result<(), EngineError> {
-    let counts = counts(&held.config.asks);
     let envelope = held.config.asks.iter().any(|ask| {
         matches!(
             ask.representation,
             crate::query::Representation::Envelope { .. }
         )
     });
-    let tabled = materializes(held) || counts;
+    let tabled = materializes(held);
     if !tabled && !envelope {
         return Ok(());
     }
@@ -386,9 +378,8 @@ fn ranged(
     let found = supports.into_memo();
     let wanted: Vec<NodeId> = held.schedule.wanted.clone();
     let root = (held.root, wanted.as_slice());
-    let mut value_graph =
-        ValueGraph::bounded(&held.tys, root, &held.config.profile, (found, hits))?;
-    value_graph.plan(held.range.expect("a range was decided"))?;
+    let value_graph = ValueGraph::bounded(&held.tys, root, &held.config.profile, (found, hits))?;
+    value_graph.refuse_endless(held.range.expect("a range was decided"))?;
     held.value_graph = Some(value_graph);
     Ok(())
 }
@@ -441,36 +432,6 @@ fn endless(name: &str) -> EngineError {
     })
 }
 
-/// A `flops` reading counts what the audio render would run.
-fn counts(asks: &[Ask]) -> bool {
-    asks.iter()
-        .any(|ask| ask.representation == crate::query::Representation::Flops)
-}
-
-/// A reading that materializes nothing is never refused for cost; a count past the budget
-/// refuses before a sample is computed.
-fn affordable(held: &Render) -> Result<(), EngineError> {
-    if !materializes(held) {
-        return Ok(());
-    }
-    let total = crate::flops::total(held);
-    if total <= held.config.budget() {
-        return Ok(());
-    }
-    let counted = crate::flops::tree(held);
-    let over = crate::flops::dominating(&counted).expect("a counted tree holds its root");
-    Err(EngineError::refused(Diagnostic {
-        code: "collapse.over_budget".to_string(),
-        message: format!(
-            "this render counts {} operations, over the budget of {}; `{}` dominates it at {} \
-             by {}",
-            counted.total, counted.budget, over.node, over.subtree, over.route
-        ),
-        location: Located::at(held.tys.name(held.root), None),
-        help: format!("pass --flop-budget {total} to render it anyway"),
-    }))
-}
-
 /// Every wanted value pulled over the range, block by block, until `until` stops it.
 #[cfg(test)]
 fn pulled(held: &mut Render, memo: (&Memory, Recording)) -> Result<(), EngineError> {
@@ -486,7 +447,6 @@ fn driving(
     held: &mut Render,
     (memory, recording): (&Memory, Recording),
 ) -> Result<Option<drive::Driver>, EngineError> {
-    affordable(held)?;
     let (Some(value_graph), Some(range)) = (held.value_graph.take(), held.range) else {
         return Ok(None);
     };
@@ -511,7 +471,7 @@ fn drove(held: &mut Render, driver: drive::Driver) {
     let keep = !dropped(&held.config);
     let range = held.range.expect("a pulled render has a range");
     held.held_bytes = driver.most_bytes();
-    held.computed = driver.work.priced_flops;
+    held.computed_samples = driver.work.computed_samples;
     held.cache_stats = Some(driver.recording.stats(&driver.memory));
     if let Some(stop) = driver.stop().filter(|stop| *stop < range.end) {
         held.range = Some(Extent::new(range.start, stop));
@@ -597,9 +557,8 @@ pub(crate) fn render_apart(
     )?;
     if let (Some(range), Some(_)) = (held.range, &held.value_graph) {
         let wanted = held.schedule.wanted.clone();
-        let mut value_graph =
-            ValueGraph::apart(&held.tys, held.root, &wanted, &held.config.profile)?;
-        value_graph.plan(range)?;
+        let value_graph = ValueGraph::apart(&held.tys, held.root, &wanted, &held.config.profile)?;
+        value_graph.refuse_endless(range)?;
         held.value_graph = Some(value_graph);
     }
     let memory = held.memory.clone();
@@ -615,13 +574,12 @@ pub(crate) fn sampled(render: &Render, node: NodeId, over: Extent) -> Result<Buf
     Ok(value_graph.samples(at, over))
 }
 
-/// FORMAT 9.3: the render's own label says what it cost and what it was allowed.
+/// FORMAT 9.3: the render's own label says where it cut below the silence threshold.
 fn stamp(held: &mut Render) {
     let root = held.root;
     let Some(label) = held.labels.remove(&root) else {
         return;
     };
-    let counted = crate::flops::total(held);
     let treated_as_silent_from_sample = held
         .treated_as_silent_from_sample
         .map(|at| (held.tys.name(root).to_string(), at));
@@ -633,7 +591,7 @@ fn stamp(held: &mut Render) {
         rate: held.config.rate,
         moved: held.value_graph.as_ref().map(ValueGraph::moved),
         cutting_below_silence_threshold: Some(cutting),
-        ..label.costing(counted, held.config.budget())
+        ..label
     };
     held.labels.insert(root, label);
 }

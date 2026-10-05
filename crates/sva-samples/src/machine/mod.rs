@@ -441,13 +441,13 @@ mod tests {
         let blocks = (to as u64).div_ceil(BLOCK as u64);
         assert!(passes <= blocks + 1, "{passes} passes over {blocks} blocks");
         let per_sample = 2 * 4 + 1;
-        let ops = feedback().ops(&Layout {
+        let layout = Layout {
             grid: Grid::of(48_000),
             width: 2,
             read_widths: vec![1],
             sites: Vec::new(),
-        });
-        let ops = ops.expect("ops") as u64;
+        };
+        let ops = lowered(&feedback(), &layout).expect("ops").0.ops.len() as u64;
         assert!(
             fills <= passes * ops + per_sample * to as u64,
             "{fills} op runs"
@@ -467,7 +467,7 @@ mod tests {
             read_widths: vec![1],
             sites: Vec::new(),
         };
-        assert_eq!(feedback().ops(&layout).expect("ops"), 20);
+        assert_eq!(lowered(&feedback(), &layout).expect("ops").0.ops.len(), 20);
         let (planes, [_, fills, reads]) = ran(to, to);
         let mut y = vec![vec![0.0f64; to as usize]; 2];
         let past = |y: &[Vec<f64>], k: usize, n: i64| match n {

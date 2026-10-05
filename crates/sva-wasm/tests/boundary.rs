@@ -930,8 +930,8 @@ fn a_stream_refuses_what_it_cannot_take_at_the_boundary() {
     refused_as(empty.err(), "engine.no_stream");
 }
 
-/// A sine is one line and its mirror, turned at each sample of its one period, 80 samples of
-/// 100 Hz at 8 kHz; a render prices what it computes, and memory answering it, nothing.
+/// A stream and a render count the samples they write and the samples their values computed;
+/// memory answering a render, nothing is computed.
 #[wasm_bindgen_test]
 fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
     let held = page();
@@ -943,8 +943,7 @@ fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
     let count = |of: &JsValue, name: &str| field(of, name).as_f64();
     let samples = (4 * BLOCK) as f64;
     assert_eq!(count(&work, "samples"), Some(samples));
-    assert_eq!(count(&work, "waves"), Some(2.0 * 80.0));
-    assert!(count(&work, "priced_flops").is_some_and(|f| f > 0.0));
+    assert!(count(&work, "computed_samples").is_some_and(|f| f > 0.0));
 
     let fresh = page();
     let work = |held: &Composition| {
@@ -954,12 +953,11 @@ fn work_crosses_as_whole_counts_from_a_stream_and_a_render() {
     };
     let whole = work(&fresh);
     assert_eq!(count(&whole, "samples"), Some(8000.0));
-    assert!(count(&whole, "priced_flops").is_some_and(|f| f > 0.0));
-    assert!(field(&whole, "waves").is_null());
+    assert!(count(&whole, "computed_samples").is_some_and(|f| f > 0.0));
     let again = work(&fresh);
     assert_eq!(count(&again, "samples"), Some(8000.0));
     assert_eq!(
-        count(&again, "priced_flops"),
+        count(&again, "computed_samples"),
         Some(0.0),
         "{}",
         as_text(&again)
@@ -1392,7 +1390,7 @@ async fn prepared(held: &Composition, readings: &[&str]) -> Rendering {
 }
 
 /// A render with `out: null` hands back no samples and reads only what it asks. Persisted, the
-/// target renders from the store alone; prepared again, nothing is computed or priced.
+/// target renders from the store alone; prepared again, nothing is computed.
 #[wasm_bindgen_test]
 async fn a_render_with_out_null_hands_back_no_samples() {
     let dir = fake_directory();
@@ -1426,7 +1424,7 @@ async fn a_render_with_out_null_hands_back_no_samples() {
         as_text(&stats)
     );
     let work = again.work().unwrap_or_else(|_| unreachable!("work"));
-    assert_eq!(field(&work, "priced_flops").as_f64(), Some(0.0));
+    assert_eq!(field(&work, "computed_samples").as_f64(), Some(0.0));
 
     let read = prepared(&reader, &["envelope"]).await;
     let asked = field(&readings(&read), "representations");
@@ -1529,20 +1527,20 @@ async fn warmed_key(held: &Composition) -> Rendering {
         .unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)))
 }
 
-/// A page reloaded over its store warms each closed-form key off the disk: nothing is priced,
+/// A page reloaded over its store warms each closed-form key off the disk: nothing is computed,
 /// and its readings and label are the first warm's.
 #[wasm_bindgen_test]
 async fn a_closed_form_key_warmed_and_persisted_warms_off_the_disk() {
     let dir = fake_directory();
     let first = bells(&dir).await;
     let cold = warmed_key(&first).await;
-    let priced = |r: &Rendering| {
+    let computed = |r: &Rendering| {
         field(
             &r.work().unwrap_or_else(|_| unreachable!("work")),
-            "priced_flops",
+            "computed_samples",
         )
     };
-    assert!(priced(&cold).as_f64() > Some(0.0));
+    assert!(computed(&cold).as_f64() > Some(0.0));
     first
         .persist()
         .await
@@ -1550,7 +1548,7 @@ async fn a_closed_form_key_warmed_and_persisted_warms_off_the_disk() {
 
     let reloaded = bells(&dir).await;
     let warm = warmed_key(&reloaded).await;
-    assert_eq!(priced(&warm).as_f64(), Some(0.0));
+    assert_eq!(computed(&warm).as_f64(), Some(0.0));
     let tier = reloaded
         .counters()
         .unwrap_or_else(|_| unreachable!("counters"));
@@ -1563,7 +1561,7 @@ async fn a_closed_form_key_warmed_and_persisted_warms_off_the_disk() {
 }
 
 /// A closed form a page renders with `out: null`, persisted, is read off the disk by the next
-/// page over the store, which prices nothing.
+/// page over the store, which computes nothing.
 #[wasm_bindgen_test]
 async fn a_closed_form_target_prepared_and_persisted_is_read_off_the_disk() {
     let dir = fake_directory();
@@ -1573,7 +1571,7 @@ async fn a_closed_form_target_prepared_and_persisted_is_read_off_the_disk() {
         let done = held.render(target, None, out).await;
         let done = done.unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)));
         let work = done.work().unwrap_or_else(|_| unreachable!("work"));
-        (held, field(&work, "priced_flops").as_f64())
+        (held, field(&work, "computed_samples").as_f64())
     };
     let (first, cold) = prepare(bells(&dir).await).await;
     assert!(cold > Some(0.0));
@@ -1926,7 +1924,9 @@ fn aborting_after(checks: u32) -> JsValue {
 async fn work_of(held: &Composition, options: JsValue) -> Result<f64, JsValue> {
     let rendered = held.render(WET, None, options).await?;
     let work = rendered.work().unwrap_or_else(|_| unreachable!("work"));
-    Ok(field(&work, "priced_flops").as_f64().unwrap_or(f64::NAN))
+    Ok(field(&work, "computed_samples")
+        .as_f64()
+        .unwrap_or(f64::NAN))
 }
 
 /// Abandoned after two blocks, the render throws an `AbortError`; the next render of the same
@@ -1996,11 +1996,11 @@ async fn what_an_abandoned_render_computed_persists() {
         let rendered = held.render("@wet([0, 0.5s])", None, options(&[])).await;
         let rendered = rendered.unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)));
         let work = rendered.work().unwrap_or_else(|_| unreachable!("work"));
-        field(&work, "priced_flops").as_f64()
+        field(&work, "computed_samples").as_f64()
     };
     let mut fresh = Composition::new(None);
     filtered(&mut fresh);
-    assert!(early(fresh).await.is_some_and(|flops| flops > 0.0));
+    assert!(early(fresh).await.is_some_and(|computed| computed > 0.0));
     let mut reopened = over_store(&dir).await;
     filtered(&mut reopened);
     assert_eq!(early(reopened).await, Some(0.0), "the store answers it");

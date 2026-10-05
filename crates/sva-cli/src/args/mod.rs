@@ -10,8 +10,7 @@ pub(crate) use reading::check_frame;
 use reading::{analyze_args, render_args};
 
 pub const USAGE: &str = "usage: sva-cli render '<expression>' --representation <r>[=<path>][,...] \
-     [--until '<condition>'] [--bits <n>] [--rate <hz>] [--flop-budget <n>] [--cache <path|none>] \
-     [--confirm]\n       \
+     [--until '<condition>'] [--bits <n>] [--rate <hz>] [--cache <path|none>] [--confirm]\n       \
      sva-cli analyze <file.wav> --representation <r>[=<path>][,...] [--confirm]\n       \
      sva-cli lint ['<expression>'] [--format <json|text>]\n       \
      sva-cli trace <node|expression>\n       \
@@ -22,7 +21,7 @@ pub const USAGE: &str = "usage: sva-cli render '<expression>' --representation <
      `@/abs/path` one anywhere, and its own ref may read an interval: `@piano([0, 2b], f0=C4)`\n\
      representations: lines atoms spectrum(peaks, frame) envelope(frame) derivative samples \
      ledger(depth, brief, skim) pitch(peaks, frame) formants(peaks, frame) stereo(frame) bands \
-     crest loudness onsets alias(oversample) bindings(node) arguments flops\n\
+     crest loudness onsets alias(oversample) bindings(node) arguments\n\
      destinations: a `.wav` path takes `samples` as audio; any other path takes JSON; none \
      puts the reading under `data.representations`\n\
      verb aliases: `validate`=lint, `list`=builtins, `create`=new, `show`=trace. `render` \
@@ -52,8 +51,6 @@ pub struct RenderArgs {
     pub rate: Option<u32>,
     /// The precision every sample is written to; the profile's own where `None`.
     pub bits: Option<i32>,
-    /// The operation count the caller acknowledges paying; the profile's own where `None`.
-    pub flop_budget: Option<u128>,
     pub asked: Vec<Asked>,
     /// The caller said a destination that already holds a file may be replaced.
     pub confirm: bool,
@@ -323,8 +320,6 @@ mod tests {
             "48000",
             "--bits",
             "16",
-            "--flop-budget",
-            "1000",
             "--until",
             "t > 1s",
         ]);
@@ -332,7 +327,6 @@ mod tests {
         assert_eq!(args.until.as_deref(), Some("t > 1s"));
         assert_eq!(args.rate, Some(48_000));
         assert_eq!(args.bits, Some(16));
-        assert_eq!(args.flop_budget, Some(1000));
         let names: Vec<&str> = args.asked.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, ["samples", "spectrum", "ledger", "bindings"]);
         assert_eq!(

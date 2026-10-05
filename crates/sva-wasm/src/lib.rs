@@ -144,7 +144,6 @@ fn refuse(message: String, help: &str) -> JsValue {
 struct Options {
     rate: Option<u32>,
     bits: Option<i32>,
-    flop_budget: Option<u128>,
     until: Option<String>,
     volatile: Vec<String>,
     live: bool,
@@ -182,7 +181,6 @@ fn options_of(options: &JsValue, keys: &[&str]) -> Result<Options, JsValue> {
             "rate" => held.rate = Some(whole(&key, &value)?),
             "bits" => held.bits = Some(whole(&key, &value)?),
             "channels" => held.channels = Some(whole(&key, &value)?),
-            "flop_budget" => held.flop_budget = Some(whole(&key, &value)?),
             "store_max_bytes" => held.store_max_bytes = Some(whole(&key, &value)?),
             "until" => held.until = Some(text(&key, &value)?),
             "live" => {
@@ -375,7 +373,7 @@ impl Composition {
 
     /// `target` as `sva-cli render` takes it, `@piano([0, 2b], f0=C4)`; `representations`
     /// what `representations()` answers, each a call as `--representation` writes it.
-    /// `options`: `rate`, `bits`, `flop_budget`, `until`, `volatile`, `out: null` (no samples),
+    /// `options`: `rate`, `bits`, `until`, `volatile`, `out: null` (no samples),
     /// and `signal`: aborted, it throws an `AbortError` before its next block.
     pub async fn render(
         &self,
@@ -383,15 +381,7 @@ impl Composition {
         representations: Option<Vec<String>>,
         options: JsValue,
     ) -> Result<Rendering, JsValue> {
-        let keys = [
-            "rate",
-            "bits",
-            "flop_budget",
-            "until",
-            "volatile",
-            "out",
-            "signal",
-        ];
+        let keys = ["rate", "bits", "until", "volatile", "out", "signal"];
         let options = options_of(&options, &keys)?;
         let out = options.out;
         let names = representations.unwrap_or_else(|| match out {
@@ -417,7 +407,6 @@ impl Composition {
             rate: options.rate,
             bits: options.bits,
             asked: &asked,
-            flop_budget: options.flop_budget,
             volatile: &options.volatile,
             out,
             abandon: signal
@@ -814,7 +803,7 @@ impl Stream {
         })
     }
 
-    /// `{ samples, priced_flops, waves }` since it opened.
+    /// `{ samples, computed_samples }` since it opened.
     pub fn work(&self) -> Result<JsValue, JsValue> {
         parse(&work_json(&self.edits.inner.borrow().work()))
     }

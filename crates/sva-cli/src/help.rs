@@ -6,7 +6,6 @@ use sva_engine::{DEFAULT_FRAME_SECS, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1};
 /// Read off the constants the parser itself defaults to, so a printed default cannot drift
 /// from the one a render actually uses.
 pub fn help_text() -> String {
-    let budget = PSYCHOACOUSTIC_V1.flop_budget;
     let bits = PSYCHOACOUSTIC_V1.precision_bits;
     let store_gb = DEFAULT_STORE_BYTES >> 30;
     format!(
@@ -21,8 +20,7 @@ DESCRIPTION:
 
 RENDER:
   sva-cli render '<expression>' --representation <list> [--until '<condition>']
-                 [--bits <n>] [--rate <hz>] [--flop-budget <n>] [--cache <path|none>]
-                 [--confirm]
+                 [--bits <n>] [--rate <hz>] [--cache <path|none>] [--confirm]
 
   Renders one expression, in the grammar a node file's body uses, and prints one
   reading per representation under `data.representations`. `@path` reads a node
@@ -111,7 +109,6 @@ RENDER:
   does a signal passed in as parameter `p`, and any `idx`, as
   `idx(t - 5ms - 2ms*sin(2*pi*t))`, is read sample by sample. An edit to a
   stream plays from the next sample on.
-  `--flop-budget <n>` is the operation count paid before a render refuses.
 
   Every node's value a render computes is kept in a store on disk, named by
   what it computes: never its file's name, directory, comments, spacing, or
@@ -263,8 +260,6 @@ DEFAULTS:
                        Default {DEFAULT_SAMPLE_RATE}.
   --bits <n>           the precision every sample is written to. Default {bits},
                        the `psychoacoustic-v1` profile's own.
-  --flop-budget <n>    the operation count paid before a render refuses.
-                       Default {budget}, the `psychoacoustic-v1` profile's own.
   ledger(depth=<n>)    how deep below its target a `ledger` walks.
                        Default {DEFAULT_LEDGER_DEPTH}.
   (peaks=<n>)          peaks a `spectrum` keeps, notes a `pitch`, formants a

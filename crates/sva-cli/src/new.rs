@@ -76,7 +76,7 @@ len = 0.5s
     ),
     (
         "perc/hat",
-        r"; Models: a closed hat -- one noise band under a shouldered crop, its 0.5 s period commensurate with this 2 s bar, its gain small because a noise's own rms is the square root of half its line count | Neglects: pitch, which no hat has; a `noise(...)*exp(...)` tail would price at 2.3e10 flops against this window's 9.1e7 | IO: (t, gain) -> amplitude | Tags: percussion, noise
+        r"; Models: a closed hat -- one noise band under a shouldered crop, its 0.5 s period commensurate with this 2 s bar, its gain small because a noise's own rms is the square root of half its line count | Neglects: pitch, which no hat has; a `noise(...)*exp(...)` tail would cost orders of magnitude more | IO: (t, gain) -> amplitude | Tags: percussion, noise
 gain = 0.0005
 crop(gain*noise(1, period=0.5, color=1), 0s, 0.4s, rise=0.002s, fall=0.2s)
 ",
@@ -89,16 +89,16 @@ crop(sample(0.5*@../chord/home(t) + @../grid/phrase-2b(t)) + 0.3*self[idx(t) - 1
     ),
     (
         "master",
-        r"; Models: two bars of the whole piece, each layer sampled on its own | Neglects: nothing it does not name; one closed form over the noise and the grid together prices 76x this, and a mono master broadcasts to any width, so no `join` of a value with itself is written | IO: (t) -> amplitude | Tags: master, arrangement
+        r"; Models: two bars of the whole piece, each layer sampled on its own | Neglects: nothing it does not name; one closed form over the noise and the grid together costs far more than this, and a mono master broadcasts to any width, so no `join` of a value with itself is written | IO: (t) -> amplitude | Tags: master, arrangement
 crop(0.6*(@fx/glue(t) + sample(@perc/hat(t)) + sample(@perc/hat(t - 1b))), 0s, 2b)
 ",
     ),
 ];
 
 /// `(command, why)`, in the order a stranger should run them: what the composition IS before
-/// what it sounds like, and what a render costs before paying for it. Answered beside the
+/// what it sounds like. Answered beside the
 /// tree `new` wrote, so the first thing an agent reads is the next thing it should do.
-pub const NEXT: [(&str, &str); 9] = [
+pub const NEXT: [(&str, &str); 8] = [
     (
         "sva-cli lint",
         "structure, comments, grid rows, key, whether each node plays bare; refuses before any audio",
@@ -122,10 +122,6 @@ pub const NEXT: [(&str, &str); 9] = [
     (
         "sva-cli render '@perc/hat' --representation atoms",
         "a noise is a line series, one atom per line, 2 Hz apart at period=0.5",
-    ),
-    (
-        "sva-cli render '@master' --representation flops",
-        "what the render costs, counted before it runs",
     ),
     (
         "sva-cli render '@master' --representation ledger(skim=1)",

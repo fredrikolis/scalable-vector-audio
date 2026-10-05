@@ -9,6 +9,7 @@ use sva_formula::{Hash, NodeId};
 use sva_samples::{Buffer, Extent};
 
 use super::drive::Driver;
+use super::drive::Work;
 use super::end::{Ending, Fading, Heard, under};
 use super::terms::{Handle, NOTES, Terms, cut, placed};
 use super::value_graph::support::Supports;
@@ -17,7 +18,6 @@ use super::world::{Plan, Root, STREAMED, Walked, Wanted, World};
 use super::{Ends, RenderConfig, range_over};
 use crate::cache::{Backend, CacheStats, Counters, Memory, Recording, Stored, Tier};
 use crate::error::{Diagnostic, EngineError, Located};
-use crate::flops::Work;
 use crate::recent::Recent;
 
 #[cfg(test)]
@@ -337,12 +337,10 @@ impl Stream {
     ) -> Changed {
         let freed = self.world.commit(std::mem::take(&mut plan.found));
         let now = self.driver.at;
-        let made = self.driver.value_graph.made().to_vec();
         let carried = self
             .driver
             .value_graph
             .settled(root, &freed, (now, self.live));
-        self.driver.value_graph.priced(range, &made);
         self.driver.value_graph.offers(&self.world.typing, range);
         for (key, parts) in &local.fetched {
             self.driver.value_graph.took(*key, parts);
@@ -468,13 +466,11 @@ impl Stream {
         }
         for short in value_graph.short((value_graph.root, asked_range, Past::Held)) {
             value_graph.read_on(&self.world.typing, short)?;
-            let made = value_graph.made().to_vec();
             let landed = value_graph.landed(short);
             let carried = value_graph.settled(value_graph.root, &[], (landed, self.live));
             for silent in carried.silent {
                 self.dropped.push(value_graph.values[silent].name.clone());
             }
-            value_graph.priced(range, &made);
             value_graph.offers(&self.world.typing, range);
         }
         Ok(())

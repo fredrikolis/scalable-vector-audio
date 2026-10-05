@@ -4,8 +4,8 @@ use std::path::Path;
 
 use sva_engine::{
     Alias, AliasBand, Answer, Arguments, BandCrest, BandTrack, Bands, Binding, Buffer, CacheStats,
-    Cost, Counters, Crest, CuttingBelowSilenceThreshold, Detail, EnvelopeFrame, FormantFrame,
-    Label, LedgerEntry, Loudness, LoudnessFrame, Onsets, Outcome, Output, PayloadKind, Source,
+    Counters, Crest, CuttingBelowSilenceThreshold, Detail, EnvelopeFrame, FormantFrame, Label,
+    LedgerEntry, Loudness, LoudnessFrame, Onsets, Outcome, Output, PayloadKind, Source,
     SpectralSum, Spectrum, StereoFrame, StereoImage, Work,
 };
 
@@ -336,26 +336,6 @@ fn symbolic_json(n: &SpectralSum) -> String {
     )
 }
 
-/// A cost tree, deepest row last, each already folded to the share it is worth printing.
-fn flops_json(tree: &sva_engine::FlopTree) -> String {
-    format!(
-        "{{ \"total\": {}, \"budget\": {}, \"rows\": {} }}",
-        tree.total,
-        tree.budget,
-        list(&tree.rows, |r: &sva_engine::FlopRow| format!(
-            "\n    {{ \"depth\": {}, \"node\": \"{}\", \"own\": {}, \"subtree\": {}, \
-             \"percent\": {}, \"route\": \"{}\", \"shared\": {} }}",
-            r.depth,
-            escape(&r.node),
-            r.own,
-            r.subtree,
-            num(r.percent),
-            escape(r.route),
-            r.shared
-        ))
-    )
-}
-
 /// `limit` caps the arrays a stdout reader scrolls past; `None` writes every value. `skim`
 /// only changes the ledger.
 pub fn value_json(output: &Output, limit: Option<usize>, skim: bool) -> String {
@@ -374,7 +354,6 @@ pub fn value_json(output: &Output, limit: Option<usize>, skim: bool) -> String {
         Output::Alias(a) => alias_json(a),
         Output::Bindings(b) => list(b, binding_json),
         Output::Arguments(a) => list(a, arguments_json),
-        Output::Flops(tree) => flops_json(tree),
         Output::Envelope(frames) => list(frames, |f: &EnvelopeFrame| {
             format!(
                 "\n    {{ \"t\": {}, \"rms\": {}, \"peak\": {} }}",
@@ -477,20 +456,16 @@ fn detail_json(detail: &Detail) -> String {
 /// place a key may be absent: each `rule` is its own shape, and its fields belong to it.
 pub fn label_json(label: &Label) -> String {
     let detail = detail_json(&label.detail);
-    let cost = match label.cost {
-        Some(Cost { flops, budget }) => format!(", \"flops\": {flops}, \"flop_budget\": {budget}"),
-        None => format!(", \"flops\": {NONE}, \"flop_budget\": {NONE}"),
-    };
     let cutting = label
         .cutting_below_silence_threshold
         .as_ref()
         .map_or(NONE.to_string(), cutting_below_silence_threshold_json);
-    let cost = format!(
-        "{cost}, \"moved_s\": {}, \"pruned\": {cutting}",
+    let rest = format!(
+        ", \"moved_s\": {}, \"pruned\": {cutting}",
         maybe(label.moved)
     );
     format!(
-        "{{ \"source\": \"{}\", \"profile\": \"{}\", \"rate\": {}, \"rule\": \"{}\"{detail}{cost} }}",
+        "{{ \"source\": \"{}\", \"profile\": \"{}\", \"rate\": {}, \"rule\": \"{}\"{detail}{rest} }}",
         match label.source {
             Source::Exact => "exact",
             Source::Measured => "measured",
@@ -513,12 +488,10 @@ pub fn cutting_below_silence_threshold_json(cutting: &CuttingBelowSilenceThresho
     )
 }
 
-/// Whole counts every one; `waves` is null where a node's go uncounted.
 pub fn work_json(work: &Work) -> String {
-    let waves = work.waves.map_or(NONE.to_string(), |w| w.to_string());
     format!(
-        "{{ \"samples\": {}, \"priced_flops\": {}, \"waves\": {waves} }}",
-        work.samples, work.priced_flops
+        "{{ \"samples\": {}, \"computed_samples\": {} }}",
+        work.samples, work.computed_samples
     )
 }
 

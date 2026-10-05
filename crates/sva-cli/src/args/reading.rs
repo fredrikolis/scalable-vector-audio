@@ -74,7 +74,7 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
         ))
     })?;
     let mut flags = Flags::default();
-    let (mut until, mut rate, mut bits, mut flop_budget) = (None, None, None, None);
+    let (mut until, mut rate, mut bits) = (None, None, None);
     let mut cache = CacheAt::Platform;
     while let Some(flag) = it.next() {
         if flags.read(flag, &mut it)? {
@@ -84,9 +84,6 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
             "--until" => until = Some(value(&mut it, "--until")?),
             "--rate" => rate = Some(hertz(&value(&mut it, "--rate")?)?),
             "--bits" => bits = Some(whole(&value(&mut it, "--bits")?, "--bits")?),
-            "--flop-budget" => {
-                flop_budget = Some(operations(&value(&mut it, "--flop-budget")?)?);
-            }
             "--cache" => {
                 cache = match value(&mut it, "--cache")?.as_str() {
                     "none" => CacheAt::Off,
@@ -114,7 +111,6 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
         until,
         rate,
         bits,
-        flop_budget,
         asked,
         confirm: flags.confirm,
         cache,
@@ -199,14 +195,6 @@ fn hertz(raw: &str) -> Result<u32, CliError> {
 pub(super) fn whole(raw: &str, flag: &str) -> Result<i32, CliError> {
     raw.parse::<i32>()
         .map_err(|_| CliError::Usage(format!("{flag} needs a whole number, got `{raw}`\n{USAGE}")))
-}
-
-pub(super) fn operations(raw: &str) -> Result<u128, CliError> {
-    raw.parse::<u128>().map_err(|_| {
-        CliError::Usage(format!(
-            "--flop-budget needs a whole count of operations, got `{raw}`\n{USAGE}"
-        ))
-    })
 }
 
 fn refuse_audio_dest(name: &str, dest: Option<&Path>) -> Result<(), CliError> {

@@ -2,7 +2,7 @@
 
 use crate::helpers::render;
 use sva_formula::{Body, ClosedForm, Edge, Origin, Part, Var, noise};
-use sva_samples::{Extent, PSYCHOACOUSTIC_V1, Rows, Source};
+use sva_samples::{Extent, PSYCHOACOUSTIC_V1, Source};
 
 const RATE: u32 = 48_000;
 
@@ -145,7 +145,7 @@ fn decaying(rate_per_sec: f64) -> Body {
 }
 
 /// A decaying lane is swept, and a swept lane is read where its own indicator is 1: past the
-/// window it costs nothing and writes zero.
+/// window it writes zero.
 #[test]
 fn a_swept_lane_is_read_only_inside_the_window_it_carries() {
     let horizon = (0.0, 4.0);
@@ -155,11 +155,6 @@ fn a_swept_lane_is_read_only_inside_the_window_it_carries() {
         Body::Mul(vec![Part::bare(decaying(3.0)), Part::bare(sine(440.0))]),
         1.0,
     ));
-    let rows = Rows::of(&law, sva_samples::Grid::of(RATE), &PSYCHOACOUSTIC_V1).expect("rows");
-    let quarter = len as i64 / 4;
-    assert!(rows.work(0, quarter).0 > 0, "the window is read");
-    assert_eq!(rows.work(quarter, len as i64).0, 0, "past it nothing is");
-
     let (held, _) = render(&law, RATE, horizon, &PSYCHOACOUSTIC_V1).expect("a windowed decay");
     assert!(held.at(0, 100) != 0.0, "inside the window");
     assert_eq!(held.at(0, len - 1), 0.0, "outside it");

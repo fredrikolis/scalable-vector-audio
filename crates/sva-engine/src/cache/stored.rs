@@ -13,8 +13,6 @@ pub struct Stored {
     pub rate: Option<u32>,
     pub grid: Grid,
     pub support: Extent,
-    /// Flops it and all under it cost.
-    pub priced: u128,
     /// The most seconds a read under it moved to land on a sample.
     pub moved: f64,
     pub readable: bool,

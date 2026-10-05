@@ -239,7 +239,6 @@ fn ladders(
 pub(crate) struct Direct {
     level: f64,
     runs: Vec<Run>,
-    lines: usize,
 }
 
 impl Direct {
@@ -251,7 +250,6 @@ impl Direct {
         Some(Direct {
             level: dc.iter().map(|l| l.amp.re).sum(),
             runs: Run::of(&moving),
-            lines: kept.len(),
         })
     }
 
@@ -267,10 +265,6 @@ impl Direct {
     pub(crate) fn at(&self, t: f64) -> f64 {
         let moving: f64 = self.runs.iter().map(|r| super::run::at(r, t).re).sum();
         self.level + moving
-    }
-
-    pub(crate) fn lines_priced_and_turned(&self) -> (usize, usize) {
-        (self.lines, self.runs.iter().map(Run::len).sum())
     }
 
     /// How far `at` sits from the exact sum at any instant.

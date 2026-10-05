@@ -2,8 +2,7 @@
 
 use sva_formula::Codomain;
 use sva_samples::{
-    BLOCK, Buffer, Cost, Detail, Dropped, Extent, Grid, Label, PSYCHOACOUSTIC_V1, Rule, Source,
-    block_end,
+    BLOCK, Buffer, Detail, Dropped, Extent, Grid, Label, PSYCHOACOUSTIC_V1, Rule, Source, block_end,
 };
 
 use sva_formula::{FOURIER_DUAL_RULES_VERSION, Hash};
@@ -12,7 +11,7 @@ use super::Stored;
 use super::stored::{Header, Laid, Samples};
 
 /// Bumped by, and only by, a change to a stored value's bytes or to the key it is stored under.
-pub const STORE_FORMAT: u32 = 43;
+pub const STORE_FORMAT: u32 = 44;
 
 /// Every entry opens with its format and Fourier dual rules version, so one another wrote is
 /// never read as a value.
@@ -111,7 +110,6 @@ fn header(head: &Header, laid: &[Laid]) -> Vec<u8> {
     out.extend_from_slice(&stored.grid.d.to_le_bytes());
     word(&mut out, stored.support.start as u64);
     word(&mut out, stored.support.end as u64);
-    out.extend_from_slice(&stored.priced.to_le_bytes());
     word(&mut out, stored.moved.to_bits());
     out.push(u8::from(stored.readable));
     out.push(u8::from(stored.sampled));
@@ -168,7 +166,6 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Header, u64)> {
     };
     let (start, end) = (r.word()? as i64, r.word()? as i64);
     let support = (start <= end).then(|| Extent::new(start, end))?;
-    let priced = r.wide()?;
     let moved = f64::from_bits(r.word()?);
     let readable = r.flag()?;
     let sampled = r.flag()?;
@@ -223,7 +220,6 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Header, u64)> {
         rate,
         grid,
         support,
-        priced,
         moved,
         readable,
         sampled,
@@ -368,14 +364,6 @@ fn labelled(out: &mut Vec<u8>, label: &Label) {
     text(out, label.profile);
     word(out, u64::from(label.rate));
     detailed(out, &label.detail);
-    match label.cost {
-        None => out.push(0),
-        Some(Cost { flops, budget }) => {
-            out.push(1);
-            out.extend_from_slice(&flops.to_le_bytes());
-            out.extend_from_slice(&budget.to_le_bytes());
-        }
-    }
     float(out, label.moved);
     match &label.cutting_below_silence_threshold {
         None => out.push(0),
@@ -535,14 +523,6 @@ impl Reader<'_> {
         };
         let rate = u32::try_from(self.word()?).ok()?;
         let detail = self.detail()?;
-        let cost = match self.byte()? {
-            0 => None,
-            1 => Some(Cost {
-                flops: self.wide()?,
-                budget: self.wide()?,
-            }),
-            _ => return None,
-        };
         let moved = self.float()?;
         let cutting_below_silence_threshold = match self.byte()? {
             0 => None,
@@ -564,7 +544,6 @@ impl Reader<'_> {
             profile,
             rate,
             detail,
-            cost,
             moved,
             cutting_below_silence_threshold,
         })

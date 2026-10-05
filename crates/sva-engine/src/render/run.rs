@@ -108,7 +108,7 @@ pub async fn render_in<B: Backend>(
                 value_graph.read_on(&held.tys, at)?;
             }
             value_graph.settled(value_graph.root, &[], (range.start, false));
-            value_graph.plan(range)?;
+            value_graph.refuse_endless(range)?;
         }
         value_graph.offers(&held.tys, range);
     }

@@ -45,7 +45,7 @@ fn whole(g: &Graph, target: &str, cache: &Tier) -> (Vec<f64>, Vec<Outcome>) {
     )
 }
 
-fn streamed(g: &Graph, target: &str, cache: &Tier) -> (Vec<f64>, u128, Vec<Outcome>) {
+fn streamed(g: &Graph, target: &str, cache: &Tier) -> (Vec<f64>, u64, Vec<Outcome>) {
     let config = StreamConfig {
         block: 1_024,
         channels: None,
@@ -65,7 +65,11 @@ fn streamed(g: &Graph, target: &str, cache: &Tier) -> (Vec<f64>, u128, Vec<Outco
     while let Some(block) = next(&mut stream).unwrap_or_else(|e| panic!("{e}")) {
         heard.extend_from_slice(block.plane(0));
     }
-    (heard, stream.work().priced_flops, outcomes(&stream.stats()))
+    (
+        heard,
+        stream.work().computed_samples,
+        outcomes(&stream.stats()),
+    )
 }
 
 /// Before its release a note is the held one, so after one held render each release reads the
@@ -86,10 +90,10 @@ fn each_release_reads_the_held_run_and_computes_only_its_tail() {
             found.contains(&Outcome::Prefix),
             "release at {release}: {found:?}"
         );
-        let tail = LEN - (release * f64::from(RATE)).ceil() as i64 + EVERY as i64;
+        let held = (release * f64::from(RATE)).floor() as u64 - EVERY as u64;
         assert!(
-            work * LEN as u128 <= cold_work * tail as u128,
-            "release at {release}: {work} of {cold_work} computed, past its tail"
+            cold_work - work >= held,
+            "release at {release}: {work} of {cold_work} computed, {held} of them held"
         );
         let (first, _) = whole(&g, &target, &cache);
         assert_eq!(

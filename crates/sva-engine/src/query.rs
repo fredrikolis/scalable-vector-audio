@@ -48,7 +48,6 @@ pub enum Representation {
     },
     Bindings,
     Arguments,
-    Flops,
 }
 
 /// What a caller asked of one node.
@@ -77,7 +76,6 @@ pub enum Output {
     Ledger(Vec<LedgerEntry>),
     Bindings(Vec<Binding>),
     Arguments(Vec<Arguments>),
-    Flops(Box<crate::flops::Tree>),
 }
 
 /// Every answer says which reading ran and under which profile, so a caller never has to
@@ -131,7 +129,6 @@ impl Representation {
             Representation::Alias { .. } => "alias",
             Representation::Bindings => "bindings",
             Representation::Arguments => "arguments",
-            Representation::Flops => "flops",
         }
     }
 
@@ -148,10 +145,8 @@ impl Representation {
             {
                 Consumes::ClosedForm
             }
-            // None reads a buffer: two are resolved first, the other counts the schedule.
-            Representation::Bindings | Representation::Arguments | Representation::Flops => {
-                Consumes::ClosedForm
-            }
+            // Neither reads a buffer: both are resolved first.
+            Representation::Bindings | Representation::Arguments => Consumes::ClosedForm,
             _ => Consumes::Buffer,
         }
     }
@@ -195,7 +190,6 @@ impl Representation {
             "alias" => Representation::Alias { oversample: 4 },
             "bindings" => Representation::Bindings,
             "arguments" => Representation::Arguments,
-            "flops" => Representation::Flops,
             _ => return None,
         })
     }

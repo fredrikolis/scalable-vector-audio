@@ -218,7 +218,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 87] = [
+pub static REGISTRY: [(&str, &str); 86] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -320,10 +320,6 @@ pub static REGISTRY: [(&str, &str); 87] = [
     (
         "collapse.no_block_row",
         "a closed form in f read block by block, which one transform over an extent places",
-    ),
-    (
-        "collapse.over_budget",
-        "a render counting more operations than the caller allowed",
     ),
     (
         "samples.zero_delay_loop",

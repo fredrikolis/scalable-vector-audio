@@ -26,7 +26,7 @@ pub use error::{CollapseError, SampleError};
 pub use filters::{Automation, AutomationFrame, FilterSite, FilterTrace};
 pub use frames::Frames;
 pub use grid::{BLOCK, Extent, Grid, Round, block_end};
-pub use label::{Cost, CuttingBelowSilenceThreshold, Detail, Dropped, Label, Rule, Source};
+pub use label::{CuttingBelowSilenceThreshold, Detail, Dropped, Label, Rule, Source};
 pub use machine::renderer::{
     Between, Binary, BufId, Formula, Index, Map, NodeRenderer, Site, SiteId, Slot, Unary, Wrap,
     Written,

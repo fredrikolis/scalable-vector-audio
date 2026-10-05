@@ -448,22 +448,6 @@ pub struct Written {
     pub refs: Vec<Body>,
 }
 
-impl Formula {
-    pub fn ops(&self) -> usize {
-        match self {
-            Formula::Rows(rows) => rows.ops(),
-            Formula::Written(written) => {
-                let mut counted = Vec::with_capacity(written.refs.len());
-                for body in &written.refs {
-                    counted.push(crate::collapse::terms(body, &counted));
-                }
-                crate::collapse::terms(&written.body, &counted)
-            }
-            Formula::Drawn { .. } => 1,
-        }
-    }
-}
-
 /// Every closed form-typed subterm was collapsed to a buffer, inlined or held as a formula
 /// before this tree was built, so there is no oscillator, no series and no delta here.
 #[derive(Clone, Debug, PartialEq)]

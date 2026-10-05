@@ -1,4 +1,4 @@
-// Concern: the radix-2 complex transform, its inverse from half the bins, what a transform costs | Non-concern: what a bin means (stft.rs, measure/) | IO: (&mut [f64], &mut [f64]) -> (); n -> flops
+// Concern: the radix-2 complex transform, its inverse from half the bins | Non-concern: what a bin means (stft.rs, measure/) | IO: (&mut [f64], &mut [f64]) -> ()
 
 use std::f64::consts::TAU;
 
@@ -77,10 +77,4 @@ pub fn irfft(bins_re: &[f64], bins_im: &[f64], n: usize) -> Vec<f64> {
     }
     ifft(&mut re, &mut im);
     re
-}
-
-/// Other lengths price as the next power of two; the STFT refuses them.
-pub fn transform_flops(n: usize) -> u128 {
-    let m = n.next_power_of_two();
-    m as u128 * u128::from(m.max(2).trailing_zeros())
 }

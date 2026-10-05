@@ -53,15 +53,13 @@ impl Counters {
     }
 }
 
-/// A node cheaper than a priced flop per this many bytes it holds is computed, never read back.
-pub const BYTES_PER_FLOP: u128 = 64;
-
-/// What a keep states of the node its samples answer: whether it is the target, and how many
-/// samples it is asked over.
+/// What a keep states of the node its samples answer: whether it is the target, whether two
+/// or more values read it, and whether a stateful run wrote it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Facts {
     pub(crate) target: bool,
-    pub(crate) samples: u64,
+    pub(crate) shared: bool,
+    pub(crate) stateful: bool,
 }
 
 /// What one keep sends memory: the samples a value computed, and the node they answer.
@@ -1309,10 +1307,10 @@ impl Memory {
     }
 }
 
-/// A node a later render is answered by, costing a flop per `BYTES_PER_FLOP` bytes or more.
+/// The target, and a node a later render is answered by that two or more values read or a
+/// stateful run wrote: what one reader alone recomputes from its own reads is never written.
 fn writes(stored: &Stored, facts: Facts) -> bool {
-    let bytes = u128::from(facts.samples) * u128::from(stored.width) * size_of::<f64>() as u128;
-    (stored.readable || facts.target) && stored.priced * BYTES_PER_FLOP >= bytes
+    facts.target || (stored.readable && (facts.shared || facts.stateful))
 }
 
 /// A run that starts inside or at the end of the one held continues it: what it holds past

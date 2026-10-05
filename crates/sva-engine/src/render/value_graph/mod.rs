@@ -1,4 +1,4 @@
-// Concern: the one graph of values, keyed by identity and step, that renders, streams, prices and logs read | Non-concern: typing, readings off samples | IO: (Typing, roots) -> ValueGraph, samples
+// Concern: the one graph of values, keyed by identity and step, that renders, streams and logs read | Non-concern: typing, readings off samples | IO: (Typing, roots) -> ValueGraph, samples
 
 mod demand;
 pub(crate) mod edit;
@@ -44,8 +44,6 @@ pub(crate) struct ValueGraph {
     pub(crate) root: usize,
     /// Each node a reading holds over the range, in its own time.
     pub(crate) wanted: Vec<usize>,
-    /// What each value costs over the whole range, as a pull pays it.
-    pub(crate) planned: Vec<u128>,
     profile: Profile,
     pub(crate) built: usize,
     pub(crate) supports: Memo,
@@ -74,7 +72,6 @@ impl ValueGraph {
             nodes: BTreeMap::new(),
             root: 0,
             wanted: Vec::new(),
-            planned: Vec::new(),
             profile: *profile,
             built: 0,
             supports: Memo::default(),
@@ -258,38 +255,9 @@ impl ValueGraph {
         }
     }
 
-    /// Prices every value over `range` before a sample is computed; a stored one costs what
-    /// computing it did.
-    pub(crate) fn plan(&mut self, range: Extent) -> Result<(), EngineError> {
-        let needs = self.bounded_demand(range)?;
-        self.planned = self.price(&needs);
-        self.stored_prices(self.values.ordered().collect());
-        Ok(())
-    }
-
-    /// `plan`'s prices for `made`; one asked without end costs nothing.
-    pub(crate) fn priced(&mut self, range: Extent, made: &[usize]) {
-        let needs = self.demand(range);
-        let made: Vec<usize> = made
-            .iter()
-            .copied()
-            .filter(|at| self.values.holds(*at))
-            .collect();
-        for at in &made {
-            let (value, compute) = (&self.values[*at], &needs[*at].compute);
-            let bounded = compute.is_empty() || compute.hull().is_bounded();
-            let price = bounded.then(|| eval::price(value, compute, &self.values));
-            self.planned[*at] = price.unwrap_or(0);
-        }
-        self.stored_prices(made);
-    }
-
-    fn stored_prices(&mut self, ats: Vec<usize>) {
-        for at in ats {
-            if let Kind::Resident(stored) = &self.values[at].kind {
-                self.planned[at] += stored.priced;
-            }
-        }
+    /// Refuses where `range` asks a value to compute samples without end.
+    pub(crate) fn refuse_endless(&self, range: Extent) -> Result<(), EngineError> {
+        self.bounded_demand(range).map(|_| ())
     }
 
     /// The most seconds any read was moved to a whole sample.
@@ -333,7 +301,7 @@ impl ValueGraph {
     }
 
     /// Computes what `asked_range` asks that is not held, each value once, after the store answers
-    /// what it holds; the price of what ran.
+    /// what it holds; the samples it computed.
     pub(crate) fn pull(
         &mut self,
         asked_range: Extent,
@@ -380,8 +348,7 @@ impl ValueGraph {
                 .min(sva_samples::block_end(from))
                 .min(over.end);
             let done = self.pulled(&within(Extent::new(from, to)), (memory, &mut *seen))?;
-            pulled.priced += done.priced;
-            pulled.waves += done.waves;
+            pulled.computed_samples += done.computed_samples;
             pulled.most_bytes = pulled.most_bytes.max(done.most_bytes);
             let mut later = within(Extent::new(to, i64::MAX));
             later.extend(self.asked(asked_range));
@@ -457,11 +424,12 @@ impl ValueGraph {
             let mut lifted = self.values.lift(at);
             let computed = self.computed(at, &mut lifted, need, (memory, &mut *seen));
             self.values.put(at, lifted);
-            let (priced, waves) = computed?;
+            computed?;
             let computed: Vec<Extent> = need.compute.iter().collect();
+            if !matches!(self.values[at].kind, Kind::Resident(_)) {
+                pulled.computed_samples += computed.iter().map(|e| e.len() as u64).sum::<u64>();
+            }
             self.kept(at, &computed, (memory, &mut *seen));
-            pulled.priced += priced;
-            pulled.waves += waves;
         }
         pulled.most_bytes = self.bytes();
         Ok(pulled)
@@ -473,15 +441,15 @@ impl ValueGraph {
         value: &mut Value,
         need: &Need,
         (memory, seen): (&Memory, &mut Recording),
-    ) -> Result<(u128, u128), EngineError> {
+    ) -> Result<(), EngineError> {
         let marks = store::marks(self.values.place(at), memory);
-        let done = eval::compute(value, need, (&self.values, &marks), &self.profile)?;
+        eval::compute(value, need, (&self.values, &marks), &self.profile)?;
         let place = self.values.place_mut(at);
         for (read, count) in store::reached(value, place, &need.compute) {
             let (read, place) = self.values.placed(read);
             store::reread(read, place, count, seen);
         }
-        Ok(done)
+        Ok(())
     }
 
     /// Drops what no later range reads: `future` is the rest of the root's range, `keep` more
@@ -593,24 +561,11 @@ impl ValueGraph {
             .unwrap_or_else(|| Label::measured(self.profile.name, value.grid.rate))
     }
 
-    /// What `need` costs each value, as computing it pays.
-    pub(crate) fn price(&self, needs: &[Need]) -> Vec<u128> {
-        let mut out = vec![0; self.values.span()];
-        for (at, value) in self.values.iter() {
-            out[at] = eval::price(value, &needs[at].compute, &self.values);
-        }
-        out
-    }
-
     /// A value made, holding what it reads.
     fn make(&mut self, value: Value) -> usize {
         let mut place = place(&self.values, &value, &self.profile);
         place.slot = value.node.and_then(|id| self.slotted.get(&id).copied());
         let at = self.values.push(value, place);
-        if self.planned.len() < self.values.span() {
-            self.planned.resize(self.values.span(), 0);
-        }
-        self.planned[at] = 0;
         self.draft.made.push(at);
         at
     }
@@ -641,7 +596,6 @@ impl ValueGraph {
     fn freed(&mut self, gone: Vec<usize>) {
         for at in gone {
             self.values.remove(at);
-            self.planned[at] = 0;
         }
     }
 
@@ -724,11 +678,10 @@ impl ValueGraph {
     }
 }
 
-/// What one pull computed: its price, and each value it asked, whether it computed any of it.
+/// What one pull computed: the samples its values computed, nothing memory answered.
 #[derive(Default)]
 pub(crate) struct Pulled {
-    pub(crate) priced: u128,
-    pub(crate) waves: u128,
+    pub(crate) computed_samples: u64,
     /// The most bytes the value graph held once a block was computed.
     pub(crate) most_bytes: usize,
 }

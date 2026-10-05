@@ -126,10 +126,4 @@ fn a_point_sampled_sum_reads_each_term_only_inside_its_crop() {
             .expect("a value");
         assert_eq!(v.to_bits(), want.re.to_bits(), "sample {n}");
     }
-
-    let (few, many) = (rows(20).work(0, len(20)).0, rows(40).work(0, len(40)).0);
-    assert!(
-        many * 10 <= few * 21,
-        "twice the terms over twice the span cost {many}, against {few}"
-    );
 }

@@ -1,4 +1,4 @@
-// Concern: proves a stream's and a render's work counters count what they did and price it alike | Non-concern: what any sample holds (stream.rs) | IO: (a composition) -> Work
+// Concern: proves a stream's and a render's work counters count what they did alike | Non-concern: what any sample holds (stream.rs) | IO: (a composition) -> Work
 
 use crate::fixtures::{Now, graph_of, next};
 use sva_ast::Graph;
@@ -50,35 +50,18 @@ fn streamed(g: &Graph, target: &str, block: usize, samples: usize) -> Work {
     stream.work()
 }
 
-/// Two saws' harmonics under 20 kHz at C2, 8 cents either side, each line and its mirror.
-const C2_LINES: u128 = 2 * (304 + 307);
-
 #[test]
-fn a_stream_counts_its_samples_and_the_lines_its_runs_turn_whatever_its_blocks() {
+fn a_stream_counts_its_samples_whatever_its_blocks() {
     let g = composition();
     let samples = 441 * 64;
     let one = streamed(&g, "low", 441, samples);
     assert_eq!(one, streamed(&g, "low", 64, samples));
     assert_eq!(one.samples, samples as u64);
-    assert_eq!(one.waves, Some(C2_LINES * samples as u128));
-}
-
-/// A stream reads its target through one node of its own, as `wrapped` reads `low`.
-/// A windowed sum turns its atoms only inside the window; a sum of rows prices each addend.
-#[test]
-fn a_swept_or_added_row_counts_only_what_it_sums() {
-    let g = composition();
-    let clipped = streamed(&g, "clipped", 441, 8_820);
-    let atoms = 2 * (20_000 / 220);
-    assert_eq!(clipped.waves, Some(atoms * 4_410));
-    assert_eq!(clipped, streamed(&g, "clipped", 1_260, 8_820));
-    let added = streamed(&g, "added", 441, 8_820);
-    assert_eq!(added.waves, Some(2 * 8_820));
-    assert_eq!(added, streamed(&g, "added", 63, 8_820));
+    assert!(one.computed_samples >= one.samples);
 }
 
 #[test]
-fn a_stream_prices_each_sample_as_a_whole_render_prices_it() {
+fn a_stream_computes_what_a_whole_render_computes() {
     let g = composition();
     let samples = 4_410;
     let secs = samples as f64 / f64::from(RATE);
@@ -86,10 +69,10 @@ fn a_stream_prices_each_sample_as_a_whole_render_prices_it() {
     let whole = render(&g, "wrapped", config, &Tier::default()).expect("a render");
     let work = whole.work();
     assert_eq!(work.samples, samples as u64);
-    assert!(work.priced_flops > 0);
+    assert!(work.computed_samples > 0);
     assert_eq!(
-        streamed(&g, "low", 441, samples).priced_flops,
-        work.priced_flops
+        streamed(&g, "low", 441, samples).computed_samples,
+        work.computed_samples
     );
 }
 
@@ -175,9 +158,9 @@ fn a_late_window_streams_its_history_and_holds_no_more_the_later_it_starts() {
 }
 
 /// A hard crop of a line series sums the series' own runs inside its window: the same bits
-/// as the series uncropped there, and the same lines turned a sample, whatever it is cut to.
+/// as the series uncropped there.
 #[test]
-fn a_cropped_line_series_turns_its_own_runs_inside_its_window() {
+fn a_cropped_line_series_writes_its_own_runs_inside_its_window() {
     let g = graph_of(
         "cropped-series",
         &[
@@ -201,13 +184,6 @@ fn a_cropped_line_series_turns_its_own_runs_inside_its_window() {
     for (n, (a, b)) in cut.iter().zip(&whole).enumerate() {
         assert_eq!(a.to_bits(), b.to_bits(), "sample {n}");
     }
-    let (plain, cropped) = (
-        streamed(&g, "breath", 441, samples),
-        streamed(&g, "cut", 441, samples),
-    );
-    let lines = plain.waves.expect("waves") / samples as u128;
-    assert!(lines > 1_000, "a noise of {lines} lines");
-    assert_eq!(cropped.waves, Some(lines * samples as u128));
 }
 
 /// Every 20 Hz from a 50 ms period lands one line on the 20 kHz ceiling: a crop keeps the

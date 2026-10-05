@@ -1183,7 +1183,7 @@ fn a_gain_outside_a_cropped_series_keeps_the_window() {
 }
 
 /// A bound a composer wrote is a term count like the floor's own, so a nesting under one is
-/// priced and refused by the same name. Under the bound, it collapses.
+/// refused by the same name. Under the bound, it collapses.
 #[test]
 fn a_nested_series_past_the_bound_refuses_or_labels() {
     let nested = |outer: i64| {

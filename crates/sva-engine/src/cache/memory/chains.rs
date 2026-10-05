@@ -17,7 +17,6 @@ fn stored(key: Hash) -> Stored {
         rate: None,
         grid: Grid::of(8_000),
         support: Extent::new(0, 100),
-        priced: 0,
         moved: 0.0,
         readable: true,
         sampled: true,
@@ -27,7 +26,8 @@ fn stored(key: Hash) -> Stored {
 
 const FACTS: Facts = Facts {
     target: false,
-    samples: 100,
+    shared: false,
+    stateful: false,
 };
 
 fn kept(memory: &Memory, key: Hash, offered: Offered) {

@@ -23,14 +23,6 @@ pub fn answer(
 ) -> Result<Answer, EngineError> {
     let closed = render.tys.ty(node).is_closed_form();
     let profile = render.config.profile.name;
-    if representation == Representation::Flops {
-        return Ok(Answer::whole(
-            Output::Flops(Box::new(crate::flops::tree_at(render, node))),
-            Source::Exact,
-            profile,
-            None,
-        ));
-    }
     if representation == Representation::Arguments {
         return Ok(Answer::whole(
             Output::Arguments(arguments_under(render, node)),

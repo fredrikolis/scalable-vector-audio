@@ -7,8 +7,14 @@ use super::until::{Known, Until};
 use super::value_graph::{Pulled, ValueGraph};
 use crate::cache::{Memory, Recording};
 use crate::error::EngineError;
-use crate::flops::Work;
 use crate::query::{DEFAULT_FRAME_SECS, Representation};
+
+/// Nothing memory answered counts as computed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Work {
+    pub samples: u64,
+    pub computed_samples: u64,
+}
 
 pub(super) struct Driver {
     pub(super) value_graph: ValueGraph,
@@ -68,10 +74,7 @@ impl Driver {
             stop: None,
             end: None,
             most_bytes: 0,
-            work: Work {
-                waves: Some(0),
-                ..Work::default()
-            },
+            work: Work::default(),
             memory,
             recording,
         }
@@ -162,12 +165,12 @@ impl Driver {
                 self.block as i64,
                 (&self.memory, &mut self.recording),
             )?;
-            self.priced(&history);
+            self.counted(&history);
         }
         let pulled = self
             .value_graph
             .pull(asked_range, (&self.memory, &mut self.recording))?;
-        self.priced(&pulled);
+        self.counted(&pulled);
         self.work.samples += (to - from) as u64;
         self.at = to;
         self.settle(from, to);
@@ -181,9 +184,8 @@ impl Driver {
         self.output.then_some(self.start)
     }
 
-    fn priced(&mut self, pulled: &Pulled) {
-        self.work.priced_flops += pulled.priced;
-        self.work.waves = self.work.waves.map(|held| held + pulled.waves);
+    fn counted(&mut self, pulled: &Pulled) {
+        self.work.computed_samples += pulled.computed_samples;
         self.most_bytes = self.most_bytes.max(pulled.most_bytes);
     }
 

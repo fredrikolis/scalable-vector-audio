@@ -8,8 +8,6 @@ pub struct Profile {
     pub floor_db: f64,
     pub floor_db_above_5k: f64,
     pub ceiling_hz: f64,
-    /// The operation count a render pays without the caller saying so.
-    pub flop_budget: u128,
     pub precision_bits: i32,
     pub silence_threshold_dbfs: f64,
 }
@@ -19,7 +17,6 @@ pub const PSYCHOACOUSTIC_V1: Profile = Profile {
     floor_db: -20.0,
     floor_db_above_5k: -25.0,
     ceiling_hz: 20_000.0,
-    flop_budget: 10_000_000_000,
     precision_bits: 24,
     silence_threshold_dbfs: -120.0,
 };
@@ -44,7 +41,6 @@ impl Profile {
             floor_db,
             floor_db_above_5k,
             ceiling_hz,
-            flop_budget: _,
             precision_bits,
             silence_threshold_dbfs: _,
         } = *self;

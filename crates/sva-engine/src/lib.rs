@@ -5,7 +5,6 @@ mod bindings;
 mod cache;
 mod cast;
 mod error;
-pub mod flops;
 mod index;
 pub mod instantiate;
 mod loops;
@@ -27,26 +26,25 @@ pub use arguments::{Argument, Arguments, Called, Chosen};
 pub use bindings::Binding;
 pub use cache::log::cache_log;
 pub use cache::{
-    BYTES_PER_FLOP, Backend, CacheStats, Counters, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY,
-    DEFAULT_STORE_BYTES, FETCH_READS, Hash, INDEX_NAME, Lookup, Nothing, Outcome, PayloadKind,
-    Persisted, STORE_FORMAT, Store, Stored, Tier,
+    Backend, CacheStats, Counters, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY, DEFAULT_STORE_BYTES,
+    FETCH_READS, Hash, INDEX_NAME, Lookup, Nothing, Outcome, PayloadKind, Persisted, STORE_FORMAT,
+    Store, Stored, Tier,
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
-pub use flops::{Row as FlopRow, Tree as FlopTree, Work};
 pub use meaning::{Meaning, meaning};
 pub use query::{Answer, Ask, DEFAULT_FRAME_SECS, Output, Representation};
 pub use refs::{identity, nodes_in, spectral_sum_of};
 pub use render::until::{Cmp, Term};
 pub use render::{
     Abandon, Built, Change, Changed, Counts, Handle, LATEST, NOTES, Never, Out, Placed, Range,
-    Render, RenderConfig, STREAMED, Session, Stream, StreamConfig, Until, answer, answer_buffer,
-    change, ends, fetch, plan, render, render_in, render_over, sketch_atom,
+    Render, RenderConfig, STREAMED, Session, Stream, StreamConfig, Until, Work, answer,
+    answer_buffer, change, ends, fetch, plan, render, render_in, render_over, sketch_atom,
 };
 pub use schedule::{Order, Schedule, schedule_from};
 pub use sva_formula::{C64, Codomain, Held, Line, NodeId, SpectralSum, Ty, Var};
 pub use sva_samples::{
-    Alias, AliasBand, BAND_COUNT, BandCrest, BandTrack, Bands, Buffer, Cost, Crest,
+    Alias, AliasBand, BAND_COUNT, BandCrest, BandTrack, Bands, Buffer, Crest,
     CuttingBelowSilenceThreshold, Detail, EnvelopeFrame, Extent, FormantFrame, Frames, Label,
     LedgerEntry, Loudness, LoudnessFrame, MAX_PINNED_FRAME, Onsets, PSYCHOACOUSTIC_V1, PitchFrame,
     Profile, Rule, SignalKind, Source, Spectrum, StereoFrame, StereoImage, measure_alias,

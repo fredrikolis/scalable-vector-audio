@@ -33,7 +33,6 @@ fn help_states_the_depth_peaks_oversample_and_frame_defaults() {
         "(frame=",
         "--rate",
         "--bits",
-        "--flop-budget",
     ] {
         assert!(
             page.contains(flag),

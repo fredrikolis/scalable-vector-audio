@@ -548,7 +548,7 @@ fn a_cropped_delta_train_keeps_only_the_instants_its_window_holds() {
 fn one_table_says_what_every_named_reading_consumes() {
     use sva_engine::Representation;
     use sva_samples::Consumes;
-    let always_closed = ["lines", "atoms", "bindings", "flops"];
+    let always_closed = ["lines", "atoms", "bindings", "arguments"];
     let turns_on_the_type = ["spectrum", "envelope", "derivative", "pitch"];
     let names = [
         "lines",
@@ -567,7 +567,7 @@ fn one_table_says_what_every_named_reading_consumes() {
         "onsets",
         "alias",
         "bindings",
-        "flops",
+        "arguments",
     ];
     for name in names {
         let held =

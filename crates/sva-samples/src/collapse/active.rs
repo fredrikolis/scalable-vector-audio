@@ -175,18 +175,6 @@ pub(crate) fn sweep_by(
     Ok(())
 }
 
-pub(crate) fn evaluated(intervals: &[SampleInterval], spans: &[SampleInterval]) -> u128 {
-    intervals
-        .iter()
-        .map(|w| {
-            spans
-                .iter()
-                .map(|s| (w.1.min(s.1) as i128 - w.0.max(s.0) as i128).max(0) as u128)
-                .sum::<u128>()
-        })
-        .sum()
-}
-
 /// Where every atom of a lane is windowed, the lane is zero outside their union.
 pub(crate) fn spans(lane: &Lane, grid: Grid) -> Option<Vec<(i64, i64)>> {
     if !lane.is_finite_sum() || lane.atoms.iter().any(|a| a.ind.is_none()) {
