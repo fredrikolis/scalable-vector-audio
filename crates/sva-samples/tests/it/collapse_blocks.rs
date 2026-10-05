@@ -4,7 +4,7 @@ use crate::helpers::part;
 use std::f64::consts::TAU;
 
 use sva_formula::{Body, C64, ClosedForm, Edge, Origin, Unary, Var};
-use sva_samples::{CollapseError, Grid, PSYCHOACOUSTIC_V1, Refs, Rows};
+use sva_samples::{CollapseError, Grid, PSYCHOACOUSTIC_V1, Rows};
 
 const RATE: u32 = 8_000;
 const LEN: usize = 4_000;
@@ -86,23 +86,6 @@ fn a_form_in_f_has_no_row_a_span_reads_alone() {
     );
 }
 
-struct NoNodes;
-
-impl Refs for NoNodes {
-    fn value(
-        &self,
-        _: sva_formula::NodeId,
-        _: usize,
-        _: sva_samples::At,
-    ) -> Result<C64, CollapseError> {
-        Err(CollapseError::NotEvaluable("a node"))
-    }
-
-    fn width(&self, _: sva_formula::NodeId) -> usize {
-        1
-    }
-}
-
 /// A left-nested sum of shaped tones, each cropped to `width` seconds, `gap` apart.
 fn notes(terms: usize, gap: f64, width: f64) -> Body {
     let note = |k: usize| Body::Shift {
@@ -132,16 +115,15 @@ fn a_point_sampled_sum_reads_each_term_only_inside_its_crop() {
         .expect("rows")
     };
 
-    let written = notes(8, gap, width);
+    let written = sva_samples::Evaluator::of(&notes(8, gap, width), 0);
     let planes = rows(8).planes(0, len(8)).expect("samples");
     for (n, v) in planes[0].iter().enumerate() {
-        let want = sva_samples::eval_written_at(
-            &written,
-            0,
-            sva_samples::At::Sample(sva_samples::Grid::of(RATE), n as i64),
-            &NoNodes,
-        )
-        .expect("a value");
+        let want = written
+            .at(sva_samples::At::Sample(
+                sva_samples::Grid::of(RATE),
+                n as i64,
+            ))
+            .expect("a value");
         assert_eq!(v.to_bits(), want.re.to_bits(), "sample {n}");
     }
 

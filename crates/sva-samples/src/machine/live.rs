@@ -2,7 +2,7 @@
 
 use super::CompiledOps;
 use super::ops::{self, Layout, lowered};
-use super::renderer::{Formula, Index, NodeRenderer, Slot};
+use super::renderer::{Index, NodeRenderer, Slot};
 use crate::error::SampleError;
 use crate::grid::Extent;
 
@@ -70,7 +70,7 @@ impl Spanned {
             .iter()
             .map(|(span, compiled_ops)| {
                 let n = (to.min(span.to) - from.max(span.from)).max(0) as u128;
-                let formulas: usize = compiled_ops.formulas.iter().map(Formula::ops).sum();
+                let formulas: usize = compiled_ops.formulas.iter().map(|(f, _)| f.ops()).sum();
                 n * (compiled_ops.ops.len() + formulas) as u128
             })
             .sum()

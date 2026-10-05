@@ -5,7 +5,6 @@ use std::sync::Arc;
 use sva_formula::{Body, Shape};
 
 use crate::collapse::Rows;
-use crate::error::CollapseError;
 use crate::grid::{Extent, Grid, Round};
 use crate::physics::Params;
 
@@ -450,31 +449,6 @@ pub struct Written {
 }
 
 impl Formula {
-    /// One component at `t`, read as a sample of `grid` where it is one; rows use their own.
-    pub fn at(&self, component: usize, t: f64, grid: Grid) -> Result<f64, CollapseError> {
-        match self {
-            Formula::Drawn { seed, rate } => {
-                let step =
-                    Grid::of(*rate)
-                        .step_at(t, Round::Even)
-                        .ok_or(CollapseError::NotEvaluable(
-                            "a draw at an instant past any step",
-                        ))?;
-                Ok(sva_formula::draw(*seed, step))
-            }
-            Formula::Rows(rows) => rows.at(component, t),
-            Formula::Written(written) => {
-                let landed = grid.step_at(t, Round::Even);
-                let at = match landed.filter(|n| grid.instant(*n) == t) {
-                    Some(n) => crate::collapse::At::Sample(grid, n),
-                    None => crate::collapse::At::Free(t),
-                };
-                let refs = crate::collapse::Shared::new(&written.refs);
-                Ok(crate::collapse::eval_written_at(&written.body, component, at, &refs)?.re)
-            }
-        }
-    }
-
     pub fn ops(&self) -> usize {
         match self {
             Formula::Rows(rows) => rows.ops(),

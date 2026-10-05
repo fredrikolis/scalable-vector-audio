@@ -2,11 +2,12 @@
 
 use super::ops::Op;
 use super::read::{Fresh, Source};
+use super::renderer::Formula;
 use super::renderer::Slot;
 use super::{CompiledOps, State, part};
 use crate::buffer::SampleView;
 use crate::error::SampleError;
-use crate::grid::Grid;
+use crate::grid::{Grid, Round};
 
 pub(super) const BLOCK: usize = 128;
 
@@ -179,6 +180,82 @@ fn binary(
     }
 }
 
+/// A formula's samples over the block, each component at the instant its time operand names:
+/// a written form a column at a time, rows and draws an instant at a time. The earliest sample
+/// any component refuses at refuses.
+fn formula(
+    p: &CompiledOps,
+    at: usize,
+    (out, w): (&mut [f64], usize),
+    (times, tw): Operand,
+    grid: Grid,
+    (from, start): (i64, usize),
+) -> Result<(), Refused> {
+    let len = out.len() / w;
+    let time = |k: usize, c: usize| part(&times[k * tw..][..tw], c);
+    let mut first: Option<usize> = None;
+    let mut refuse = |k: usize| first = Some(first.map_or(k, |f| f.min(k)));
+    match &p.formulas[at] {
+        (Formula::Written(_), programs) => {
+            for (c, program) in programs.iter().enumerate() {
+                let mut columns = program.columns(len);
+                columns.grid = grid;
+                for k in 0..len {
+                    let t = time(k, c);
+                    columns.t[k] = t;
+                    columns.on[k] = landed(grid, t, from + (start + k) as i64);
+                }
+                let values = columns.root(0, (0, len));
+                for k in 0..len {
+                    match values.get(k) {
+                        Ok(v) => out[k * w + c] = v.re,
+                        Err(_) => refuse(k),
+                    }
+                }
+            }
+        }
+        (Formula::Rows(rows), _) => {
+            for k in 0..len {
+                for c in 0..w {
+                    match rows.at(c, time(k, c)) {
+                        Ok(v) => out[k * w + c] = v,
+                        Err(_) => refuse(k),
+                    }
+                }
+            }
+        }
+        (Formula::Drawn { seed, rate }, _) => {
+            for k in 0..len {
+                for c in 0..w {
+                    match Grid::of(*rate).step_at(time(k, c), Round::Even) {
+                        Some(step) => out[k * w + c] = sva_formula::draw(*seed, step),
+                        None => refuse(k),
+                    }
+                }
+            }
+        }
+    }
+    match first {
+        Some(k) => Err((
+            start + k,
+            SampleError::FormulaUnevaluable {
+                at: from + (start + k) as i64,
+            },
+        )),
+        None => Ok(()),
+    }
+}
+
+/// The sample `t` is the instant of, where it is one. Below 2^50 samples on a grid of whole
+/// steps a sample's instant rounds back to that sample, so the guess `n` is checked directly.
+fn landed(grid: Grid, t: f64, n: i64) -> Option<i64> {
+    if grid.is_rate() && n.unsigned_abs() < 1 << 50 && grid.instant(n) == t {
+        return Some(n);
+    }
+    grid.step_at(t, Round::Even)
+        .filter(|m| grid.instant(*m) == t)
+}
+
 /// Samples `[start, end)` of the block, of one slot.
 fn fill(
     p: &CompiledOps,
@@ -267,14 +344,7 @@ fn fill(
             }
             Ok(())
         }
-        Op::Formula { at } => each(out, (from, start, w), &mut |i, n, s| {
-            for (c, v) in s.iter_mut().enumerate() {
-                *v = p.formulas[*at]
-                    .at(c, part(arg(0, i), c), here.grid)
-                    .map_err(|_| SampleError::FormulaUnevaluable { at: n })?;
-            }
-            Ok(())
-        }),
+        Op::Formula { at } => formula(p, *at, (out, w), operand(args[0]), here.grid, (from, start)),
         Op::Add(_) => {
             out.fill(0.0);
             for &s in args {

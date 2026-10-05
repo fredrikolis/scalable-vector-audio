@@ -124,6 +124,9 @@ impl Lowered {
             if matches!(op, Op::Indexed { .. } | Op::Instant { .. }) {
                 self.indices.pop();
             }
+            if matches!(op, Op::Formula { .. }) {
+                self.formulas.pop();
+            }
             return *slot;
         }
         self.ops.push(op);
@@ -136,7 +139,8 @@ impl Lowered {
         slot
     }
 
-    /// What `op` computes, numbers by their bits; `None` for a state or a formula, never shared.
+    /// What `op` computes, numbers by their bits, a formula by the first equal one; `None` for
+    /// a state, never shared.
     fn key(&self, op: &Op, args: &[usize]) -> Option<String> {
         let bits = |v: &[f64]| v.iter().map(|v| v.to_bits()).collect::<Vec<u64>>();
         let what = match op {
@@ -153,7 +157,11 @@ impl Lowered {
                 slot, at, reach, ..
             } => format!("indexed {slot:?} {reach:?} {:?}", self.indices[*at]),
             Op::Instant { at, .. } => format!("instant {:?}", self.indices[*at]),
-            Op::Formula { .. } | Op::Filter { .. } | Op::Physics { .. } => return None,
+            Op::Formula { at } => {
+                let first = self.formulas.iter().position(|f| *f == self.formulas[*at]);
+                format!("formula {}", first.expect("the formula itself"))
+            }
+            Op::Filter { .. } | Op::Physics { .. } => return None,
             other => format!("{other:?}"),
         };
         Some(format!("{what} {args:?}"))

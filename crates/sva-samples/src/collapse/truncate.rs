@@ -1,4 +1,4 @@
-// Concern: truncates every series to the terms the profile leaves, once per collapse | Non-concern: evaluating what is left (point.rs) | IO: (&SpectralSum or &Body) -> the same, series-free
+// Concern: truncates every series to the terms the profile leaves, once per collapse | Non-concern: evaluating what is left | IO: (&SpectralSum or &Body) -> the same, series-free
 
 use std::cell::RefCell;
 use std::collections::HashMap;

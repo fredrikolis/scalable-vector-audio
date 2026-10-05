@@ -1,10 +1,10 @@
-// Concern: a written form's addends, the interval each is live in, and what walking it costs | Non-concern: evaluating one (point.rs) | IO: (&Body, grid) -> addends, intervals, (nodes, waves)
+// Concern: a written form's addends, the interval each is live in, and what walking it costs | Non-concern: evaluating one (column.rs) | IO: (&Body, grid) -> addends, intervals, (nodes, waves)
 
 use sva_formula::closed_form::{Part, map_children};
 use sva_formula::{Body, ClosedForm};
 
 use super::active::{self, SampleInterval};
-use super::point;
+use super::{column, point};
 use crate::grid::Grid;
 
 pub(super) fn addends(form: &ClosedForm) -> Option<Vec<ClosedForm>> {
@@ -48,8 +48,8 @@ fn linear_over(f: &Body) -> Option<Body> {
     }
 }
 
-/// One component's `(nodes, waves)` over the samples `[from, to)` of `grid`, as
-/// `point::eval_body` walks them: a run is priced by its Horner steps and turns its lines,
+/// One component's `(nodes, waves)` over the samples `[from, to)` of `grid`, priced as a
+/// walk of the form: a run is priced by its Horner steps and turns its lines,
 /// every other node is one, and a crop's operand counts only at the instants its interval holds.
 pub(crate) fn point_work(
     f: &Body,
@@ -71,7 +71,7 @@ pub(crate) fn point_work(
         })
 }
 
-/// A written sum's addends in order, a left-nested `a + b + c` as one list: `point::eval_body`
+/// A written sum's addends in order, a left-nested `a + b + c` as one list: a sum
 /// folds either from +0 to the same bits, as no partial sum from +0 is -0.
 pub(super) fn summed(f: &Body) -> Option<Vec<&Part>> {
     let Body::Add(parts) = f else {
@@ -217,7 +217,7 @@ fn walked(f: &Body, component: usize, clock: &Clock, span: SampleInterval) -> (u
         Body::Join(parts) => {
             let widths: Vec<usize> = parts
                 .iter()
-                .map(|p| point::width_of(&p.body, &point::NoRefs))
+                .map(|p| column::width_of(&p.body, &[]))
                 .collect();
             match point::lane_of(&widths, component) {
                 Some((at, inner)) => branch(&parts[at], inner, clock, span),
@@ -226,7 +226,7 @@ fn walked(f: &Body, component: usize, clock: &Clock, span: SampleInterval) -> (u
         }
         Body::Channel(of, k) => branch(of, usize::from(*k), clock, span),
         Body::Crop { of, .. } => branch(of, component, clock, clock.cropped(span, f)),
-        // `point::product` walks no factor past one a shut crop zeroed.
+        // A product evaluates no factor past one a shut crop zeroed.
         Body::Mul(parts) => {
             let mut live = span;
             parts.iter().fold((n, 0), |held, part| {
@@ -244,5 +244,18 @@ fn walked(f: &Body, component: usize, clock: &Clock, span: SampleInterval) -> (u
             .iter()
             .map(|part| walked(&part.body, component, clock, span))
             .fold((n, 0), add),
+    }
+}
+
+/// One operation per written subterm, each read of `refs[k]` counting that form's.
+pub(crate) fn terms(body: &Body, refs: &[usize]) -> usize {
+    match body {
+        Body::Node(id) => refs[id.0 as usize],
+        Body::Banded(b) => (b.widest.max(0) as usize)
+            .saturating_mul(terms(&b.series.term.body, refs))
+            .saturating_add(2),
+        _ => sva_formula::closed_form::children(body)
+            .iter()
+            .fold(1usize, |held, p| held.saturating_add(terms(&p.body, refs))),
     }
 }

@@ -1,12 +1,13 @@
-// Concern: which row a closed form takes, read on any span of its grid or at any instant, and priced | Non-concern: one instant's arithmetic (point.rs) | IO: (form, grid) -> Rows; (span, t) -> samples
+// Concern: which row a closed form takes, read on any span of its grid or at any instant, and priced | Non-concern: a form's arithmetic | IO: (form, grid) -> Rows; (span, t) -> samples
 
 use sva_formula::spectral_sum::atom::SpectralAtom;
 use sva_formula::{ClosedForm, Lane, Opaque, Reads, SpectralSum, Var, normalize_closed_form};
 
 use super::active::{self, SampleInterval};
+use super::column::{self, Program};
 use super::lines::{self, Direct};
 use super::truncate::{self, Audible};
-use super::{addends, atoms, point, reading, tail};
+use super::{addends, atoms, point, tail};
 use crate::error::CollapseError;
 use crate::grid::{Grid, Round};
 use crate::label::{Detail, Label, Rule, Source};
@@ -31,11 +32,13 @@ enum Row {
         spans: Vec<Option<Vec<(i64, i64)>>>,
         intervals: Vec<Vec<SampleInterval>>,
     },
-    /// A written sum's addends each read only inside its own interval.
+    /// A written sum's addends each read only inside its own interval. Each component's
+    /// program holds the whole form first, then each addend where it is a sum.
     Point {
         written: Box<ClosedForm>,
         width: usize,
         intervals: Vec<SampleInterval>,
+        programs: Vec<Program>,
     },
     /// Each addend's row, its width, and the interval outside which it writes +0.
     Added(Vec<(Row, usize, SampleInterval)>),
@@ -330,13 +333,18 @@ fn point(form: &ClosedForm, grid: Grid, profile: &Profile) -> Result<Labelled, C
         ..form.clone()
     };
     let tail_db = truncate::dropped_db(&written.body);
-    let width = point::width_of(&written.body, &point::NoRefs).max(1);
-    let intervals = addends::summed(&written.body)
-        .map_or_else(Vec::new, |parts| addends::addend_intervals(&parts, grid));
+    let width = column::width_of(&written.body, &[]).max(1);
+    let parts = addends::summed(&written.body).unwrap_or_default();
+    let intervals = addends::addend_intervals(&parts, grid);
+    let roots: Vec<&sva_formula::Body> = std::iter::once(&written.body)
+        .chain(parts.iter().map(|p| &*p.body))
+        .collect();
+    let programs = (0..width).map(|c| Program::of(&roots, &[], c)).collect();
     let row = Row::Point {
         written: Box::new(written),
         width,
         intervals,
+        programs,
     };
     let detail = Detail::Point {
         rule: Rule::PointSampled,
@@ -428,8 +436,14 @@ fn values(
             out
         }
         Row::Point {
-            written, intervals, ..
-        } => reading::written(&written.body, intervals, c, (from, to), grid)?,
+            written,
+            intervals,
+            programs,
+            ..
+        } => {
+            let summed = addends::summed(&written.body).is_some();
+            point_values(&programs[c], summed.then_some(intervals), (from, to), grid)?
+        }
         Row::Added(parts) => {
             let mut sum = vec![0.0; n];
             for (part, held, reach) in parts {
@@ -445,6 +459,67 @@ fn values(
             sum
         }
     })
+}
+
+/// Lanes a written form is evaluated over at once.
+const CHUNK: i64 = 256;
+
+/// Samples `[from, to)` of a written form's component, from the whole form, or, given each
+/// addend's interval, summed from +0 in order over the addends live at each sample: one left
+/// out is exactly zero there. The first sample refusing refuses them all.
+fn point_values(
+    program: &Program,
+    intervals: Option<&Vec<SampleInterval>>,
+    (from, to): SampleInterval,
+    grid: Grid,
+) -> Result<Vec<f64>, CollapseError> {
+    let mut out = vec![0.0; (to - from).max(0) as usize];
+    let mut columns = program.columns(CHUNK.min(to - from).max(0) as usize);
+    columns.grid = grid;
+    let mut at = from;
+    while at < to {
+        let end = (at + CHUNK).min(to);
+        let lanes = (end - at) as usize;
+        columns.again();
+        for (i, n) in (at..end).enumerate() {
+            columns.t[i] = grid.instant(n);
+            columns.on[i] = Some(n);
+        }
+        let written = &mut out[(at - from) as usize..][..lanes];
+        match intervals {
+            None => {
+                let whole = columns.root(0, (0, lanes));
+                for (i, v) in written.iter_mut().enumerate() {
+                    *v = whole.get(i).map_err(Clone::clone)?.re;
+                }
+            }
+            Some(intervals) => {
+                let mut sums: Vec<Result<sva_formula::C64, CollapseError>> =
+                    vec![Ok(sva_formula::C64::ZERO); lanes];
+                for (k, live) in intervals.iter().enumerate() {
+                    let (lo, hi) = active::meet((at, end), *live);
+                    let (lo, hi) = ((lo - at).max(0) as usize, (hi - at).max(0) as usize);
+                    if lo >= hi {
+                        continue;
+                    }
+                    let addend = columns.root(k + 1, (lo, hi));
+                    for (i, sum) in sums.iter_mut().enumerate().take(hi).skip(lo) {
+                        if let Some(held) = sum.as_ref().ok().copied() {
+                            *sum = addend.get(i).map(|v| held + v).map_err(Clone::clone);
+                        }
+                    }
+                }
+                for (v, sum) in written.iter_mut().zip(sums) {
+                    *v = match sum? {
+                        sum if sum.is_finite() => sum.re,
+                        _ => return Err(column::INFINITE),
+                    };
+                }
+            }
+        }
+        at = end;
+    }
+    Ok(out)
 }
 
 /// `values` at an instant between samples, where no interval of samples skips a term.
@@ -466,8 +541,10 @@ fn between(row: &Row, c: usize, t: f64) -> Result<f64, CollapseError> {
             out
         }
         Row::Sweep { sum, .. } => point::eval_spectral_sum(sum, c, t)?.re,
-        Row::Point { written, .. } => {
-            point::eval_body_on(&written.body, c, point::At::Free(t), &point::NoRefs)?.re
+        Row::Point { programs, .. } => {
+            let mut columns = programs[c].columns(1);
+            columns.t[0] = t;
+            columns.root(0, (0, 1)).get(0).map_err(Clone::clone)?.re
         }
         Row::Added(parts) => {
             let mut sum = 0.0;
@@ -493,7 +570,7 @@ fn terms(row: &Row, c: usize) -> usize {
                     .map_or(0, |d| d.lines_priced_and_turned().0)
         }),
         Row::Sweep { sum, .. } => sum.lanes[c].atoms.len(),
-        Row::Point { written, .. } => point::terms(&written.body, &[]),
+        Row::Point { written, .. } => addends::terms(&written.body, &[]),
         Row::Added(parts) => parts.iter().fold(0, |held, (part, width, _)| {
             held + lane(*width, c).map_or(0, |lane| terms(part, lane))
         }),

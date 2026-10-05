@@ -577,10 +577,9 @@ fn saturated(body: &Body, grid: Grid) -> Extent {
     if !clamped(body, &mut chains) || chains.is_empty() {
         return Extent::EVERYWHERE;
     }
-    let at = |b: &Body, n: i64| {
-        sva_samples::eval_written_at(b, 0, sva_samples::At::Sample(grid, n), &Unread).ok()
-    };
-    let zero = |n: i64| at(body, n).is_some_and(|x| x.re == 0.0 && x.im == 0.0);
+    let form = sva_samples::Evaluator::of(body, 0);
+    let at = |n: i64| form.at(sva_samples::At::Sample(grid, n)).ok();
+    let zero = |n: i64| at(n).is_some_and(|x| x.re == 0.0 && x.im == 0.0);
     let reach = 1i64 << 62;
     let side = |later: bool| -> Option<i64> {
         if !zero(if later { reach } else { -reach }) {
@@ -678,13 +677,9 @@ impl Clamp<'_> {
     /// time the last up to which it does.
     fn held(&self, grid: Grid, later: bool) -> Option<i64> {
         let bound = Clamp::bound(self.body, later == self.rising)?;
+        let form = sva_samples::Evaluator::of(self.body, 0);
         let at = |n: i64| {
-            let x = sva_samples::eval_written_at(
-                self.body,
-                0,
-                sva_samples::At::Sample(grid, n),
-                &Unread,
-            );
+            let x = form.at(sva_samples::At::Sample(grid, n));
             x.is_ok_and(|x| x.im == 0.0 && x.re == bound)
         };
         let reach = 1i64 << 62;
@@ -728,7 +723,7 @@ impl Clamp<'_> {
         };
         let margin = f64::from(ops + 8) * 2f64.powi(-48) * m / a.re.abs();
         let moved = if later { t - margin } else { t + margin };
-        let x = sva_samples::eval_written_at(self.body, 0, sva_samples::At::Free(moved), &Unread);
+        let x = sva_samples::Evaluator::of(self.body, 0).at(sva_samples::At::Free(moved));
         x.is_ok_and(|x| x.im == 0.0 && x.re == bound) && margin.is_finite()
     }
 }
@@ -779,23 +774,6 @@ fn monotone(body: &Body, moving: &mut bool) -> bool {
         Body::Div(num, den) => matches!(*den.body, Body::Const(_)) && monotone(&num.body, moving),
         Body::Shift { of, .. } => monotone(&of.body, moving),
         _ => false,
-    }
-}
-
-struct Unread;
-
-impl sva_samples::Refs for Unread {
-    fn value(
-        &self,
-        _: NodeId,
-        _: usize,
-        _: sva_samples::At,
-    ) -> Result<C64, sva_samples::CollapseError> {
-        Err(sva_samples::CollapseError::NotEvaluable("a node"))
-    }
-
-    fn width(&self, _: NodeId) -> usize {
-        1
     }
 }
 
@@ -870,7 +848,6 @@ pub(crate) fn placed(by: f64, grid: Grid) -> Option<sva_samples::Map> {
     grid.snapped(shifted(by)?)
 }
 
-/// A shift of `by` seconds as the time it reads at.
 pub(crate) fn shifted(by: f64) -> Option<Affine> {
     Some(Affine {
         scale: Q::ONE,

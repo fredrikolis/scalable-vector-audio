@@ -6,7 +6,10 @@ pub mod ops;
 mod read;
 pub mod renderer;
 
+use std::sync::Arc;
+
 use crate::buffer::{Buffer, SampleView};
+use crate::collapse::Program;
 use crate::error::SampleError;
 use crate::filters::FilterSite;
 use crate::grid::Extent;
@@ -27,7 +30,8 @@ pub(super) struct CompiledOps {
     ops: Vec<Op>,
     widths: Vec<usize>,
     args: Vec<Vec<usize>>,
-    formulas: Vec<Formula>,
+    /// Each formula, a written one with its program per component.
+    formulas: Vec<(Formula, Arc<Vec<Program>>)>,
     indices: Vec<Index<usize>>,
     sites: Vec<Site>,
     pub width: usize,
@@ -36,11 +40,24 @@ pub(super) struct CompiledOps {
 impl NodeRenderer {
     pub(super) fn compile(&self, layout: &Layout) -> Result<CompiledOps, SampleError> {
         let (lowered, width) = lowered(self, layout)?;
+        let mut formulas: Vec<(Formula, Arc<Vec<Program>>)> = lowered
+            .formulas
+            .into_iter()
+            .map(|f| (f, Arc::new(Vec::new())))
+            .collect();
+        for (slot, op) in lowered.ops.iter().enumerate() {
+            if let Op::Formula { at } = op
+                && let (Formula::Written(w), programs) = &mut formulas[*at]
+            {
+                let each = (0..lowered.widths[slot]).map(|c| Program::of(&[&w.body], &w.refs, c));
+                *programs = Arc::new(each.collect());
+            }
+        }
         Ok(CompiledOps {
             ops: lowered.ops,
             widths: lowered.widths,
             args: lowered.args,
-            formulas: lowered.formulas,
+            formulas,
             indices: lowered.indices,
             sites: layout.sites.clone(),
             width,
