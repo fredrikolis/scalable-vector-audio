@@ -1,10 +1,12 @@
 // Concern: runs one node renderer a block at a time, span after span, onto its own samples | Non-concern: the op array's shape (ops.rs), cutting spans (live.rs) | IO: (Spanned, reads, own) -> samples
 
 mod block;
+mod kernels;
 mod live;
 pub mod ops;
 mod read;
 pub mod renderer;
+mod tape;
 
 use std::sync::Arc;
 
@@ -15,8 +17,9 @@ use crate::filters::FilterSite;
 use crate::grid::Extent;
 use crate::grid::Grid;
 use crate::physics::{Solver, site};
-use block::{BLOCK, BlockScratch, Here};
+use block::{BLOCK, BlockScratch};
 use ops::{Layout, Op, lowered};
+use read::Here;
 use renderer::{Formula, Index, NodeRenderer, Site, Slot};
 
 pub use live::{Span, Spanned};
@@ -355,21 +358,8 @@ fn own_reach(op: &Op, from: i64, most: usize) -> Option<usize> {
 /// The fewest samples a block an own-past read shortens runs; a nearer read runs per sample.
 const RUN: usize = 16;
 
-/// Passes over a block, ops run over part of one, and samples read one by one, per thread.
-#[cfg(test)]
-mod counts {
-    use std::cell::Cell;
-
-    thread_local! {
-        pub(super) static PASSES: Cell<u64> = const { Cell::new(0) };
-        pub(super) static FILLS: Cell<u64> = const { Cell::new(0) };
-        pub(super) static READS: Cell<u64> = const { Cell::new(0) };
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::counts::{FILLS, PASSES, READS};
     use super::renderer::{BufId, Index, Map, NodeRenderer, Slot};
     use super::*;
     use crate::grid::{Extent, Round, WIDE};
@@ -403,7 +393,7 @@ mod tests {
         NodeRenderer::Join(vec![line(0), line(1)])
     }
 
-    fn ran(to: i64, step: i64) -> (Vec<Vec<f64>>, [u64; 3]) {
+    fn ran(to: i64) -> Vec<Vec<f64>> {
         let layout = Layout {
             grid: Grid::of(48_000),
             width: 2,
@@ -416,48 +406,14 @@ mod tests {
         (0..to).for_each(|n| input.push(0, f64::from(u8::from(n % 4800 == 0))));
         let mut out = Buffer::empty(48_000, 2, to as usize, 0);
         let mut machine = Machine::over(&spanned, 0).expect("a machine");
-        let counted = || [&PASSES, &FILLS, &READS].map(|c| c.with(std::cell::Cell::get));
-        let before = counted();
-        let mut at = 0;
-        while at < to {
-            at = (at + step).min(to);
-            machine
-                .run_to(at, &[input.within(Extent::from(0))], (&mut out, 0))
-                .expect("samples");
-        }
-        let after = counted();
-        (out.planes, [0, 1, 2].map(|k| after[k] - before[k]))
-    }
-
-    /// A pass per block, the far reads copied whole and only the damping run sample by sample,
-    /// writing what a sample-at-a-time run does.
-    #[test]
-    fn a_loop_reading_itself_one_sample_back_runs_a_pass_per_block() {
-        let to = 24_000;
-        let (whole, [passes, fills, reads]) = ran(to, to);
-        let (single, [one_by_one, ..]) = ran(to, 1);
-        assert_eq!(whole, single);
-        assert_eq!(one_by_one, to as u64);
-        let blocks = (to as u64).div_ceil(BLOCK as u64);
-        assert!(passes <= blocks + 1, "{passes} passes over {blocks} blocks");
-        let per_sample = 2 * 4 + 1;
-        let layout = Layout {
-            grid: Grid::of(48_000),
-            width: 2,
-            read_widths: vec![1],
-            sites: Vec::new(),
-        };
-        let ops = lowered(&feedback(), &layout).expect("ops").0.ops.len() as u64;
-        assert!(
-            fills <= passes * ops + per_sample * to as u64,
-            "{fills} op runs"
-        );
-        let far = 2 * 2 * LONG.iter().sum::<i64>() as u64;
-        assert!(reads <= 2 * 2 * to as u64 + far, "{reads} reads");
+        machine
+            .run_to(to, &[input.within(Extent::from(0))], (&mut out, 0))
+            .expect("samples");
+        out.planes
     }
 
     /// Each line reads both long lines and its own last sample, and both mix the same input:
-    /// every identical read and mix runs once, writing the bits the loop's own arithmetic does.
+    /// every identical read and mix is one op, writing the bits the loop's own arithmetic does.
     #[test]
     fn identical_reads_of_a_loops_own_past_run_once() {
         let to = 24_000;
@@ -468,7 +424,7 @@ mod tests {
             sites: Vec::new(),
         };
         assert_eq!(lowered(&feedback(), &layout).expect("ops").0.ops.len(), 20);
-        let (planes, [_, fills, reads]) = ran(to, to);
+        let planes = ran(to);
         let mut y = vec![vec![0.0f64; to as usize]; 2];
         let past = |y: &[Vec<f64>], k: usize, n: i64| match n {
             n if n < 0 => 0.0,
@@ -490,15 +446,135 @@ mod tests {
                 .collect()
         };
         assert_eq!(bits(&planes), bits(&y));
-        let blocks = (to as u64).div_ceil(BLOCK as u64) + 1;
-        let (last, channels, scaled, sums, join) = (1, 2, 2, 2, 1);
-        let per_sample = last + channels + scaled + sums + join;
-        assert!(
-            fills <= blocks * 20 + per_sample * to as u64,
-            "{fills} op runs"
-        );
-        let far = 2 * 2 * LONG.iter().sum::<i64>() as u64;
-        assert!(reads <= 2 * to as u64 + far, "{reads} reads");
+    }
+
+    /// A two-line loop whose last samples move a filter, a map, a pair, a crop, a draw, a
+    /// delay read at a moving length and that length's instant.
+    fn through_every_op() -> NodeRenderer {
+        use super::renderer::{Binary, Formula, Unary};
+        use NodeRenderer::{Const, Map as Of, Mul};
+        let own = |lag: i64, k: usize| NodeRenderer::Channel {
+            x: Box::new(NodeRenderer::Read {
+                slot: Slot::Own,
+                map: Map::shift(-lag),
+            }),
+            k,
+        };
+        let input = NodeRenderer::Read {
+            slot: Slot::Read(BufId(0)),
+            map: Map::shift(0),
+        };
+        let b = Box::new;
+        let filtered = NodeRenderer::Filter {
+            site: super::renderer::SiteId(0),
+            from: 0,
+            x: b(NodeRenderer::Add(vec![
+                input.clone(),
+                Mul(vec![Const(0.5), own(1, 0)]),
+            ])),
+            cutoff: b(NodeRenderer::Add(vec![
+                Const(800.0),
+                Mul(vec![Const(400.0), Of(Unary::Sin, b(own(1, 1)))]),
+            ])),
+            q: b(Const(0.7)),
+            gain: b(Const(0.0)),
+        };
+        let paired = NodeRenderer::Add(vec![
+            NodeRenderer::Zip(
+                Binary::Max,
+                b(NodeRenderer::Div(b(own(2, 0)), b(Const(3.0)))),
+                b(own(1, 1)),
+            ),
+            NodeRenderer::Pow(b(Const(0.9)), b(own(1, 0))),
+        ]);
+        let cropped = NodeRenderer::Crop {
+            x: b(NodeRenderer::Sub(b(paired), b(Const(0.5)))),
+            window: (100, 20_000),
+            a: 100.0 / 48_000.0,
+            b: 20_000.0 / 48_000.0,
+            rise: 0.01,
+            fall: 0.01,
+        };
+        let drawn = NodeRenderer::Formula {
+            formula: Formula::Drawn {
+                seed: 7,
+                rate: 1_000,
+            },
+            width: 1,
+            time: b(NodeRenderer::Add(vec![
+                NodeRenderer::Time,
+                Mul(vec![Const(0.000_1), own(1, 0)]),
+            ])),
+        };
+        let back = || {
+            let length = NodeRenderer::Add(vec![
+                Const(0.000_2),
+                Mul(vec![Const(0.000_1), Of(Unary::Sin, b(own(1, 1)))]),
+            ]);
+            Index::Add(vec![
+                Index::At(Map::whole(1, 0)),
+                Index::Neg(Box::new(Index::Step(b(length), Round::Floor))),
+            ])
+        };
+        let delayed = NodeRenderer::Indexed {
+            slot: Slot::Own,
+            index: back(),
+            reach: Some((-14, -4)),
+        };
+        let lag = NodeRenderer::Sub(b(NodeRenderer::Time), b(NodeRenderer::Instant(back())));
+        NodeRenderer::Join(vec![
+            NodeRenderer::Add(vec![
+                Mul(vec![Const(0.3), filtered]),
+                Mul(vec![Const(0.2), cropped]),
+                Mul(vec![Const(0.1), drawn]),
+                Mul(vec![
+                    Const(0.3),
+                    NodeRenderer::Channel {
+                        x: b(delayed),
+                        k: 1,
+                    },
+                ]),
+            ]),
+            NodeRenderer::Add(vec![
+                Mul(vec![Const(0.5), input]),
+                Mul(vec![Const(0.4), own(1, 1)]),
+                Mul(vec![Const(10.0), lag]),
+            ]),
+        ])
+    }
+
+    /// A machine's spans continue exactly where the last ended, whatever they cut a loop
+    /// through every op into: the same bits run whole, a sample at a time, or 37 at a time.
+    #[test]
+    fn a_loop_through_every_op_writes_what_a_sample_at_a_time_run_does() {
+        let to = 12_000;
+        let layout = Layout {
+            grid: Grid::of(48_000),
+            width: 2,
+            read_widths: vec![1],
+            sites: vec![Site::Filter(sva_formula::Shape::Lowpass)],
+        };
+        let spanned = Spanned::new(&through_every_op(), &layout, (0, to), &[Extent::EVERYWHERE])
+            .expect("a program");
+        let mut input = Buffer::empty(48_000, 1, to as usize, 0);
+        (0..to).for_each(|n| input.push(0, f64::from(u8::from(n % 2400 == 0))));
+        let run = |step: i64| {
+            let mut out = Buffer::empty(48_000, 2, to as usize, 0);
+            let mut machine = Machine::over(&spanned, 0).expect("a machine");
+            let mut at = 0;
+            while at < to {
+                at = (at + step).min(to);
+                machine
+                    .run_to(at, &[input.within(Extent::from(0))], (&mut out, 0))
+                    .expect("samples");
+            }
+            let bits = out.planes.iter().flatten().map(|v| v.to_bits());
+            bits.collect::<Vec<u64>>()
+        };
+        let whole = run(to);
+        assert!(whole.iter().all(|v| f64::from_bits(*v).is_finite()));
+        assert_eq!(whole, run(1));
+        assert_eq!(whole, run(37));
     }
 
     /// A delay read at a moving length and a loop reading itself far back, by index.

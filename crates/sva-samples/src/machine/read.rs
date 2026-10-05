@@ -1,45 +1,44 @@
-// Concern: one reading of a source's stored samples at the whole index a map names | Non-concern: the positions a map names (renderer.rs) | IO: (SampleView, map, sample) -> f64 per component
+// Concern: what a block reads, another node's samples or its own past, at the whole index a map names | Non-concern: the positions a map names | IO: (SampleView, map, sample) -> f64 per component
 
-use super::renderer::Map;
+use super::renderer::{Map, Slot};
 use crate::buffer::SampleView;
 use crate::error::SampleError;
+use crate::grid::Grid;
 
-/// Samples of `view`, or `fresh`, before `limit` only: a node's own past is written up to
-/// the sample being computed.
+/// What a block reads: other nodes' samples, this node's own past before the block, and the
+/// grid it steps on.
+pub(super) struct Here<'a> {
+    pub(super) reads: &'a [SampleView<'a>],
+    pub(super) own: SampleView<'a>,
+    pub(super) grid: Grid,
+}
+
+impl<'a> Here<'a> {
+    pub(super) fn source(&self, slot: Slot, n: i64) -> Source<'a> {
+        match slot {
+            Slot::Read(id) => Source {
+                view: self.reads[id.0 as usize],
+                limit: None,
+            },
+            Slot::Own => Source {
+                view: self.own,
+                limit: Some(n),
+            },
+        }
+    }
+}
+
 pub(super) struct Source<'a> {
     pub(super) view: SampleView<'a>,
     pub(super) limit: Option<i64>,
-    pub(super) fresh: Fresh<'a>,
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct Fresh<'a> {
-    pub(super) from: i64,
-    pub(super) values: &'a [f64],
-    pub(super) width: usize,
 }
 
 impl Source<'_> {
     fn sample(&self, c: usize, k: i64) -> Result<f64, SampleError> {
-        #[cfg(test)]
-        super::counts::READS.with(|n| n.set(n.get() + 1));
         if self.limit.is_some_and(|limit| k >= limit) {
             return Err(SampleError::ReadsAhead { at: k });
         }
-        let Fresh {
-            from,
-            values,
-            width,
-        } = self.fresh;
-        let fresh = k.checked_sub(from).and_then(|at| usize::try_from(at).ok());
-        let fresh = fresh.filter(|_| self.limit.is_some());
-        let held = match fresh {
-            Some(at) => values
-                .get(at * width..(at + 1) * width)
-                .map(|v| super::part(v, c)),
-            None => self.view.get(c, k),
-        };
-        held.ok_or(SampleError::ReadsAhead { at: k })
+        self.view.get(c, k).ok_or(SampleError::ReadsAhead { at: k })
     }
 
     /// Samples `n` on, copied as one run where `map` shifts onto held ones; `false` else.
