@@ -5,11 +5,14 @@
 //! `refusal` the envelope it would print.
 
 mod opfs;
+mod threads;
 
 pub use opfs::DirectoryHandle;
+pub use threads::start_threads;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::rc::Rc;
 
@@ -135,7 +138,7 @@ fn thrown(refusal: &CliError) -> JsValue {
 }
 
 /// A refusal raised here carries its own repair: a page has no `--help`.
-fn refuse(message: String, help: &str) -> JsValue {
+pub(crate) fn refuse(message: String, help: &str) -> JsValue {
     let diagnostic = Diagnostic::new("wasm.bad_argument", message.clone()).helped(help);
     crossed("validation_error", &message, &[diagnostic])
 }
@@ -153,6 +156,7 @@ struct Options {
     out: Out,
     signal: Option<JsValue>,
     store_max_bytes: Option<u64>,
+    threads: Option<NonZeroUsize>,
 }
 
 /// `keys` are the options this call reads; any other is refused by name.
@@ -182,6 +186,14 @@ fn options_of(options: &JsValue, keys: &[&str]) -> Result<Options, JsValue> {
             "bits" => held.bits = Some(whole(&key, &value)?),
             "channels" => held.channels = Some(whole(&key, &value)?),
             "store_max_bytes" => held.store_max_bytes = Some(whole(&key, &value)?),
+            "threads" => {
+                held.threads = Some(NonZeroUsize::new(whole(&key, &value)?).ok_or_else(|| {
+                    refuse(
+                        "`threads` is 0".into(),
+                        "pass 1 to compute on one thread, or more",
+                    )
+                })?)
+            }
             "until" => held.until = Some(text(&key, &value)?),
             "live" => {
                 held.live = value
@@ -304,6 +316,7 @@ pub struct Composition {
     tier: Rc<Tier<opfs::Opfs>>,
     /// A render in flight holds it; one beside it types in a session of its own.
     session: Cell<Session>,
+    threads: Option<NonZeroUsize>,
 }
 
 fn unstored(why: String) -> JsValue {
@@ -329,30 +342,36 @@ impl Composition {
             }))),
             tier: Rc::new(tier),
             session: Cell::default(),
+            threads: None,
         }
     }
 
     /// Memory over the store in `dir`, an origin-private file system directory; alone where
     /// none opens. `options.store_max_bytes`: the store's budget, evicting the least recently
-    /// used past it at each persist.
+    /// used past it at each persist. `options.threads`: the most threads a render computes on.
     pub async fn open(
         name: Option<String>,
         dir: Option<DirectoryHandle>,
         options: JsValue,
     ) -> Result<Composition, JsValue> {
-        let budget = options_of(&options, &["store_max_bytes"])?.store_max_bytes;
-        let Some(dir) = dir else {
-            return Ok(Composition::new(name));
-        };
-        let backend = opfs::Opfs { dir };
-        let tier = match Store::open(backend, budget.unwrap_or(DEFAULT_STORE_BYTES)).await {
-            Ok(store) => Tier::over(store, DEFAULT_CACHE_BYTES),
-            Err(why) => {
-                logged(&format!("the store would not open, so none is kept: {why}"));
-                Tier::alone(DEFAULT_CACHE_BYTES)
+        let options = options_of(&options, &["store_max_bytes", "threads"])?;
+        let tier = match dir {
+            None => Tier::alone(DEFAULT_CACHE_BYTES),
+            Some(dir) => {
+                let budget = options.store_max_bytes.unwrap_or(DEFAULT_STORE_BYTES);
+                match Store::open(opfs::Opfs { dir }, budget).await {
+                    Ok(store) => Tier::over(store, DEFAULT_CACHE_BYTES),
+                    Err(why) => {
+                        logged(&format!("the store would not open, so none is kept: {why}"));
+                        Tier::alone(DEFAULT_CACHE_BYTES)
+                    }
+                }
             }
         };
-        Ok(Composition::over(name, tier))
+        Ok(Composition {
+            threads: options.threads,
+            ..Composition::over(name, tier)
+        })
     }
 
     /// The only commit to the directory `open` was handed.
@@ -373,15 +392,18 @@ impl Composition {
 
     /// `target` as `sva-cli render` takes it, `@piano([0, 2b], f0=C4)`; `representations`
     /// what `representations()` answers, each a call as `--representation` writes it.
-    /// `options`: `rate`, `bits`, `until`, `volatile`, `out: null` (no samples),
-    /// and `signal`: aborted, it throws an `AbortError` before its next block.
+    /// `options`: `rate`, `bits`, `until`, `volatile`, `out: null` (no samples), `threads`
+    /// (as `open` takes it), and `signal`: aborted, it throws an `AbortError` before its next
+    /// block.
     pub async fn render(
         &self,
         target: &str,
         representations: Option<Vec<String>>,
         options: JsValue,
     ) -> Result<Rendering, JsValue> {
-        let keys = ["rate", "bits", "until", "volatile", "out", "signal"];
+        let keys = [
+            "rate", "bits", "until", "volatile", "out", "signal", "threads",
+        ];
         let options = options_of(&options, &keys)?;
         let out = options.out;
         let names = representations.unwrap_or_else(|| match out {
@@ -412,6 +434,7 @@ impl Composition {
             abandon: signal
                 .as_ref()
                 .map_or(&Never, |signal| signal as &dyn Abandon),
+            threads: Some(threads::limit(options.threads.or(self.threads))),
             ..Job::over(&self.inner, target)
         };
         let mut session = self.session.take();
@@ -427,18 +450,21 @@ impl Composition {
         Ok(Rendering { inner, asked })
     }
 
-    /// `target` block by block. `options`: `rate`, `bits`, `until`, `live`, `channels`.
+    /// `target` block by block. `options`: `rate`, `bits`, `until`, `live`, `channels`,
+    /// `threads` (as `open` takes it).
     pub async fn stream(
         &self,
         target: &str,
         block: usize,
         options: JsValue,
     ) -> Result<Stream, JsValue> {
-        let options = options_of(&options, &["rate", "bits", "until", "live", "channels"])?;
+        let keys = ["rate", "bits", "until", "live", "channels", "threads"];
+        let options = options_of(&options, &keys)?;
         let job = Job {
             until: options.until.as_deref(),
             rate: options.rate,
             bits: options.bits,
+            threads: Some(threads::limit(options.threads.or(self.threads))),
             ..Job::over(&self.inner, target)
         };
         let opened = sva_core::stream(&job, (block, options.channels), &*self.tier).await;

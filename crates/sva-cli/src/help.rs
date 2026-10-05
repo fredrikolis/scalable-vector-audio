@@ -20,7 +20,8 @@ DESCRIPTION:
 
 RENDER:
   sva-cli render '<expression>' --representation <list> [--until '<condition>']
-                 [--bits <n>] [--rate <hz>] [--cache <path|none>] [--confirm]
+                 [--bits <n>] [--rate <hz>] [--threads <n>] [--cache <path|none>]
+                 [--confirm]
 
   Renders one expression, in the grammar a node file's body uses, and prints one
   reading per representation under `data.representations`. `@path` reads a node
@@ -96,6 +97,12 @@ RENDER:
   `sp` count or `self[idx(t) - 1]` means one sample at whatever rate is asked.
   `rand` draws once per step, keyed by that step's index; a key between steps
   reads the step nearest it, ties to even.
+
+  `--threads <n>` (default: every core the machine reports) is the most
+  threads a render computes on; `1` computes every value in turn on one.
+  Values none of the others reads, and the blocks of a value that holds no
+  state, compute apart, to the same bits on any number of threads.
+
   A discrete loop reads its own past only by index; `self(t - d)` in one
   refuses as `type.discrete_self_at_time`, naming what made it discrete. A
   read `@x(k*t - d)` steps `x` at `k` times the step, every input it reads,

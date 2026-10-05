@@ -12,8 +12,10 @@ mod store;
 pub(crate) mod support;
 mod value;
 mod values;
+mod waves;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use sva_formula::{ClosedForm, Hash, Held as Representation, NodeId, Var};
@@ -306,18 +308,20 @@ impl ValueGraph {
         &mut self,
         asked_range: Extent,
         (memory, seen): (&Memory, &mut Recording),
+        threads: NonZeroUsize,
     ) -> Result<Pulled, EngineError> {
-        self.pulled(&self.asked(asked_range), (memory, seen))
+        self.pulled(&self.asked(asked_range), (memory, seen), threads)
     }
 
     /// The history each stateful value runs through before what `asked_range` holds of it, pulled
-    /// up to `block` samples at a time within the grid's blocks, each dropped once no later one
-    /// reads it: the state a late range starts from, streamed as a render streams it.
+    /// up to `block` samples and a grid block per thread at a time, each dropped once no later
+    /// one reads it: the state a late range starts from, streamed as a render streams it.
     pub(crate) fn history(
         &mut self,
         asked_range: Extent,
         block: i64,
         (memory, seen): (&Memory, &mut Recording),
+        threads: NonZeroUsize,
     ) -> Result<Pulled, EngineError> {
         let needs = self.bounded_demand(asked_range)?;
         let spans: Vec<(usize, Extent)> = self
@@ -345,9 +349,13 @@ impl ValueGraph {
         while from < over.end {
             let to = from
                 .saturating_add(block)
-                .min(sva_samples::block_end(from))
+                .min(blocks_end(from, threads))
                 .min(over.end);
-            let done = self.pulled(&within(Extent::new(from, to)), (memory, &mut *seen))?;
+            let done = self.pulled(
+                &within(Extent::new(from, to)),
+                (memory, &mut *seen),
+                threads,
+            )?;
             pulled.computed_samples += done.computed_samples;
             pulled.most_bytes = pulled.most_bytes.max(done.most_bytes);
             let mut later = within(Extent::new(to, i64::MAX));
@@ -392,6 +400,7 @@ impl ValueGraph {
         &mut self,
         asked: &[(usize, Extent)],
         (memory, seen): (&Memory, &mut Recording),
+        threads: NonZeroUsize,
     ) -> Result<Pulled, EngineError> {
         let mut needs = demand::demand(&self.values, asked);
         let order: Vec<usize> = self.values.ordered().collect();
@@ -412,44 +421,31 @@ impl ValueGraph {
         }
         self.endless(&needs)?;
         let mut pulled = Pulled::default();
-        for at in order {
-            let need = &needs[at];
-            if need.hold.is_empty() && need.compute.is_empty() {
-                continue;
+        let asked: Vec<usize> = order
+            .into_iter()
+            .filter(|at| !(needs[*at].hold.is_empty() && needs[*at].compute.is_empty()))
+            .collect();
+        for wave in waves::waves(&self.values, &asked) {
+            let computing: Vec<usize> = wave
+                .iter()
+                .copied()
+                .filter(|at| self.values[*at].alias().is_none())
+                .collect();
+            self.computed(&computing, &needs, (memory, &mut *seen), threads)?;
+            for at in wave {
+                if self.values[at].alias().is_some() {
+                    self.kept(at, &[], (memory, &mut *seen));
+                    continue;
+                }
+                let computed: Vec<Extent> = needs[at].compute.iter().collect();
+                if !matches!(self.values[at].kind, Kind::Resident(_)) {
+                    pulled.computed_samples += computed.iter().map(|e| e.len() as u64).sum::<u64>();
+                }
+                self.kept(at, &computed, (memory, &mut *seen));
             }
-            if self.values[at].alias().is_some() {
-                self.kept(at, &[], (memory, &mut *seen));
-                continue;
-            }
-            let mut lifted = self.values.lift(at);
-            let computed = self.computed(at, &mut lifted, need, (memory, &mut *seen));
-            self.values.put(at, lifted);
-            computed?;
-            let computed: Vec<Extent> = need.compute.iter().collect();
-            if !matches!(self.values[at].kind, Kind::Resident(_)) {
-                pulled.computed_samples += computed.iter().map(|e| e.len() as u64).sum::<u64>();
-            }
-            self.kept(at, &computed, (memory, &mut *seen));
         }
         pulled.most_bytes = self.bytes();
         Ok(pulled)
-    }
-
-    fn computed(
-        &mut self,
-        at: usize,
-        value: &mut Value,
-        need: &Need,
-        (memory, seen): (&Memory, &mut Recording),
-    ) -> Result<(), EngineError> {
-        let marks = store::marks(self.values.place(at), memory);
-        eval::compute(value, need, (&self.values, &marks), &self.profile)?;
-        let place = self.values.place_mut(at);
-        for (read, count) in store::reached(value, place, &need.compute) {
-            let (read, place) = self.values.placed(read);
-            store::reread(read, place, count, seen);
-        }
-        Ok(())
     }
 
     /// Drops what no later range reads: `future` is the rest of the root's range, `keep` more
@@ -1227,6 +1223,11 @@ impl Building<'_> {
         value.reads = reads;
         Ok(value)
     }
+}
+
+pub(crate) fn blocks_end(from: i64, blocks: NonZeroUsize) -> i64 {
+    let more = i64::try_from(blocks.get() - 1).unwrap_or(i64::MAX);
+    sva_samples::block_end(from).saturating_add(more.saturating_mul(sva_samples::BLOCK))
 }
 
 /// The value `at` only moves, through every alias between.

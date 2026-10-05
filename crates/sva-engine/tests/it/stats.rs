@@ -102,13 +102,11 @@ fn a_reuse_is_noted_where_its_read_first_sounds() {
             ("song", "@note(t) + @note(t - 2s) + @note(t - 4s)\n"),
         ],
     );
-    let held = render(
-        &graph,
-        "song",
-        RenderConfig::seconds(RATE, 6.0),
-        &Tier::default(),
-    )
-    .expect("a render");
+    let one_block_a_pull = RenderConfig {
+        threads: std::num::NonZeroUsize::MIN,
+        ..RenderConfig::seconds(RATE, 6.0)
+    };
+    let held = render(&graph, "song", one_block_a_pull, &Tier::default()).expect("a render");
     let stats = held
         .cache_stats
         .expect("every render reports what it asked");

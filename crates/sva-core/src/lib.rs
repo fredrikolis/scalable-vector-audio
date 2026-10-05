@@ -31,6 +31,7 @@ pub use tempo::{Tempo, refuse_unresolved_bars, resolved as tempo};
 pub use until::until;
 
 use std::cell::RefCell;
+use std::num::NonZeroUsize;
 use std::path::Path;
 
 use sva_ast::{Dir, Graph, Refusal, Source};
@@ -95,6 +96,8 @@ pub struct Job<'a> {
     pub volatile: &'a [String],
     pub out: Out,
     pub abandon: &'a dyn Abandon,
+    /// The most threads it computes on; `None` takes every core the platform reports.
+    pub threads: Option<NonZeroUsize>,
 }
 
 impl<'a> Job<'a> {
@@ -109,6 +112,7 @@ impl<'a> Job<'a> {
             volatile: &[],
             out: Out::Kept,
             abandon: &Never,
+            threads: None,
         }
     }
 }
@@ -161,6 +165,9 @@ fn settle(job: &Job) -> Result<(Graph, RenderConfig), CliError> {
     }
     config.volatile = job.volatile.to_vec();
     config.out = job.out;
+    if let Some(threads) = job.threads {
+        config.threads = threads;
+    }
     config.asks = job
         .asked
         .iter()

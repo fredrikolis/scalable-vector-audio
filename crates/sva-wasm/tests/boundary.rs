@@ -441,6 +441,36 @@ fn the_cache_budget_is_the_pages_own() {
     assert!(held.cache_bytes() <= 1_024.0, "a lower cap evicts at once");
 }
 
+/// `threads` is a ceiling: a build that starts none computes on one thread whatever a page
+/// asks, to the same samples, and refuses only a thread count of nothing.
+#[wasm_bindgen_test]
+fn a_render_asks_at_most_the_threads_the_module_started() {
+    let threads = |n: u32| options(&[("threads", JsValue::from(n))]);
+    let held = page();
+    let alone = plane(&render(&held, "master"));
+    for n in [1, 4] {
+        let asked = held
+            .rendered("@master([0, 1s])", None, threads(n))
+            .unwrap_or_else(|_| unreachable!("`threads: {n}` renders"));
+        assert_eq!(plane(&asked), alone, "on {n}");
+    }
+    let refused = held.rendered("@master([0, 1s])", None, threads(0));
+    assert!(refused.is_err(), "no thread at all refuses");
+    assert!(
+        now(sva_wasm::start_threads(2)).is_err(),
+        "a build without wasm threads starts none"
+    );
+    let only = js_sys::Object::new();
+    js_sys::Reflect::set(&only, &"threads".into(), &JsValue::from(3))
+        .unwrap_or_else(|_| unreachable!("an object takes a key"));
+    let opened = now(Composition::open(None, None, only.into()))
+        .unwrap_or_else(|_| unreachable!("`open` takes `threads`"));
+    assert!(
+        now(opened.stream("1", 64, threads(2))).is_ok(),
+        "and so does a stream"
+    );
+}
+
 /// A located refusal is the contract everywhere else in this engine, so it has to cross as one:
 /// data on a thrown `Error`, never a trap that takes the module down with it.
 #[wasm_bindgen_test]

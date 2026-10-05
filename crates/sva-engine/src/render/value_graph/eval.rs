@@ -10,6 +10,7 @@ use super::values::Values;
 use crate::error::{Diagnostic, EngineError, Located};
 
 /// `done` holds every value `value` reads; a run marks its state at each of `marks` it passes.
+/// Never one whose segments compute apart: each of those is a `segment`.
 pub(crate) fn compute(
     value: &mut Value,
     need: &Need,
@@ -18,11 +19,9 @@ pub(crate) fn compute(
 ) -> Result<(), EngineError> {
     for segment in need.compute.iter() {
         match &value.kind {
-            Kind::Rows(_) => rows(value, segment)?,
             Kind::MachineRun(machine_run) if machine_run.stateful() => {
                 stepped(value, segment, need.restart, (done, marks))?
             }
-            Kind::MachineRun(_) => run_machine(value, segment, done)?,
             Kind::Frames { .. } => frames(value, segment, done)?,
             Kind::Istft => istft(value, segment, done, profile)?,
             Kind::Resident { .. } => {
@@ -32,10 +31,37 @@ pub(crate) fn compute(
                     .expect("a stored value short of its readers");
                 value.hold(samples_of(done, live, segment));
             }
+            Kind::Rows(_) | Kind::MachineRun(_) => unreachable!("its segments compute apart"),
         }
         evaluated(&mut value.evaluated, segment);
     }
     Ok(())
+}
+
+/// Each sample a pure function of its index and the values it reads, so any cut of its
+/// segments computes the same bits.
+pub(crate) fn apart(value: &Value) -> bool {
+    match &value.kind {
+        Kind::Rows(_) => true,
+        Kind::MachineRun(machine_run) => !machine_run.stateful(),
+        _ => false,
+    }
+}
+
+pub(crate) fn segment(
+    value: &Value,
+    segment: Extent,
+    done: &Values,
+) -> Result<Buffer, EngineError> {
+    match &value.kind {
+        Kind::Rows(_) => rows(value, segment),
+        _ => run_machine(value, segment, done),
+    }
+}
+
+pub(crate) fn held(value: &mut Value, segment: Extent, samples: Buffer) {
+    value.hold(samples);
+    evaluated(&mut value.evaluated, segment);
 }
 
 /// A segment continuing the last one computed extends it, so a value pulled block by block
@@ -47,7 +73,7 @@ fn evaluated(held: &mut Vec<Extent>, segment: Extent) {
     }
 }
 
-fn rows(value: &mut Value, segment: Extent) -> Result<(), EngineError> {
+fn rows(value: &Value, segment: Extent) -> Result<Buffer, EngineError> {
     let Kind::Rows(rows) = &value.kind else {
         unreachable!("a value of rows");
     };
@@ -57,8 +83,7 @@ fn rows(value: &mut Value, segment: Extent) -> Result<(), EngineError> {
     finite(&value.name, planes.iter().flatten())?;
     let mut buffer = Buffer::of_planes(value.grid.rate, planes);
     buffer.start = segment.start;
-    value.hold(buffer);
-    Ok(())
+    Ok(buffer)
 }
 
 /// Every value a slot reads, viewed over what `over` reads of it.
@@ -94,7 +119,7 @@ impl<'a> View<'a> {
     }
 }
 
-fn run_machine(value: &mut Value, segment: Extent, done: &Values) -> Result<(), EngineError> {
+fn run_machine(value: &Value, segment: Extent, done: &Values) -> Result<Buffer, EngineError> {
     let Kind::MachineRun(machine_run) = &value.kind else {
         unreachable!("a machine run");
     };
@@ -107,8 +132,7 @@ fn run_machine(value: &mut Value, segment: Extent, done: &Values) -> Result<(), 
         .run_to(segment.end, &views, (&mut own, segment.start))
         .map_err(|e| sample_refused(&value.name, &e))?;
     finite(&value.name, own.planes.iter().flatten())?;
-    value.hold(own);
-    Ok(())
+    Ok(own)
 }
 
 /// Where a run keeps its state: each switch, and a ladder `every` samples from its start.

@@ -131,13 +131,16 @@ Every reading says whether it is `exact` or `measured`, under which profile and 
 rate. `--rate` is the one rate a render samples at: the target is read at its instants, and
 each node at the instants its reader asks for. A closed form is exact at any instant; a filter,
 discrete loop or solver steps on the grid its reader asks for, and refuses a time that moves.
-`--rate` is legal with every representation.
+`--rate` is legal with every representation. `--threads 4` caps a render at four threads
+(default: every core); the samples are the same bits at any count.
 
 `sva-cli builtins` prints every builtin with its arity and named arguments, the unit suffixes
 and the note-name grammar; a name outside that closed vocabulary does not parse. `sva-cli new
 my-song` writes eleven files with a grid, a noise and a tempo, and nine commands to run in order.
 
 `sva-wasm` runs the same compositions in a browser: `npm install @scalable-vector-audio/sva-wasm`.
+It needs a cross-origin isolated page. Call `await startThreads(n)` once, in a worker, and each
+render then uses up to `n` threads, or fewer if `open` or `render` sets `threads`.
 MIT. See `LICENSE`.
 
 ## Credit

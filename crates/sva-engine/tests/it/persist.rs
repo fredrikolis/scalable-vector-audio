@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 use std::sync::atomic::Ordering;
 use std::task::{Context, Poll, Waker};
 
@@ -1852,6 +1853,7 @@ fn a_render_with_its_out_dropped_holds_its_root_a_block_at_a_time() {
     let held = |secs: f64, out: Out| {
         let config = RenderConfig {
             out,
+            threads: NonZeroUsize::new(2).expect("two"),
             ..RenderConfig::seconds(RATE, secs)
         };
         let done = render(&graph, "master", config, &Tier::default()).expect("a render");

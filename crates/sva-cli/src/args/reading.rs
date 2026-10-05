@@ -1,5 +1,6 @@
 // Concern: parses the readings, flags and destinations of a render or an analysis | Non-concern: the subcommand dispatch (mod.rs), what a target names | IO: (argv tail) -> Command or CliError
 
+use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 
 use sva_core::{Asked, Call, CliError, asked, calls, is_wav, wav_path};
@@ -74,7 +75,7 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
         ))
     })?;
     let mut flags = Flags::default();
-    let (mut until, mut rate, mut bits) = (None, None, None);
+    let (mut until, mut rate, mut bits, mut threads) = (None, None, None, None);
     let mut cache = CacheAt::Platform;
     while let Some(flag) = it.next() {
         if flags.read(flag, &mut it)? {
@@ -84,6 +85,7 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
             "--until" => until = Some(value(&mut it, "--until")?),
             "--rate" => rate = Some(hertz(&value(&mut it, "--rate")?)?),
             "--bits" => bits = Some(whole(&value(&mut it, "--bits")?, "--bits")?),
+            "--threads" => threads = Some(count(&value(&mut it, "--threads")?)?),
             "--cache" => {
                 cache = match value(&mut it, "--cache")?.as_str() {
                     "none" => CacheAt::Off,
@@ -111,6 +113,7 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
         until,
         rate,
         bits,
+        threads,
         asked,
         confirm: flags.confirm,
         cache,
@@ -190,6 +193,14 @@ fn hertz(raw: &str) -> Result<u32, CliError> {
             "--rate needs a whole number of hertz above zero, got `{raw}`\n{USAGE}"
         ))),
     }
+}
+
+fn count(raw: &str) -> Result<NonZeroUsize, CliError> {
+    raw.parse::<NonZeroUsize>().map_err(|_| {
+        CliError::Usage(format!(
+            "--threads needs a whole number of threads above zero, got `{raw}`\n{USAGE}"
+        ))
+    })
 }
 
 pub(super) fn whole(raw: &str, flag: &str) -> Result<i32, CliError> {

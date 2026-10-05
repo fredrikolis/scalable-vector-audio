@@ -302,6 +302,7 @@ jobs:
         with:
           toolchain: "1.96.0"
           targets: wasm32-unknown-unknown
+          components: rust-src
       - uses: jetli/wasm-pack-action@v0.4.0
         with:
           version: "v0.15.0"
@@ -313,9 +314,9 @@ jobs:
       - run: npm install -g npm@11.5.1 && npm --version
       # wasm-pack looks for a LICENSE next to the crate's own Cargo.toml, not the workspace root.
       - run: cp LICENSE crates/sva-wasm/LICENSE
-      # Single-threaded --target web, matching today's manual build; threading is a future major.
+      # With wasm threads: it needs SharedArrayBuffer, so a cross-origin isolated page.
       - name: Build the browser bundle
-        run: wasm-pack build --release --target web --scope scalable-vector-audio --out-dir target/wasm-web-pkg crates/sva-wasm
+        run: crates/sva-wasm/threads.sh target/wasm-web-pkg --scope scalable-vector-audio
       # A scoped name publishes restricted unless told otherwise.
       - name: Publish to npm
         run: wasm-pack publish --access public --target web --pkg-dir target/wasm-web-pkg crates/sva-wasm

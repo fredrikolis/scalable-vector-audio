@@ -1,10 +1,12 @@
-// Concern: pulls or skips a value graph block by block within the grid's blocks until its range ends or `until` holds | Non-concern: what a value computes | IO: (ValueGraph, range) -> blocks
+// Concern: pulls or skips a value graph a grid block per thread at a time until its range ends or `until` holds | Non-concern: what a value computes | IO: (ValueGraph, range) -> blocks
 
-use sva_samples::{Buffer, Extent, block_end};
+use std::num::NonZeroUsize;
+
+use sva_samples::{Buffer, Extent};
 
 use super::RenderConfig;
 use super::until::{Known, Until};
-use super::value_graph::{Pulled, ValueGraph};
+use super::value_graph::{Pulled, ValueGraph, blocks_end};
 use crate::cache::{Memory, Recording};
 use crate::error::EngineError;
 use crate::query::{DEFAULT_FRAME_SECS, Representation};
@@ -22,6 +24,7 @@ pub(super) struct Driver {
     pub(super) at: i64,
     last: i64,
     block: usize,
+    threads: NonZeroUsize,
     until: Option<Until>,
     frame: usize,
     stop: Option<i64>,
@@ -68,6 +71,7 @@ impl Driver {
             output: !super::dropped(config),
             last: range.end,
             block,
+            threads: config.threads,
             keep: config.until.as_ref().map_or(0, |_| frame as i64),
             until: config.until.clone(),
             frame,
@@ -93,7 +97,10 @@ impl Driver {
     }
 
     pub(super) fn next(&self) -> Extent {
-        Extent::new(self.at, self.next_to(self.block).min(block_end(self.at)))
+        let to = self
+            .next_to(self.block)
+            .min(blocks_end(self.at, self.threads));
+        Extent::new(self.at, to)
     }
 
     fn next_to(&self, n: usize) -> i64 {
@@ -150,13 +157,13 @@ impl Driver {
         self.pulled(self.block)
     }
 
-    /// Up to `n` samples on, within one block; false once it ended.
+    /// Up to `n` samples on, within a grid block per thread; false once it ended.
     pub(super) fn pulled(&mut self, n: usize) -> Result<bool, EngineError> {
         let from = self.at;
         if self.end.is_some_and(|end| from >= end) {
             return Ok(false);
         }
-        let to = self.next_to(n).min(block_end(from));
+        let to = self.next_to(n).min(blocks_end(from, self.threads));
         self.recording.reach(from);
         let asked_range = Extent::new(from, to);
         if from == self.start {
@@ -164,12 +171,15 @@ impl Driver {
                 asked_range,
                 self.block as i64,
                 (&self.memory, &mut self.recording),
+                self.threads,
             )?;
             self.counted(&history);
         }
-        let pulled = self
-            .value_graph
-            .pull(asked_range, (&self.memory, &mut self.recording))?;
+        let pulled = self.value_graph.pull(
+            asked_range,
+            (&self.memory, &mut self.recording),
+            self.threads,
+        )?;
         self.counted(&pulled);
         self.work.samples += (to - from) as u64;
         self.at = to;

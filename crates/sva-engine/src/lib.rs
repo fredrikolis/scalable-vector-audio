@@ -17,6 +17,7 @@ mod refs;
 pub mod render;
 mod schedule;
 mod steps;
+mod threads;
 mod time;
 mod trace;
 mod typing;
@@ -50,6 +51,7 @@ pub use sva_samples::{
     Profile, Rule, SignalKind, Source, Spectrum, StereoFrame, StereoImage, measure_alias,
     pinned_frame,
 };
+pub use threads::default_threads;
 pub use trace::{Traced, Up, trace};
 pub use typing::{Typing, Value, When};
 pub use vocabulary::{MAX_WIDTH, named_may_move, recognized_named, shape, shape_name};

@@ -13,6 +13,7 @@ mod volatile;
 mod world;
 
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use sva_ast::Graph;
@@ -50,6 +51,8 @@ pub struct RenderConfig {
     /// What reads one of these keeps one value in memory, its last.
     pub volatile: Vec<String>,
     pub out: Out,
+    /// The most threads it computes on; one computes every value in turn on the caller's.
+    pub threads: NonZeroUsize,
 }
 
 /// Whether a render hands back its root's samples; dropped, with no reading asked, it holds
@@ -71,6 +74,7 @@ impl RenderConfig {
             asks: Vec::new(),
             volatile: Vec::new(),
             out: Out::Kept,
+            threads: crate::threads::default_threads(),
         }
     }
 
@@ -457,7 +461,7 @@ fn driving(
     Ok(Some(drive::Driver::new(
         value_graph,
         range,
-        sva_samples::BLOCK as usize,
+        (sva_samples::BLOCK as usize).saturating_mul(held.config.threads.get()),
         &held.config,
         (memory.clone(), recording),
     )))
@@ -508,7 +512,8 @@ pub(crate) fn finer(
     let mut value_graph = ValueGraph::finer(&render.tys, node, &[node], profile, i128::from(fine))?;
     let at = value_graph.root;
     let memory = &render.memory;
-    value_graph.pull(over, (memory, &mut Recording::over(memory)))?;
+    let threads = render.config.threads;
+    value_graph.pull(over, (memory, &mut Recording::over(memory)), threads)?;
     let mut held = value_graph.samples(at, over);
     held.rate = render.config.rate * fine;
     Ok(held)
@@ -570,7 +575,8 @@ pub(crate) fn sampled(render: &Render, node: NodeId, over: Extent) -> Result<Buf
     let mut value_graph = ValueGraph::build(&render.tys, node, &[node], &render.config.profile)?;
     let at = value_graph.root;
     let memory = &render.memory;
-    value_graph.pull(over, (memory, &mut Recording::over(memory)))?;
+    let threads = render.config.threads;
+    value_graph.pull(over, (memory, &mut Recording::over(memory)), threads)?;
     Ok(value_graph.samples(at, over))
 }
 

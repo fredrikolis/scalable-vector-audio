@@ -191,6 +191,72 @@ fn a_tree_is_the_same_bits_shared_or_apart_whole_or_streamed() {
     assert!(rendered >= 20, "only {rendered} of 24 trees rendered");
 }
 
+/// A value's blocks and the values no wave reads among each other compute on any number of
+/// threads, each written whole by one, so a tree renders over several blocks to the same bits
+/// on one thread or many.
+#[test]
+fn a_tree_is_the_same_bits_on_one_thread_or_many() {
+    let mut rendered = 0;
+    for seed in 1..=24u64 {
+        let mut composition = sva_ast::Composition::new();
+        for (name, body) in &tree(seed) {
+            composition.insert(name, body);
+        }
+        let g = sva_ast::load(&composition).expect("a composition");
+        let on = |threads: usize| {
+            let config = RenderConfig {
+                range: Range {
+                    start: Some(0),
+                    end: Some(6 * sva_samples::BLOCK),
+                },
+                threads: std::num::NonZeroUsize::new(threads).expect("a thread"),
+                ..RenderConfig::at(48_000)
+            };
+            let held = render(&g, "root", config, &Tier::default()).ok()?;
+            Some(bits(held.output(held.root).expect("the root").plane(0)))
+        };
+        let Some(want) = on(1) else {
+            continue;
+        };
+        rendered += 1;
+        for threads in [3, 4] {
+            assert_eq!(
+                on(threads),
+                Some(want.clone()),
+                "{seed}: on {threads} threads"
+            );
+        }
+    }
+    assert!(rendered >= 20, "only {rendered} of 24 trees rendered");
+}
+
+/// A stateless value that refuses in a late block, beside one that does not, refuses the same
+/// on one thread or many.
+#[test]
+fn a_refusal_is_the_same_on_one_thread_or_many() {
+    let mut composition = sva_ast::Composition::new();
+    composition.insert("grows", "crop(exp(800*t), 0s, 2s)\n");
+    composition.insert(
+        "root",
+        "@grows + lowpass(sample(sin(2*pi*220*t)), cutoff=900, q=0.7)\n",
+    );
+    let g = sva_ast::load(&composition).expect("a composition");
+    let on = |threads: usize| {
+        let config = RenderConfig {
+            threads: std::num::NonZeroUsize::new(threads).expect("a thread"),
+            ..RenderConfig::seconds(RATE, 2.0)
+        };
+        match render(&g, "root", config, &Tier::default()) {
+            Ok(_) => panic!("a value past the largest double refuses"),
+            Err(e) => e.to_string(),
+        }
+    };
+    let want = on(1);
+    for threads in [3, 4] {
+        assert_eq!(on(threads), want, "on {threads} threads");
+    }
+}
+
 /// A value held apart for its read is still named by what it computes: the apart build holds
 /// one value per read, several under one key, and only keys the shared build holds.
 #[test]

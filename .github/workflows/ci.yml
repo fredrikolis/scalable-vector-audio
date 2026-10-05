@@ -45,6 +45,7 @@ jobs:
         with:
           toolchain: "1.96.0"
           targets: wasm32-unknown-unknown
+          components: rust-src
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: wasm
@@ -53,3 +54,4 @@ jobs:
           version: "v0.15.0"
       # Optimised, as npm ships it: simd128 (.cargo/config.toml) vectorises only there.
       - run: wasm-pack test --release --node crates/sva-wasm
+      - run: crates/sva-wasm/threads.sh target/wasm-web-pkg

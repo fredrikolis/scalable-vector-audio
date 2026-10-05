@@ -10,7 +10,7 @@ pub(crate) use reading::check_frame;
 use reading::{analyze_args, render_args};
 
 pub const USAGE: &str = "usage: sva-cli render '<expression>' --representation <r>[=<path>][,...] \
-     [--until '<condition>'] [--bits <n>] [--rate <hz>] [--cache <path|none>] [--confirm]\n       \
+     [--until '<condition>'] [--bits <n>] [--rate <hz>] [--threads <n>] [--cache <path|none>] [--confirm]\n       \
      sva-cli analyze <file.wav> --representation <r>[=<path>][,...] [--confirm]\n       \
      sva-cli lint ['<expression>'] [--format <json|text>]\n       \
      sva-cli trace <node|expression>\n       \
@@ -51,6 +51,8 @@ pub struct RenderArgs {
     pub rate: Option<u32>,
     /// The precision every sample is written to; the profile's own where `None`.
     pub bits: Option<i32>,
+    /// The most threads it computes on; every core where `None`.
+    pub threads: Option<std::num::NonZeroUsize>,
     pub asked: Vec<Asked>,
     /// The caller said a destination that already holds a file may be replaced.
     pub confirm: bool,
@@ -322,11 +324,14 @@ mod tests {
             "16",
             "--until",
             "t > 1s",
+            "--threads",
+            "3",
         ]);
         assert_eq!(args.target, "@piano([0, 2b], f0=C4)");
         assert_eq!(args.until.as_deref(), Some("t > 1s"));
         assert_eq!(args.rate, Some(48_000));
         assert_eq!(args.bits, Some(16));
+        assert_eq!(args.threads.map(std::num::NonZeroUsize::get), Some(3));
         let names: Vec<&str> = args.asked.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, ["samples", "spectrum", "ledger", "bindings"]);
         assert_eq!(
@@ -350,6 +355,19 @@ mod tests {
             Some(Path::new("/tmp/ledger.json"))
         );
         assert_eq!(args.asked[3].node.as_deref(), Some("voice"));
+    }
+
+    #[test]
+    fn a_render_on_no_threads_is_refused() {
+        let message = refused(&[
+            "render",
+            "1",
+            "--representation",
+            "envelope",
+            "--threads",
+            "0",
+        ]);
+        assert!(message.contains("--threads"), "{message}");
     }
 
     #[test]
