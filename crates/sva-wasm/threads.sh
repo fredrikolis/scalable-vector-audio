@@ -13,3 +13,7 @@ done
 export RUSTFLAGS
 cd "$(dirname "$0")"
 wasm-pack build --release --target web --out-dir "$out" "$@" . -- -Z build-std=std,panic_abort
+if [ -d "$out/snippets" ]; then
+  jq '.files += ["snippets"] | .files |= unique' "$out/package.json" > "$out/package.json.tmp"
+  mv "$out/package.json.tmp" "$out/package.json"
+fi
