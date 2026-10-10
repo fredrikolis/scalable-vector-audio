@@ -640,23 +640,19 @@ fn one_table_says_what_every_named_reading_consumes() {
     );
 }
 
-/// Each row builds its own variant, and a bare name reads every argument at the one default
-/// `Given` holds: `pitch` keeps as many notes as `spectrum` keeps peaks.
+/// Each row builds the variant whose own row it is, and a bare name reads every argument at
+/// the one default `Given` holds: `pitch` keeps as many notes as `spectrum` keeps peaks.
 #[test]
 fn every_row_builds_its_own_reading_at_the_shared_defaults() {
     use sva_engine::{DEFAULT_FRAME_SECS, DEFAULT_MAX_PEAKS, Given, READINGS};
-    for (at, row) in READINGS.iter().enumerate() {
+    for row in READINGS {
         let built = row.representation(&Given::default());
-        assert_eq!(built.name(), row.name, "{}: its own row", row.name);
-        for other in &READINGS[at + 1..] {
-            assert_ne!(
-                std::mem::discriminant(&built),
-                std::mem::discriminant(&other.representation(&Given::default())),
-                "{} and {} build one variant",
-                row.name,
-                other.name
-            );
-        }
+        assert!(
+            std::ptr::eq(built.reading(), row),
+            "{} builds {}, another row's variant",
+            row.name,
+            built.name()
+        );
     }
     assert_eq!(
         Representation::from_name("pitch"),

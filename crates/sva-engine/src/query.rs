@@ -1,7 +1,5 @@
 // Concern: the one table of observations: names, arguments, defaults, what each reads, help; the answer envelope | Non-concern: taking one reading (answer.rs) | IO: (name, Given) -> Representation
 
-use std::mem::discriminant;
-
 use sva_formula::{C64, Line, SpectralSum, Var};
 use sva_samples::{
     Alias, Bands, Buffer, Consumes, Crest, EnvelopeFrame, FormantFrame, LedgerEntry, Loudness,
@@ -112,142 +110,176 @@ impl Reading {
     }
 }
 
+static LINES: Reading = Reading {
+    name: "lines",
+    takes: &[],
+    reads: Reads::ClosedForm,
+    help: "the exact line list of a closed form",
+    build: |_| Representation::Lines,
+};
+
+static ATOMS: Reading = Reading {
+    name: "atoms",
+    takes: &[],
+    reads: Reads::ClosedForm,
+    help: "each term of a closed form: its sketch, line, decay, polynomial and window",
+    build: |_| Representation::Atoms,
+};
+
+static SPECTRUM: Reading = Reading {
+    name: "spectrum",
+    takes: &[Arg::Peaks, Arg::Frame],
+    reads: Reads::Either,
+    help: "its lines, or its spectrum averaged over every frame",
+    build: |g| Representation::Spectrum {
+        max_peaks: g.peaks,
+        frame_secs: g.frame,
+    },
+};
+
+static ENVELOPE: Reading = Reading {
+    name: "envelope",
+    takes: &[Arg::Frame],
+    reads: Reads::Either,
+    help: "rms and peak, per frame off samples",
+    build: |g| Representation::Envelope {
+        frame_secs: g.frame,
+    },
+};
+
+static DERIVATIVE: Reading = Reading {
+    name: "derivative",
+    takes: &[],
+    reads: Reads::Either,
+    help: "the derivative, or the first difference of samples",
+    build: |_| Representation::Derivative,
+};
+
+static SAMPLES: Reading = Reading {
+    name: "samples",
+    takes: &[],
+    reads: Reads::Samples,
+    help: "the samples themselves; a `.wav` destination writes them as audio",
+    build: |_| Representation::Samples,
+};
+
+static LEDGER: Reading = Reading {
+    name: "ledger",
+    takes: &[Arg::Depth, Arg::Brief, Arg::Skim],
+    reads: Reads::Graph,
+    help: "rms, peak, share and clipping per node under the target",
+    build: |g| Representation::Ledger { depth: g.depth },
+};
+
+static PITCH: Reading = Reading {
+    name: "pitch",
+    takes: &[Arg::Peaks, Arg::Frame],
+    reads: Reads::Either,
+    help: "the notes it holds, per frame off samples",
+    build: |g| Representation::Pitch {
+        max_notes: g.peaks,
+        frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
+    },
+};
+
+static FORMANTS: Reading = Reading {
+    name: "formants",
+    takes: &[Arg::Peaks, Arg::Frame],
+    reads: Reads::Samples,
+    help: "formant frequencies, bandwidths and levels per frame",
+    build: |g| Representation::Formants {
+        max_formants: g.peaks,
+        frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
+    },
+};
+
+static STEREO: Reading = Reading {
+    name: "stereo",
+    takes: &[Arg::Frame],
+    reads: Reads::Samples,
+    help: "correlation, width and balance between two channels, per frame",
+    build: |g| Representation::Stereo {
+        frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
+    },
+};
+
+static BANDS: Reading = Reading {
+    name: "bands",
+    takes: &[],
+    reads: Reads::Samples,
+    help: "each auditory band's level over time",
+    build: |_| Representation::Bands,
+};
+
+static CREST: Reading = Reading {
+    name: "crest",
+    takes: &[],
+    reads: Reads::Samples,
+    help: "peak against rms, broadband and per band",
+    build: |_| Representation::Crest,
+};
+
+static LOUDNESS: Reading = Reading {
+    name: "loudness",
+    takes: &[],
+    reads: Reads::Samples,
+    help: "integrated, momentary and short-term loudness in LUFS",
+    build: |_| Representation::Loudness,
+};
+
+static ONSETS: Reading = Reading {
+    name: "onsets",
+    takes: &[],
+    reads: Reads::Samples,
+    help: "onset times, their strength and the spacing between them",
+    build: |_| Representation::Onsets,
+};
+
+static ALIAS: Reading = Reading {
+    name: "alias",
+    takes: &[Arg::Oversample],
+    reads: Reads::Graph,
+    help: "what folded, against a re-render at a multiple of the rate",
+    build: |g| Representation::Alias {
+        oversample: g.oversample,
+    },
+};
+
+static BINDINGS: Reading = Reading {
+    name: "bindings",
+    takes: &[Arg::Node],
+    reads: Reads::Structure,
+    help: "the bindings one instance resolved, each with its source",
+    build: |_| Representation::Bindings,
+};
+
+static ARGUMENTS: Reading = Reading {
+    name: "arguments",
+    takes: &[],
+    reads: Reads::Structure,
+    help: "each builtin call's named arguments as the numbers it was lowered with",
+    build: |_| Representation::Arguments,
+};
+
 /// Every reading a caller may ask for, in the order a listing prints them.
-pub const READINGS: [Reading; 17] = [
-    Reading {
-        name: "lines",
-        takes: &[],
-        reads: Reads::ClosedForm,
-        help: "the exact line list of a closed form",
-        build: |_| Representation::Lines,
-    },
-    Reading {
-        name: "atoms",
-        takes: &[],
-        reads: Reads::ClosedForm,
-        help: "each term of a closed form: its sketch, line, decay, polynomial and window",
-        build: |_| Representation::Atoms,
-    },
-    Reading {
-        name: "spectrum",
-        takes: &[Arg::Peaks, Arg::Frame],
-        reads: Reads::Either,
-        help: "its lines, or its spectrum averaged over every frame",
-        build: |g| Representation::Spectrum {
-            max_peaks: g.peaks,
-            frame_secs: g.frame,
-        },
-    },
-    Reading {
-        name: "envelope",
-        takes: &[Arg::Frame],
-        reads: Reads::Either,
-        help: "rms and peak, per frame off samples",
-        build: |g| Representation::Envelope {
-            frame_secs: g.frame,
-        },
-    },
-    Reading {
-        name: "derivative",
-        takes: &[],
-        reads: Reads::Either,
-        help: "the derivative, or the first difference of samples",
-        build: |_| Representation::Derivative,
-    },
-    Reading {
-        name: "samples",
-        takes: &[],
-        reads: Reads::Samples,
-        help: "the samples themselves; a `.wav` destination writes them as audio",
-        build: |_| Representation::Samples,
-    },
-    Reading {
-        name: "ledger",
-        takes: &[Arg::Depth, Arg::Brief, Arg::Skim],
-        reads: Reads::Graph,
-        help: "rms, peak, share and clipping per node under the target",
-        build: |g| Representation::Ledger { depth: g.depth },
-    },
-    Reading {
-        name: "pitch",
-        takes: &[Arg::Peaks, Arg::Frame],
-        reads: Reads::Either,
-        help: "the notes it holds, per frame off samples",
-        build: |g| Representation::Pitch {
-            max_notes: g.peaks,
-            frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
-        },
-    },
-    Reading {
-        name: "formants",
-        takes: &[Arg::Peaks, Arg::Frame],
-        reads: Reads::Samples,
-        help: "formant frequencies, bandwidths and levels per frame",
-        build: |g| Representation::Formants {
-            max_formants: g.peaks,
-            frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
-        },
-    },
-    Reading {
-        name: "stereo",
-        takes: &[Arg::Frame],
-        reads: Reads::Samples,
-        help: "correlation, width and balance between two channels, per frame",
-        build: |g| Representation::Stereo {
-            frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
-        },
-    },
-    Reading {
-        name: "bands",
-        takes: &[],
-        reads: Reads::Samples,
-        help: "each auditory band's level over time",
-        build: |_| Representation::Bands,
-    },
-    Reading {
-        name: "crest",
-        takes: &[],
-        reads: Reads::Samples,
-        help: "peak against rms, broadband and per band",
-        build: |_| Representation::Crest,
-    },
-    Reading {
-        name: "loudness",
-        takes: &[],
-        reads: Reads::Samples,
-        help: "integrated, momentary and short-term loudness in LUFS",
-        build: |_| Representation::Loudness,
-    },
-    Reading {
-        name: "onsets",
-        takes: &[],
-        reads: Reads::Samples,
-        help: "onset times, their strength and the spacing between them",
-        build: |_| Representation::Onsets,
-    },
-    Reading {
-        name: "alias",
-        takes: &[Arg::Oversample],
-        reads: Reads::Graph,
-        help: "what folded, against a re-render at a multiple of the rate",
-        build: |g| Representation::Alias {
-            oversample: g.oversample,
-        },
-    },
-    Reading {
-        name: "bindings",
-        takes: &[Arg::Node],
-        reads: Reads::Structure,
-        help: "the bindings one instance resolved, each with its source",
-        build: |_| Representation::Bindings,
-    },
-    Reading {
-        name: "arguments",
-        takes: &[],
-        reads: Reads::Structure,
-        help: "each builtin call's named arguments as the numbers it was lowered with",
-        build: |_| Representation::Arguments,
-    },
+pub static READINGS: [&Reading; 17] = [
+    &LINES,
+    &ATOMS,
+    &SPECTRUM,
+    &ENVELOPE,
+    &DERIVATIVE,
+    &SAMPLES,
+    &LEDGER,
+    &PITCH,
+    &FORMANTS,
+    &STEREO,
+    &BANDS,
+    &CREST,
+    &LOUDNESS,
+    &ONSETS,
+    &ALIAS,
+    &BINDINGS,
+    &ARGUMENTS,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -363,12 +395,27 @@ impl Answer {
 }
 
 impl Representation {
+    /// Exhaustive, so a variant with no row is a compile error.
     pub fn reading(self) -> &'static Reading {
-        let this = discriminant(&self);
-        READINGS
-            .iter()
-            .find(|row| discriminant(&row.representation(&Given::default())) == this)
-            .expect("every reading has its row in READINGS")
+        match self {
+            Representation::Lines => &LINES,
+            Representation::Atoms => &ATOMS,
+            Representation::Spectrum { .. } => &SPECTRUM,
+            Representation::Envelope { .. } => &ENVELOPE,
+            Representation::Derivative => &DERIVATIVE,
+            Representation::Samples => &SAMPLES,
+            Representation::Ledger { .. } => &LEDGER,
+            Representation::Pitch { .. } => &PITCH,
+            Representation::Formants { .. } => &FORMANTS,
+            Representation::Stereo { .. } => &STEREO,
+            Representation::Bands => &BANDS,
+            Representation::Crest => &CREST,
+            Representation::Loudness => &LOUDNESS,
+            Representation::Onsets => &ONSETS,
+            Representation::Alias { .. } => &ALIAS,
+            Representation::Bindings => &BINDINGS,
+            Representation::Arguments => &ARGUMENTS,
+        }
     }
 
     pub fn name(self) -> &'static str {
