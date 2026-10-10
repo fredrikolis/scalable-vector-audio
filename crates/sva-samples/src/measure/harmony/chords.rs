@@ -1,7 +1,7 @@
 // Concern: the chords a curve's moments hold, a run of moments naming one note set each | Non-concern: what a chord moves to (siblings) | IO: (moments, hop, floor) -> chords
 
-use super::{Moment, above};
-use crate::measure::pitch::{midi_of, name_peaks};
+use super::{Moment, Partial, above};
+use crate::measure::pitch::{Note, midi_of, name_peaks};
 use crate::measure::spectrum::{Peak, db};
 
 pub const METHOD: &str = "per moment: the partials at or above the floor, named as `pitch` names \
@@ -25,28 +25,39 @@ fn nearest(hz: f64) -> i64 {
     midi_of(hz).round() as i64
 }
 
-pub fn notes_at(moment: &Moment, floor_db: f64) -> (Vec<i64>, Vec<i64>) {
-    let kept = above(moment, floor_db);
-    let mut found: Vec<Peak> = kept
+/// The partials at or above the floor that `pitch` names, loudest first, each with its name:
+/// a note, or the harmonic of a louder partial. Partials outside its band are left out.
+pub fn named(moment: &Moment, floor_db: f64) -> Vec<(Partial, Note)> {
+    let mut kept = above(moment, floor_db);
+    kept.sort_by(|a, b| b.amplitude.total_cmp(&a.amplitude));
+    let found: Vec<Peak> = kept
         .iter()
         .map(|p| Peak {
             hz: p.hz,
             db: db(p.amplitude),
         })
         .collect();
-    found.sort_by(|a, b| b.db.total_cmp(&a.db));
+    name_peaks(&found, usize::MAX)
+        .into_iter()
+        .map(|note| {
+            let partial = *kept
+                .iter()
+                .find(|p| p.hz == note.hz)
+                .expect("each name is one kept partial's");
+            (partial, note)
+        })
+        .collect()
+}
+
+pub fn notes_at(moment: &Moment, floor_db: f64) -> (Vec<i64>, Vec<i64>) {
     let (mut notes, mut unresolved) = (Vec::new(), Vec::new());
-    for named in name_peaks(&found, usize::MAX) {
+    for (partial, named) in named(moment, floor_db) {
         if named.harmonic_of.is_some() {
             continue;
         }
         let note = nearest(named.hz);
         notes.push(note);
-        let bounds = kept
-            .iter()
-            .find(|p| p.hz == named.hz)
-            .expect("each name is one kept partial's")
-            .hz_bounds;
+        let bounds = partial.hz_bounds;
         if nearest(bounds.0) != note || nearest(bounds.1) != note {
             unresolved.push(note);
         }

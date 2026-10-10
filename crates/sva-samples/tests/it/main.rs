@@ -15,6 +15,7 @@ mod measure_crest;
 mod measure_envelope;
 mod measure_formants;
 mod measure_harmony;
+mod measure_inharmonicity;
 mod measure_ledger;
 mod measure_loudness;
 mod measure_onsets;

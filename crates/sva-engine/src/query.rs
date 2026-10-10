@@ -2,6 +2,7 @@
 
 use sva_formula::{C64, Line, SpectralSum, Var};
 use sva_samples::measure::harmony::dissonance::Dissonance;
+use sva_samples::measure::harmony::inharmonicity::Inharmonicity;
 use sva_samples::measure::harmony::tonnetz::TonalDistance;
 use sva_samples::measure::harmony::voice_leading::{Norm, VoiceLeading};
 use sva_samples::{
@@ -310,6 +311,19 @@ static TONAL_DISTANCE: Reading = Reading {
     },
 };
 
+static INHARMONICITY: Reading = Reading {
+    name: "inharmonicity",
+    takes: &[Arg::Frame, Arg::Floor],
+    reads: Reads::Either,
+    help: "its harmonic series per frame: each member's cents off n f1, the stiff-string B each \
+           fits, and the energy in no series",
+    build: |g| Representation::Harmony {
+        reading: Harmonic::Inharmonicity,
+        frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
+        floor_db: g.floor_db,
+    },
+};
+
 static BINDINGS: Reading = Reading {
     name: "bindings",
     takes: &[Arg::Node],
@@ -327,7 +341,7 @@ static ARGUMENTS: Reading = Reading {
 };
 
 /// Every reading a caller may ask for, in the order a listing prints them.
-pub static READINGS: [&Reading; 20] = [
+pub static READINGS: [&Reading; 21] = [
     &LINES,
     &ATOMS,
     &SPECTRUM,
@@ -346,6 +360,7 @@ pub static READINGS: [&Reading; 20] = [
     &DISSONANCE,
     &VOICE_LEADING,
     &TONAL_DISTANCE,
+    &INHARMONICITY,
     &BINDINGS,
     &ARGUMENTS,
 ];
@@ -394,12 +409,13 @@ pub enum Representation {
     Arguments,
 }
 
-/// The three readings taken off one curve of partials.
+/// The readings taken off one curve of partials.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Harmonic {
     Dissonance { max_pairs: usize },
     VoiceLeading { norm: Norm },
     TonalDistance,
+    Inharmonicity,
 }
 
 /// What a caller asked of one node.
@@ -429,6 +445,7 @@ pub enum Output {
     Dissonance(Box<Dissonance>),
     VoiceLeading(Box<VoiceLeading>),
     TonalDistance(Box<TonalDistance>),
+    Inharmonicity(Box<Inharmonicity>),
     Bindings(Vec<Binding>),
     Arguments(Vec<Arguments>),
 }
@@ -502,6 +519,7 @@ impl Representation {
                 Harmonic::Dissonance { .. } => &DISSONANCE,
                 Harmonic::VoiceLeading { .. } => &VOICE_LEADING,
                 Harmonic::TonalDistance => &TONAL_DISTANCE,
+                Harmonic::Inharmonicity => &INHARMONICITY,
             },
             Representation::Bindings => &BINDINGS,
             Representation::Arguments => &ARGUMENTS,

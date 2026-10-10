@@ -5,7 +5,8 @@ use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
 use sva_formula::{Line, SpectralSum, Var, d_dt, envelope_read, line_atoms_read};
 use sva_samples::measure::harmony::dissonance::Crowded;
 use sva_samples::measure::harmony::{
-    self, Framing, Moment, chords, dissonance, measured as framed, tonnetz, voice_leading,
+    self, Framing, Moment, chords, dissonance, inharmonicity, measured as framed, tonnetz,
+    voice_leading,
 };
 use sva_samples::{
     Buffer, Consumes, Extent, Peak, PitchFrame, Profile, Source, measure::bands, measure::crest,
@@ -267,6 +268,9 @@ fn harmonic(
         ))),
         Harmonic::TonalDistance => {
             Output::TonalDistance(Box::new(tonnetz::analyze(chords(), framing, floor_db)))
+        }
+        Harmonic::Inharmonicity => {
+            Output::Inharmonicity(Box::new(inharmonicity::measure(moments, framing, floor_db)))
         }
     })
 }

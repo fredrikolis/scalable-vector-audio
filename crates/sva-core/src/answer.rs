@@ -12,6 +12,7 @@ use sva_engine::{
 use sva_engine::harmony::Framing;
 use sva_engine::harmony::chords::{self, Chord};
 use sva_engine::harmony::dissonance::{self, Dissonance, Extreme};
+use sva_engine::harmony::inharmonicity::{self, Inharmonicity, Series, Weighted};
 use sva_engine::harmony::tonnetz::{self, Quality, TonalDistance, Triad};
 use sva_engine::harmony::voice_leading::{self, VoiceLeading};
 use sva_engine::pitch as pitch_names;
@@ -409,6 +410,70 @@ fn tonal_distance_json(d: &TonalDistance) -> String {
     )
 }
 
+fn weighted_json(w: Option<Weighted>) -> String {
+    w.map_or(NONE.to_string(), |w| {
+        format!(
+            "{{ \"value\": {}, \"bounds\": [{}, {}] }}",
+            num(w.value),
+            num(w.bounds.0),
+            num(w.bounds.1)
+        )
+    })
+}
+
+fn bounds_json(b: Option<(f64, f64)>) -> String {
+    b.map_or(NONE.to_string(), |(lo, hi)| {
+        format!("[{}, {}]", num(lo), num(hi))
+    })
+}
+
+fn series_json(s: &Series) -> String {
+    let fit = s.fit.map_or(NONE.to_string(), |f| {
+        format!(
+            "{{ \"b\": {}, \"b_bounds\": {}, \"f0\": {}, \"f0_bounds\": {} }}",
+            num(f.b),
+            bounds_json(f.b_bounds),
+            num(f.f0_hz),
+            bounds_json(f.f0_bounds)
+        )
+    });
+    format!(
+        "{{ \"f1\": {}, \"cents\": {}, \"fit\": {fit}, \"members\": {} }}",
+        num(s.members[0].partial.hz),
+        weighted_json(s.cents),
+        list(&s.members, |m| format!(
+            "{{ \"n\": {}, \"hz\": {}, \"hz_bounds\": {}, \"amplitude\": {}, \
+             \"amplitude_bounds\": {}, \"cents\": {}, \"cents_bounds\": {} }}",
+            m.n,
+            num(m.partial.hz),
+            bounds_json(Some(m.partial.hz_bounds)),
+            num(m.partial.amplitude),
+            bounds_json(Some(m.partial.amplitude_bounds)),
+            num(m.cents),
+            bounds_json(Some(m.cents_bounds))
+        ))
+    )
+}
+
+fn inharmonicity_json(r: &Inharmonicity) -> String {
+    format!(
+        "{{ \"model\": \"{}\", {}, \"cents_mean\": {}, \"cents_max\": {}, \
+         \"unexplained_mean\": {}, \"curve\": {} }}",
+        escape(inharmonicity::MODEL),
+        framing_json(&r.framing, r.floor_db),
+        maybe(r.cents_mean),
+        extreme_json(r.cents_max),
+        maybe(r.unexplained_mean),
+        list(&r.frames, |f| format!(
+            "\n    {{ \"t\": {}, \"cents\": {}, \"unexplained\": {}, \"series\": {} }}",
+            num(f.t_secs),
+            weighted_json(f.cents),
+            weighted_json(f.unexplained),
+            list(&f.series, series_json)
+        ))
+    )
+}
+
 fn binding_json(b: &Binding) -> String {
     format!(
         "\n    {{ \"name\": \"{}\", \"source\": \"{}\" }}",
@@ -506,6 +571,7 @@ pub fn value_json(output: &Output, limit: Option<usize>, skim: bool) -> String {
         Output::Dissonance(d) => dissonance_json(d),
         Output::VoiceLeading(v) => voice_leading_json(v),
         Output::TonalDistance(d) => tonal_distance_json(d),
+        Output::Inharmonicity(r) => inharmonicity_json(r),
         Output::Bindings(b) => list(b, binding_json),
         Output::Arguments(a) => list(a, arguments_json),
         Output::Envelope(frames) => list(frames, |f: &EnvelopeFrame| {

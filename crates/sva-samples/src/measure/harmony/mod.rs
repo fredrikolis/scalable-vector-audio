@@ -2,6 +2,7 @@
 
 pub mod chords;
 pub mod dissonance;
+pub mod inharmonicity;
 pub mod measured;
 pub mod tonnetz;
 pub mod voice_leading;

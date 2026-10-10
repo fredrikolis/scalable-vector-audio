@@ -613,7 +613,7 @@ fn a_cropped_delta_train_keeps_only_the_instants_its_window_holds() {
 }
 
 /// `consumes` decides whether the schedule materializes a buffer. Every name the engine
-/// resolves is checked, and the seven whose verdict turns on the node's own type both ways.
+/// resolves is checked, and the eight whose verdict turns on the node's own type both ways.
 #[test]
 fn one_table_says_what_every_named_reading_consumes() {
     use sva_engine::Representation;
@@ -627,6 +627,7 @@ fn one_table_says_what_every_named_reading_consumes() {
         "dissonance",
         "voice_leading",
         "tonal_distance",
+        "inharmonicity",
     ];
     let names = [
         "lines",
@@ -647,6 +648,7 @@ fn one_table_says_what_every_named_reading_consumes() {
         "dissonance",
         "voice_leading",
         "tonal_distance",
+        "inharmonicity",
         "bindings",
         "arguments",
     ];

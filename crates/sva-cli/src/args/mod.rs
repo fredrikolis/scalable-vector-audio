@@ -696,6 +696,24 @@ mod tests {
     }
 
     #[test]
+    fn inharmonicity_takes_the_harmonic_frame_and_floor() {
+        let args = rendered(&[
+            "render",
+            "@a",
+            "--representation",
+            "inharmonicity(frame=10ms, floor=-60db)",
+        ]);
+        assert_eq!(
+            args.asked[0].representation,
+            sva_engine::Representation::Harmony {
+                reading: sva_engine::Harmonic::Inharmonicity,
+                frame_secs: 0.01,
+                floor_db: -60.0,
+            }
+        );
+    }
+
+    #[test]
     fn bindings_needs_a_node() {
         refused(&["render", "@a", "--representation", "bindings"]);
     }

@@ -156,3 +156,122 @@ fn a_dyad_in_f_reads_as_its_cosines_in_t_do() {
         assert!((a - b).abs() <= 1e-12 * b, "at {t}s: {a} vs {b}");
     }
 }
+
+fn inharmonic(answer: &sva_engine::Answer) -> &sva_engine::harmony::inharmonicity::Inharmonicity {
+    let Output::Inharmonicity(r) = &answer.value else {
+        panic!("inharmonicity answers its curve, not {:?}", answer.value)
+    };
+    r
+}
+
+/// Eight steady partials of a stiff string on 110 Hz, B = 2e-4, as Fletcher's law places them.
+fn stiff_cosines() -> String {
+    let terms: Vec<String> = (1..=8)
+        .map(|n| {
+            format!(
+                "{}*cos(2*pi*{n}*110*sqrt(1 + 0.0002*{})*t)",
+                0.4 / f64::from(n),
+                n * n
+            )
+        })
+        .collect();
+    format!("{}\n", terms.join(" + "))
+}
+
+/// The engine's `string` builtin lowers to Fletcher's law, so its exact partials fit back the
+/// B it was asked for and the f0 it rings on, at every instant its members stand over the floor.
+#[test]
+fn the_string_builtins_exact_partials_fit_back_its_inharmonicity() {
+    let asked = harmony(Harmonic::Inharmonicity, -40.0);
+    let law = rendered(
+        "string",
+        &[("node", "string(110, inharmonicity=0.0004)\n")],
+        asked,
+    );
+    let read = read(&law, asked);
+    assert_eq!(read.source, Source::Exact);
+    let fits: Vec<_> = inharmonic(&read)
+        .frames
+        .iter()
+        .filter_map(|f| f.series.first().and_then(|s| s.fit))
+        .collect();
+    assert!(fits.len() >= 2, "{fits:?}");
+    for fit in fits {
+        assert!((fit.b - 4e-4).abs() < 1e-9 * 4e-4, "{fit:?}");
+        assert!((fit.f0_hz - 110.0).abs() < 1e-9, "{fit:?}");
+        assert_eq!(
+            fit.b_bounds,
+            Some((fit.b, fit.b)),
+            "exact partials bound to a point"
+        );
+    }
+}
+
+/// A band-limited saw is whole multiples: its 220 Hz series stands at 0 cents and fits no B.
+#[test]
+fn a_saw_reads_its_series_at_zero_cents() {
+    let asked = harmony(Harmonic::Inharmonicity, -40.0);
+    let law = rendered("saw", &[("node", "0.5*saw(220)\n")], asked);
+    let read = read(&law, asked);
+    for frame in &inharmonic(&read).frames {
+        assert!(frame.cents.expect("members").value < 1e-9, "{frame:?}");
+        let root = &frame.series[0];
+        assert_eq!(root.members[0].partial.hz, 220.0);
+        assert!(root.fit.expect("members").b.abs() < 1e-12);
+    }
+}
+
+/// The steady stiff string read exact and measured off its samples steps along one time
+/// axis; where the frame lies wholly inside the second, the measured cents agree within 0.15
+/// and B within 1.5%, inside the bounds each measured frame reports.
+#[test]
+fn a_stiff_string_reads_exact_and_its_samples_measured_alike() {
+    let asked = harmony(Harmonic::Inharmonicity, -40.0);
+    let body = stiff_cosines();
+    let exact = read(&rendered("stiff-exact", &[("node", &body)], asked), asked);
+    let sampled = rendered(
+        "stiff-measured",
+        &[("string", &body), ("node", "sample(@string)\n")],
+        asked,
+    );
+    let measured = read(&sampled, asked);
+    assert_eq!(
+        (exact.source, measured.source),
+        (Source::Exact, Source::Measured)
+    );
+    let (exact, measured) = (inharmonic(&exact), inharmonic(&measured));
+    assert_eq!(exact.frames.len(), 20);
+    assert_eq!(exact.frames.len(), measured.frames.len());
+    for (truth, found) in exact.frames.iter().zip(&measured.frames).take(19).skip(1) {
+        assert!((truth.t_secs - found.t_secs).abs() < 1e-12, "one time axis");
+        let (cents, held) = (
+            truth.cents.expect("members").value,
+            found.cents.expect("members"),
+        );
+        assert!((held.value - cents).abs() < 0.15, "{held:?} vs {cents}");
+        assert!(held.bounds.0 <= cents && cents <= held.bounds.1, "{held:?}");
+        let b = truth.series[0].fit.expect("members").b;
+        assert!((b - 2e-4).abs() < 1e-9 * 2e-4, "{b}");
+        let fit = found.series[0].fit.expect("members");
+        let (lo, hi) = fit.b_bounds.expect("a positive f0^2 over the box");
+        assert!((fit.b - b).abs() < 0.015 * b, "{fit:?}");
+        assert!(lo <= b && b <= hi, "{b} in [{lo}, {hi}]");
+    }
+}
+
+/// A closed form with no atom sum, and an impulse, refuse under the harmonic readings' codes
+/// and name the measured reading of `sample(...)`.
+#[test]
+fn inharmonicity_refuses_a_form_with_no_partials_by_the_harmonic_codes() {
+    let asked = harmony(Harmonic::Inharmonicity, -40.0);
+    for (body, code) in [
+        ("abs(sin(2*pi*440*t))\n", "cast.left_algebra"),
+        ("delta(t - 0.5s)\n", "read.no_partial_at_instant"),
+    ] {
+        let law = rendered("refused", &[("node", body)], asked);
+        let id = law.id("node").expect("the root");
+        let refused = answer(&law, id, asked).expect_err("no partials");
+        assert_eq!(refused.code(), code, "{body}");
+        assert!(format!("{refused}").contains("sample("), "{refused}");
+    }
+}

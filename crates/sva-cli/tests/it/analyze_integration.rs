@@ -126,6 +126,7 @@ fn analyze_takes_only_the_readings_a_buffer_answers_and_needs_a_wav() {
             "dissonance",
             "envelope",
             "formants",
+            "inharmonicity",
             "loudness",
             "onsets",
             "pitch",
