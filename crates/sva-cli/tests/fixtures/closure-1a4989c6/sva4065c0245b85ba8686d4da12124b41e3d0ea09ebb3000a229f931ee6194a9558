@@ -1,0 +1,2 @@
+f0 = D2
+crop(lowpass(sample(saw(f0) + 0.33*square(f0/2)), cutoff=350 + 1600*exp(-t/0.06), q=1.2)*@sva046a5fc7c03eb08d8ac01e517b4ce72a7765d820d9966e676c197a21b3b39045(t, tc=0.003)*(0.55 + 0.45*exp(-t/0.2)), 0s, 0.29s, fall=0.04s)

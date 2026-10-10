@@ -1,0 +1,4 @@
+f0 = A1
+vel = 1
+release = 0.8
+crop(0.537*lowpass(sample(vel*tanh(1.5*(sin(2*pi*f0*t) + 0.3*sin(4*pi*f0*t)))*min(t/0.003, 1)*exp(-t/0.35)*(crop(1, 0s, release) + crop(exp(-(t - release)/0.04), release, release + 0.3s))), cutoff=600, q=0.7), 0s, release + 0.3s)

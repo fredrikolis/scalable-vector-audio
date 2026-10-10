@@ -10,6 +10,7 @@ mod lint;
 mod lint_verdict;
 mod outline;
 mod panics;
+mod pinned;
 mod render_integration;
 mod scaffold;
 mod store;

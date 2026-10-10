@@ -1,0 +1,4 @@
+f0 = A3
+vel = 0.7087
+release = 1
+crop(0.2622*vel*(bandpass(sample(saw(f0, 0.006*f0/5.1*sin(2*pi*5.1*t)*(1 - exp(-t/0.6))) + saw(f0*8ct, 0.006*f0/5.6*sin(2*pi*5.6*t)*(1 - exp(-t/0.6))) + saw(f0/8ct, 0.006*f0/4.7*sin(2*pi*4.7*t)*(1 - exp(-t/0.6)))), cutoff=800, q=2.5) + 0.6*bandpass(sample(saw(f0, 0.006*f0/5.1*sin(2*pi*5.1*t)*(1 - exp(-t/0.6))) + saw(f0*8ct, 0.006*f0/5.6*sin(2*pi*5.6*t)*(1 - exp(-t/0.6))) + saw(f0/8ct, 0.006*f0/4.7*sin(2*pi*4.7*t)*(1 - exp(-t/0.6)))), cutoff=1150, q=4) + 0.15*bandpass(sample(saw(f0, 0.006*f0/5.1*sin(2*pi*5.1*t)*(1 - exp(-t/0.6))) + saw(f0*8ct, 0.006*f0/5.6*sin(2*pi*5.6*t)*(1 - exp(-t/0.6))) + saw(f0/8ct, 0.006*f0/4.7*sin(2*pi*4.7*t)*(1 - exp(-t/0.6)))), cutoff=2800, q=8))*@sva046a5fc7c03eb08d8ac01e517b4ce72a7765d820d9966e676c197a21b3b39045(t, tc=0.08)*(crop(1, 0s, release) + crop(exp(-(t - release)/0.4), release, release + 2.5s)), 0s, release + 2.5s)

@@ -1,0 +1,2 @@
+seed = 1
+crop(bandpass(sample(rand(t, seed=seed)), cutoff=350 + 1050*pow(sin(pi*t/6.4), 2), q=1.2)*pow(sin(pi*t/6.4), 2), 0s, 6.4s)

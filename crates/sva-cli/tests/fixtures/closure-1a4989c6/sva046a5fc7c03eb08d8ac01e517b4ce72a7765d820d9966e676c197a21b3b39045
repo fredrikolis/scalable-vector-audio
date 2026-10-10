@@ -1,0 +1,2 @@
+tc = 0.006
+min(t, tc)/tc - sin(2*pi*min(t, tc)/tc)/(2*pi)
