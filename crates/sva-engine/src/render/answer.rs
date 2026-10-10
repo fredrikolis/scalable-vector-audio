@@ -8,7 +8,7 @@ use sva_samples::measure::harmony::{
     self, Framing, Moment, chords, dissonance, inharmonicity, measured as framed, tonnetz,
     voice_leading,
 };
-use sva_samples::measure::periodicity;
+use sva_samples::measure::{modulation, periodicity, sliding};
 use sva_samples::{
     Buffer, Consumes, Extent, Peak, PitchFrame, Profile, Source, measure::bands, measure::crest,
     measure::envelope, measure::formants, measure::loudness, measure::onsets, measure::pitch,
@@ -323,26 +323,38 @@ fn crowded(name: &str, representation: Representation, held: Crowded) -> EngineE
 }
 
 /// Each names the window that would read, and `longer` how to hand it a target that long.
-fn unread(name: &str, why: periodicity::Unread, longer: impl Fn(f64) -> String) -> EngineError {
-    let least = periodicity::MIN_WINDOW_SECS;
+fn unread(
+    name: &str,
+    representation: Representation,
+    why: sliding::Unread,
+    longer: impl Fn(f64) -> String,
+) -> EngineError {
+    let reading = representation.name();
     let (code, message, help) = match why {
-        periodicity::Unread::WindowUnderTwoPeriods { window_secs } => (
-            "read.periodicity_window_under_two_periods",
+        sliding::Unread::WindowUnderTwoPeriods {
+            window_secs,
+            least_secs,
+        } => (
+            "read.window_under_two_periods",
             format!(
-                "a {window_secs}s window holds under twice the longest period read, {}s, so a \
-                 lag there would overlap under half its window",
-                periodicity::MAX_PERIOD_SECS
+                "a {window_secs}s window holds under two of the longest period `{reading}` \
+                 reads, {}s",
+                least_secs / 2.0
             ),
-            format!("ask a window of {least}s or longer, as `periodicity(window={least}s)`"),
+            format!(
+                "ask a window of {least_secs}s or longer, as `{reading}(window={least_secs}s)`"
+            ),
         ),
-        periodicity::Unread::TargetShorterThanWindow {
+        sliding::Unread::TargetShorterThanWindow {
             held_secs,
             window_secs,
+            least_secs,
         } => (
-            "read.periodicity_target_under_window",
+            "read.target_under_window",
             format!("the target holds {held_secs}s, under the {window_secs}s window"),
             format!(
-                "{}, or ask a window as short as {least}s, as `periodicity(window={least}s)`",
+                "{}, or ask a window as short as {least_secs}s, as \
+                 `{reading}(window={least_secs}s)`",
                 longer(window_secs)
             ),
         ),
@@ -587,7 +599,7 @@ fn measured(
                 NoReading::NeedsAGraph => not_a_reading(render, node, other),
                 NoReading::TooNarrow { need, held } => too_narrow(render, node, need, held),
                 NoReading::Crowded(held) => crowded(render.tys.name(node), other, held),
-                NoReading::Unread(why) => unread(render.tys.name(node), why, |secs| {
+                NoReading::Unread(why) => unread(render.tys.name(node), other, why, |secs| {
                     format!(
                         "render an interval of at least {secs}s, as `@x([0, {secs}s])` writes one"
                     )
@@ -604,7 +616,7 @@ pub enum NoReading {
     NeedsAGraph,
     TooNarrow { need: usize, held: usize },
     Crowded(Crowded),
-    Unread(periodicity::Unread),
+    Unread(sliding::Unread),
 }
 
 /// Every reading a buffer answers on its own, with no graph behind it.
@@ -679,6 +691,14 @@ pub fn off_buffer(buffer: &Buffer, representation: Representation) -> Result<Out
             curve,
         } => Output::Periodicity(Box::new(
             periodicity::measure(plane, sr, start, frame_secs, window_secs, curve)
+                .map_err(NoReading::Unread)?,
+        )),
+        Representation::Modulation {
+            frame_secs,
+            window_secs,
+            bpm,
+        } => Output::Modulation(Box::new(
+            modulation::measure(plane, sr, start, frame_secs, window_secs, bpm)
                 .map_err(NoReading::Unread)?,
         )),
         _ => return Err(NoReading::NeedsAGraph),
@@ -1015,7 +1035,7 @@ pub fn answer_buffer(
             format!("this reading needs {need} components and the file holds {held}"),
         ),
         NoReading::Crowded(held) => crowded(name, representation, held),
-        NoReading::Unread(why) => unread(name, why, |secs| {
+        NoReading::Unread(why) => unread(name, representation, why, |secs| {
             format!("analyze a file holding at least {secs}s")
         }),
     })?;

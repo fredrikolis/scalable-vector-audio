@@ -5,6 +5,7 @@ use sva_samples::measure::harmony::dissonance::Dissonance;
 use sva_samples::measure::harmony::inharmonicity::Inharmonicity;
 use sva_samples::measure::harmony::tonnetz::TonalDistance;
 use sva_samples::measure::harmony::voice_leading::{Norm, VoiceLeading};
+use sva_samples::measure::modulation::Modulation;
 use sva_samples::measure::periodicity::Periodicity;
 use sva_samples::{
     Alias, Bands, Buffer, Consumes, Crest, EnvelopeFrame, FormantFrame, LedgerEntry, Loudness,
@@ -27,6 +28,8 @@ pub const DEFAULT_FLOOR_DB: f64 = -40.0;
 pub const DEFAULT_MAX_PAIRS: usize = 1 << 17;
 /// The span of onset-strength envelope one `periodicity` window autocorrelates.
 pub const DEFAULT_PERIODICITY_WINDOW_SECS: f64 = 6.0;
+/// The span of band envelope one `modulation` window transforms.
+pub const DEFAULT_MODULATION_WINDOW_SECS: f64 = 4.0;
 
 /// Every named argument a reading may take; the engine reads only those `Given` holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +47,7 @@ pub enum Arg {
     Pairs,
     Window,
     Curve,
+    Bpm,
 }
 
 impl Arg {
@@ -62,6 +66,7 @@ impl Arg {
             Arg::Pairs => "pairs",
             Arg::Window => "window",
             Arg::Curve => "curve",
+            Arg::Bpm => "bpm",
         }
     }
 }
@@ -78,8 +83,10 @@ pub struct Given {
     pub floor_db: f64,
     pub norm: Norm,
     pub max_pairs: usize,
-    pub window_secs: f64,
+    /// `None` until written: each windowed reading then takes its own default.
+    pub window: Option<f64>,
     pub curve: bool,
+    pub bpm: Option<f64>,
 }
 
 impl Default for Given {
@@ -92,8 +99,9 @@ impl Default for Given {
             floor_db: DEFAULT_FLOOR_DB,
             norm: Norm::L1,
             max_pairs: DEFAULT_MAX_PAIRS,
-            window_secs: DEFAULT_PERIODICITY_WINDOW_SECS,
+            window: None,
             curve: false,
+            bpm: None,
         }
     }
 }
@@ -344,8 +352,23 @@ static PERIODICITY: Reading = Reading {
            the drift between windows",
     build: |g| Representation::Periodicity {
         frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
-        window_secs: g.window_secs,
+        window_secs: g.window.unwrap_or(DEFAULT_PERIODICITY_WINDOW_SECS),
         curve: g.curve,
+    },
+};
+
+static MODULATION: Reading = Reading {
+    name: "modulation",
+    takes: &[Arg::Frame, Arg::Window, Arg::Bpm],
+    reads: Reads::Samples,
+    help: "how its band envelopes move per sliding window, under 150 Hz, to 2 kHz and over: \
+           the leading modulation rates from 0.5 to 20 Hz, in beats where `bpm` is given, \
+           their depth as a modulation index, the level, and the spectral centroid's mean \
+           and its own swing in Hz",
+    build: |g| Representation::Modulation {
+        frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
+        window_secs: g.window.unwrap_or(DEFAULT_MODULATION_WINDOW_SECS),
+        bpm: g.bpm,
     },
 };
 
@@ -366,7 +389,7 @@ static ARGUMENTS: Reading = Reading {
 };
 
 /// Every reading a caller may ask for, in the order a listing prints them.
-pub static READINGS: [&Reading; 22] = [
+pub static READINGS: [&Reading; 23] = [
     &LINES,
     &ATOMS,
     &SPECTRUM,
@@ -387,6 +410,7 @@ pub static READINGS: [&Reading; 22] = [
     &TONAL_DISTANCE,
     &INHARMONICITY,
     &PERIODICITY,
+    &MODULATION,
     &BINDINGS,
     &ARGUMENTS,
 ];
@@ -437,6 +461,12 @@ pub enum Representation {
         window_secs: f64,
         curve: bool,
     },
+    /// Windows of `window_secs` centred every `frame_secs`; `bpm` adds each rate in beats.
+    Modulation {
+        frame_secs: f64,
+        window_secs: f64,
+        bpm: Option<f64>,
+    },
     Bindings,
     Arguments,
 }
@@ -479,6 +509,7 @@ pub enum Output {
     TonalDistance(Box<TonalDistance>),
     Inharmonicity(Box<Inharmonicity>),
     Periodicity(Box<Periodicity>),
+    Modulation(Box<Modulation>),
     Bindings(Vec<Binding>),
     Arguments(Vec<Arguments>),
 }
@@ -555,6 +586,7 @@ impl Representation {
                 Harmonic::Inharmonicity => &INHARMONICITY,
             },
             Representation::Periodicity { .. } => &PERIODICITY,
+            Representation::Modulation { .. } => &MODULATION,
             Representation::Bindings => &BINDINGS,
             Representation::Arguments => &ARGUMENTS,
         }

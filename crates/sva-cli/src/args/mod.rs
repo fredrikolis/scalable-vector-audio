@@ -732,6 +732,26 @@ mod tests {
     }
 
     #[test]
+    fn modulation_takes_its_step_window_and_bpm() {
+        let args = rendered(&[
+            "render",
+            "@a",
+            "--representation",
+            "modulation(frame=0.25s, window=6s, bpm=140)",
+        ]);
+        assert_eq!(
+            args.asked[0].representation,
+            sva_engine::Representation::Modulation {
+                frame_secs: 0.25,
+                window_secs: 6.0,
+                bpm: Some(140.0),
+            }
+        );
+        refused(&["render", "@a", "--representation", "modulation(bpm=0)"]);
+        refused(&["render", "@a", "--representation", "modulation(bpm=2s)"]);
+    }
+
+    #[test]
     fn bindings_needs_a_node() {
         refused(&["render", "@a", "--representation", "bindings"]);
     }

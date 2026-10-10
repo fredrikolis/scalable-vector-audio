@@ -15,8 +15,10 @@ use sva_engine::harmony::dissonance::{self, Dissonance, Extreme};
 use sva_engine::harmony::inharmonicity::{self, Inharmonicity, Series, Weighted};
 use sva_engine::harmony::tonnetz::{self, Quality, TonalDistance, Triad};
 use sva_engine::harmony::voice_leading::{self, VoiceLeading};
-use sva_engine::periodicity::{self, Periodicity, Stats, Track, Window};
+use sva_engine::modulation::{self, Modulation};
+use sva_engine::periodicity::{self, Periodicity, Track, Window};
 use sva_engine::pitch as pitch_names;
+use sva_engine::sliding::Stats;
 
 use crate::json::{NONE, capped, escape, latest, list, num};
 
@@ -543,6 +545,78 @@ fn periodicity_json(p: &Periodicity) -> String {
     )
 }
 
+/// `period_beats` is left out where no `bpm` was asked; `depth_key` names the depth's unit.
+fn modulation_peak_json(p: &modulation::Peak, depth_key: &str) -> String {
+    let beats = p
+        .period_beats
+        .map_or(String::new(), |b| format!(", \"period_beats\": {}", num(b)));
+    format!(
+        "{{ \"hz\": {}{beats}, \"{depth_key}\": {} }}",
+        num(p.hz),
+        num(p.depth)
+    )
+}
+
+fn modulation_window_json(w: &modulation::Window) -> String {
+    let centroid = w.centroid.as_ref().map_or(NONE.to_string(), |c| {
+        format!(
+            "{{ \"mean_hz\": {}, \"peaks\": {} }}",
+            num(c.mean_hz),
+            list(&c.peaks, |p| modulation_peak_json(p, "depth_hz"))
+        )
+    });
+    format!(
+        "\n      {{ \"t\": {}, \"from\": {}, \"to\": {}, \"level\": {}, \"peaks\": {}, \
+         \"centroid\": {centroid} }}",
+        num(w.t_secs),
+        num(w.from_secs),
+        num(w.to_secs),
+        num(w.level),
+        list(&w.peaks, |p| modulation_peak_json(p, "depth"))
+    )
+}
+
+fn modulation_track_json(t: &modulation::Track) -> String {
+    let centres: Vec<String> = t.centres_hz.iter().map(|hz| num(*hz)).collect();
+    format!(
+        "\n    {{ \"group\": \"{}\", \"centres_hz\": [{}], \"summary\": {{ \
+         \"windows_with_peak\": {}, \"hz\": {}, \"depth\": {}, \"centroid_hz\": {}, \
+         \"centroid_depth_hz\": {} }}, \"windows\": {} }}",
+        t.group.key(),
+        centres.join(", "),
+        t.summary.windows_with_peak,
+        spread_json(t.summary.hz),
+        spread_json(t.summary.depth),
+        spread_json(t.summary.centroid_hz),
+        spread_json(t.summary.centroid_depth_hz),
+        list(&t.windows, modulation_window_json)
+    )
+}
+
+fn modulation_json(m: &Modulation) -> String {
+    let splits: Vec<String> = modulation::SPLITS_HZ.iter().map(|hz| num(*hz)).collect();
+    format!(
+        "{{ \"model\": \"{}\", \"hop_secs\": {}, \"window_secs\": {}, \"envelope_hz\": {}, \
+         \"bin_step_hz\": {}, \"resolution_hz\": {}, \"min_hz\": {}, \"max_hz\": {}, \
+         \"bpm\": {}, \"splits_hz\": [{}], \"smoothing\": {{ \"hz\": {}, \"poles\": {} }}, \
+         \"passband_gain_at_max_hz\": {}, \"tracks\": {} }}",
+        escape(modulation::MODEL),
+        num(m.hop_secs),
+        num(m.window_secs),
+        num(m.envelope_hz),
+        num(m.bin_step_hz),
+        num(m.resolution_hz),
+        num(m.min_hz),
+        num(m.max_hz),
+        maybe(m.bpm),
+        splits.join(", "),
+        maybe(modulation::SMOOTHING.hz),
+        modulation::SMOOTHING.poles,
+        num(m.passband_gain_at_max_hz),
+        list(&m.tracks, modulation_track_json)
+    )
+}
+
 fn binding_json(b: &Binding) -> String {
     format!(
         "\n    {{ \"name\": \"{}\", \"source\": \"{}\" }}",
@@ -642,6 +716,7 @@ pub fn value_json(output: &Output, limit: Option<usize>, skim: bool) -> String {
         Output::TonalDistance(d) => tonal_distance_json(d),
         Output::Inharmonicity(r) => inharmonicity_json(r),
         Output::Periodicity(p) => periodicity_json(p),
+        Output::Modulation(m) => modulation_json(m),
         Output::Bindings(b) => list(b, binding_json),
         Output::Arguments(a) => list(a, arguments_json),
         Output::Envelope(frames) => list(frames, |f: &EnvelopeFrame| {

@@ -1,6 +1,7 @@
 // Concern: what periodicity owes a metronome, jittered and rubato trains, a kick under hats, silence, refusals | Non-concern: the band filters (measure_bands.rs) | IO: (samples) -> asserts
 
-use sva_samples::measure::periodicity::{Group, Periodicity, Track, Unread, measure};
+use sva_samples::measure::periodicity::{Group, Periodicity, Track, measure};
+use sva_samples::measure::sliding::Unread;
 
 /// A 2 kHz envelope, so 0.5 s is exactly 1000 lags.
 const RATE: f64 = 16_000.0;
@@ -169,13 +170,17 @@ fn a_window_under_two_periods_and_a_target_under_the_window_refuse() {
     let samples = vec![0.0; (3.0 * RATE) as usize];
     assert_eq!(
         measure(&samples, RATE, 0.0, 0.5, 3.0, false),
-        Err(Unread::WindowUnderTwoPeriods { window_secs: 3.0 })
+        Err(Unread::WindowUnderTwoPeriods {
+            window_secs: 3.0,
+            least_secs: 4.0
+        })
     );
     assert_eq!(
         measure(&samples, RATE, 0.0, 0.5, 4.0, false),
         Err(Unread::TargetShorterThanWindow {
             held_secs: 3.0,
-            window_secs: 4.0
+            window_secs: 4.0,
+            least_secs: 4.0
         })
     );
 }

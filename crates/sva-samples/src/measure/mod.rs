@@ -8,9 +8,11 @@ pub mod formants;
 pub mod harmony;
 pub mod ledger;
 pub mod loudness;
+pub mod modulation;
 pub mod onsets;
 pub mod periodicity;
 pub mod pitch;
+pub mod sliding;
 pub mod spectrum;
 pub mod stereo;
 

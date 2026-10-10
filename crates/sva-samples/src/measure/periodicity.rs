@@ -1,8 +1,8 @@
 // Concern: how strongly onset strength repeats per sliding window: broadband, low, rest | Non-concern: the band filters (bands.rs), any verdict | IO: (&[f64], rate, start, hop, window) -> Periodicity
 
 use super::bands::{self, Bands, Smoothing};
-use super::harmony::dissonance::Extreme;
 use super::onsets::spectral_flux;
+use super::sliding::{self, Stats, Unread, stats};
 use crate::fft::{fft, ifft};
 
 /// A band belongs to `low` where its centre is under this; kick and sub sit there.
@@ -11,8 +11,6 @@ pub const SPLIT_HZ: f64 = 150.0;
 pub const MIN_PERIOD_SECS: f64 = 0.1;
 /// 30 bpm.
 pub const MAX_PERIOD_SECS: f64 = 2.0;
-/// Every lag read then overlaps at least half its window.
-pub const MIN_WINDOW_SECS: f64 = 2.0 * MAX_PERIOD_SECS;
 pub const PEAKS: usize = 3;
 /// Each band's energy through two one-poles at 10 Hz before it is decimated: a sustained
 /// tone's ripple at twice its frequency, which would alias into the envelope, falls 12 dB an
@@ -106,13 +104,6 @@ pub struct Window {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Stats {
-    pub mean: f64,
-    pub min: Extreme,
-    pub max: Extreme,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Summary {
     pub windows_with_peak: usize,
     pub bpm: Option<Stats>,
@@ -139,13 +130,6 @@ pub struct Periodicity {
     pub tracks: Vec<Track>,
 }
 
-/// Why no window was read.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Unread {
-    WindowUnderTwoPeriods { window_secs: f64 },
-    TargetShorterThanWindow { held_secs: f64, window_secs: f64 },
-}
-
 pub fn measure(
     samples: &[f64],
     sample_rate: f64,
@@ -154,16 +138,7 @@ pub fn measure(
     window_secs: f64,
     curve: bool,
 ) -> Result<Periodicity, Unread> {
-    if window_secs < MIN_WINDOW_SECS {
-        return Err(Unread::WindowUnderTwoPeriods { window_secs });
-    }
-    let held_secs = samples.len() as f64 / sample_rate;
-    if held_secs < window_secs {
-        return Err(Unread::TargetShorterThanWindow {
-            held_secs,
-            window_secs,
-        });
-    }
+    sliding::fits(samples.len(), sample_rate, window_secs, MAX_PERIOD_SECS)?;
     let split = bands::smoothed(samples, sample_rate, start_secs, SMOOTHING);
     let rate = split.rate_hz;
     let lags = Lags {
@@ -171,24 +146,29 @@ pub fn measure(
         max: (MAX_PERIOD_SECS * rate).floor() as usize,
         rate,
     };
-    let hop = ((hop_secs * sample_rate).round() as usize).max(1);
-    let size = (window_secs * rate).round() as usize;
-    let centres: Vec<usize> = (0..samples.len()).step_by(hop).collect();
+    let len = split.bands.first().map_or(0, |b| b.rms.len());
+    let grid = sliding::spans(
+        samples.len(),
+        sample_rate,
+        start_secs,
+        hop_secs,
+        rate,
+        window_secs,
+        len,
+    );
     let tracks = Group::ALL
         .into_iter()
         .zip(envelopes(&split))
         .map(|(group, (centres_hz, envelope))| {
-            let mut windows: Vec<Window> = centres
+            let mut windows: Vec<Window> = grid
+                .spans
                 .iter()
-                .map(|&c| {
-                    let middle = (c as f64 * rate / sample_rate).round() as usize;
-                    let from = middle.saturating_sub(size / 2);
-                    let to = (middle + size - size / 2).min(envelope.len());
-                    let heights = heights(&envelope[from..to], lags.max + 1);
+                .map(|s| {
+                    let heights = heights(&envelope[s.from..s.to], lags.max + 1);
                     Window {
-                        t_secs: start_secs + c as f64 / sample_rate,
-                        from_secs: start_secs + from as f64 / rate,
-                        to_secs: start_secs + to as f64 / rate,
+                        t_secs: s.t_secs,
+                        from_secs: s.from_secs,
+                        to_secs: s.to_secs,
                         peaks: lags.peaks(&heights),
                         drift_bpm: None,
                         curve: curve.then(|| {
@@ -216,8 +196,8 @@ pub fn measure(
         })
         .collect();
     Ok(Periodicity {
-        hop_secs: hop as f64 / sample_rate,
-        window_secs: size as f64 / rate,
+        hop_secs: grid.hop_secs,
+        window_secs: grid.window_secs,
         envelope_hz: rate,
         lag_step_secs: 1.0 / rate,
         min_period_secs: lags.min as f64 / rate,
@@ -310,23 +290,6 @@ impl Lags {
             })
             .collect()
     }
-}
-
-fn stats(values: impl Iterator<Item = (f64, f64)>) -> Option<Stats> {
-    let held: Vec<(f64, f64)> = values.collect();
-    let first = *held.first()?;
-    let pick = |better: fn(f64, f64) -> bool| {
-        let (t, value) = held
-            .iter()
-            .copied()
-            .fold(first, |a, b| if better(b.1, a.1) { b } else { a });
-        Extreme { value, t_secs: t }
-    };
-    Some(Stats {
-        mean: held.iter().map(|(_, v)| v).sum::<f64>() / held.len() as f64,
-        min: pick(|a, b| a < b),
-        max: pick(|a, b| a > b),
-    })
 }
 
 fn summary(windows: &[Window]) -> Summary {

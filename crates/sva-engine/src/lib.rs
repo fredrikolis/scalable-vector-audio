@@ -36,9 +36,9 @@ pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
 pub use meaning::{Meaning, meaning};
 pub use query::{
     Answer, Arg, Ask, Atom, DEFAULT_BUFFER_SECS, DEFAULT_FLOOR_DB, DEFAULT_FRAME_SECS,
-    DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PAIRS, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE,
-    DEFAULT_PERIODICITY_WINDOW_SECS, Given, Harmonic, Output, READINGS, Reading, Reads,
-    Representation,
+    DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PAIRS, DEFAULT_MAX_PEAKS, DEFAULT_MODULATION_WINDOW_SECS,
+    DEFAULT_OVERSAMPLE, DEFAULT_PERIODICITY_WINDOW_SECS, Given, Harmonic, Output, READINGS,
+    Reading, Reads, Representation,
 };
 pub use refs::{identity, nodes_in, spectral_sum_of};
 pub use render::until::{Cmp, Term};
@@ -49,7 +49,7 @@ pub use render::{
 };
 pub use schedule::{Order, Schedule, schedule_from};
 pub use sva_formula::{C64, Codomain, Held, Line, NodeId, SpectralSum, Ty, Var};
-pub use sva_samples::measure::{harmony, periodicity, pitch};
+pub use sva_samples::measure::{harmony, modulation, periodicity, pitch, sliding};
 pub use sva_samples::{
     Alias, AliasBand, BAND_COUNT, BandCrest, BandTrack, Bands, Buffer, Crest,
     CuttingBelowSilenceThreshold, Detail, EnvelopeFrame, Extent, FormantFrame, Frames, Label,

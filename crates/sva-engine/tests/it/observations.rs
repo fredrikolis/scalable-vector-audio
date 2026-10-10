@@ -650,6 +650,7 @@ fn one_table_says_what_every_named_reading_consumes() {
         "tonal_distance",
         "inharmonicity",
         "periodicity",
+        "modulation",
         "bindings",
         "arguments",
     ];
@@ -797,8 +798,62 @@ fn a_closed_forms_periodicity_is_measured_off_its_samples() {
 fn periodicity_of_a_target_under_its_window_names_both_remedies() {
     let (law, asked) = periodicity_of("periodic-short", 1.0);
     let refused = answer(&law, law.id("node").expect("the root"), asked).expect_err("1 s < 4 s");
-    assert_eq!(refused.code(), "read.periodicity_target_under_window");
+    assert_eq!(refused.code(), "read.target_under_window");
     let said = format!("{refused}");
     assert!(said.contains("([0, 4s])"), "{said}");
     assert!(said.contains("periodicity(window=4s)"), "{said}");
+}
+
+fn modulation_of(name: &str, window_secs: f64) -> (Render, Representation) {
+    let asked = Representation::Modulation {
+        frame_secs: 0.5,
+        window_secs,
+        bpm: Some(120.0),
+    };
+    let g = graph_of(
+        name,
+        &[("node", "sin(2*pi*1000*t)*(1 + 0.5*sin(2*pi*4*t))\n")],
+    );
+    let config = RenderConfig::seconds(8_192, 8.0).asking(vec![Ask {
+        node: "node".to_string(),
+        representation: asked,
+    }]);
+    let law = render(&g, "node", config, &Tier::default()).unwrap_or_else(|e| panic!("{e}"));
+    (law, asked)
+}
+
+/// A closed form's tremolo is read off its rendered samples, never exactly: 4 Hz, half a beat
+/// at 120 bpm, at its index 0.5, in every `mid` window clear of the opening.
+#[test]
+fn a_closed_forms_modulation_is_measured_off_its_samples() {
+    let (law, asked) = modulation_of("tremolo", 4.0);
+    let found = answer(&law, law.id("node").expect("the root"), asked).expect("8 s holds 4 s");
+    assert_eq!((found.source, found.rate), (Source::Measured, Some(8_192)));
+    let Output::Modulation(m) = found.value else {
+        panic!("modulation answers its windows, not {:?}", found.value)
+    };
+    let mid = m
+        .tracks
+        .iter()
+        .find(|t| t.group.key() == "mid")
+        .expect("a mid group");
+    for w in mid.windows.iter().filter(|w| w.from_secs >= 0.5) {
+        let lead = w.peaks[0];
+        assert!((lead.hz - 4.0).abs() < 1e-3, "{w:?}");
+        assert!((lead.depth - 0.5).abs() < 1e-3, "{w:?}");
+        assert!(
+            (lead.period_beats.expect("a bpm") - 0.5).abs() < 1e-3,
+            "{w:?}"
+        );
+    }
+}
+
+/// A window under two periods of the slowest rate refuses, naming the window that would read.
+#[test]
+fn modulation_under_two_periods_names_the_least_window() {
+    let (law, asked) = modulation_of("tremolo-narrow", 3.0);
+    let refused = answer(&law, law.id("node").expect("the root"), asked).expect_err("3 s < 4 s");
+    assert_eq!(refused.code(), "read.window_under_two_periods");
+    let said = format!("{refused}");
+    assert!(said.contains("modulation(window=4s)"), "{said}");
 }

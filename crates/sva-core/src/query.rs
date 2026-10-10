@@ -208,8 +208,9 @@ pub fn asked(call: &Call) -> Result<Asked, CliError> {
             Arg::Floor => given.floor_db = decibels(raw, key)?,
             Arg::Norm => given.norm = norm(raw)?,
             Arg::Pairs => given.max_pairs = count(raw, key)?,
-            Arg::Window => given.window_secs = seconds(raw, key)?,
+            Arg::Window => given.window = Some(seconds(raw, key)?),
             Arg::Curve => given.curve = switch(raw, key)?,
+            Arg::Bpm => given.bpm = Some(tempo(raw, key)?),
         }
     }
     if row.takes.contains(&Arg::Node) && node.is_none() {
@@ -351,6 +352,24 @@ pub fn seconds(raw: &str, key: &str) -> Result<f64, CliError> {
         _ => Err(CliError::usage(
             "query.bad_value",
             format!("`{key}` needs a positive time, as `50ms` or `0.05`, got `{raw}`"),
+        )),
+    }
+}
+
+/// A bare positive number of beats per minute.
+fn tempo(raw: &str, key: &str) -> Result<f64, CliError> {
+    let held = match sva_ast::tokenize(raw).as_deref() {
+        Ok([one]) => match one.kind {
+            sva_ast::TokenKind::Num(v) => Some(v),
+            _ => None,
+        },
+        _ => None,
+    };
+    match held {
+        Some(v) if v > 0.0 && v.is_finite() => Ok(v),
+        _ => Err(CliError::usage(
+            "query.bad_value",
+            format!("`{key}` needs a positive tempo in beats per minute, as `140`, got `{raw}`"),
         )),
     }
 }

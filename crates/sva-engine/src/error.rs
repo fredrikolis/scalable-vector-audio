@@ -447,12 +447,12 @@ pub static REGISTRY: [(&str, &str); 90] = [
         "a harmonic reading of a frame whose partials over the floor pair past the cap",
     ),
     (
-        "read.periodicity_window_under_two_periods",
-        "a periodicity window under twice the longest period it reads",
+        "read.window_under_two_periods",
+        "a sliding-window reading's window under twice the longest period it reads",
     ),
     (
-        "read.periodicity_target_under_window",
-        "a periodicity reading of a target shorter than its window",
+        "read.target_under_window",
+        "a sliding-window reading of a target shorter than its window",
     ),
     (
         "engine.bad_crop_shoulder",
