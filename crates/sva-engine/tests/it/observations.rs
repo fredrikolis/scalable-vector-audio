@@ -1,7 +1,9 @@
 // Concern: proves every answer says which reading ran and under which profile | Non-concern: the arithmetic of any one reading (sva-samples) | IO: (a Render) -> Answer
 
 use crate::fixtures::graph_of;
-use sva_engine::{Ask, Output, Render, RenderConfig, Representation, Source, Tier, answer, render};
+use sva_engine::{
+    Ask, Output, Render, RenderConfig, Representation, Source, Tier, answer, periodicity, render,
+};
 
 const CHORD: &str = "sin(2*pi*256*t) + sin(2*pi*512*t)\n";
 
@@ -776,8 +778,8 @@ fn periodicity_of(name: &str, secs: f64) -> (Render, Representation) {
 }
 
 /// A closed form swelling twice a second is read off its rendered samples, never exactly:
-/// its onset strength repeats every 0.5 s, 1024 lags of the 2048 Hz envelope, in every window
-/// clear of the opening rise from silence.
+/// its onset strength repeats every 0.5 s, 1024 lags of the 2048 Hz envelope, inside the bounds
+/// of every whole window clear of the opening rise from silence.
 #[test]
 fn a_closed_forms_periodicity_is_measured_off_its_samples() {
     let (law, asked) = periodicity_of("periodic-swell", 8.0);
@@ -787,8 +789,12 @@ fn a_closed_forms_periodicity_is_measured_off_its_samples() {
         panic!("periodicity answers its windows, not {:?}", found.value)
     };
     for track in p.tracks.iter().filter(|t| t.group.key() != "low") {
-        for w in track.windows.iter().filter(|w| w.from_secs >= 0.5) {
-            assert_eq!(w.peaks[0].bpm, 120.0, "{}: {w:?}", track.group.key());
+        let whole = |w: &&periodicity::Window| {
+            w.from_secs >= 0.5 && w.to_secs - w.from_secs == p.window_secs
+        };
+        for w in track.windows.iter().filter(whole) {
+            let (lo, hi) = w.peaks[0].bpm_bounds.expect("a whole window");
+            assert!(lo <= 120.0 && 120.0 <= hi, "{}: {w:?}", track.group.key());
         }
     }
 }

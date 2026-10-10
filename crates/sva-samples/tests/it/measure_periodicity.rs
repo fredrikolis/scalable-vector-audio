@@ -1,6 +1,6 @@
-// Concern: what periodicity owes a metronome, jittered and rubato trains, a kick under hats, silence, refusals | Non-concern: the band filters (measure_bands.rs) | IO: (samples) -> asserts
+// Concern: what periodicity owes a metronome, a tempo sweep, jittered and rubato trains, a kick under hats, silence, refusals | Non-concern: the band filters | IO: (samples) -> asserts
 
-use sva_samples::measure::periodicity::{Group, Periodicity, Track, measure};
+use sva_samples::measure::periodicity::{Group, Periodicity, Track, Window, measure};
 use sva_samples::measure::sliding::Unread;
 
 /// A 2 kHz envelope, so 0.5 s is exactly 1000 lags.
@@ -51,6 +51,24 @@ fn train(secs: f64, at: impl Fn(usize) -> f64) -> Vec<f64> {
     out
 }
 
+/// A 2 ms 3 kHz burst every `period_secs`, placed between samples: exactly periodic.
+fn pulses(secs: f64, period_secs: f64) -> Vec<f64> {
+    (0..(secs * RATE) as usize)
+        .map(|i| {
+            let t = i as f64 / RATE;
+            let since = t - (t / period_secs).floor() * period_secs;
+            match since < 0.002 {
+                true => (-since / 0.0005).exp() * (std::f64::consts::TAU * 3000.0 * since).sin(),
+                false => 0.0,
+            }
+        })
+        .collect()
+}
+
+fn within(bounds: Option<(f64, f64)>, x: f64) -> bool {
+    bounds.is_some_and(|(lo, hi)| lo <= x && x <= hi)
+}
+
 fn read(samples: &[f64]) -> Periodicity {
     measure(samples, RATE, 0.0, 0.5, 4.0, false).expect("a 4 s window over a longer target")
 }
@@ -60,6 +78,13 @@ fn track(p: &Periodicity, group: Group) -> &Track {
         .iter()
         .find(|t| t.group == group)
         .expect("every group")
+}
+
+fn whole<'a>(p: &Periodicity, t: &'a Track) -> Vec<&'a Window> {
+    t.windows
+        .iter()
+        .filter(|w| w.to_secs - w.from_secs == p.window_secs)
+        .collect()
 }
 
 fn leads(t: &Track) -> Vec<(f64, f64)> {
@@ -72,8 +97,9 @@ fn leads(t: &Track) -> Vec<(f64, f64)> {
         .collect()
 }
 
-/// 120 bpm on the envelope's own grid leads every window at exactly 0.5 s, within 2% of the
-/// biased ceiling 1 - 0.5/span, and never drifts.
+/// 120 bpm on the envelope's own grid leads every window at 0.5 s, inside the bounds of each
+/// whole one, a clipped one bounding nothing, within 2% of the biased ceiling 1 - 0.5/span,
+/// and drifts by rounding alone.
 #[test]
 fn a_metronome_reads_its_exact_bpm_with_a_high_peak_and_no_drift() {
     let p = read(&train(10.0, |k| k as f64 * 0.5));
@@ -82,12 +108,51 @@ fn a_metronome_reads_its_exact_bpm_with_a_high_peak_and_no_drift() {
     assert_eq!(broadband.windows.len(), 20);
     for w in &broadband.windows {
         let lead = w.peaks[0];
-        assert_eq!((lead.period_secs, lead.bpm), (0.5, 120.0), "{w:?}");
+        match w.to_secs - w.from_secs == p.window_secs {
+            true => assert!(within(lead.period_bounds_secs, 0.5), "{w:?}"),
+            false => assert!(lead.period_bounds_secs.is_none() && lead.bpm_bounds.is_none()),
+        }
+        assert!((lead.bpm - 120.0).abs() < 1e-3, "{w:?}");
         let ceiling = 1.0 - 0.5 / (w.to_secs - w.from_secs);
         assert!((lead.height - ceiling).abs() < 0.02 * ceiling, "{w:?}");
     }
     let drift = broadband.summary.drift_bpm.expect("windows with a lead");
-    assert_eq!((drift.min.value, drift.max.value), (0.0, 0.0));
+    assert!(
+        drift.min.value.abs().max(drift.max.value.abs()) < 1e-3,
+        "{drift:?}"
+    );
+}
+
+/// 128 bpm, 937.5 lags, reads 128.00 in every whole window, inside bounds under a lag wide.
+#[test]
+fn a_steady_128_bpm_train_reads_128_inside_its_bounds() {
+    let p = read(&pulses(12.0, 60.0 / 128.0));
+    let full = whole(&p, track(&p, Group::Broadband));
+    assert!(full.len() > 10);
+    for w in full {
+        let lead = w.peaks[0];
+        assert!((lead.bpm - 128.0).abs() < 0.005, "{w:?}");
+        assert!(within(lead.bpm_bounds, 128.0), "{w:?}");
+        assert!(within(lead.period_bounds_secs, 60.0 / 128.0), "{w:?}");
+        let (lo, hi) = lead.period_bounds_secs.expect("a whole window");
+        assert!(hi - lo <= p.lag_step_secs * (1.0 + 1e-9), "{w:?}");
+    }
+}
+
+/// Tempos 61 to 176 bpm, some a hair off a lag or half lag, lie inside every whole window's bounds.
+#[test]
+fn the_true_tempo_lies_inside_the_bounds_across_a_sweep() {
+    for bpm in [
+        61.3, 77.7, 84.05, 90.1, 104.03, 117.2, 133.3, 147.32, 163.6, 175.44,
+    ] {
+        let period = 60.0 / bpm;
+        let p = read(&pulses(12.0, period));
+        for w in whole(&p, track(&p, Group::Broadband)) {
+            let lead = w.peaks[0];
+            assert!(within(lead.period_bounds_secs, period), "{bpm}: {w:?}");
+            assert!(within(lead.bpm_bounds, bpm), "{bpm}: {w:?}");
+        }
+    }
 }
 
 /// Each click moved up to 40 ms either way repeats less: every lead stands under the
@@ -143,11 +208,10 @@ fn a_kick_leads_the_low_band_and_hats_the_rest_at_double_rate() {
     let p = read(&out);
     let low = track(&p, Group::Low);
     assert!(low.centres_hz.iter().all(|&hz| hz < 150.0) && !low.centres_hz.is_empty());
-    for (period, _) in leads(low) {
-        assert_eq!(period, 0.5);
-    }
-    for (period, _) in leads(track(&p, Group::Rest)) {
-        assert_eq!(period, 0.25);
+    for (track, period) in [(low, 0.5), (track(&p, Group::Rest), 0.25)] {
+        for w in whole(&p, track) {
+            assert!(within(w.peaks[0].period_bounds_secs, period), "{w:?}");
+        }
     }
 }
 

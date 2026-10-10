@@ -503,9 +503,12 @@ fn periodicity_window_json(w: &Window) -> String {
         num(w.to_secs),
         maybe(w.drift_bpm),
         list(&w.peaks, |p| format!(
-            "{{ \"period_secs\": {}, \"bpm\": {}, \"height\": {} }}",
+            "{{ \"period_secs\": {}, \"period_bounds_secs\": {}, \"bpm\": {}, \
+             \"bpm_bounds\": {}, \"height\": {} }}",
             num(p.period_secs),
+            bounds_json(p.period_bounds_secs),
             num(p.bpm),
+            bounds_json(p.bpm_bounds),
             num(p.height)
         ))
     )

@@ -4,6 +4,7 @@ use super::bands::{self, Bands, Smoothing};
 use super::onsets::spectral_flux;
 use super::sliding::{self, Stats, Unread, stats};
 use crate::fft::{fft, ifft};
+use crate::stft::hann_periodic;
 
 /// A band belongs to `low` where its centre is under this; kick and sub sit there.
 pub const SPLIT_HZ: f64 = 150.0;
@@ -44,13 +45,35 @@ pub const MODEL: &str = "onset strength: the spectral flux `onsets` takes, sum o
                          taken by FFT and exact up to its rounding, and an envelope repeating \
                          exactly every tau peaks near 1 - tau/W, so of two periods that repeat \
                          equally the shorter reads higher, and heights at different periods or \
-                         spans are not on one scale. peaks: lags from `min_period_secs` to \
-                         `max_period_secs` whose height is positive, over the lag before and \
-                         no lower than the lag after, the highest three, highest first; a \
-                         period is that lag on the envelope's grid, `lag_step_secs` apart, with \
-                         no interpolation between lags; bpm = 60 / period. No tempo prior (Ellis \
-                         weights by a log-Gaussian) and no octave choice: a beat, its half and \
-                         its double may each lead, and each is reported; no inter-onset \
+                         spans are not on one scale. place(tau): the same y under a periodic \
+                         Hann taper w, sum of y[n] w[n] y[n + tau] w[n + tau] over sum of w[n] \
+                         w[n + tau], the taper's own autocorrelation divided out: the window's \
+                         ends no longer cut an onset abruptly, which in the plain sum skews a \
+                         peak by up to a quarter lag, and the bias toward short lags is gone \
+                         (Harris, F. J. (1978), On the use of windows for harmonic analysis \
+                         with the discrete Fourier transform, Proc. IEEE 66(1) 51-83). peaks: \
+                         lags L from `min_period_secs` to `max_period_secs` whose height is \
+                         positive and whose place is over the lag before's and no lower than \
+                         the lag after's, the highest three by height, highest first, each \
+                         with the plain curve's height at L. period: L + d lags of \
+                         `lag_step_secs`, d the vertex of the parabola through place at L - 1, \
+                         L and L + 1 (Smith, J. O. and Serra, X. (1987), PARSHL, Proc. ICMC), \
+                         |d| <= 1/2; bpm = 60 / period. Bounds: under the model that place is \
+                         symmetric about the true period P and falls strictly away from it, L \
+                         reading at least its neighbours puts P within half a lag of L, and \
+                         the higher neighbour names the half: P lies in [L, L + 1/2] where \
+                         place at L + 1 is over place at L - 1, in [L - 1/2, L] otherwise; d \
+                         lies in that half too, so P is within r of the period, r the farther \
+                         end of that half from it, r <= 1/2 lag. `period_bounds_secs` is \
+                         period -+ r and `bpm_bounds` 60 over those. They cover the lag grid \
+                         and the interpolation alone, under that model, which no window can \
+                         confirm: an envelope not periodic across the window (a tempo moving, \
+                         onsets jittered) is outside it, and its place need not peak at any \
+                         one period. Both are null where the window refutes the model, place \
+                         not falling strictly from L - 1 to L - 2 and from L + 1 to L + 2, or \
+                         leaves the stated span, clipped at the target's ends. No tempo prior \
+                         (Ellis weights by a log-Gaussian) and no octave choice: a beat, its \
+                         half and its double may each lead, and each is reported; no inter-onset \
                          clustering or beat tracking (Dixon, S. (2001), Automatic extraction \
                          of tempo and beat from expressive performances, J. New Music Res. \
                          30(1) 39-58) is done. drift_bpm: the leading peak's bpm less the \
@@ -87,7 +110,13 @@ impl Group {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Peak {
     pub period_secs: f64,
+    /// Where MODEL's symmetric peak puts the true period; `None` where the window refutes or
+    /// leaves that model.
+    pub period_bounds_secs: Option<(f64, f64)>,
     pub bpm: f64,
+    /// 60 over `period_bounds_secs`.
+    pub bpm_bounds: Option<(f64, f64)>,
+    /// The plain curve's height at the peak's lag.
     pub height: f64,
 }
 
@@ -156,6 +185,7 @@ pub fn measure(
         window_secs,
         len,
     );
+    let size = (grid.window_secs * rate).round() as usize;
     let tracks = Group::ALL
         .into_iter()
         .zip(envelopes(&split))
@@ -164,12 +194,12 @@ pub fn measure(
                 .spans
                 .iter()
                 .map(|s| {
-                    let heights = heights(&envelope[s.from..s.to], lags.max + 1);
+                    let (heights, place) = heights(&envelope[s.from..s.to], lags.max + 1);
                     Window {
                         t_secs: s.t_secs,
                         from_secs: s.from_secs,
                         to_secs: s.to_secs,
-                        peaks: lags.peaks(&heights),
+                        peaks: lags.peaks(&heights, &place, s.to - s.from == size),
                         drift_bpm: None,
                         curve: curve.then(|| {
                             heights[..heights.len().min(lags.max + 1)]
@@ -238,17 +268,27 @@ fn envelopes(split: &Bands) -> Vec<(Vec<f64>, Vec<f64>)> {
         .collect()
 }
 
-/// The mean-removed segment's autocorrelation at lags `0..=top` the segment holds, over its
-/// value at lag 0; zero-padded past `len + top` so no lag wraps.
-fn heights(segment: &[f64], top: usize) -> Vec<f64> {
+/// At lags `0..=top` the segment holds: the mean-removed segment's autocorrelation over its
+/// value at lag 0, and MODEL's place, the curve a peak is located on.
+fn heights(segment: &[f64], top: usize) -> (Vec<f64>, Vec<f64>) {
     let top = top.min(segment.len().saturating_sub(1));
     let mean = segment.iter().sum::<f64>() / segment.len() as f64;
-    let n = (segment.len() + top + 1).next_power_of_two();
+    let y: Vec<f64> = segment.iter().map(|x| x - mean).collect();
+    let taper = hann_periodic(segment.len());
+    let tapered: Vec<f64> = y.iter().zip(&taper).map(|(y, w)| y * w).collect();
+    let plain = correlated(&y, top);
+    let (curve, own) = (correlated(&tapered, top), correlated(&taper, top));
+    (
+        plain.iter().map(|r| r / plain[0]).collect(),
+        curve.iter().zip(&own).map(|(c, w)| c / w).collect(),
+    )
+}
+
+/// sum over n of x[n] x[n + tau] at lags `0..=top`, zero-padded past `len + top` so no lag wraps.
+fn correlated(x: &[f64], top: usize) -> Vec<f64> {
+    let n = (x.len() + top + 1).next_power_of_two();
     let mut re = vec![0.0; n];
-    for (y, x) in re.iter_mut().zip(segment) {
-        *y = x - mean;
-    }
-    let energy: f64 = re.iter().map(|y| y * y).sum();
+    re[..x.len()].copy_from_slice(x);
     let mut im = vec![0.0; n];
     fft(&mut re, &mut im);
     for (r, i) in re.iter_mut().zip(im.iter_mut()) {
@@ -257,7 +297,7 @@ fn heights(segment: &[f64], top: usize) -> Vec<f64> {
     }
     ifft(&mut re, &mut im);
     re.truncate(top + 1);
-    re.into_iter().map(|r| r / energy).collect()
+    re
 }
 
 struct Lags {
@@ -267,13 +307,12 @@ struct Lags {
 }
 
 impl Lags {
-    fn peaks(&self, heights: &[f64]) -> Vec<Peak> {
+    /// Local maxima of `place`, ranked by `heights`, each located and bounded as MODEL states;
+    /// `whole` where the window holds its full span.
+    fn peaks(&self, heights: &[f64], place: &[f64], whole: bool) -> Vec<Peak> {
         let last = self.max.min(heights.len().saturating_sub(2));
         let mut found: Vec<(usize, f64)> = (self.min.max(1)..=last)
-            .filter(|&l| {
-                let h = heights[l];
-                h > 0.0 && h > heights[l - 1] && h >= heights[l + 1]
-            })
+            .filter(|&l| heights[l] > 0.0 && place[l] > place[l - 1] && place[l] >= place[l + 1])
             .map(|l| (l, heights[l]))
             .collect();
         found.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -281,10 +320,23 @@ impl Lags {
             .into_iter()
             .take(PEAKS)
             .map(|(lag, height)| {
-                let period_secs = lag as f64 / self.rate;
+                let (before, at, after) = (place[lag - 1], place[lag], place[lag + 1]);
+                let shift = 0.5 * (before - after) / (before - 2.0 * at + after);
+                let half = match after > before {
+                    true => (0.0, 0.5),
+                    false => (-0.5, 0.0),
+                };
+                let reach = (shift - half.0).max(half.1 - shift);
+                let secs = |l: f64| (lag as f64 + l) / self.rate;
+                let period_secs = secs(shift);
+                let falls = place[lag - 2] < before
+                    && place.get(lag + 2).is_some_and(|&beyond| beyond < after);
+                let bounds = (whole && falls).then(|| (secs(shift - reach), secs(shift + reach)));
                 Peak {
                     period_secs,
+                    period_bounds_secs: bounds,
                     bpm: 60.0 / period_secs,
+                    bpm_bounds: bounds.map(|(lo, hi)| (60.0 / hi, 60.0 / lo)),
                     height,
                 }
             })

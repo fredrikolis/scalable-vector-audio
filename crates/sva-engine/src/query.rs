@@ -363,8 +363,8 @@ static PERIODICITY: Reading = Reading {
     takes: &[Arg::Frame, Arg::Window, Arg::Curve],
     reads: Reads::Samples,
     help: "how strongly its onset strength repeats per sliding window, broadband, under 150 Hz \
-           and over: the leading periods in seconds and bpm, their autocorrelation heights, \
-           the drift between windows",
+           and over: the leading periods in seconds and bpm with their bounds, their \
+           autocorrelation heights, the drift between windows",
     build: |g| Representation::Periodicity {
         frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
         window_secs: g.window.unwrap_or(DEFAULT_PERIODICITY_WINDOW_SECS),
