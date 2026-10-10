@@ -268,7 +268,7 @@ fn text(key: &str, value: &JsValue) -> Result<String, JsValue> {
 
 /// Each entry one call, as `--representation` writes it: `spectrum(peaks=8)`.
 fn representations_of(names: &[String]) -> Result<Vec<Asked>, JsValue> {
-    names
+    let calls = names
         .iter()
         .map(|name| {
             let call = sva_core::call(name).map_err(|e| thrown(&e))?;
@@ -278,9 +278,10 @@ fn representations_of(names: &[String]) -> Result<Vec<Asked>, JsValue> {
                     "drop the `=path`, and read it from `representations()`",
                 ));
             }
-            sva_core::asked(&call).map_err(|e| thrown(&e))
+            Ok(call)
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    sva_core::asked_all(&calls).map_err(|e| thrown(&e))
 }
 
 /// Nothing in a browser pushes back when memory grows inside the tab's own address space.

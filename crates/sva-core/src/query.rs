@@ -124,6 +124,24 @@ pub fn call(text: &str) -> Result<Call, CliError> {
     Ok(Call { name, args, dest })
 }
 
+/// Every call resolved. An answer keys each reading by its name, so a name asked twice
+/// would print one key twice and a JSON reader would keep only the last; it refuses.
+pub fn asked_all(calls: &[Call]) -> Result<Vec<Asked>, CliError> {
+    let mut out: Vec<Asked> = Vec::with_capacity(calls.len());
+    for call in calls {
+        let one = asked(call)?;
+        if out.iter().any(|held| held.name == one.name) {
+            return Err(CliError::Usage(format!(
+                "`{}` is asked more than once; ask each reading once, every argument in \
+                 its one call",
+                one.name
+            )));
+        }
+        out.push(one);
+    }
+    Ok(out)
+}
+
 /// The reading a call names, each argument read as that reading takes it.
 pub fn asked(call: &Call) -> Result<Asked, CliError> {
     let name = call.name.as_str();

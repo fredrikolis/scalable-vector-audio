@@ -3,7 +3,7 @@
 use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 
-use sva_core::{Asked, Call, CliError, asked, calls, is_wav, wav_path};
+use sva_core::{Asked, Call, CliError, asked_all, calls, is_wav, wav_path};
 use sva_engine::{DEFAULT_SAMPLE_RATE, MAX_PINNED_FRAME, Representation, pinned_frame};
 
 use super::{ANALYZE_REPRESENTATIONS, AnalyzeArgs, CacheAt, Command, RenderArgs, USAGE, value};
@@ -36,18 +36,16 @@ impl Flags {
     }
 
     fn resolved(&self, allowed: Option<&[&str]>) -> Result<Vec<Asked>, CliError> {
-        let mut out = Vec::with_capacity(self.calls.len());
-        for call in &self.calls {
-            let name = call.name.as_str();
-            let one = asked(call).map_err(usage)?;
-            if allowed.is_some_and(|set| !set.contains(&name)) {
-                return Err(CliError::Usage(format!(
-                    "`analyze` does not answer `{name}` — only {} need no rendered \
-                     graph\n{USAGE}",
-                    ANALYZE_REPRESENTATIONS.join(", ")
-                )));
-            }
-            out.push(one);
+        let out = asked_all(&self.calls).map_err(usage)?;
+        if let Some(one) = out
+            .iter()
+            .find(|one| allowed.is_some_and(|set| !set.contains(&one.name.as_str())))
+        {
+            return Err(CliError::Usage(format!(
+                "`analyze` does not answer `{}` — only {} need no rendered graph\n{USAGE}",
+                one.name,
+                ANALYZE_REPRESENTATIONS.join(", ")
+            )));
         }
         Ok(out)
     }

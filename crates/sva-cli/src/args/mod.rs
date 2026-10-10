@@ -424,6 +424,26 @@ mod tests {
         }
     }
 
+    /// The answer keys a reading by its name, so asking one twice would print that key twice.
+    #[test]
+    fn a_reading_asked_twice_refuses_by_name() {
+        for written in [
+            &["--representation", "spectrum(peaks=4),spectrum(frame=20ms)"][..],
+            &["--representation", "lines", "--representation", "lines"][..],
+            &["--representation", "samples=/tmp/a.wav,samples"][..],
+        ] {
+            let message = refused(&[&["render", "@a"][..], written].concat());
+            assert!(message.contains("asked more than once"), "{message}");
+        }
+        let message = refused(&[
+            "analyze",
+            "/tmp/a.wav",
+            "--representation",
+            "pitch,pitch(peaks=2)",
+        ]);
+        assert!(message.contains("`pitch`"), "{message}");
+    }
+
     #[test]
     fn a_representation_that_left_the_language_names_what_replaced_it() {
         for (gone, write) in sva_core::RETIRED {
