@@ -23,11 +23,19 @@ fn help_states_the_depth_peaks_oversample_and_frame_defaults() {
         assert!(page.contains(&format!("Default {held}")), "{held}: {page}");
     }
     assert!(
+        page.contains(&format!(
+            "Default {}; only a device",
+            sva_engine::DEFAULT_BUFFER_SECS
+        )),
+        "the buffer a live device holds: {page}"
+    );
+    assert!(
         page.contains(&format!("Default {}", sva_engine::DEFAULT_FRAME_SECS)),
         "the frame a pitch or stereo reading steps by: {page}"
     );
     for flag in [
         "ledger(depth=",
+        "samples(buffer=",
         "(peaks=",
         "alias(oversample=",
         "(frame=",

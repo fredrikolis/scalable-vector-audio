@@ -95,6 +95,7 @@ pub fn json_of(r: &Rendered, name: &str, representation: Representation) -> Stri
             profile: r.config.profile.name,
             label: r.label(),
             written: &[],
+            played: None,
             answers: &answers,
             limit: Some(SAMPLE_LIMIT),
         }),

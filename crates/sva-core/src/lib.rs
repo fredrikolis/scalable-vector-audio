@@ -14,8 +14,8 @@ mod tempo;
 mod until;
 
 pub use answer::{
-    Printed, Report, SAMPLE_LIMIT, answer_json, counters_json, label_json, query_data, stats_json,
-    stream_stats_json, value_json, work_json,
+    Played, Printed, Report, SAMPLE_LIMIT, answer_json, counters_json, label_json, query_data,
+    stats_json, stream_stats_json, value_json, work_json,
 };
 pub use builtins::{Builtins, Callable, Crossing, builtins, builtins_data};
 pub use cli_error::{CliError, LintViolation, lint_diagnostic};
@@ -23,7 +23,8 @@ pub use lint_code::LintCode;
 pub use outline::outline_data;
 pub use output::{Diagnostic, Severity, diagnostics_json, error_envelope, success_envelope};
 pub use query::{
-    Asked, Call, RETIRED, asked, asked_all, call, calls, is_wav, retired, seconds, wav_path,
+    Asked, Call, Destination, RETIRED, asked, asked_all, call, calls, is_wav, retired, seconds,
+    wav_path,
 };
 pub use target::{Edge, Target, target};
 pub use tempo::{Tempo, refuse_unresolved_bars, resolved as tempo};
@@ -35,11 +36,11 @@ use std::path::Path;
 
 use sva_ast::{Dir, Graph, Refusal, Source};
 use sva_engine::{
-    Ask, Change, Changed, DEFAULT_SAMPLE_RATE, EngineError, Range, RenderConfig, StreamConfig,
-    render, render_in,
+    Ask, Change, Changed, DEFAULT_SAMPLE_RATE, EngineError, PSYCHOACOUSTIC_V1, Range, RenderConfig,
+    StreamConfig, render, render_in,
 };
 
-pub use sva_engine::{Abandon, Handle, Never, Out, Placed, Session, Stream, Until};
+pub use sva_engine::{Abandon, Handle, Hear, Never, Out, Placed, Session, Stream, Until};
 
 pub use sva_engine::{Answer, Extent, Label, Output, Representation};
 pub use sva_engine::{
@@ -95,6 +96,7 @@ pub struct Job<'a> {
     pub volatile: &'a [String],
     pub out: Out,
     pub abandon: &'a dyn Abandon,
+    pub hear: Option<&'a dyn Hear>,
     /// The most threads it computes on; `None` takes every core the platform reports.
     pub threads: Option<NonZeroUsize>,
 }
@@ -111,6 +113,7 @@ impl<'a> Job<'a> {
             volatile: &[],
             out: Out::Kept,
             abandon: &Never,
+            hear: None,
             threads: None,
         }
     }
@@ -162,9 +165,7 @@ fn settle(job: &Job) -> Result<(Graph, RenderConfig), CliError> {
         until,
         ..RenderConfig::at(rate)
     };
-    if let Some(bits) = job.bits {
-        config.profile.precision_bits = precision(bits)?;
-    }
+    config.profile.precision_bits = precision_bits(job.bits)?;
     config.volatile = job.volatile.to_vec();
     config.out = job.out;
     if let Some(threads) = job.threads {
@@ -228,7 +229,15 @@ pub async fn execute_over<B: Backend>(
     session: &mut Session,
 ) -> Result<Rendered, CliError> {
     let (graph, config) = settle(&job)?;
-    let render = render_in(session, &graph, PROBE, config, tier, job.abandon).await;
+    let render = render_in(
+        session,
+        &graph,
+        PROBE,
+        config,
+        tier,
+        (job.abandon, job.hear),
+    )
+    .await;
     rendered(&job, graph, render)
 }
 
@@ -398,6 +407,11 @@ fn streamed(
         .cloned()
         .expect("the target was defined as the probe");
     Ok((delta, expr))
+}
+
+/// The precision a render writes every sample to: `bits`, else the profile's own.
+pub fn precision_bits(bits: Option<i32>) -> Result<i32, CliError> {
+    bits.map_or(Ok(PSYCHOACOUSTIC_V1.precision_bits), precision)
 }
 
 /// A double holds no bit past its own mantissa, and one bit writes only zero.

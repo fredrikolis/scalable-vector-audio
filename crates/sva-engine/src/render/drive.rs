@@ -128,7 +128,7 @@ impl Driver {
         Ok(Some(out))
     }
 
-    fn played(&self, from: i64) -> Buffer {
+    pub(super) fn played(&self, from: i64) -> Buffer {
         let end = self.end.map_or(self.at, |end| end.clamp(from, self.at));
         self.value_graph
             .samples(self.value_graph.root, Extent::new(from, end))

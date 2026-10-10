@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use sva_engine::{Arg, Given, READINGS, Representation};
+use sva_engine::{Arg, DEFAULT_BUFFER_SECS, Given, READINGS, Representation};
 
 use crate::cli_error::CliError;
 
@@ -21,12 +21,25 @@ pub struct Call {
     pub dest: Option<PathBuf>,
 }
 
+/// Where a reading goes instead of stdout: a path, its extension picking the format, or a
+/// live device named after `alsa:`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Destination {
+    File(PathBuf),
+    Alsa {
+        /// Any ALSA PCM name: `default`, `hw:1`, `plughw:1,0`.
+        device: String,
+        /// `samples(buffer=50ms)`: how much the device holds ahead of what it plays.
+        buffer_secs: f64,
+    },
+}
+
 /// A call resolved to the reading it names and the arguments only a front end reads.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Asked {
     pub name: String,
     pub representation: Representation,
-    pub dest: Option<PathBuf>,
+    pub dest: Option<Destination>,
     /// `bindings(node=@voice)`: the instance whose bindings are read.
     pub node: Option<String>,
     /// `ledger(brief=1)`: only the rows that clipped.
@@ -47,12 +60,32 @@ pub fn retired(name: &str) -> Option<&'static str> {
         .map(|(_, write)| *write)
 }
 
-/// A comma list of calls; a comma inside a call's parentheses separates its arguments.
+/// A comma list of calls; a comma inside a call's parentheses separates its arguments, and
+/// one inside an `alsa:` device name, `hw:1,0`, stays in it where no reading follows it.
 pub fn calls(text: &str) -> Result<Vec<Call>, CliError> {
-    split_outside(text, ',')?
-        .into_iter()
-        .map(|one| call(one.trim()))
-        .collect()
+    let mut joined: Vec<String> = Vec::new();
+    for one in split_outside(text, ',')? {
+        match joined.last_mut() {
+            Some(last) if names_a_device(last) && !names_a_reading(one) => {
+                last.push(',');
+                last.push_str(one);
+            }
+            _ => joined.push(one.to_string()),
+        }
+    }
+    joined.iter().map(|one| call(one.trim())).collect()
+}
+
+fn names_a_device(call: &str) -> bool {
+    let close = call.rfind(')').map_or(0, |at| at + 1);
+    call[close..]
+        .split_once('=')
+        .is_some_and(|(_, dest)| dest.trim_start().starts_with("alsa:"))
+}
+
+fn names_a_reading(text: &str) -> bool {
+    let head = text[..text.find(['(', '=']).unwrap_or(text.len())].trim();
+    READINGS.iter().any(|row| row.name == head) || retired(head).is_some()
 }
 
 /// `name`, `name(k=v, ...)`, either followed by `=path`.
@@ -121,6 +154,15 @@ pub fn asked_all(calls: &[Call]) -> Result<Vec<Asked>, CliError> {
     Ok(out)
 }
 
+impl Asked {
+    pub fn path(&self) -> Option<&Path> {
+        match &self.dest {
+            Some(Destination::File(path)) => Some(path),
+            Some(Destination::Alsa { .. }) | None => None,
+        }
+    }
+}
+
 /// The reading a call names, each argument read as that reading takes it.
 pub fn asked(call: &Call) -> Result<Asked, CliError> {
     let name = call.name.as_str();
@@ -141,6 +183,7 @@ pub fn asked(call: &Call) -> Result<Asked, CliError> {
         ));
     };
     let (mut given, mut node, mut brief, mut skim) = (Given::default(), None, false, false);
+    let mut buffer = None;
     for (key, raw) in &call.args {
         let Some(arg) = row.takes.iter().find(|arg| arg.key() == key) else {
             let keys: Vec<&str> = row.takes.iter().map(|arg| arg.key()).collect();
@@ -160,6 +203,7 @@ pub fn asked(call: &Call) -> Result<Asked, CliError> {
             Arg::Brief => brief = switch(raw, key)?,
             Arg::Skim => skim = switch(raw, key)?,
             Arg::Node => node = Some(self::node(raw)?),
+            Arg::Buffer => buffer = Some(microseconds(raw, key)?),
         }
     }
     if row.takes.contains(&Arg::Node) && node.is_none() {
@@ -171,11 +215,41 @@ pub fn asked(call: &Call) -> Result<Asked, CliError> {
     Ok(Asked {
         name: call.name.clone(),
         representation: row.representation(&given),
-        dest: call.dest.clone(),
+        dest: destination(name, call.dest.as_deref(), buffer)?,
         node,
         brief,
         skim,
     })
+}
+
+/// `alsa:` opens a device name, and only a device has a buffer to size.
+fn destination(
+    name: &str,
+    dest: Option<&Path>,
+    buffer: Option<f64>,
+) -> Result<Option<Destination>, CliError> {
+    let device = dest.and_then(|d| d.to_str()?.strip_prefix("alsa:"));
+    match (dest, device, buffer) {
+        (_, Some(""), _) => Err(CliError::usage(
+            "destination.no_device",
+            format!(
+                "`{name}=alsa:` names no device; write an ALSA device after it, as \
+                 `alsa:default` or `alsa:hw:1`"
+            ),
+        )),
+        (_, Some(device), _) => Ok(Some(Destination::Alsa {
+            device: device.to_string(),
+            buffer_secs: buffer.unwrap_or(DEFAULT_BUFFER_SECS),
+        })),
+        (_, None, Some(_)) => Err(CliError::usage(
+            "query.buffer_without_device",
+            format!(
+                "`buffer` sizes a live device's buffer, and `{name}` names none; write \
+                 `{name}(buffer=...)=alsa:<device>`, or drop `buffer`"
+            ),
+        )),
+        (dest, None, None) => Ok(dest.map(|d| Destination::File(d.to_path_buf()))),
+    }
 }
 
 /// `raw` split at each `sep` no parenthesis encloses.
@@ -271,6 +345,21 @@ pub fn seconds(raw: &str, key: &str) -> Result<f64, CliError> {
         _ => Err(CliError::usage(
             "query.bad_value",
             format!("`{key}` needs a positive time, as `50ms` or `0.05`, got `{raw}`"),
+        )),
+    }
+}
+
+/// A device takes its buffer in whole microseconds, as a C `int`.
+fn microseconds(raw: &str, key: &str) -> Result<f64, CliError> {
+    let secs = seconds(raw, key)?;
+    match (1.0..=f64::from(i32::MAX)).contains(&(secs * 1e6).round()) {
+        true => Ok(secs),
+        false => Err(CliError::usage(
+            "query.bad_value",
+            format!(
+                "`{key}` is a whole number of microseconds from 1us to {}s, got `{raw}`",
+                i32::MAX / 1_000_000
+            ),
         )),
     }
 }

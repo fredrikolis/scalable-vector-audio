@@ -107,6 +107,7 @@ pub fn write(printed: &Printed, dest: &Path, framing: &Framing) -> Result<(), Cl
             profile: framing.profile,
             label: None,
             written: &[],
+            played: None,
             answers: std::slice::from_ref(printed),
             limit: None,
         }),

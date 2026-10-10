@@ -3,7 +3,7 @@
 use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 
-use sva_core::{Asked, Call, CliError, asked_all, calls, is_wav, wav_path};
+use sva_core::{Asked, Call, CliError, Destination, asked_all, calls, is_wav, wav_path};
 use sva_engine::{DEFAULT_SAMPLE_RATE, MAX_PINNED_FRAME, READINGS, Representation, pinned_frame};
 
 use super::{AnalyzeArgs, CacheAt, Command, RenderArgs, value};
@@ -35,9 +35,14 @@ impl Flags {
         Ok(true)
     }
 
-    /// `off_file` keeps to the readings a file's samples answer alone.
+    /// `off_file` keeps to the readings a file's samples answer alone, and to files.
     fn resolved(&self, off_file: bool) -> Result<Vec<Asked>, CliError> {
         let out = asked_all(&self.calls)?;
+        for one in &out {
+            if let Some(Destination::Alsa { device, .. }) = &one.dest {
+                refuse_device(&one.name, device, off_file)?;
+            }
+        }
         if let Some(one) = out
             .iter()
             .find(|one| off_file && !one.representation.off_samples(true))
@@ -101,7 +106,7 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
         }
     }
     let asked = flags.resolved(false)?;
-    refuse_shared_destination(asked.iter().filter_map(|a| a.dest.as_deref()))?;
+    refuse_shared_destination(asked.iter().filter_map(Asked::path))?;
     if asked.is_empty() {
         return Err(CliError::usage(
             "cli.missing_argument",
@@ -139,7 +144,7 @@ pub(super) fn analyze_args(rest: &[String]) -> Result<Command, CliError> {
         ));
     }
     let asked = flags.resolved(true)?;
-    refuse_shared_destination(asked.iter().filter_map(|a| a.dest.as_deref()))?;
+    refuse_shared_destination(asked.iter().filter_map(Asked::path))?;
     if asked.is_empty() {
         return Err(CliError::usage(
             "cli.missing_argument",
@@ -232,6 +237,29 @@ fn refuse_audio_dest(name: &str, dest: Option<&Path>) -> Result<(), CliError> {
         ));
     }
     Ok(())
+}
+
+/// A device plays audio as a render pulls it, so only a render's `samples` goes to one.
+fn refuse_device(name: &str, device: &str, off_file: bool) -> Result<(), CliError> {
+    if name != "samples" {
+        return Err(CliError::usage(
+            "destination.not_audio",
+            format!(
+                "`alsa:{device}` plays audio, and `{name}` is not audio; write \
+                 `samples=alsa:{device}`, and `{name}` to stdout or a path"
+            ),
+        ));
+    }
+    if off_file {
+        return Err(CliError::usage(
+            "destination.needs_render",
+            format!(
+                "`alsa:{device}` plays a render as it is pulled, and `analyze` renders \
+                 nothing; play a composition with `sva-cli render`"
+            ),
+        ));
+    }
+    crate::device::refuse_unsupported(device)
 }
 
 /// A transform sized to fit is not the grid the caller asked two windows to share.

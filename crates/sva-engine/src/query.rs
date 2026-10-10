@@ -14,6 +14,8 @@ pub const DEFAULT_FRAME_SECS: f64 = 0.05;
 pub const DEFAULT_MAX_PEAKS: usize = 16;
 pub const DEFAULT_LEDGER_DEPTH: usize = 3;
 pub const DEFAULT_OVERSAMPLE: u32 = 4;
+/// How much audio a live device holds ahead of what it plays, where `samples` names one.
+pub const DEFAULT_BUFFER_SECS: f64 = 0.05;
 
 /// Every named argument a reading may take; the engine reads only those `Given` holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +27,7 @@ pub enum Arg {
     Brief,
     Skim,
     Node,
+    Buffer,
 }
 
 impl Arg {
@@ -37,6 +40,7 @@ impl Arg {
             Arg::Brief => "brief",
             Arg::Skim => "skim",
             Arg::Node => "node",
+            Arg::Buffer => "buffer",
         }
     }
 }
@@ -157,9 +161,10 @@ static DERIVATIVE: Reading = Reading {
 
 static SAMPLES: Reading = Reading {
     name: "samples",
-    takes: &[],
+    takes: &[Arg::Buffer],
     reads: Reads::Samples,
-    help: "the samples themselves; a `.wav` destination writes them as audio",
+    help: "the samples themselves; a `.wav` destination writes them as audio, an \
+           `alsa:<device>` one plays them as they render",
     build: |_| Representation::Samples,
 };
 

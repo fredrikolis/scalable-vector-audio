@@ -49,7 +49,7 @@ pub fn write_wav(
 }
 
 /// `bits` of full scale, shifted up to fill a `word`-bit sample.
-fn quantize(sample: f32, bits: u8, word: u8) -> i32 {
+pub(crate) fn quantize(sample: f32, bits: u8, word: u8) -> i32 {
     let full = ((1i32 << (bits - 1)) - 1) as f32;
     ((sample.clamp(-1.0, 1.0) * full).round() as i32) << (word - bits)
 }

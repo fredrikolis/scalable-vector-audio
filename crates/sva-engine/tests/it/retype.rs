@@ -27,7 +27,7 @@ fn mixed(name: &str, hz: u32) -> Graph {
 }
 
 fn rendered(session: &mut Session, graph: &Graph, tier: &Tier) -> Render {
-    let held = render_in(session, graph, "master", config(), tier, &Never).now();
+    let held = render_in(session, graph, "master", config(), tier, (&Never, None)).now();
     held.unwrap_or_else(|e| panic!("{e}"))
 }
 
@@ -109,7 +109,15 @@ fn a_refused_render_leaves_the_session_as_it_was() {
             ("master", "sample(@p*0.5) + lowpass(1)\n"),
         ],
     );
-    let refused = render_in(&mut session, &broken, "master", config(), &tier, &Never).now();
+    let refused = render_in(
+        &mut session,
+        &broken,
+        "master",
+        config(),
+        &tier,
+        (&Never, None),
+    )
+    .now();
     assert!(refused.is_err(), "a lowpass of no cutoff refuses");
     let edited = mixed("retype-mended", 440);
     let after = rendered(&mut session, &edited, &tier);
@@ -126,14 +134,30 @@ fn a_session_renders_each_target_and_each_composition_as_a_render_of_its_own() {
     let tier = Tier::default();
     let graph = mixed("retype-targets", 220);
     for target in ["master", "p", "master", "x"] {
-        let held = render_in(&mut session, &graph, target, config(), &tier, &Never).now();
+        let held = render_in(
+            &mut session,
+            &graph,
+            target,
+            config(),
+            &tier,
+            (&Never, None),
+        )
+        .now();
         let held = held.unwrap_or_else(|e| panic!("{target}: {e}"));
         let alone = render_over(&graph, target, config(), &Tier::default()).now();
         assert_eq!(bits(&held), bits(&alone.expect("a render")), "{target}");
     }
     let mut lacking = graph.clone();
     lacking.set("x", None);
-    let refused = render_in(&mut session, &lacking, "master", config(), &tier, &Never).now();
+    let refused = render_in(
+        &mut session,
+        &lacking,
+        "master",
+        config(),
+        &tier,
+        (&Never, None),
+    )
+    .now();
     let alone = render_over(&lacking, "master", config(), &Tier::default()).now();
     assert_eq!(
         refused.err().map(|e| e.to_string()),
@@ -162,7 +186,7 @@ fn turned(session: &mut Session, cutoff: u32, tier: &Tier) -> (Vec<String>, Rend
         "master",
         config.clone(),
         tier,
-        &Never,
+        (&Never, None),
     )
     .now();
     let held = held.unwrap_or_else(|e| panic!("{e}"));

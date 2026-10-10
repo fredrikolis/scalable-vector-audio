@@ -5,6 +5,7 @@ mod arity;
 mod bare;
 mod composition;
 mod destination;
+mod device;
 mod directory;
 mod help;
 mod lint;

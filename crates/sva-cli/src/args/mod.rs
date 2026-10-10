@@ -404,10 +404,7 @@ mod tests {
         assert_eq!(args.threads.map(std::num::NonZeroUsize::get), Some(3));
         let names: Vec<&str> = args.asked.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, ["samples", "spectrum", "ledger", "bindings"]);
-        assert_eq!(
-            args.asked[0].dest.as_deref(),
-            Some(Path::new("/tmp/out.wav"))
-        );
+        assert_eq!(args.asked[0].path(), Some(Path::new("/tmp/out.wav")));
         assert_eq!(
             args.asked[1].representation,
             sva_engine::Representation::Spectrum {
@@ -420,10 +417,7 @@ mod tests {
             sva_engine::Representation::Ledger { depth: 2 }
         );
         assert!(args.asked[2].brief);
-        assert_eq!(
-            args.asked[2].dest.as_deref(),
-            Some(Path::new("/tmp/ledger.json"))
-        );
+        assert_eq!(args.asked[2].path(), Some(Path::new("/tmp/ledger.json")));
         assert_eq!(args.asked[3].node.as_deref(), Some("voice"));
     }
 
@@ -525,6 +519,139 @@ mod tests {
     #[test]
     fn a_wav_destination_takes_samples_and_nothing_else() {
         refused(&["render", "@a", "--representation", "ledger=/tmp/out.wav"]);
+    }
+
+    /// `alsa:` after `=` names a live device; its buffer is the reading's own argument, at
+    /// the table's default until written, and the other flags and readings stand beside it.
+    #[test]
+    fn a_device_destination_takes_samples_and_a_buffer_beside_every_other_flag() {
+        use sva_core::Destination;
+        let row = sva_engine::Representation::Samples.reading();
+        assert_eq!(row.takes, [sva_engine::Arg::Buffer]);
+        assert_eq!(sva_engine::Arg::Buffer.key(), "buffer");
+        let args = rendered(&["render", "@a", "--representation", "samples=alsa:default"]);
+        assert_eq!(
+            args.asked[0].dest,
+            Some(Destination::Alsa {
+                device: "default".to_string(),
+                buffer_secs: sva_engine::DEFAULT_BUFFER_SECS,
+            })
+        );
+        assert_eq!(args.asked[0].path(), None);
+        let args = rendered(&[
+            "render",
+            "@a",
+            "--representation",
+            "samples(buffer=20ms)=alsa:hw:1,0,loudness",
+            "--until",
+            "t > 1s",
+            "--rate",
+            "44100",
+        ]);
+        let names: Vec<&str> = args.asked.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["samples", "loudness"]);
+        assert_eq!(
+            args.asked[0].dest,
+            Some(Destination::Alsa {
+                device: "hw:1,0".to_string(),
+                buffer_secs: 0.02,
+            }),
+            "a comma inside a device name stays in it where no reading follows"
+        );
+        assert_eq!(args.asked[1].dest, None);
+        assert_eq!(args.until.as_deref(), Some("t > 1s"));
+        assert_eq!(args.rate, Some(44_100));
+        let args = rendered(&[
+            "render",
+            "@a",
+            "--representation",
+            "lines,samples=alsa:plughw:CARD=PCH,DEV=0",
+        ]);
+        assert_eq!(
+            args.asked[1].dest,
+            Some(Destination::Alsa {
+                device: "plughw:CARD=PCH,DEV=0".to_string(),
+                buffer_secs: sva_engine::DEFAULT_BUFFER_SECS,
+            })
+        );
+    }
+
+    #[test]
+    fn a_device_refuses_what_it_cannot_play_naming_the_text() {
+        let render = |r: &'static str| vec!["render", "@a", "--representation", r];
+        let cases: [(Vec<&str>, &str, &str); 9] = [
+            (
+                render("samples=alsa:hw:0,samples=alsa:hw:1"),
+                "query.duplicate",
+                "`samples`",
+            ),
+            (
+                render("samples=alsa:"),
+                "destination.no_device",
+                "`samples=alsa:`",
+            ),
+            (
+                render("loudness=alsa:default"),
+                "destination.not_audio",
+                "`loudness`",
+            ),
+            (
+                render("samples(buffer=50ms)"),
+                "query.buffer_without_device",
+                "`samples`",
+            ),
+            (
+                render("samples(buffer=50ms)=/tmp/a.wav"),
+                "query.buffer_without_device",
+                "`buffer`",
+            ),
+            (
+                render("samples(buffer=0)=alsa:default"),
+                "query.bad_value",
+                "`0`",
+            ),
+            (
+                render("samples(buffer=5000s)=alsa:default"),
+                "query.bad_value",
+                "`5000s`",
+            ),
+            (
+                render("lines(buffer=1)"),
+                "query.unknown_argument",
+                "`buffer`",
+            ),
+            (
+                vec![
+                    "analyze",
+                    "/tmp/a.wav",
+                    "--representation",
+                    "samples=alsa:hw:1",
+                ],
+                "destination.needs_render",
+                "`alsa:hw:1`",
+            ),
+        ];
+        for (parts, code, text) in cases {
+            let Err(CliError::Usage {
+                code: held,
+                message,
+            }) = parse_args(&argv(&parts))
+            else {
+                panic!("{parts:?} refuses as an argument mistake");
+            };
+            assert_eq!(held, code, "{parts:?}: {message}");
+            assert!(message.contains(text), "{parts:?}: {message}");
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn off_linux_a_device_refuses_at_parse_as_an_unsupported_platform() {
+        let parts = argv(&["render", "@a", "--representation", "samples=alsa:default"]);
+        let Err(CliError::Usage { code, .. }) = parse_args(&parts) else {
+            panic!("refused");
+        };
+        assert_eq!(code, "destination.unsupported_platform");
     }
 
     #[test]

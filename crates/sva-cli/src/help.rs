@@ -2,8 +2,8 @@
 
 use sva_core::DEFAULT_STORE_BYTES;
 use sva_engine::{
-    DEFAULT_FRAME_SECS, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE,
-    DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1, READINGS, Reads,
+    DEFAULT_BUFFER_SECS, DEFAULT_FRAME_SECS, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS,
+    DEFAULT_OVERSAMPLE, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1, READINGS, Reads,
 };
 
 /// Read off the constants the parser itself defaults to, so a printed default cannot drift
@@ -74,9 +74,19 @@ RENDER:
   followed by `=<path>` writes a file instead, listed under `written`:
   `samples=<path>.wav` writes audio, encoded as `--bits` says; any other path
   takes the reading's JSON, uncapped. A path that already holds a file refuses
-  unless `--confirm` is written. `lines`, `atoms`, `derivative`, `bindings`,
-  `arguments`, and a closed form's `spectrum`, `envelope` and `pitch`, read the
-  expression and ignore the range.
+  unless `--confirm` is written. `samples=alsa:<device>` plays the samples on
+  that ALSA device (`alsa:default`, `alsa:hw:1`, `alsa:plughw:1,0`) as each
+  block is pulled, in real time, through `aplay` from alsa-utils; Linux only,
+  anywhere else it refuses as `destination.unsupported_platform`. It sends
+  32-bit floats, or integer PCM where `--bits` is 16 or under. A device that
+  cannot take the format refuses with aplay's reason, and one aplay says plays
+  another rate than the render's stops there as `destination.rate_inexact`.
+  `samples(buffer=<t>)` is how much the device holds ahead of what it plays.
+  Once it has played out, `data.played` states the device, its seconds, rate,
+  channels, format, the buffer asked and the one granted, and every underrun
+  aplay reported, with what it cannot see.
+  `lines`, `atoms`, `derivative`, `bindings`, `arguments`, and a closed form's
+  `spectrum`, `envelope` and `pitch`, read the expression and ignore the range.
 
   A closed form's `spectrum` and `pitch` are its exact lines, so a term under a
   crop or an envelope, which has a width and is no line, refuses them; so do
@@ -251,6 +261,8 @@ EXAMPLES:
     --until 'envelope(t) < -60db and t > 1s' --representation samples=/tmp/note.wav
   sva-cli render 'sample(@chord/home)' --representation 'spectrum(peaks=8)' --rate 48000
   sva-cli render 'sample(@voice/note([0, 2s], f0=C4))' --representation pitch
+  sva-cli render '@master' \
+    --representation 'samples(buffer=100ms)=alsa:default,loudness'
   sva-cli lint
   sva-cli lint '@master'
   sva-cli trace grid/phrase-2b
@@ -292,6 +304,9 @@ DEFAULTS:
                        Default {DEFAULT_FRAME_SECS}, except `spectrum`, which sizes
                        its own transform to the range unless it is set.
   bindings(node=@<path>) the instance whose bindings are read; required.
+  samples(buffer=<t>)  how much an `alsa:` device holds ahead of what it plays,
+                       in seconds. Default {DEFAULT_BUFFER_SECS}; only a device
+                       has one.
   ledger(brief, skim)  `0` unless set `1`.
   --format <json|text> how `lint` prints its findings: the envelope, or one
                        terminal line each, colored where stdout is a terminal.

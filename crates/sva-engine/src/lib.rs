@@ -35,14 +35,14 @@ pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
 pub use meaning::{Meaning, meaning};
 pub use query::{
-    Answer, Arg, Ask, Atom, DEFAULT_FRAME_SECS, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS,
-    DEFAULT_OVERSAMPLE, Given, Output, READINGS, Reading, Reads, Representation,
+    Answer, Arg, Ask, Atom, DEFAULT_BUFFER_SECS, DEFAULT_FRAME_SECS, DEFAULT_LEDGER_DEPTH,
+    DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, Given, Output, READINGS, Reading, Reads, Representation,
 };
 pub use refs::{identity, nodes_in, spectral_sum_of};
 pub use render::until::{Cmp, Term};
 pub use render::{
-    Abandon, Built, Change, Changed, Counts, Handle, LATEST, NOTES, Never, Out, Placed, Range,
-    Render, RenderConfig, STREAMED, Session, Stream, StreamConfig, Until, Work, answer,
+    Abandon, Built, Change, Changed, Counts, Handle, Hear, LATEST, NOTES, Never, Out, Placed,
+    Range, Render, RenderConfig, STREAMED, Session, Stream, StreamConfig, Until, Work, answer,
     answer_buffer, change, ends, fetch, plan, render, render_in, render_over, sketch_atom,
 };
 pub use schedule::{Order, Schedule, schedule_from};

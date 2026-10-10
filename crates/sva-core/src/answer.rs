@@ -622,8 +622,48 @@ pub struct Report<'a> {
     pub profile: &'a str,
     pub label: Option<&'a Label>,
     pub written: &'a [(String, &'a Path)],
+    /// Absent where no reading named a live device.
+    pub played: Option<&'a Played>,
     pub answers: &'a [Printed],
     pub limit: Option<usize>,
+}
+
+/// What a live device played, as its player reported it back.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Played {
+    pub representation: String,
+    /// As the destination named it, `alsa:hw:1`.
+    pub device: String,
+    pub seconds: f64,
+    pub rate: u32,
+    pub channels: usize,
+    /// The ALSA sample format the samples were sent in, `FLOAT_LE`.
+    pub format: &'static str,
+    pub buffer_secs: f64,
+    /// What the device gave for the buffer asked; `None` where the player stated none.
+    pub granted_buffer_secs: Option<f64>,
+    pub underruns: usize,
+    /// What saw the underruns `underruns` counts, and what it cannot see.
+    pub underruns_seen_by: &'static str,
+}
+
+fn played_json(played: &Played) -> String {
+    format!(
+        "{{ \"representation\": \"{}\", \"device\": \"{}\", \"seconds\": {}, \
+         \"sample_rate\": {}, \"channels\": {}, \"format\": \"{}\", \"buffer\": {{ \
+         \"asked_secs\": {}, \"granted_secs\": {} }}, \"underruns\": {{ \"count\": {}, \
+         \"seen_by\": \"{}\" }} }}",
+        escape(&played.representation),
+        escape(&played.device),
+        num(played.seconds),
+        played.rate,
+        played.channels,
+        played.format,
+        num(played.buffer_secs),
+        maybe(played.granted_buffer_secs),
+        played.underruns,
+        escape(played.underruns_seen_by),
+    )
 }
 
 /// `written` names every reading that went to a file rather than into `representations`.
@@ -658,10 +698,13 @@ pub fn query_data(report: &Report) -> String {
             num(end)
         )
     });
+    let played = report.played.map_or(String::new(), |played| {
+        format!("\n  \"played\": {},", played_json(played))
+    });
     format!(
         "{{\n  \"target\": \"{}\",\n  \"sample_rate\": {},\n  \"bits\": {},\n  \
          \"profile\": \"{}\",\n  \"interval\": {interval},\n  \"label\": {label},\n  \
-         \"written\": {written},\n  \"representations\": {{\n    {reads}\n  }}\n}}",
+         \"written\": {written},{played}\n  \"representations\": {{\n    {reads}\n  }}\n}}",
         escape(report.target),
         report.rate,
         report.bits.map_or(NONE.to_string(), |b| b.to_string()),

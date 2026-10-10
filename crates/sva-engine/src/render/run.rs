@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use sva_ast::Graph;
 use sva_formula::NodeId;
+use sva_samples::Buffer;
 
 use super::value_graph;
 use super::world::{Reach, Reached, Walking, World};
@@ -20,6 +21,12 @@ pub trait Abandon {
 }
 
 pub struct Never;
+
+/// What hears the root's samples block by block as they are pulled.
+pub trait Hear {
+    /// False lets the render go.
+    fn heard(&self, block: &Buffer) -> bool;
+}
 
 /// Renders made in turn, each advancing the version the last held.
 #[derive(Default)]
@@ -42,19 +49,28 @@ pub async fn render_over<B: Backend>(
     config: RenderConfig,
     tier: &Tier<B>,
 ) -> Result<Render, EngineError> {
-    render_in(&mut Session::default(), graph, target, config, tier, &Never).await
+    render_in(
+        &mut Session::default(),
+        graph,
+        target,
+        config,
+        tier,
+        (&Never, None),
+    )
+    .await
 }
 
 /// `target` over `tier`, from the root down, typed anew only where `session` typed it
 /// otherwise; a node memory answers stands as its samples. With `out` dropped and no reading,
-/// a root it answers ends the render unread. Abandoned, it stops before its next block.
+/// a root it answers ends the render unread. Abandoned, or a block not heard, it stops before
+/// its next block.
 pub async fn render_in<B: Backend>(
     session: &mut Session,
     graph: &Graph,
     target: &str,
     config: RenderConfig,
     tier: &Tier<B>,
-    abandon: &dyn Abandon,
+    (abandon, hear): (&dyn Abandon, Option<&dyn Hear>),
 ) -> Result<Render, EngineError> {
     let memory = tier.memory();
     let mut recording = Recording::over(memory);
@@ -119,8 +135,12 @@ pub async fn render_in<B: Backend>(
                 if abandon.abandoned().await {
                     return Err(EngineError::Abandoned);
                 }
+                let from = driver.at;
                 if !driver.pull()? {
                     break;
+                }
+                if hear.is_some_and(|hear| !hear.heard(&driver.played(from))) {
+                    return Err(EngineError::Abandoned);
                 }
                 let needs = driver.value_graph.needs(driver.next());
                 for (key, parts) in tier.fetch(&needs).await.handed {

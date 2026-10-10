@@ -3,13 +3,14 @@
 use std::path::Path;
 
 use sva_core::{
-    Answer, Asked, CliError, Diagnostic, Job, Output, Printed, Report, SAMPLE_LIMIT, Session, Tier,
-    cwd, execute_over, query_data,
+    Answer, Asked, CliError, Destination, Diagnostic, Hear, Job, Output, Printed, Report,
+    SAMPLE_LIMIT, Session, Tier, cwd, execute_over, query_data,
 };
 use sva_engine::{Buffer, PSYCHOACOUSTIC_V1, answer_buffer, cache_log};
 
 use crate::args::{AnalyzeArgs, RenderArgs};
 use crate::destination::{Framing, refuse_inside, refuse_replacing, write};
+use crate::device::Hearing;
 use crate::directory::Directory;
 use crate::store::wait;
 use crate::wav::{SampleEncoding, read_channels};
@@ -20,11 +21,9 @@ pub fn render(args: &RenderArgs) -> Result<String, CliError> {
     let here = crate::composition::composition()?;
     let (dir, target) = crate::composition::located(&here, &args.target)?;
     // Judged before the first is opened: a refusal on the last leaves none of them on disk.
-    for asked in &args.asked {
-        if let Some(dest) = asked.dest.as_deref() {
-            refuse_inside(&dir, dest)?;
-            refuse_replacing(dest, args.confirm)?;
-        }
+    for dest in args.asked.iter().filter_map(Asked::path) {
+        refuse_inside(&dir, dest)?;
+        refuse_replacing(dest, args.confirm)?;
     }
     let mut warnings = Vec::new();
     let tier = crate::store::opened(&args.cache, &mut warnings)?;
@@ -43,15 +42,23 @@ fn answered(
 ) -> Result<String, CliError> {
     let source = sva_ast::Dir::at(dir);
     let logs = std::env::var("SVA_LOG").is_ok_and(|level| level == "debug");
+    let hearing = hearing(args)?;
     let job = Job {
         until: args.until.as_deref(),
         rate: args.rate,
         bits: args.bits,
         asked: &args.asked,
         threads: args.threads,
+        hear: hearing.as_ref().map(|hearing| hearing as &dyn Hear),
         ..Job::over(&source, target)
     };
-    let rendered = wait(execute_over(job, tier, &mut Session::default()))?;
+    let rendered = wait(execute_over(job, tier, &mut Session::default()));
+    let stopped = hearing.as_ref().and_then(Hearing::stopped);
+    let rendered = match (rendered, stopped) {
+        (_, Some(why)) => return Err(why),
+        (rendered, None) => rendered?,
+    };
+    let played = hearing.map(Hearing::finish).transpose()?;
 
     let rate = rendered.config.rate;
     let stats = rendered.render.cache_stats.as_ref();
@@ -77,8 +84,9 @@ fn answered(
         replace: args.confirm,
     };
 
-    let mut taken = Vec::with_capacity(args.asked.len());
-    for asked in &args.asked {
+    let kept: Vec<&Asked> = args.asked.iter().filter(|a| !plays(a)).collect();
+    let mut taken = Vec::with_capacity(kept.len());
+    for asked in &kept {
         let node = asked.node.as_deref().unwrap_or(&rendered.target);
         let answer = rendered.answer(node, asked.representation)?;
         taken.push(match asked.brief {
@@ -86,7 +94,7 @@ fn answered(
             false => answer,
         });
     }
-    let (answers, written) = routed(&args.asked, taken, &framing)?;
+    let (answers, written) = routed(&kept, taken, &framing)?;
 
     Ok(query_data(&Report {
         target: &args.target,
@@ -96,17 +104,41 @@ fn answered(
         profile: rendered.config.profile.name,
         label: rendered.label(),
         written: &written,
+        played: played.as_ref(),
         answers: &answers,
         limit: Some(SAMPLE_LIMIT),
     }))
 }
 
+fn plays(asked: &Asked) -> bool {
+    matches!(asked.dest, Some(Destination::Alsa { .. }))
+}
+
+/// The device the render's `samples` plays on, opened before the render so a missing player
+/// refuses before anything is computed.
+fn hearing(args: &RenderArgs) -> Result<Option<Hearing>, CliError> {
+    let alsa = args.asked.iter().find_map(|a| match &a.dest {
+        Some(Destination::Alsa {
+            device,
+            buffer_secs,
+        }) => Some((a.name.as_str(), device, *buffer_secs)),
+        _ => None,
+    });
+    let Some((name, device, buffer_secs)) = alsa else {
+        return Ok(None);
+    };
+    let encoding = SampleEncoding::of(sva_core::precision_bits(args.bits)?);
+    let named = (name, args.target.as_str());
+    Hearing::open(device, buffer_secs, encoding, named).map(Some)
+}
+
 /// What stays in the envelope, and what left it for a file.
 type Routed<'a> = (Vec<Printed>, Vec<(String, &'a Path)>);
 
-/// Every reading is taken before any file is opened, so a later refusal writes nothing.
+/// Every reading is taken before any file is opened, so a later refusal writes nothing. A
+/// reading a device played was heard as the render pulled it, and is none of these.
 fn routed<'a>(
-    asked: &'a [Asked],
+    asked: &[&'a Asked],
     taken: Vec<Answer>,
     framing: &Framing,
 ) -> Result<Routed<'a>, CliError> {
@@ -118,11 +150,14 @@ fn routed<'a>(
             answer,
             skim: one.skim,
         };
-        match one.dest.as_deref() {
+        match &one.dest {
             None => answers.push(printed),
-            Some(dest) => {
+            Some(Destination::File(dest)) => {
                 write(&printed, dest, framing)?;
-                written.push((one.name.clone(), dest));
+                written.push((one.name.clone(), dest.as_path()));
+            }
+            Some(Destination::Alsa { .. }) => {
+                unreachable!("a device heard its reading as it rendered")
             }
         }
     }
@@ -151,7 +186,7 @@ fn briefed(answer: Answer) -> Answer {
 pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
     let dir = cwd()?;
     let composition = is_composition(&dir);
-    for dest in args.asked.iter().filter_map(|a| a.dest.as_deref()) {
+    for dest in args.asked.iter().filter_map(Asked::path) {
         if composition {
             refuse_inside(&dir, dest)?;
         }
@@ -191,7 +226,7 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
             .map_err(CliError::Engine)?,
         );
     }
-    let (answers, written) = routed(&args.asked, taken, &framing)?;
+    let (answers, written) = routed(&args.asked.iter().collect::<Vec<_>>(), taken, &framing)?;
     Ok(success_envelope(
         &query_data(&Report {
             target: &target,
@@ -201,6 +236,7 @@ pub fn analyze(args: &AnalyzeArgs) -> Result<String, CliError> {
             profile: PSYCHOACOUSTIC_V1.name,
             label: None,
             written: &written,
+            played: None,
             answers: &answers,
             limit: Some(SAMPLE_LIMIT),
         }),

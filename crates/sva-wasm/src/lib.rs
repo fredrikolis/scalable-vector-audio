@@ -642,6 +642,7 @@ fn answered(rendered: &Rendered, asked: &[Asked]) -> Result<JsValue, JsValue> {
         profile: rendered.config.profile.name,
         label: rendered.label(),
         written: &[],
+        played: None,
         answers: &answers,
         limit: Some(SAMPLE_LIMIT),
     }))
