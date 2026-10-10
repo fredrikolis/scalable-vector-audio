@@ -211,6 +211,8 @@ pub fn asked(call: &Call) -> Result<Asked, CliError> {
             Arg::Window => given.window = Some(seconds(raw, key)?),
             Arg::Curve => given.curve = switch(raw, key)?,
             Arg::Bpm => given.bpm = Some(tempo(raw, key)?),
+            Arg::Cell => given.cell_secs = seconds(raw, key)?,
+            Arg::Smooth => given.smooth_secs = seconds(raw, key)?,
         }
     }
     if row.takes.contains(&Arg::Node) && node.is_none() {

@@ -18,6 +18,7 @@ use sva_engine::harmony::voice_leading::{self, VoiceLeading};
 use sva_engine::modulation::{self, Modulation};
 use sva_engine::periodicity::{self, Periodicity, Track, Window};
 use sva_engine::pitch as pitch_names;
+use sva_engine::self_similarity::{self, SelfSimilarity};
 use sva_engine::sliding::Stats;
 
 use crate::json::{NONE, capped, escape, latest, list, num};
@@ -617,6 +618,98 @@ fn modulation_json(m: &Modulation) -> String {
     )
 }
 
+fn span_json(span: (f64, f64)) -> String {
+    format!("{{ \"from\": {}, \"to\": {} }}", num(span.0), num(span.1))
+}
+
+fn numbers(values: &[f64]) -> String {
+    let held: Vec<String> = values.iter().map(|v| num(*v)).collect();
+    format!("[{}]", held.join(", "))
+}
+
+fn self_similarity_cell_json(c: &self_similarity::Cell) -> String {
+    format!(
+        "\n    {{ \"t\": {}, \"from\": {}, \"to\": {}, \"chroma\": {}, \"levels_db\": {} }}",
+        num(c.t_secs),
+        num(c.from_secs),
+        num(c.to_secs),
+        numbers(&c.chroma),
+        numbers(&c.levels_db)
+    )
+}
+
+/// `matrix` is left out where not asked.
+fn self_similarity_view_json(v: &self_similarity::Reading, from_secs: f64, step: f64) -> String {
+    let matrix = v.matrix.as_ref().map_or(String::new(), |rows| {
+        let rows: Vec<String> = rows
+            .iter()
+            .map(|r| format!("\n      {}", numbers(r)))
+            .collect();
+        format!(", \"matrix\": [{}]", rows.join(","))
+    });
+    format!(
+        "\n    {{ \"view\": \"{}\", \"stripes_found\": {}, \"stripes\": {}, \
+         \"novelty\": {{ \"from_secs\": {}, \"step_secs\": {}, \"values\": {} }}, \
+         \"peaks_found\": {}, \"peaks\": {}{matrix} }}",
+        v.view.key(),
+        v.stripes_found,
+        list(&v.stripes, |s| format!(
+            "\n      {{ \"shift_semitones\": {}, \"lag_secs\": {}, \"earlier\": {}, \
+             \"later\": {}, \"cells\": {}, \"similarity_mean\": {}, \"similarity_min\": {} }}",
+            s.shift_semitones,
+            num(s.lag_secs),
+            span_json(s.earlier),
+            span_json(s.later),
+            s.cells,
+            num(s.similarity_mean),
+            num(s.similarity_min)
+        )),
+        num(from_secs),
+        num(step),
+        numbers(&v.novelty),
+        v.peaks_found,
+        list(&v.peaks, |p| format!(
+            "{{ \"t\": {}, \"novelty\": {} }}",
+            num(p.t_secs),
+            num(p.novelty)
+        ))
+    )
+}
+
+/// `cells` is left out where not asked.
+fn self_similarity_json(s: &SelfSimilarity) -> String {
+    let cells = s.cells.as_ref().map_or(String::new(), |c| {
+        format!(", \"cells\": {}", list(c, self_similarity_cell_json))
+    });
+    format!(
+        "{{ \"model\": \"{}\", \"hop_secs\": {}, \"frame_window_secs\": {}, \
+         \"resolution_hz\": {}, \"cell_secs\": {}, \"frames_per_cell\": {}, \
+         \"cell_count\": {}, \"max_cells\": {}, \"smooth_cells\": {}, \"kernel_cells\": {}, \
+         \"floor_db\": {}, \"listed\": {}, \"min_hz\": {}, \"max_hz\": {}, \
+         \"centres_hz\": {}{cells}, \"views\": {} }}",
+        escape(self_similarity::MODEL),
+        num(s.hop_secs),
+        num(s.frame_window_secs),
+        num(s.resolution_hz),
+        num(s.cell_secs),
+        s.frames_per_cell,
+        s.cell_count,
+        self_similarity::MAX_CELLS,
+        s.smooth_cells,
+        s.kernel_cells,
+        num(s.floor_db),
+        s.listed,
+        num(s.min_hz),
+        num(s.max_hz),
+        numbers(&s.centres_hz),
+        list(&s.views, |v| self_similarity_view_json(
+            v,
+            s.novelty_from_secs,
+            s.cell_secs
+        ))
+    )
+}
+
 fn binding_json(b: &Binding) -> String {
     format!(
         "\n    {{ \"name\": \"{}\", \"source\": \"{}\" }}",
@@ -717,6 +810,7 @@ pub fn value_json(output: &Output, limit: Option<usize>, skim: bool) -> String {
         Output::Inharmonicity(r) => inharmonicity_json(r),
         Output::Periodicity(p) => periodicity_json(p),
         Output::Modulation(m) => modulation_json(m),
+        Output::SelfSimilarity(s) => self_similarity_json(s),
         Output::Bindings(b) => list(b, binding_json),
         Output::Arguments(a) => list(a, arguments_json),
         Output::Envelope(frames) => list(frames, |f: &EnvelopeFrame| {

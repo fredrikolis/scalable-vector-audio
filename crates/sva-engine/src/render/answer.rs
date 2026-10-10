@@ -8,7 +8,7 @@ use sva_samples::measure::harmony::{
     self, Framing, Moment, chords, dissonance, inharmonicity, measured as framed, tonnetz,
     voice_leading,
 };
-use sva_samples::measure::{modulation, periodicity, sliding};
+use sva_samples::measure::{modulation, periodicity, self_similarity, sliding};
 use sva_samples::{
     Buffer, Consumes, Extent, Peak, PitchFrame, Profile, Source, measure::bands, measure::crest,
     measure::envelope, measure::formants, measure::loudness, measure::onsets, measure::pitch,
@@ -367,6 +367,27 @@ fn unread(
     })
 }
 
+/// Names the cell that fits and, through `shorter`, how to hand it a target that short.
+fn too_many_cells(
+    name: &str,
+    held: self_similarity::TooManyCells,
+    shorter: impl Fn(f64) -> String,
+) -> EngineError {
+    EngineError::refused(Diagnostic {
+        code: "read.too_many_cells".to_string(),
+        message: format!(
+            "the target's {}s at cell={}s is {} cells a side, past the {} a matrix holds",
+            held.held_secs, held.cell_secs, held.cells, held.cap
+        ),
+        location: Located::at(name, None),
+        help: format!(
+            "ask a coarser cell, as `self_similarity(cell={}s)`, or {}",
+            held.least_cell_secs,
+            shorter(held.most_secs)
+        ),
+    })
+}
+
 /// A closed form's envelope is exact or refused, never measured unasked: a refusal of its
 /// sum says so, and names `sample(...)` as the way to ask for the measured one.
 fn not_exact(representation: Representation, left: EngineError) -> EngineError {
@@ -604,6 +625,14 @@ fn measured(
                         "render an interval of at least {secs}s, as `@x([0, {secs}s])` writes one"
                     )
                 }),
+                NoReading::TooManyCells(held) => {
+                    too_many_cells(render.tys.name(node), held, |secs| {
+                        format!(
+                            "render an interval of at most {secs}s, as `@x([0, {secs}s])` \
+                             writes one"
+                        )
+                    })
+                }
             });
         }
     })
@@ -617,6 +646,7 @@ pub enum NoReading {
     TooNarrow { need: usize, held: usize },
     Crowded(Crowded),
     Unread(sliding::Unread),
+    TooManyCells(self_similarity::TooManyCells),
 }
 
 /// Every reading a buffer answers on its own, with no graph behind it.
@@ -701,6 +731,29 @@ pub fn off_buffer(buffer: &Buffer, representation: Representation) -> Result<Out
             modulation::measure(plane, sr, start, frame_secs, window_secs, bpm)
                 .map_err(NoReading::Unread)?,
         )),
+        Representation::SelfSimilarity {
+            frame_secs,
+            cell_secs,
+            smooth_secs,
+            window_secs,
+            floor_db,
+            listed,
+            curve,
+        } => {
+            let asked = self_similarity::Asked {
+                hop_secs: frame_secs,
+                cell_secs,
+                smooth_secs,
+                window_secs,
+                floor_db,
+                listed,
+                curve,
+            };
+            Output::SelfSimilarity(Box::new(
+                self_similarity::measure(plane, sr, start, asked)
+                    .map_err(NoReading::TooManyCells)?,
+            ))
+        }
         _ => return Err(NoReading::NeedsAGraph),
     })
 }
@@ -1037,6 +1090,9 @@ pub fn answer_buffer(
         NoReading::Crowded(held) => crowded(name, representation, held),
         NoReading::Unread(why) => unread(name, representation, why, |secs| {
             format!("analyze a file holding at least {secs}s")
+        }),
+        NoReading::TooManyCells(held) => too_many_cells(name, held, |secs| {
+            format!("analyze a file holding at most {secs}s")
         }),
     })?;
     Ok(Answer::whole(

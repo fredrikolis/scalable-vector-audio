@@ -2,9 +2,11 @@
 
 use sva_core::DEFAULT_STORE_BYTES;
 use sva_engine::{
-    DEFAULT_BUFFER_SECS, DEFAULT_FLOOR_DB, DEFAULT_FRAME_SECS, DEFAULT_LEDGER_DEPTH,
-    DEFAULT_MAX_PAIRS, DEFAULT_MAX_PEAKS, DEFAULT_MODULATION_WINDOW_SECS, DEFAULT_OVERSAMPLE,
-    DEFAULT_PERIODICITY_WINDOW_SECS, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1, READINGS, Reads,
+    DEFAULT_BUFFER_SECS, DEFAULT_CELL_SECS, DEFAULT_FLOOR_DB, DEFAULT_FRAME_SECS,
+    DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PAIRS, DEFAULT_MAX_PEAKS, DEFAULT_MODULATION_WINDOW_SECS,
+    DEFAULT_NOVELTY_WINDOW_SECS, DEFAULT_OVERSAMPLE, DEFAULT_PERIODICITY_WINDOW_SECS,
+    DEFAULT_SAMPLE_RATE, DEFAULT_SMOOTH_SECS, PSYCHOACOUSTIC_V1, READINGS, Reads,
+    self_similarity::MAX_CELLS,
 };
 
 /// Read off the constants the parser itself defaults to, so a printed default cannot drift
@@ -298,14 +300,17 @@ DEFAULTS:
   ledger(depth=<n>)    how deep below its target a `ledger` walks.
                        Default {DEFAULT_LEDGER_DEPTH}.
   (peaks=<n>)          peaks a `spectrum` keeps, notes a `pitch`, formants a
-                       `formants`. Default {DEFAULT_MAX_PEAKS}.
+                       `formants`, stripes and novelty peaks a `self_similarity`
+                       lists per view. Default {DEFAULT_MAX_PEAKS}.
   alias(oversample=<n>) the multiple `alias` re-renders at to hear what folded.
                        Default {DEFAULT_OVERSAMPLE}.
   (frame=<t>)          the step a framed reading advances by, in seconds.
                        Default {DEFAULT_FRAME_SECS}, except `spectrum`, which sizes
                        its own transform to the range unless it is set.
   (floor=<db>)         the amplitude, as `-40db`, under which a harmonic reading
-                       drops a partial. Default {DEFAULT_FLOOR_DB}db.
+                       or `self_similarity` drops a partial, and under which
+                       `self_similarity` counts a band level as zero.
+                       Default {DEFAULT_FLOOR_DB}db.
   voice_leading(norm=<l1|l2>) how a voice leading's moves add up. Default l1.
   dissonance(pairs=<n>) the most partial pairs one frame sums before it refuses.
                        Default {DEFAULT_MAX_PAIRS}.
@@ -319,6 +324,16 @@ DEFAULTS:
                        Default {DEFAULT_MODULATION_WINDOW_SECS}.
   modulation(bpm=<n>)  a tempo, as `140`, adding each rate's period in beats.
                        Default none.
+  self_similarity(cell=<t>) the side of one matrix cell, in seconds, a whole
+                       number of frames; the target may span at most
+                       {MAX_CELLS} cells. Default {DEFAULT_CELL_SECS}.
+  self_similarity(smooth=<t>) the length each diagonal is averaged over
+                       before stripes are picked, in seconds.
+                       Default {DEFAULT_SMOOTH_SECS}.
+  self_similarity(window=<t>) the whole width of the novelty kernel, in
+                       seconds. Default {DEFAULT_NOVELTY_WINDOW_SECS}.
+  self_similarity(curve=<0|1>) `1` adds every cell's chroma and band levels and
+                       each view's matrix. Default 0.
   bindings(node=@<path>) the instance whose bindings are read; required.
   samples(buffer=<t>)  how much an `alsa:` device holds ahead of what it plays,
                        in seconds. Default {DEFAULT_BUFFER_SECS}; only a device

@@ -651,6 +651,7 @@ fn one_table_says_what_every_named_reading_consumes() {
         "inharmonicity",
         "periodicity",
         "modulation",
+        "self_similarity",
         "bindings",
         "arguments",
     ];
@@ -856,4 +857,59 @@ fn modulation_under_two_periods_names_the_least_window() {
     assert_eq!(refused.code(), "read.window_under_two_periods");
     let said = format!("{refused}");
     assert!(said.contains("modulation(window=4s)"), "{said}");
+}
+
+fn self_similarity_of(name: &str, frame_secs: f64, cell_secs: f64) -> (Render, Representation) {
+    let asked = Representation::SelfSimilarity {
+        frame_secs,
+        cell_secs,
+        smooth_secs: 2.0,
+        window_secs: 4.0,
+        floor_db: -40.0,
+        listed: 16,
+        curve: false,
+    };
+    let g = graph_of(
+        name,
+        &[(
+            "node",
+            "sin(2*pi*262*t)*(0.5 + 0.5*cos(2*pi*0.25*t)) + \
+             sin(2*pi*392*t)*(0.5 - 0.5*cos(2*pi*0.25*t))\n",
+        )],
+    );
+    let config = RenderConfig::seconds(8_192, 16.0).asking(vec![Ask {
+        node: "node".to_string(),
+        representation: asked,
+    }]);
+    let law = render(&g, "node", config, &Tier::default()).unwrap_or_else(|e| panic!("{e}"));
+    (law, asked)
+}
+
+/// A closed form crossfading C and G every 4 s is read off its rendered samples, never
+/// exactly: its strongest stripe is itself 4 s back, to the 410-sample frame, untransposed.
+#[test]
+fn a_closed_forms_self_similarity_is_measured_off_its_samples() {
+    let (law, asked) = self_similarity_of("crossfade", 0.05, 0.5);
+    let found = answer(&law, law.id("node").expect("the root"), asked).expect("32 cells");
+    assert_eq!((found.source, found.rate), (Source::Measured, Some(8_192)));
+    let Output::SelfSimilarity(s) = found.value else {
+        panic!("self_similarity answers its views, not {:?}", found.value)
+    };
+    let lead = s.views[0].stripes[0];
+    assert_eq!(lead.shift_semitones, 0, "{lead:?}");
+    assert!((lead.lag_secs - 4.0).abs() <= s.hop_secs, "{lead:?}");
+    assert!(lead.similarity_mean > 0.99, "{lead:?}");
+}
+
+/// Cells of 10 ms over 16 s pass the cap: refused, naming the cell that fits and the
+/// interval this one does.
+#[test]
+fn self_similarity_past_the_cap_names_both_remedies() {
+    let (law, asked) = self_similarity_of("crossfade-fine", 0.01, 0.01);
+    let refused =
+        answer(&law, law.id("node").expect("the root"), asked).expect_err("1600 > 1024 cells");
+    assert_eq!(refused.code(), "read.too_many_cells");
+    let said = format!("{refused}");
+    assert!(said.contains("self_similarity(cell=0.02"), "{said}");
+    assert!(said.contains("@x([0, 10.25s])"), "{said}");
 }

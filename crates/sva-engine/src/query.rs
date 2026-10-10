@@ -7,6 +7,7 @@ use sva_samples::measure::harmony::tonnetz::TonalDistance;
 use sva_samples::measure::harmony::voice_leading::{Norm, VoiceLeading};
 use sva_samples::measure::modulation::Modulation;
 use sva_samples::measure::periodicity::Periodicity;
+use sva_samples::measure::self_similarity::SelfSimilarity;
 use sva_samples::{
     Alias, Bands, Buffer, Consumes, Crest, EnvelopeFrame, FormantFrame, LedgerEntry, Loudness,
     Onsets, PitchFrame, Source, Spectrum, StereoImage,
@@ -30,6 +31,12 @@ pub const DEFAULT_MAX_PAIRS: usize = 1 << 17;
 pub const DEFAULT_PERIODICITY_WINDOW_SECS: f64 = 6.0;
 /// The span of band envelope one `modulation` window transforms.
 pub const DEFAULT_MODULATION_WINDOW_SECS: f64 = 4.0;
+/// The side of one `self_similarity` matrix cell.
+pub const DEFAULT_CELL_SECS: f64 = 0.5;
+/// The length `self_similarity` averages each diagonal over before it picks stripes.
+pub const DEFAULT_SMOOTH_SECS: f64 = 4.0;
+/// The whole width of `self_similarity`'s novelty kernel.
+pub const DEFAULT_NOVELTY_WINDOW_SECS: f64 = 8.0;
 
 /// Every named argument a reading may take; the engine reads only those `Given` holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +55,8 @@ pub enum Arg {
     Window,
     Curve,
     Bpm,
+    Cell,
+    Smooth,
 }
 
 impl Arg {
@@ -67,6 +76,8 @@ impl Arg {
             Arg::Window => "window",
             Arg::Curve => "curve",
             Arg::Bpm => "bpm",
+            Arg::Cell => "cell",
+            Arg::Smooth => "smooth",
         }
     }
 }
@@ -87,6 +98,8 @@ pub struct Given {
     pub window: Option<f64>,
     pub curve: bool,
     pub bpm: Option<f64>,
+    pub cell_secs: f64,
+    pub smooth_secs: f64,
 }
 
 impl Default for Given {
@@ -102,6 +115,8 @@ impl Default for Given {
             window: None,
             curve: false,
             bpm: None,
+            cell_secs: DEFAULT_CELL_SECS,
+            smooth_secs: DEFAULT_SMOOTH_SECS,
         }
     }
 }
@@ -372,6 +387,33 @@ static MODULATION: Reading = Reading {
     },
 };
 
+static SELF_SIMILARITY: Reading = Reading {
+    name: "self_similarity",
+    takes: &[
+        Arg::Frame,
+        Arg::Cell,
+        Arg::Smooth,
+        Arg::Window,
+        Arg::Floor,
+        Arg::Peaks,
+        Arg::Curve,
+    ],
+    reads: Reads::Samples,
+    help: "how its stretches resemble one another, by chroma and by band levels, over cells \
+           of `cell`: the repeated stretches as stripes, each pair of spans with its \
+           similarity and, by chroma, its transposition in semitones; Foote's novelty at every \
+           cell boundary and its peaks; `curve=1` adds the cells and the matrix",
+    build: |g| Representation::SelfSimilarity {
+        frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
+        cell_secs: g.cell_secs,
+        smooth_secs: g.smooth_secs,
+        window_secs: g.window.unwrap_or(DEFAULT_NOVELTY_WINDOW_SECS),
+        floor_db: g.floor_db,
+        listed: g.peaks,
+        curve: g.curve,
+    },
+};
+
 static BINDINGS: Reading = Reading {
     name: "bindings",
     takes: &[Arg::Node],
@@ -389,7 +431,7 @@ static ARGUMENTS: Reading = Reading {
 };
 
 /// Every reading a caller may ask for, in the order a listing prints them.
-pub static READINGS: [&Reading; 23] = [
+pub static READINGS: [&Reading; 24] = [
     &LINES,
     &ATOMS,
     &SPECTRUM,
@@ -411,6 +453,7 @@ pub static READINGS: [&Reading; 23] = [
     &INHARMONICITY,
     &PERIODICITY,
     &MODULATION,
+    &SELF_SIMILARITY,
     &BINDINGS,
     &ARGUMENTS,
 ];
@@ -467,6 +510,17 @@ pub enum Representation {
         window_secs: f64,
         bpm: Option<f64>,
     },
+    /// Cells of `cell_secs` over frames every `frame_secs`; `listed` stripes and peaks are
+    /// listed, and `curve` adds the cells and matrices.
+    SelfSimilarity {
+        frame_secs: f64,
+        cell_secs: f64,
+        smooth_secs: f64,
+        window_secs: f64,
+        floor_db: f64,
+        listed: usize,
+        curve: bool,
+    },
     Bindings,
     Arguments,
 }
@@ -510,6 +564,7 @@ pub enum Output {
     Inharmonicity(Box<Inharmonicity>),
     Periodicity(Box<Periodicity>),
     Modulation(Box<Modulation>),
+    SelfSimilarity(Box<SelfSimilarity>),
     Bindings(Vec<Binding>),
     Arguments(Vec<Arguments>),
 }
@@ -587,6 +642,7 @@ impl Representation {
             },
             Representation::Periodicity { .. } => &PERIODICITY,
             Representation::Modulation { .. } => &MODULATION,
+            Representation::SelfSimilarity { .. } => &SELF_SIMILARITY,
             Representation::Bindings => &BINDINGS,
             Representation::Arguments => &ARGUMENTS,
         }

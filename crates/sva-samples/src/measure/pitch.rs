@@ -5,8 +5,8 @@ use crate::measure::spectrum::{Peak, magnitudes, peaks};
 const NAMES: [&str; 12] = [
     "C", "Cs", "D", "Ds", "E", "F", "Fs", "G", "Gs", "A", "As", "B",
 ];
-const LOWEST_HZ: f64 = 25.0;
-const HIGHEST_HZ: f64 = 5000.0;
+pub const LOWEST_HZ: f64 = 25.0;
+pub const HIGHEST_HZ: f64 = 5000.0;
 const HARMONIC_TOLERANCE: f64 = 0.04;
 const HIGHEST_HARMONIC: f64 = 8.0;
 

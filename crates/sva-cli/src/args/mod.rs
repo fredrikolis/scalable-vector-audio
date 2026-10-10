@@ -752,6 +752,41 @@ mod tests {
     }
 
     #[test]
+    fn self_similarity_takes_its_cell_smooth_window_and_listing() {
+        let args = rendered(&[
+            "render",
+            "@a",
+            "--representation",
+            "self_similarity(frame=0.1s, cell=1s, smooth=3s, window=12s, floor=-50db, \
+             peaks=4, curve=1)",
+        ]);
+        assert_eq!(
+            args.asked[0].representation,
+            sva_engine::Representation::SelfSimilarity {
+                frame_secs: 0.1,
+                cell_secs: 1.0,
+                smooth_secs: 3.0,
+                window_secs: 12.0,
+                floor_db: -50.0,
+                listed: 4,
+                curve: true,
+            }
+        );
+        refused(&[
+            "render",
+            "@a",
+            "--representation",
+            "self_similarity(cell=0)",
+        ]);
+        refused(&[
+            "render",
+            "@a",
+            "--representation",
+            "self_similarity(smooth=x)",
+        ]);
+    }
+
+    #[test]
     fn bindings_needs_a_node() {
         refused(&["render", "@a", "--representation", "bindings"]);
     }
