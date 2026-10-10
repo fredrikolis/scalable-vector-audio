@@ -1,13 +1,17 @@
 // Concern: the `--help` page, each flag's default printed from its own constant | Non-concern: parsing those flags (args/), the JSON a subcommand answers (output.rs) | IO: () -> the page
 
-use sva_core::{DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, DEFAULT_STORE_BYTES};
-use sva_engine::{DEFAULT_FRAME_SECS, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1};
+use sva_core::DEFAULT_STORE_BYTES;
+use sva_engine::{
+    DEFAULT_FRAME_SECS, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE,
+    DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1, READINGS, Reads,
+};
 
 /// Read off the constants the parser itself defaults to, so a printed default cannot drift
 /// from the one a render actually uses.
 pub fn help_text() -> String {
     let bits = PSYCHOACOUSTIC_V1.precision_bits;
     let store_gb = DEFAULT_STORE_BYTES >> 30;
+    let representations = representations();
     format!(
         r#"USAGE:
   sva-cli (render | analyze | lint | trace | builtins | outline | new) [arguments]
@@ -149,12 +153,20 @@ RENDER:
   `rand`'s key or seed is not listed. `at` spans are bytes of the instance's
   own body, as `sva-cli outline` counts them.
 
+REPRESENTATIONS:
+  Each one a `--representation` call, its arguments in parentheses, every
+  default under DEFAULTS. `exact` is read off the written math, `measured` off
+  samples.
+
+{representations}
+
 ANALYZE:
   sva-cli analyze <file.wav> --representation <list> [--confirm]
 
   Runs the same readings over a whole external `.wav` at its own rate, never
-  resampled. Only the readings a buffer answers alone apply; the rest need the
-  graph behind it.
+  resampled. Only the readings a buffer answers alone apply, each listed under
+  REPRESENTATIONS as `measured` or `exact off a closed form, measured off
+  samples`; the rest need the graph behind it.
 
 LINT:
   sva-cli lint ['<expression>'] [--format <json|text>]
@@ -321,4 +333,26 @@ VERB ALIASES:
 SEE ALSO:
   sva-cli --version    Show version information"#
     )
+}
+
+/// One entry per reading, off the one table: its call, what it answers off, and its line.
+fn representations() -> String {
+    READINGS
+        .iter()
+        .map(|row| {
+            let keys: Vec<&str> = row.takes.iter().map(|arg| arg.key()).collect();
+            let call = match keys[..] {
+                [] => row.name.to_string(),
+                _ => format!("{}({})", row.name, keys.join(", ")),
+            };
+            let source = match row.reads {
+                Reads::ClosedForm | Reads::Structure => "exact",
+                Reads::Either => "exact off a closed form, measured off samples",
+                Reads::Samples => "measured",
+                Reads::Graph => "measured, and the graph behind the samples",
+            };
+            format!("  {call:<27}{source}\n      {}", row.help)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

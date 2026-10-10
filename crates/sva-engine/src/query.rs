@@ -1,4 +1,6 @@
-// Concern: names every observation, what each consumes, and the envelope an answer carries | Non-concern: taking one reading (answer.rs, sva-samples) | IO: (name) -> Representation, Consumes
+// Concern: the one table of observations: names, arguments, defaults, what each reads, help; the answer envelope | Non-concern: taking one reading (answer.rs) | IO: (name, Given) -> Representation
+
+use std::mem::discriminant;
 
 use sva_formula::{Line, SpectralSum};
 use sva_samples::{
@@ -11,6 +13,242 @@ use crate::bindings::Binding;
 
 /// The default window a framed reading uses when the observation names none.
 pub const DEFAULT_FRAME_SECS: f64 = 0.05;
+pub const DEFAULT_MAX_PEAKS: usize = 16;
+pub const DEFAULT_LEDGER_DEPTH: usize = 3;
+pub const DEFAULT_OVERSAMPLE: u32 = 4;
+
+/// Every named argument a reading may take; the engine reads only those `Given` holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arg {
+    Peaks,
+    Frame,
+    Depth,
+    Oversample,
+    Brief,
+    Skim,
+    Node,
+}
+
+impl Arg {
+    pub fn key(self) -> &'static str {
+        match self {
+            Arg::Peaks => "peaks",
+            Arg::Frame => "frame",
+            Arg::Depth => "depth",
+            Arg::Oversample => "oversample",
+            Arg::Brief => "brief",
+            Arg::Skim => "skim",
+            Arg::Node => "node",
+        }
+    }
+}
+
+/// The arguments a `Representation` is built from, each at its default until written.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Given {
+    pub peaks: usize,
+    /// `None` until written: `spectrum` then sizes its transform to the range, and every
+    /// other framed reading steps by `DEFAULT_FRAME_SECS`.
+    pub frame: Option<f64>,
+    pub depth: usize,
+    pub oversample: u32,
+}
+
+impl Default for Given {
+    fn default() -> Given {
+        Given {
+            peaks: DEFAULT_MAX_PEAKS,
+            frame: None,
+            depth: DEFAULT_LEDGER_DEPTH,
+            oversample: DEFAULT_OVERSAMPLE,
+        }
+    }
+}
+
+/// What a reading reads, which decides whether its answer is exact or measured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reads {
+    /// The written closed form alone: always exact.
+    ClosedForm,
+    /// Whichever the node holds: exact off a closed form, measured off samples.
+    Either,
+    /// Samples alone: always measured.
+    Samples,
+    /// Samples and the graph that rendered them, so no file answers it.
+    Graph,
+    /// The resolved instances, before anything renders; nothing composes for it.
+    Structure,
+}
+
+impl Reads {
+    pub fn consumes(self, closed: bool) -> Consumes {
+        match self {
+            Reads::ClosedForm | Reads::Structure => Consumes::ClosedForm,
+            Reads::Either if closed => Consumes::ClosedForm,
+            Reads::Either | Reads::Samples | Reads::Graph => Consumes::Buffer,
+        }
+    }
+
+    pub fn off_samples(self, sampled: bool) -> bool {
+        match self {
+            Reads::Samples => true,
+            Reads::Either => sampled,
+            Reads::ClosedForm | Reads::Graph | Reads::Structure => false,
+        }
+    }
+}
+
+pub struct Reading {
+    pub name: &'static str,
+    pub takes: &'static [Arg],
+    pub reads: Reads,
+    pub help: &'static str,
+    build: fn(&Given) -> Representation,
+}
+
+impl Reading {
+    pub fn representation(&self, given: &Given) -> Representation {
+        (self.build)(given)
+    }
+}
+
+/// Every reading a caller may ask for, in the order a listing prints them.
+pub const READINGS: [Reading; 17] = [
+    Reading {
+        name: "lines",
+        takes: &[],
+        reads: Reads::ClosedForm,
+        help: "the exact line list of a closed form",
+        build: |_| Representation::Lines,
+    },
+    Reading {
+        name: "atoms",
+        takes: &[],
+        reads: Reads::ClosedForm,
+        help: "each term of a closed form, sketched",
+        build: |_| Representation::Atoms,
+    },
+    Reading {
+        name: "spectrum",
+        takes: &[Arg::Peaks, Arg::Frame],
+        reads: Reads::Either,
+        help: "its lines, or its spectrum averaged over every frame",
+        build: |g| Representation::Spectrum {
+            max_peaks: g.peaks,
+            frame_secs: g.frame,
+        },
+    },
+    Reading {
+        name: "envelope",
+        takes: &[Arg::Frame],
+        reads: Reads::Either,
+        help: "rms and peak, per frame off samples",
+        build: |g| Representation::Envelope {
+            frame_secs: g.frame,
+        },
+    },
+    Reading {
+        name: "derivative",
+        takes: &[],
+        reads: Reads::Either,
+        help: "the derivative, or the first difference of samples",
+        build: |_| Representation::Derivative,
+    },
+    Reading {
+        name: "samples",
+        takes: &[],
+        reads: Reads::Samples,
+        help: "the samples themselves; a `.wav` destination writes them as audio",
+        build: |_| Representation::Samples,
+    },
+    Reading {
+        name: "ledger",
+        takes: &[Arg::Depth, Arg::Brief, Arg::Skim],
+        reads: Reads::Graph,
+        help: "rms, peak, share and clipping per node under the target",
+        build: |g| Representation::Ledger { depth: g.depth },
+    },
+    Reading {
+        name: "pitch",
+        takes: &[Arg::Peaks, Arg::Frame],
+        reads: Reads::Either,
+        help: "the notes it holds, per frame off samples",
+        build: |g| Representation::Pitch {
+            max_notes: g.peaks,
+            frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
+        },
+    },
+    Reading {
+        name: "formants",
+        takes: &[Arg::Peaks, Arg::Frame],
+        reads: Reads::Samples,
+        help: "formant frequencies, bandwidths and levels per frame",
+        build: |g| Representation::Formants {
+            max_formants: g.peaks,
+            frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
+        },
+    },
+    Reading {
+        name: "stereo",
+        takes: &[Arg::Frame],
+        reads: Reads::Samples,
+        help: "correlation, width and balance between two channels, per frame",
+        build: |g| Representation::Stereo {
+            frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
+        },
+    },
+    Reading {
+        name: "bands",
+        takes: &[],
+        reads: Reads::Samples,
+        help: "each auditory band's level over time",
+        build: |_| Representation::Bands,
+    },
+    Reading {
+        name: "crest",
+        takes: &[],
+        reads: Reads::Samples,
+        help: "peak against rms, broadband and per band",
+        build: |_| Representation::Crest,
+    },
+    Reading {
+        name: "loudness",
+        takes: &[],
+        reads: Reads::Samples,
+        help: "integrated, momentary and short-term loudness in LUFS",
+        build: |_| Representation::Loudness,
+    },
+    Reading {
+        name: "onsets",
+        takes: &[],
+        reads: Reads::Samples,
+        help: "onset times, their strength and the spacing between them",
+        build: |_| Representation::Onsets,
+    },
+    Reading {
+        name: "alias",
+        takes: &[Arg::Oversample],
+        reads: Reads::Graph,
+        help: "what folded, against a re-render at a multiple of the rate",
+        build: |g| Representation::Alias {
+            oversample: g.oversample,
+        },
+    },
+    Reading {
+        name: "bindings",
+        takes: &[Arg::Node],
+        reads: Reads::Structure,
+        help: "the bindings one instance resolved, each with its source",
+        build: |_| Representation::Bindings,
+    },
+    Reading {
+        name: "arguments",
+        takes: &[],
+        reads: Reads::Structure,
+        help: "each builtin call's named arguments as the numbers it was lowered with",
+        build: |_| Representation::Arguments,
+    },
+];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Representation {
@@ -86,7 +324,7 @@ pub struct Answer {
     pub source: Source,
     pub profile: &'static str,
     pub rate: Option<u32>,
-    /// FORMAT 14.1: a series answers the terms it keeps, the tail beside them.
+    /// A series answers the terms it keeps, the tail beside them.
     pub dropped: Vec<sva_formula::Line>,
     pub tail_db: Option<f64>,
 }
@@ -110,87 +348,31 @@ impl Answer {
 }
 
 impl Representation {
-    pub fn name(self) -> &'static str {
-        match self {
-            Representation::Lines => "lines",
-            Representation::Atoms => "atoms",
-            Representation::Spectrum { .. } => "spectrum",
-            Representation::Envelope { .. } => "envelope",
-            Representation::Derivative => "derivative",
-            Representation::Samples => "samples",
-            Representation::Ledger { .. } => "ledger",
-            Representation::Pitch { .. } => "pitch",
-            Representation::Formants { .. } => "formants",
-            Representation::Stereo { .. } => "stereo",
-            Representation::Bands => "bands",
-            Representation::Crest => "crest",
-            Representation::Loudness => "loudness",
-            Representation::Onsets => "onsets",
-            Representation::Alias { .. } => "alias",
-            Representation::Bindings => "bindings",
-            Representation::Arguments => "arguments",
-        }
+    pub fn reading(self) -> &'static Reading {
+        let this = discriminant(&self);
+        READINGS
+            .iter()
+            .find(|row| discriminant(&row.representation(&Given::default())) == this)
+            .expect("every reading has its row in READINGS")
     }
 
-    /// `lines` and `atoms` read a closed form and nothing else. `spectrum`, `envelope`,
-    /// `derivative` and `pitch` read whichever the node holds, so its own `Ty` decides.
+    pub fn name(self) -> &'static str {
+        self.reading().name
+    }
+
     pub fn consumes(self, closed: bool) -> Consumes {
-        match self {
-            Representation::Lines | Representation::Atoms => Consumes::ClosedForm,
-            Representation::Spectrum { .. }
-            | Representation::Envelope { .. }
-            | Representation::Derivative
-            | Representation::Pitch { .. }
-                if closed =>
-            {
-                Consumes::ClosedForm
-            }
-            // Neither reads a buffer: both are resolved first.
-            Representation::Bindings | Representation::Arguments => Consumes::ClosedForm,
-            _ => Consumes::Buffer,
-        }
+        self.reading().reads.consumes(closed)
     }
 
     /// Whether a node's samples alone answer this reading, `sampled` where it holds samples.
     pub fn off_samples(self, sampled: bool) -> bool {
-        let graph = matches!(
-            self,
-            Representation::Alias { .. } | Representation::Ledger { .. }
-        );
-        !graph && self.consumes(!sampled) == Consumes::Buffer
+        self.reading().reads.off_samples(sampled)
     }
 
     pub fn from_name(name: &str) -> Option<Representation> {
-        Some(match name {
-            "lines" => Representation::Lines,
-            "atoms" => Representation::Atoms,
-            "spectrum" => Representation::Spectrum {
-                max_peaks: 16,
-                frame_secs: None,
-            },
-            "envelope" => Representation::Envelope { frame_secs: None },
-            "derivative" => Representation::Derivative,
-            "samples" => Representation::Samples,
-            "ledger" => Representation::Ledger { depth: 3 },
-            "pitch" => Representation::Pitch {
-                max_notes: 6,
-                frame_secs: DEFAULT_FRAME_SECS,
-            },
-            "formants" => Representation::Formants {
-                max_formants: 5,
-                frame_secs: DEFAULT_FRAME_SECS,
-            },
-            "stereo" => Representation::Stereo {
-                frame_secs: DEFAULT_FRAME_SECS,
-            },
-            "bands" => Representation::Bands,
-            "crest" => Representation::Crest,
-            "loudness" => Representation::Loudness,
-            "onsets" => Representation::Onsets,
-            "alias" => Representation::Alias { oversample: 4 },
-            "bindings" => Representation::Bindings,
-            "arguments" => Representation::Arguments,
-            _ => return None,
-        })
+        READINGS
+            .iter()
+            .find(|row| row.name == name)
+            .map(|row| row.representation(&Given::default()))
     }
 }

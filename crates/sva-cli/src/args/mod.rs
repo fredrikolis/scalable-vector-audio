@@ -19,29 +19,11 @@ pub const USAGE: &str = "usage: sva-cli render '<expression>' --representation <
      sva-cli new <name> [--idempotency-key <key>]\n\
      a render's target is one expression; `@path` reads a node in the current directory, \
      `@/abs/path` one anywhere, and its own ref may read an interval: `@piano([0, 2b], f0=C4)`\n\
-     representations: lines atoms spectrum(peaks, frame) envelope(frame) derivative samples \
-     ledger(depth, brief, skim) pitch(peaks, frame) formants(peaks, frame) stereo(frame) bands \
-     crest loudness onsets alias(oversample) bindings(node) arguments\n\
      destinations: a `.wav` path takes `samples` as audio; any other path takes JSON; none \
      puts the reading under `data.representations`\n\
      verb aliases: `validate`=lint, `list`=builtins, `create`=new, `show`=trace. `render` \
      and `analyze` take a reading, which the standard's verb list has no word for, so they \
      keep their own names.";
-
-/// Only the readings that are a pure function of a buffer; the rest need the graph behind it.
-pub const ANALYZE_REPRESENTATIONS: [&str; 11] = [
-    "samples",
-    "spectrum",
-    "envelope",
-    "derivative",
-    "pitch",
-    "formants",
-    "bands",
-    "loudness",
-    "crest",
-    "stereo",
-    "onsets",
-];
 
 #[derive(Debug, PartialEq)]
 pub struct RenderArgs {

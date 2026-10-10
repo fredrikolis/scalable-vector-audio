@@ -15,9 +15,9 @@ fn help_states_the_sample_rate_default() {
 fn help_states_the_depth_peaks_oversample_and_frame_defaults() {
     let page = help_text();
     let counts = [
-        sva_core::DEFAULT_LEDGER_DEPTH,
-        sva_core::DEFAULT_MAX_PEAKS,
-        sva_core::DEFAULT_OVERSAMPLE as usize,
+        sva_engine::DEFAULT_LEDGER_DEPTH,
+        sva_engine::DEFAULT_MAX_PEAKS,
+        sva_engine::DEFAULT_OVERSAMPLE as usize,
     ];
     for held in counts {
         assert!(page.contains(&format!("Default {held}")), "{held}: {page}");
@@ -38,6 +38,22 @@ fn help_states_the_depth_peaks_oversample_and_frame_defaults() {
             page.contains(flag),
             "{flag} is named under DEFAULTS: {page}"
         );
+    }
+}
+
+/// The listing is the table's, so a reading the parser takes is one the page names, with
+/// every argument it takes and its line.
+#[test]
+fn help_lists_every_reading_with_its_arguments_and_line() {
+    let page = help_text();
+    for row in &sva_engine::READINGS {
+        let keys: Vec<&str> = row.takes.iter().map(|arg| arg.key()).collect();
+        let call = match keys[..] {
+            [] => format!("\n  {} ", row.name),
+            _ => format!("\n  {}({})", row.name, keys.join(", ")),
+        };
+        assert!(page.contains(&call), "{call}: {page}");
+        assert!(page.contains(row.help), "{}: {page}", row.help);
     }
 }
 

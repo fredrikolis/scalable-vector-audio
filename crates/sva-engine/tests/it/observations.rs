@@ -584,6 +584,66 @@ fn one_table_says_what_every_named_reading_consumes() {
         };
         assert_eq!(held.consumes(false), sampled, "{name} off a sampled node");
     }
+    let listed: Vec<&str> = sva_engine::READINGS.iter().map(|row| row.name).collect();
+    assert_eq!(
+        listed, names,
+        "the table lists exactly these, in this order"
+    );
+}
+
+/// Each row builds its own variant, and a bare name reads every argument at the one default
+/// `Given` holds: `pitch` keeps as many notes as `spectrum` keeps peaks.
+#[test]
+fn every_row_builds_its_own_reading_at_the_shared_defaults() {
+    use sva_engine::{DEFAULT_FRAME_SECS, DEFAULT_MAX_PEAKS, Given, READINGS};
+    for (at, row) in READINGS.iter().enumerate() {
+        let built = row.representation(&Given::default());
+        assert_eq!(built.name(), row.name, "{}: its own row", row.name);
+        for other in &READINGS[at + 1..] {
+            assert_ne!(
+                std::mem::discriminant(&built),
+                std::mem::discriminant(&other.representation(&Given::default())),
+                "{} and {} build one variant",
+                row.name,
+                other.name
+            );
+        }
+    }
+    assert_eq!(
+        Representation::from_name("pitch"),
+        Some(Representation::Pitch {
+            max_notes: DEFAULT_MAX_PEAKS,
+            frame_secs: DEFAULT_FRAME_SECS,
+        })
+    );
+    assert_eq!(
+        Representation::from_name("formants"),
+        Some(Representation::Formants {
+            max_formants: DEFAULT_MAX_PEAKS,
+            frame_secs: DEFAULT_FRAME_SECS,
+        })
+    );
+}
+
+/// A file's samples answer what reads samples alone, and whatever reads either kind.
+#[test]
+fn samples_alone_answer_what_reads_neither_a_graph_nor_the_written_math() {
+    use sva_engine::Reads;
+    for reads in [
+        Reads::ClosedForm,
+        Reads::Either,
+        Reads::Samples,
+        Reads::Graph,
+        Reads::Structure,
+    ] {
+        let off_a_file = matches!(reads, Reads::Samples | Reads::Either);
+        assert_eq!(reads.off_samples(true), off_a_file, "{reads:?} on samples");
+        assert_eq!(
+            reads.off_samples(false),
+            reads == Reads::Samples,
+            "{reads:?} on a closed form"
+        );
+    }
 }
 
 /// Two nodes holding one form are one value, kept once; a refusal off it names the node asked,

@@ -19,9 +19,7 @@ mod trace;
 mod variables;
 mod wav;
 
-pub use args::{
-    ANALYZE_REPRESENTATIONS, AnalyzeArgs, CacheAt, Command, Format, RenderArgs, USAGE, parse_args,
-};
+pub use args::{AnalyzeArgs, CacheAt, Command, Format, RenderArgs, USAGE, parse_args};
 pub use composition::{composition, located};
 pub use destination::{Framing, refuse_inside, write as write_destination};
 pub use help::help_text;

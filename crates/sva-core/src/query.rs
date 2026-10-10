@@ -2,38 +2,14 @@
 
 use std::path::{Path, PathBuf};
 
-use sva_engine::{DEFAULT_FRAME_SECS, Representation};
+use sva_engine::{Arg, Given, READINGS, Representation};
 
 use crate::cli_error::CliError;
-
-pub const REPRESENTATIONS: [&str; 17] = [
-    "lines",
-    "atoms",
-    "spectrum",
-    "envelope",
-    "derivative",
-    "samples",
-    "ledger",
-    "pitch",
-    "formants",
-    "stereo",
-    "bands",
-    "crest",
-    "loudness",
-    "onsets",
-    "alias",
-    "bindings",
-    "arguments",
-];
 
 pub const RETIRED: [(&str, &str); 2] = [
     ("exact-envelope", "envelope, symbolic on a closed form"),
     ("exact-derivative", "derivative, symbolic on a closed form"),
 ];
-
-pub const DEFAULT_OVERSAMPLE: u32 = 4;
-pub const DEFAULT_MAX_PEAKS: usize = 16;
-pub const DEFAULT_LEDGER_DEPTH: usize = 3;
 
 /// One reading written as a call, `spectrum(peaks=8, frame=50ms)=out.json`: its name, its
 /// arguments as written, and where it goes.
@@ -150,78 +126,45 @@ pub fn asked(call: &Call) -> Result<Asked, CliError> {
             "`{name}` left the language; write `{write}`"
         )));
     }
-    let mut out = Asked {
-        name: call.name.clone(),
-        representation: Representation::from_name(name).unwrap_or(Representation::Samples),
-        dest: call.dest.clone(),
-        node: None,
-        brief: false,
-        skim: false,
+    let Some(row) = READINGS.iter().find(|row| row.name == name) else {
+        let names: Vec<&str> = READINGS.iter().map(|row| row.name).collect();
+        return Err(CliError::Usage(format!(
+            "unknown representation `{name}`; the representations are {}",
+            names.join(", ")
+        )));
     };
-    let (mut peaks, mut frame, mut depth, mut oversample) = (
-        DEFAULT_MAX_PEAKS,
-        None,
-        DEFAULT_LEDGER_DEPTH,
-        DEFAULT_OVERSAMPLE,
-    );
-    let takes: &[&str] = match name {
-        "spectrum" | "pitch" | "formants" => &["peaks", "frame"],
-        "envelope" | "stereo" => &["frame"],
-        "ledger" => &["depth", "brief", "skim"],
-        "alias" => &["oversample"],
-        "bindings" => &["node"],
-        known if Representation::from_name(known).is_some() => &[],
-        other => {
-            return Err(CliError::Usage(format!(
-                "unknown representation `{other}`; the representations are {}",
-                REPRESENTATIONS.join(", ")
-            )));
-        }
-    };
+    let (mut given, mut node, mut brief, mut skim) = (Given::default(), None, false, false);
     for (key, raw) in &call.args {
-        if !takes.contains(&key.as_str()) {
-            return Err(CliError::Usage(match takes {
+        let Some(arg) = row.takes.iter().find(|arg| arg.key() == key) else {
+            let keys: Vec<&str> = row.takes.iter().map(|arg| arg.key()).collect();
+            return Err(CliError::Usage(match keys[..] {
                 [] => format!("`{name}` takes no arguments, not `{key}`"),
-                some => format!("`{name}` takes {}, not `{key}`", some.join(", ")),
+                _ => format!("`{name}` takes {}, not `{key}`", keys.join(", ")),
             }));
-        }
-        match key.as_str() {
-            "peaks" => peaks = count(raw, key)?,
-            "depth" => depth = count(raw, key)?,
-            "frame" => frame = Some(seconds(raw, key)?),
-            "oversample" => oversample = factor(raw)?,
-            "brief" => out.brief = switch(raw, key)?,
-            "skim" => out.skim = switch(raw, key)?,
-            _ => out.node = Some(node(raw)?),
+        };
+        match arg {
+            Arg::Peaks => given.peaks = count(raw, key)?,
+            Arg::Depth => given.depth = count(raw, key)?,
+            Arg::Frame => given.frame = Some(seconds(raw, key)?),
+            Arg::Oversample => given.oversample = factor(raw)?,
+            Arg::Brief => brief = switch(raw, key)?,
+            Arg::Skim => skim = switch(raw, key)?,
+            Arg::Node => node = Some(self::node(raw)?),
         }
     }
-    if name == "bindings" && out.node.is_none() {
-        return Err(CliError::Usage(
-            "`bindings` reads one instance's bindings; name it, as `bindings(node=@voice)`"
-                .to_string(),
-        ));
+    if row.takes.contains(&Arg::Node) && node.is_none() {
+        return Err(CliError::Usage(format!(
+            "`{name}` reads one instance's {name}; name it, as `{name}(node=@voice)`"
+        )));
     }
-    let framed = frame.unwrap_or(DEFAULT_FRAME_SECS);
-    out.representation = match name {
-        "spectrum" => Representation::Spectrum {
-            max_peaks: peaks,
-            frame_secs: frame,
-        },
-        "envelope" => Representation::Envelope { frame_secs: frame },
-        "pitch" => Representation::Pitch {
-            max_notes: peaks,
-            frame_secs: framed,
-        },
-        "formants" => Representation::Formants {
-            max_formants: peaks,
-            frame_secs: framed,
-        },
-        "stereo" => Representation::Stereo { frame_secs: framed },
-        "ledger" => Representation::Ledger { depth },
-        "alias" => Representation::Alias { oversample },
-        _ => out.representation,
-    };
-    Ok(out)
+    Ok(Asked {
+        name: call.name.clone(),
+        representation: row.representation(&given),
+        dest: call.dest.clone(),
+        node,
+        brief,
+        skim,
+    })
 }
 
 /// `raw` split at each `sep` no parenthesis encloses.

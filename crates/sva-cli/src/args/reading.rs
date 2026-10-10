@@ -4,9 +4,9 @@ use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 
 use sva_core::{Asked, Call, CliError, asked_all, calls, is_wav, wav_path};
-use sva_engine::{DEFAULT_SAMPLE_RATE, MAX_PINNED_FRAME, Representation, pinned_frame};
+use sva_engine::{DEFAULT_SAMPLE_RATE, MAX_PINNED_FRAME, READINGS, Representation, pinned_frame};
 
-use super::{ANALYZE_REPRESENTATIONS, AnalyzeArgs, CacheAt, Command, RenderArgs, USAGE, value};
+use super::{AnalyzeArgs, CacheAt, Command, RenderArgs, USAGE, value};
 
 /// What `render` and `analyze` both read: the calls asked for, and `--confirm`.
 #[derive(Default)]
@@ -35,16 +35,22 @@ impl Flags {
         Ok(true)
     }
 
-    fn resolved(&self, allowed: Option<&[&str]>) -> Result<Vec<Asked>, CliError> {
+    /// `off_file` keeps to the readings a file's samples answer alone.
+    fn resolved(&self, off_file: bool) -> Result<Vec<Asked>, CliError> {
         let out = asked_all(&self.calls).map_err(usage)?;
         if let Some(one) = out
             .iter()
-            .find(|one| allowed.is_some_and(|set| !set.contains(&one.name.as_str())))
+            .find(|one| off_file && !one.representation.off_samples(true))
         {
+            let answered: Vec<&str> = READINGS
+                .iter()
+                .filter(|row| row.reads.off_samples(true))
+                .map(|row| row.name)
+                .collect();
             return Err(CliError::Usage(format!(
                 "`analyze` does not answer `{}` — only {} need no rendered graph\n{USAGE}",
                 one.name,
-                ANALYZE_REPRESENTATIONS.join(", ")
+                answered.join(", ")
             )));
         }
         Ok(out)
@@ -97,7 +103,7 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
             }
         }
     }
-    let asked = flags.resolved(None)?;
+    let asked = flags.resolved(false)?;
     refuse_shared_destination(asked.iter().filter_map(|a| a.dest.as_deref()))?;
     if asked.is_empty() {
         return Err(CliError::Usage(format!(
@@ -133,7 +139,7 @@ pub(super) fn analyze_args(rest: &[String]) -> Result<Command, CliError> {
             "unknown argument `{flag}`\n{USAGE}"
         )));
     }
-    let asked = flags.resolved(Some(&ANALYZE_REPRESENTATIONS))?;
+    let asked = flags.resolved(true)?;
     refuse_shared_destination(asked.iter().filter_map(|a| a.dest.as_deref()))?;
     if asked.is_empty() {
         return Err(CliError::Usage(format!(

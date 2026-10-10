@@ -34,7 +34,10 @@ pub use cache::{
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
 pub use meaning::{Meaning, meaning};
-pub use query::{Answer, Ask, DEFAULT_FRAME_SECS, Output, Representation};
+pub use query::{
+    Answer, Arg, Ask, DEFAULT_FRAME_SECS, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS,
+    DEFAULT_OVERSAMPLE, Given, Output, READINGS, Reading, Reads, Representation,
+};
 pub use refs::{identity, nodes_in, spectral_sum_of};
 pub use render::until::{Cmp, Term};
 pub use render::{

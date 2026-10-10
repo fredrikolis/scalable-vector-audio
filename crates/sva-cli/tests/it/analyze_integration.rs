@@ -110,7 +110,31 @@ fn a_reading_that_needs_a_graph_refuses_off_a_file() {
 /// Argv says which readings a file answers at all, before a byte of it is read.
 #[test]
 fn analyze_takes_only_the_readings_a_buffer_answers_and_needs_a_wav() {
-    for name in sva_cli::ANALYZE_REPRESENTATIONS {
+    let answered: Vec<&str> = sva_engine::READINGS
+        .iter()
+        .filter(|row| row.reads.off_samples(true))
+        .map(|row| row.name)
+        .collect();
+    let mut sorted = answered.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted,
+        [
+            "bands",
+            "crest",
+            "derivative",
+            "envelope",
+            "formants",
+            "loudness",
+            "onsets",
+            "pitch",
+            "samples",
+            "spectrum",
+            "stereo",
+        ],
+        "the readings a buffer answers alone"
+    );
+    for name in answered {
         assert!(
             parse_args(&argv(&["analyze", "/tmp/a.wav", "--representation", name])).is_ok(),
             "`{name}` is one a buffer answers"

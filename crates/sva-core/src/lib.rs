@@ -23,8 +23,7 @@ pub use lint_code::LintCode;
 pub use outline::outline_data;
 pub use output::{Diagnostic, Severity, diagnostics_json, error_envelope, success_envelope};
 pub use query::{
-    Asked, Call, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, REPRESENTATIONS,
-    RETIRED, asked, asked_all, call, calls, is_wav, retired, seconds, wav_path,
+    Asked, Call, RETIRED, asked, asked_all, call, calls, is_wav, retired, seconds, wav_path,
 };
 pub use target::{Edge, Target, target};
 pub use tempo::{Tempo, refuse_unresolved_bars, resolved as tempo};

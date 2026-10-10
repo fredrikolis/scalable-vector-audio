@@ -181,11 +181,7 @@ pub fn plan(typing: &Typing, root: NodeId, asks: &[Ask]) -> Schedule {
         let Some(id) = typing.id(&ask.node) else {
             continue;
         };
-        // FORMAT 14.2: `bindings` and `arguments` are structural; neither composes.
-        if matches!(
-            ask.representation,
-            crate::query::Representation::Bindings | crate::query::Representation::Arguments
-        ) {
+        if ask.representation.reading().reads == crate::query::Reads::Structure {
             continue;
         }
         match ask.representation.consumes(typing.ty(id).is_closed_form()) {
