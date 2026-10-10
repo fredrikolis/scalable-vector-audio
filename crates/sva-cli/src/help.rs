@@ -82,8 +82,11 @@ RENDER:
   crop or an envelope, which has a width and is no line, refuses them; so do
   `spectrum(frame=)` and `envelope(frame=)`, as a closed form has no frames. To
   measure any of them frame by frame, a reader samples the target's ref,
-  `sample(@x([0, 1s]))`, and an author writes `sample(...)` inside the node. A measured `spectrum` is one
-  spectrum: every `frame`-long window across the range, averaged. `pitch` is framed, one entry
+  `sample(@x([0, 1s]))`, and an author writes `sample(...)` inside the node.
+  A closed form with no exact envelope, such as a crop of a decay, refuses
+  `envelope` with the reason rather than measuring it unasked; `sample(...)`
+  asks for the measured one. A measured `spectrum` is one spectrum: every
+  `frame`-long window across the range, averaged. `pitch` is framed, one entry
   per `frame`; for the spectrum at one instant, read a range one frame long.
   A measured `envelope` is framed too, and reads every channel: a frame's
   `rms` is the root mean square of all its channels' samples together, its

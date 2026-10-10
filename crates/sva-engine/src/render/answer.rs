@@ -52,13 +52,11 @@ pub fn answer(
                         found = held;
                         &found
                     }
-                    Err(left) => return measured_instead(render, node, representation, left),
+                    Err(left) => return Err(not_exact(representation, left)),
                 },
             };
-            let (value, listed, source) = match exact(render, node, representation, sum) {
-                Err(left) => return measured_instead(render, node, representation, left),
-                Ok(held) => held,
-            };
+            let (value, listed, source) = exact(render, node, representation, sum)
+                .map_err(|left| not_exact(representation, left))?;
             Ok(Answer {
                 value,
                 source,
@@ -81,72 +79,6 @@ pub fn answer(
             ))
         }
     }
-}
-
-/// A closed form no atom sum reaches answers no reading symbolically. An envelope is the one
-/// reading that is also measured off `sample(...)`, so it is measured here rather than refused.
-fn measured_instead(
-    render: &Render,
-    node: sva_formula::NodeId,
-    representation: Representation,
-    left: EngineError,
-) -> Result<Answer, EngineError> {
-    match representation {
-        Representation::Envelope { frame_secs } if left.code() == "cast.left_algebra" => {
-            off_the_grid(render, node, frame_secs)
-        }
-        _ => Err(left),
-    }
-}
-
-/// The samples this node reaches: the buffer the render holds, or the collapse it would have run,
-/// down to point sampling the written closed form.
-pub(super) fn on_the_grid(
-    render: &Render,
-    node: sva_formula::NodeId,
-) -> Result<Buffer, EngineError> {
-    if render.buffer(node).is_some() {
-        return render.output(node);
-    }
-    let extent = render.range.ok_or_else(|| {
-        render.unranged.clone().unwrap_or_else(|| {
-            refused(
-                render,
-                node,
-                "engine.not_materialized",
-                "a measured envelope reads samples, and this render read none".to_string(),
-            )
-        })
-    })?;
-    collapsed_over(render, node, extent)
-}
-
-fn collapsed_over(
-    render: &Render,
-    node: sva_formula::NodeId,
-    extent: sva_samples::Extent,
-) -> Result<Buffer, EngineError> {
-    super::sampled(render, node, extent)
-}
-
-fn off_the_grid(
-    render: &Render,
-    node: sva_formula::NodeId,
-    frame_secs: Option<f64>,
-) -> Result<Answer, EngineError> {
-    let rate = render.config.rate;
-    let buffer = on_the_grid(render, node)?;
-    Ok(Answer::whole(
-        Output::Envelope(envelope::trace(
-            &buffer.slices(),
-            f64::from(rate),
-            buffer.origin_secs(),
-            frame_secs.unwrap_or(DEFAULT_FRAME_SECS),
-        )),
-        Source::Measured,
-        render.config.profile.name,
-        Some(rate),
-    ))
 }
 
 fn exact(
@@ -229,6 +161,23 @@ fn exact(
         other => return Err(not_a_closed_form(render, node, other)),
     };
     Ok((value, listed, source))
+}
+
+/// A closed form's envelope is exact or refused, never measured unasked: a refusal of its
+/// sum says so, and names `sample(...)` as the way to ask for the measured one.
+fn not_exact(representation: Representation, left: EngineError) -> EngineError {
+    match (representation, left) {
+        (Representation::Envelope { frame_secs: None }, EngineError::Refused(cause)) => {
+            EngineError::refused(Diagnostic {
+                message: format!("this closed form has no exact envelope: {}", cause.message),
+                help: "a measured envelope is asked for explicitly: read `envelope` of \
+                       `sample(...)` of it, as `sample(@x([0, 1s]))`"
+                    .to_string(),
+                ..*cause
+            })
+        }
+        (_, left) => left,
+    }
 }
 
 /// A closed form holds no frames, so a written `frame` is refused rather than ignored.
@@ -586,7 +535,7 @@ fn own_samples(render: &Render, id: sva_formula::NodeId) -> Result<Buffer, Engin
     let range = render.range.expect("a ledger reads a decided range");
     match render.buffer(id) {
         Some(_) => render.output(id),
-        None => collapsed_over(render, id, range),
+        None => super::sampled(render, id, range),
     }
 }
 

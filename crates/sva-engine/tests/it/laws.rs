@@ -300,12 +300,11 @@ fn spectrum_of_a_pair_is_its_full_line_list_or_labeled_measured() {
     );
 }
 
-/// A pole times an indicator leaves A, so no closed form carries the analytic signal. The
-/// reading is still an answer: one collapse, measured off the grid, never a refusal. A line
-/// spectrum, whose analytic signal stays in A, keeps its exact envelope.
+/// A pole times an indicator leaves A, so no closed form carries the analytic signal, and a
+/// reciprocal in t composes no atom sum at all. Neither has an exact envelope, and neither is
+/// measured unasked: each refuses with why and names `sample(...)`, which answers measured.
 #[test]
-fn envelope_of_a_damped_stack_is_measured_not_refused() {
-    let damped = "crop(exp(-3*t)*sin(2*pi*440*t), 0s, 0.05s)\n";
+fn envelope_without_an_exact_answer_refuses_and_names_the_measured_one() {
     let reading = |name: &str, body: &str| {
         let g = graph_of(name, &[("node", body)]);
         let config = RenderConfig::seconds(48_000, 0.1).asking(vec![Ask {
@@ -315,64 +314,32 @@ fn envelope_of_a_damped_stack_is_measured_not_refused() {
         let held = render(&g, "node", config, &Tier::default()).expect("a law renders");
         let root = held.id("node").expect("the root");
         answer(&held, root, Representation::Envelope { frame_secs: None })
-            .unwrap_or_else(|e| panic!("{name}: {e}"))
     };
 
-    let measured = reading("envelope-damped", damped);
-    assert_eq!(measured.source, Source::Measured);
-    assert_eq!(
-        measured.rate,
-        Some(48_000),
-        "a measured reading names its rate"
-    );
-    let Output::Envelope(frames) = measured.value else {
-        panic!("an envelope answers frames off the grid");
-    };
-    assert!(!frames.is_empty(), "the window carries frames");
-    let inside = frames.first().expect("the first frame").rms;
-    let after = frames.last().expect("the last frame").rms;
-    assert!(inside > 0.1, "the strike sounds: {inside}");
-    assert!(after < inside / 100.0, "the crop ends it: {after}");
+    for (body, code) in [
+        (
+            "crop(exp(-3*t)*sin(2*pi*440*t), 0s, 0.05s)",
+            "cast.left_algebra",
+        ),
+        ("exp(-100*t*t)*sin(2*pi*440*t)", "cast.left_algebra"),
+        ("1/(t*t + 1)", "cast.left_algebra"),
+    ] {
+        let refused = reading(body, &format!("{body}\n"))
+            .expect_err("no exact envelope, and none measured unasked");
+        assert_eq!(refused.code(), code, "{body}");
+        let said = refused.to_string();
+        assert!(said.contains("no exact envelope"), "{body}: {said}");
+        assert!(said.contains("sample("), "{body}: {said}");
 
-    // A Gaussian times a sine leaves A for a different reason, and takes the same route.
-    let gaussian = reading("envelope-gaussian", "exp(-100*t*t)*sin(2*pi*440*t)\n");
-    assert_eq!(gaussian.source, Source::Measured);
+        let measured = reading(body, &format!("sample({body})\n"))
+            .unwrap_or_else(|e| panic!("{body}: the measured envelope asked for: {e}"));
+        assert_eq!(measured.source, Source::Measured, "{body}");
+        assert_eq!(measured.rate, Some(48_000), "{body}");
+    }
 
-    let exact = reading("envelope-lines", "sin(2*pi*440*t)\n");
+    let exact = reading("lines", "sin(2*pi*440*t)\n").expect("an exact envelope");
     assert_eq!(exact.source, Source::Exact, "a line spectrum stays exact");
     assert_eq!(exact.rate, None, "an exact envelope needs no rate");
-}
-
-/// A reciprocal of a closed form in t composes no atom sum at all, so nothing symbolic answers
-/// and no collapse off a spectral sum does either. Row 4 over the written closed form still
-/// reaches the grid, and the envelope of that buffer is the reading.
-#[test]
-fn envelope_of_a_rational_in_t_is_measured() {
-    let g = graph_of("envelope-rational", &[("node", "1/(t*t + 1)\n")]);
-    let config = RenderConfig::seconds(8_000, 1.0).asking(vec![Ask {
-        node: "node".to_string(),
-        representation: Representation::Envelope { frame_secs: None },
-    }]);
-    let held = render(&g, "node", config, &Tier::default()).expect("a rational in t renders");
-    let root = held.id("node").expect("the root");
-    let taken = answer(&held, root, Representation::Envelope { frame_secs: None })
-        .expect("an envelope off the grid, not a refusal");
-    assert_eq!(taken.source, Source::Measured);
-    assert_eq!(taken.rate, Some(8_000), "a measured reading names its rate");
-    let Output::Envelope(frames) = taken.value else {
-        panic!("an envelope answers frames off the grid");
-    };
-    for frame in &frames {
-        let want = 1.0 / (frame.t_secs * frame.t_secs + 1.0);
-        assert!(
-            (frame.peak - want).abs() < 1e-3,
-            "at {}s the peak is the closed form's own value: {} against {want}",
-            frame.t_secs,
-            frame.peak
-        );
-    }
-    let last = frames.last().expect("the window carries frames");
-    assert!(last.rms < 0.55, "the tail falls away: {}", last.rms);
 }
 
 /// A decay steep enough that its weight from t = 0 passes the largest double is anchored at

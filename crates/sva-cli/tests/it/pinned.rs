@@ -76,7 +76,7 @@ const PINNED: &str = r#"
 0 store:236e57aaf63072e05f0c5cadb2f1ca5a 191aae4125e378b3
 0 lines refused "read.lines_need_unwindowed_lines"
 0 spectrum refused "read.lines_need_unwindowed_lines"
-0 envelope 102784d436d55dd5
+0 envelope refused "cast.left_algebra"
 0 derivative 3c4b7a53de255642
 0 ledger 301ba8530bb8a641
 0 pitch refused "read.lines_need_unwindowed_lines"
@@ -94,7 +94,7 @@ const PINNED: &str = r#"
 1 store:d84ea2e9a660550dcab8546ed05750de ad18d331f8e6ed37
 1 lines refused "read.lines_need_unwindowed_lines"
 1 spectrum refused "read.lines_need_unwindowed_lines"
-1 envelope 7e2904876be17928
+1 envelope refused "cast.left_algebra"
 1 derivative acfd9df607f9e976
 1 ledger 40b6413cf9c33fc0
 1 pitch refused "read.lines_need_unwindowed_lines"
@@ -215,7 +215,7 @@ const PINNED: &str = r#"
 7 store:cc86e69433b46af5be112c1c4ab0e7cd 66d971a62ec42181
 7 lines refused "read.lines_need_unwindowed_lines"
 7 spectrum refused "read.lines_need_unwindowed_lines"
-7 envelope 9e60d743849aef4d
+7 envelope refused "cast.left_algebra"
 7 derivative 4c8306ae0e47500b
 7 ledger 3eced3ce79e67005
 7 pitch refused "read.lines_need_unwindowed_lines"
@@ -251,7 +251,7 @@ const PINNED: &str = r#"
 9 store:c8dc043c4d4f32378541059c3de19646 e5e0840199bd8323
 9 lines refused "read.lines_need_unwindowed_lines"
 9 spectrum refused "read.lines_need_unwindowed_lines"
-9 envelope ad0882f0b0d40298
+9 envelope refused "cast.left_algebra"
 9 derivative 832b940b443c04d9
 9 ledger 01194d6093d32b20
 9 pitch refused "read.lines_need_unwindowed_lines"
@@ -269,7 +269,7 @@ const PINNED: &str = r#"
 10 store:87d95ee7a686a6ae61878ea8bdc0f16d 27df824abd1d3486
 10 lines refused "read.lines_need_unwindowed_lines"
 10 spectrum refused "read.lines_need_unwindowed_lines"
-10 envelope a3af181f5cbb2487
+10 envelope refused "cast.left_algebra"
 10 derivative 3b93523aba257d86
 10 ledger d85440a165c53e75
 10 pitch refused "read.lines_need_unwindowed_lines"
@@ -366,7 +366,7 @@ const PINNED: &str = r#"
 15 store:5990c37b349b96907d3cc8ffe6b32299 bd6c7956a5dde8ff
 15 lines refused "read.lines_need_unwindowed_lines"
 15 spectrum refused "read.lines_need_unwindowed_lines"
-15 envelope a6b7835b469ebb82
+15 envelope refused "cast.left_algebra"
 15 derivative 85fd74bc6d856544
 15 ledger f3afb30b0c4c2fb5
 15 pitch refused "read.lines_need_unwindowed_lines"
