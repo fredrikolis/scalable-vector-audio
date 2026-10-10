@@ -129,10 +129,18 @@ fn exact(
             let held = lines(render, node, sum.var, &listed.atoms)?;
             let mut found = partials(&held);
             found.sort_by(|a, b| b.db.total_cmp(&a.db));
+            let start = render.read_from.ok_or_else(|| {
+                refused(
+                    render,
+                    node,
+                    "engine.not_materialized",
+                    "an exact `pitch` frame starts at the sample the render reads its root \
+                     from, and this render, not asked for `pitch`, decided none"
+                        .to_string(),
+                )
+            })?;
             let frame = PitchFrame {
-                t_secs: render
-                    .range
-                    .map_or(0.0, |range| range.start_secs(render.config.rate)),
+                t_secs: start as f64 / f64::from(render.config.rate),
                 notes: pitch::name_peaks(&found, max_notes),
             };
             (Output::Pitch(vec![frame]), listed)

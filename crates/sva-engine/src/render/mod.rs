@@ -24,7 +24,7 @@ use crate::bindings::Binding;
 use crate::cache::{CacheStats, Memory, Recording, Stored, Tier, now};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate;
-use crate::query::Ask;
+use crate::query::{Ask, Representation};
 use crate::refs;
 use crate::schedule::{self, Schedule};
 use crate::typing::{self, Typing};
@@ -122,6 +122,8 @@ pub struct Render {
     /// The samples the root was read over; `None` where no reading needed any.
     pub range: Option<Extent>,
     pub(crate) unranged: Option<EngineError>,
+    /// The sample the root is read from, decided where a reading needs it: `range`'s start.
+    pub(crate) read_from: Option<i64>,
     /// Every value the render read, each over the segments it computed.
     pub(crate) value_graph: Option<ValueGraph>,
     /// The samples its pulls computed.
@@ -155,6 +157,7 @@ impl Render {
             held_bytes: 0,
             range: None,
             unranged: None,
+            read_from: None,
             value_graph: None,
             computed_samples: 0,
             unslotted: None,
@@ -348,14 +351,13 @@ fn ranged(
     held: &mut Render,
     (decided, hits): (Option<end::End>, &BTreeMap<NodeId, Arc<Stored>>),
 ) -> Result<(), EngineError> {
-    let envelope = held.config.asks.iter().any(|ask| {
-        matches!(
-            ask.representation,
-            crate::query::Representation::Envelope { .. }
-        )
-    });
+    let asked = |of: fn(&Representation) -> bool| {
+        held.config.asks.iter().any(|ask| of(&ask.representation))
+    };
+    let envelope = asked(|r| matches!(r, Representation::Envelope { .. }));
+    let pitch = asked(|r| matches!(r, Representation::Pitch { .. }));
     let tabled = materializes(held);
-    if !tabled && !envelope {
+    if !tabled && !envelope && !pitch {
         return Ok(());
     }
     let supports = Supports::new(&held.tys);
@@ -364,8 +366,12 @@ fn ranged(
         (Some(_), None) => Ending::new(&held.tys, &held.config.profile, &supports).exact(held.root),
         (None, None) => Ending::new(&held.tys, &held.config.profile, &supports).of(held.root),
     };
-    held.treated_as_silent_from_sample = end.treated_as_silent_from_sample;
     let support = end.support;
+    held.read_from = Some(start_over(&held.config, support));
+    if !tabled && !envelope {
+        return Ok(());
+    }
+    held.treated_as_silent_from_sample = end.treated_as_silent_from_sample;
     let range = range_over(
         (&held.config, held.tys.name(held.root)),
         support,
@@ -403,7 +409,7 @@ pub(crate) fn range_over(
     support: Extent,
     ends: Ends,
 ) -> Result<Extent, EngineError> {
-    let start = config.range.start.unwrap_or_else(|| default_start(support));
+    let start = start_over(config, support);
     let end = match config.range.end.or(default_end(support)) {
         Some(end) => end,
         None => match ends {
@@ -412,6 +418,11 @@ pub(crate) fn range_over(
         },
     };
     Ok(Extent::new(start, end.max(start)))
+}
+
+/// The sample a root of `support` is read from: the stated start, else where its support begins.
+pub(crate) fn start_over(config: &RenderConfig, support: Extent) -> i64 {
+    config.range.start.unwrap_or_else(|| default_start(support))
 }
 
 fn default_start(support: Extent) -> i64 {

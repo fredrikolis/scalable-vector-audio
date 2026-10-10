@@ -9,7 +9,7 @@ use sva_formula::Hash;
 use sva_samples::Extent;
 
 use super::terms::{Handle, NOTES, Terms, is_term};
-use super::{RenderConfig, default_end, default_start};
+use super::{RenderConfig, default_end, start_over};
 use crate::cache::{Known as Answer, Stored};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::Instances;
@@ -568,7 +568,7 @@ fn answers(hit: &Stored, root: bool, config: &RenderConfig) -> bool {
     if !root {
         return hit.readable;
     }
-    let start = config.range.start.unwrap_or_else(|| default_start(support));
+    let start = start_over(config, support);
     let Some(end) = config.range.end.or(default_end(support)) else {
         return false;
     };

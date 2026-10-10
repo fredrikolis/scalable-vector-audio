@@ -1,7 +1,7 @@
 // Concern: proves a closed form answers off its own spectral sum with no buffer behind it | Non-concern: what a collapse produces (sva-samples) | IO: (a composition) -> Answer
 
 use crate::fixtures::graph_of;
-use sva_engine::{Ask, Output, RenderConfig, Representation, Source, Tier, answer, render};
+use sva_engine::{Ask, Output, Range, RenderConfig, Representation, Source, Tier, answer, render};
 
 const CHORD: &str = "sin(2*pi*256*t) + sin(2*pi*512*t) + sin(2*pi*768*t)\n";
 
@@ -243,6 +243,41 @@ fn pitch_sums_the_complex_amplitudes_of_lines_at_one_frequency() {
         "{} dB",
         note.db
     );
+}
+
+/// An exact pitch frame starts where the render reads its root from: the stated start, else
+/// the one its support gives, 0 for an unwindowed line. A render never asked for `pitch`
+/// decided no start, and refuses rather than inventing one.
+#[test]
+fn an_exact_pitch_frame_starts_where_the_render_reads_from() {
+    let g = graph_of("pitch-start", &[("tone", "sin(2*pi*440*t)\n")]);
+    let pitch = Representation::Pitch {
+        max_notes: 4,
+        frame_secs: 0.05,
+    };
+    let read = |asked: Representation, start: Option<i64>| {
+        let mut config = RenderConfig::at(48_000).asking(vec![Ask {
+            node: "tone".to_string(),
+            representation: asked,
+        }]);
+        config.range = Range { start, end: None };
+        let held = render(&g, "tone", config, &Tier::default()).expect("a tone");
+        let root = held.id("tone").expect("the root");
+        answer(&held, root, pitch)
+    };
+    let starts = |start: Option<i64>| {
+        let found = read(pitch, start).expect("an exact pitch");
+        assert_eq!(found.source, Source::Exact);
+        let Output::Pitch(frames) = found.value else {
+            panic!("expected pitch frames");
+        };
+        frames.iter().map(|f| f.t_secs).collect::<Vec<f64>>()
+    };
+    assert_eq!(starts(Some(24_000)), vec![0.5]);
+    assert_eq!(starts(None), vec![0.0]);
+
+    let unasked = read(Representation::Lines, Some(24_000)).expect_err("no start decided");
+    assert_eq!(unasked.code(), "engine.not_materialized");
 }
 
 /// `spectrum` of a dual is the exact line list, the same content as `lines`
