@@ -290,6 +290,27 @@ fn a_laws_spectrum_ignores_the_peak_budget_and_refuses_a_frame_length() {
     assert_eq!(refused.code(), "engine.observation_needs_samples");
 }
 
+/// A closed form's envelope refuses a frame length as its spectrum does.
+#[test]
+fn a_laws_envelope_refuses_a_frame_length() {
+    let law = rendered("framed-envelope", "sin(2*pi*100*t)\n", vec!["lines"]);
+    let id = law.id("node").expect("the root");
+    let exact =
+        answer(&law, id, Representation::Envelope { frame_secs: None }).expect("an exact envelope");
+    assert_eq!(exact.source, Source::Exact);
+
+    let refused = answer(
+        &law,
+        id,
+        Representation::Envelope {
+            frame_secs: Some(0.01),
+        },
+    )
+    .expect_err("a law has no frames");
+    assert_eq!(refused.code(), "engine.observation_needs_samples");
+    assert!(refused.to_string().contains("envelope"), "{refused}");
+}
+
 /// FORMAT 6.1: a finite `sum` is the type of its term, so the exact reading of a finite sum
 /// of sinusoids is every line those terms place, never an empty list labelled exact.
 #[test]

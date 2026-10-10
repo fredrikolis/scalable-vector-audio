@@ -166,17 +166,16 @@ fn exact(
         Representation::Spectrum {
             frame_secs: Some(_),
             ..
+        } => return Err(unframed(render, node, "spectrum is its lines", "the lines")),
+        Representation::Envelope {
+            frame_secs: Some(_),
         } => {
-            return Err(EngineError::refused(Diagnostic {
-                code: "engine.observation_needs_samples".to_string(),
-                message: "a closed form's spectrum is its lines, and it has no frames to \
-                          take a spectrum across"
-                    .to_string(),
-                location: Located::at(render.tys.name(node), None),
-                help: "drop `frame` for the lines, or read `sample(...)` of it to measure \
-                       frames"
-                    .to_string(),
-            }));
+            return Err(unframed(
+                render,
+                node,
+                "envelope is its exact squared magnitude",
+                "the exact envelope",
+            ));
         }
         // A pair's spectrum is its whole line list; no estimate, no peaks.
         Representation::Spectrum {
@@ -216,7 +215,7 @@ fn exact(
             })?;
             (Output::Symbolic(Box::new(slope)), Listed::NONE)
         }
-        Representation::Envelope { .. } => {
+        Representation::Envelope { frame_secs: None } => {
             let held =
                 refs::read_through(&render.tys, |t| envelope_read(sum, t)).map_err(|left| {
                     EngineError::of_closed_form(
@@ -230,6 +229,16 @@ fn exact(
         other => return Err(not_a_closed_form(render, node, other)),
     };
     Ok((value, listed, source))
+}
+
+/// A closed form holds no frames, so a written `frame` is refused rather than ignored.
+fn unframed(render: &Render, node: sva_formula::NodeId, is: &str, bare: &str) -> EngineError {
+    EngineError::refused(Diagnostic {
+        code: "engine.observation_needs_samples".to_string(),
+        message: format!("a closed form's {is}, and it has no frames to take it across"),
+        location: Located::at(render.tys.name(node), None),
+        help: format!("drop `frame` for {bare}, or read `sample(...)` of it to measure frames"),
+    })
 }
 
 /// Every atom the spectral sum stands for, beside the terms its series truncated away or left

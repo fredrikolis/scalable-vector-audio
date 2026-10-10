@@ -79,10 +79,10 @@ RENDER:
   expression and ignore the range.
 
   A closed form's `spectrum` and `pitch` are its exact lines, so a term under a
-  crop or an envelope, which has a width and is no line, refuses them; so does
-  `spectrum(frame=)`, as a closed form has no frames. To measure either frame
-  by frame, a reader samples the target's ref, `sample(@x([0, 1s]))`, and an
-  author writes `sample(...)` inside the node. A measured `spectrum` is one
+  crop or an envelope, which has a width and is no line, refuses them; so do
+  `spectrum(frame=)` and `envelope(frame=)`, as a closed form has no frames. To
+  measure any of them frame by frame, a reader samples the target's ref,
+  `sample(@x([0, 1s]))`, and an author writes `sample(...)` inside the node. A measured `spectrum` is one
   spectrum: every `frame`-long window across the range, averaged. `pitch` is framed, one entry
   per `frame`; for the spectrum at one instant, read a range one frame long.
   A measured `envelope` is framed too, and reads every channel: a frame's
