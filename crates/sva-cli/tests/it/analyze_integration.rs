@@ -123,6 +123,7 @@ fn analyze_takes_only_the_readings_a_buffer_answers_and_needs_a_wav() {
             "bands",
             "crest",
             "derivative",
+            "dissonance",
             "envelope",
             "formants",
             "loudness",
@@ -131,6 +132,8 @@ fn analyze_takes_only_the_readings_a_buffer_answers_and_needs_a_wav() {
             "samples",
             "spectrum",
             "stereo",
+            "tonal_distance",
+            "voice_leading",
         ],
         "the readings a buffer answers alone"
     );

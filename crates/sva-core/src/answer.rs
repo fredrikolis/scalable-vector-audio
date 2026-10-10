@@ -9,6 +9,13 @@ use sva_engine::{
     SpectralSum, Spectrum, StereoFrame, StereoImage, Work,
 };
 
+use sva_engine::harmony::Framing;
+use sva_engine::harmony::chords::{self, Chord};
+use sva_engine::harmony::dissonance::{self, Dissonance, Extreme};
+use sva_engine::harmony::tonnetz::{self, Quality, TonalDistance, Triad};
+use sva_engine::harmony::voice_leading::{self, VoiceLeading};
+use sva_engine::pitch as pitch_names;
+
 use crate::json::{NONE, capped, escape, latest, list, num};
 
 /// Past this a caller reading stdout wants a later interval start, not a wall of JSON.
@@ -258,6 +265,150 @@ fn alias_json(a: &Alias) -> String {
     )
 }
 
+/// The fields every harmonic reading opens with: where its partials came from, the floor
+/// under them, and the time axis its curve steps along.
+fn framing_json(framing: &Framing, floor_db: f64) -> String {
+    let window = framing.window.map_or(NONE.to_string(), |w| {
+        format!(
+            "{{ \"size\": {}, \"secs\": {}, \"resolution_hz\": {} }}",
+            w.size,
+            num(w.secs),
+            num(w.resolution_hz)
+        )
+    });
+    format!(
+        "\"partials\": \"{}\", \"floor_db\": {}, \"hop_secs\": {}, \"window\": {window}",
+        escape(framing.method()),
+        num(floor_db),
+        num(framing.hop_secs)
+    )
+}
+
+fn extreme_json(e: Option<Extreme>) -> String {
+    e.map_or(NONE.to_string(), |e| {
+        format!(
+            "{{ \"value\": {}, \"t\": {} }}",
+            num(e.value),
+            num(e.t_secs)
+        )
+    })
+}
+
+fn dissonance_json(d: &Dissonance) -> String {
+    format!(
+        "{{ \"model\": \"{}\", \"constants\": {{ \"a\": {}, \"b\": {}, \"d_star\": {}, \
+         \"s1\": {}, \"s2\": {} }}, \"amplitude\": \"product\", {}, \"mean\": {}, \
+         \"max\": {}, \"min\": {}, \"curve\": {} }}",
+        escape(dissonance::MODEL),
+        num(dissonance::A),
+        num(dissonance::B),
+        num(dissonance::D_STAR),
+        num(dissonance::S1),
+        num(dissonance::S2),
+        framing_json(&d.framing, d.floor_db),
+        maybe(d.mean),
+        extreme_json(d.max),
+        extreme_json(d.min),
+        list(&d.frames, |f| format!(
+            "\n    {{ \"t\": {}, \"roughness\": {}, \"roughness_bounds\": [{}, {}], \
+             \"partials\": {} }}",
+            num(f.t_secs),
+            num(f.roughness),
+            num(f.roughness_bounds.0),
+            num(f.roughness_bounds.1),
+            f.partials
+        ))
+    )
+}
+
+fn notes_json(notes: &[i64]) -> String {
+    list(notes, |n| format!("\"{}\"", pitch_names::note_name(*n)))
+}
+
+fn chord_fields(c: &Chord) -> String {
+    format!(
+        "\"start_secs\": {}, \"end_secs\": {}, \"notes\": {}, \"unresolved\": {}",
+        num(c.start_secs),
+        num(c.end_secs),
+        notes_json(&c.notes),
+        notes_json(&c.unresolved)
+    )
+}
+
+fn voice_leading_json(v: &VoiceLeading) -> String {
+    format!(
+        "{{ \"model\": \"{}\", \"norm\": \"{}\", \"chords_by\": \"{}\", {}, \
+         \"total\": {}, \"chords\": {}, \"transitions\": {} }}",
+        escape(voice_leading::MODEL),
+        v.norm.key(),
+        escape(chords::METHOD),
+        framing_json(&v.framing, v.floor_db),
+        num(v.total),
+        list(&v.chords, |c| format!("\n    {{ {} }}", chord_fields(c))),
+        list(&v.transitions, |t| format!(
+            "\n    {{ \"t\": {}, \"from\": {}, \"to\": {}, \"distance\": {}, \
+             \"mapping\": {} }}",
+            num(t.at_secs),
+            notes_json(&t.from),
+            notes_json(&t.to),
+            num(t.distance),
+            list(&t.mapping, |(from, to)| format!(
+                "{{ \"from\": \"{}\", \"to\": \"{}\" }}",
+                pitch_names::note_name(*from),
+                pitch_names::note_name(*to)
+            ))
+        ))
+    )
+}
+
+fn triad_json(t: Option<Triad>) -> String {
+    t.map_or(NONE.to_string(), |t| {
+        format!(
+            "{{ \"root\": \"{}\", \"quality\": \"{}\" }}",
+            pitch_names::class_name(i64::from(t.root)),
+            match t.quality {
+                Quality::Major => "major",
+                Quality::Minor => "minor",
+            }
+        )
+    })
+}
+
+fn tonal_distance_json(d: &TonalDistance) -> String {
+    let tonic = d.tonic.map_or(NONE.to_string(), |(triad, t)| {
+        format!(
+            "{{ \"triad\": {}, \"t\": {} }}",
+            triad_json(Some(triad)),
+            num(t)
+        )
+    });
+    format!(
+        "{{ \"model\": \"{}\", \"chords_by\": \"{}\", {}, \"tonic\": {tonic}, \
+         \"chords\": {}, \"transitions\": {} }}",
+        escape(tonnetz::MODEL),
+        escape(chords::METHOD),
+        framing_json(&d.framing, d.floor_db),
+        list(&d.chords, |c| format!(
+            "\n    {{ {}, \"triad\": {}, \"tension\": {} }}",
+            chord_fields(&c.chord),
+            triad_json(c.triad),
+            counted(c.tension)
+        )),
+        list(&d.transitions, |t| format!(
+            "\n    {{ \"t\": {}, \"from\": {}, \"to\": {}, \"distance\": {}, \
+             \"path\": {} }}",
+            num(t.at_secs),
+            triad_json(t.from),
+            triad_json(t.to),
+            counted(t.path.as_ref().map(Vec::len)),
+            t.path.as_ref().map_or(NONE.to_string(), |p| format!(
+                "\"{}\"",
+                p.iter().map(|s| s.letter()).collect::<String>()
+            ))
+        ))
+    )
+}
+
 fn binding_json(b: &Binding) -> String {
     format!(
         "\n    {{ \"name\": \"{}\", \"source\": \"{}\" }}",
@@ -352,6 +503,9 @@ pub fn value_json(output: &Output, limit: Option<usize>, skim: bool) -> String {
         Output::Crest(c) => crest_json(c),
         Output::Onsets(o) => onsets_json(o),
         Output::Alias(a) => alias_json(a),
+        Output::Dissonance(d) => dissonance_json(d),
+        Output::VoiceLeading(v) => voice_leading_json(v),
+        Output::TonalDistance(d) => tonal_distance_json(d),
         Output::Bindings(b) => list(b, binding_json),
         Output::Arguments(a) => list(a, arguments_json),
         Output::Envelope(frames) => list(frames, |f: &EnvelopeFrame| {

@@ -64,21 +64,29 @@ fn name_all(found: &[Peak], max_notes: usize) -> Vec<Note> {
         .iter()
         .take(max_notes)
         .map(|p| {
-            let midi = 69.0 + 12.0 * (p.hz / 440.0).log2();
+            let midi = midi_of(p.hz);
             let nearest = midi.round();
             Note {
                 hz: p.hz,
-                name: format!(
-                    "{}{}",
-                    NAMES[(nearest as i64).rem_euclid(12) as usize],
-                    (nearest as i64) / 12 - 1
-                ),
+                name: note_name(nearest as i64),
                 cents: (midi - nearest) * 100.0,
                 db: p.db,
                 harmonic_of: harmonic_of(p, &audible),
             }
         })
         .collect()
+}
+
+pub fn midi_of(hz: f64) -> f64 {
+    69.0 + 12.0 * (hz / 440.0).log2()
+}
+
+pub fn note_name(midi: i64) -> String {
+    format!("{}{}", class_name(midi), midi.div_euclid(12) - 1)
+}
+
+pub fn class_name(midi: i64) -> &'static str {
+    NAMES[midi.rem_euclid(12) as usize]
 }
 
 fn harmonic_of(peak: &Peak, louder_first: &[&Peak]) -> Option<f64> {

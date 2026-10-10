@@ -2,8 +2,9 @@
 
 use sva_core::DEFAULT_STORE_BYTES;
 use sva_engine::{
-    DEFAULT_BUFFER_SECS, DEFAULT_FRAME_SECS, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS,
-    DEFAULT_OVERSAMPLE, DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1, READINGS, Reads,
+    DEFAULT_BUFFER_SECS, DEFAULT_FLOOR_DB, DEFAULT_FRAME_SECS, DEFAULT_LEDGER_DEPTH,
+    DEFAULT_MAX_PAIRS, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, DEFAULT_SAMPLE_RATE,
+    PSYCHOACOUSTIC_V1, READINGS, Reads,
 };
 
 /// Read off the constants the parser itself defaults to, so a printed default cannot drift
@@ -303,6 +304,11 @@ DEFAULTS:
   (frame=<t>)          the step a framed reading advances by, in seconds.
                        Default {DEFAULT_FRAME_SECS}, except `spectrum`, which sizes
                        its own transform to the range unless it is set.
+  (floor=<db>)         the amplitude, as `-40db`, under which a harmonic reading
+                       drops a partial. Default {DEFAULT_FLOOR_DB}db.
+  voice_leading(norm=<l1|l2>) how a voice leading's moves add up. Default l1.
+  dissonance(pairs=<n>) the most partial pairs one frame sums before it refuses.
+                       Default {DEFAULT_MAX_PAIRS}.
   bindings(node=@<path>) the instance whose bindings are read; required.
   samples(buffer=<t>)  how much an `alsa:` device holds ahead of what it plays,
                        in seconds. Default {DEFAULT_BUFFER_SECS}; only a device

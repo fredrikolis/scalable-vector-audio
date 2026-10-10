@@ -15,6 +15,7 @@ mod extents;
 mod faded;
 mod fixtures;
 mod grid;
+mod harmony;
 mod index;
 mod instantiate;
 mod laws;

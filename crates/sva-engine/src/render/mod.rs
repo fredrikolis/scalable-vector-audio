@@ -354,7 +354,12 @@ fn ranged(
     let asked = |of: fn(&Representation) -> bool| {
         held.config.asks.iter().any(|ask| of(&ask.representation))
     };
-    let envelope = asked(|r| matches!(r, Representation::Envelope { .. }));
+    let envelope = asked(|r| {
+        matches!(
+            r,
+            Representation::Envelope { .. } | Representation::Harmony { .. }
+        )
+    });
     let pitch = asked(|r| matches!(r, Representation::Pitch { .. }));
     let tabled = materializes(held);
     if !tabled && !envelope && !pitch {

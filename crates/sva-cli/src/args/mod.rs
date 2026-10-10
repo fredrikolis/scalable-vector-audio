@@ -655,6 +655,47 @@ mod tests {
     }
 
     #[test]
+    fn a_harmonic_reading_takes_its_floor_in_decibels_and_its_norm_by_name() {
+        let args = rendered(&[
+            "render",
+            "@a",
+            "--representation",
+            "voice_leading(frame=10ms, floor=-60db, norm=l2),dissonance",
+        ]);
+        assert_eq!(
+            args.asked[0].representation,
+            sva_engine::Representation::Harmony {
+                reading: sva_engine::Harmonic::VoiceLeading {
+                    norm: sva_engine::harmony::voice_leading::Norm::L2
+                },
+                frame_secs: 0.01,
+                floor_db: -60.0,
+            }
+        );
+        assert_eq!(
+            args.asked[1].representation,
+            sva_engine::Representation::Harmony {
+                reading: sva_engine::Harmonic::Dissonance {
+                    max_pairs: sva_engine::DEFAULT_MAX_PAIRS
+                },
+                frame_secs: sva_engine::DEFAULT_FRAME_SECS,
+                floor_db: sva_engine::DEFAULT_FLOOR_DB,
+            }
+        );
+        let render = |r: &'static str| vec!["render", "@a", "--representation", r];
+        for (parts, text) in [
+            (render("dissonance(floor=-60)"), "`-60`"),
+            (render("voice_leading(norm=l3)"), "`l3`"),
+            (render("dissonance(norm=l1)"), "`norm`"),
+        ] {
+            let Err(CliError::Usage { message, .. }) = parse_args(&argv(&parts)) else {
+                panic!("{parts:?} refuses as an argument mistake");
+            };
+            assert!(message.contains(text), "{parts:?}: {message}");
+        }
+    }
+
+    #[test]
     fn bindings_needs_a_node() {
         refused(&["render", "@a", "--representation", "bindings"]);
     }

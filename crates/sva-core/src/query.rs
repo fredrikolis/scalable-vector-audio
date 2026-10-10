@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use sva_engine::harmony::voice_leading::Norm;
 use sva_engine::{Arg, DEFAULT_BUFFER_SECS, Given, READINGS, Representation};
 
 use crate::cli_error::CliError;
@@ -204,6 +205,9 @@ pub fn asked(call: &Call) -> Result<Asked, CliError> {
             Arg::Skim => skim = switch(raw, key)?,
             Arg::Node => node = Some(self::node(raw)?),
             Arg::Buffer => buffer = Some(microseconds(raw, key)?),
+            Arg::Floor => given.floor_db = decibels(raw, key)?,
+            Arg::Norm => given.norm = norm(raw)?,
+            Arg::Pairs => given.max_pairs = count(raw, key)?,
         }
     }
     if row.takes.contains(&Arg::Node) && node.is_none() {
@@ -362,6 +366,38 @@ fn microseconds(raw: &str, key: &str) -> Result<f64, CliError> {
             ),
         )),
     }
+}
+
+/// A level the language spells in decibels, `-40db`; a bare number names no unit.
+fn decibels(raw: &str, key: &str) -> Result<f64, CliError> {
+    use sva_ast::{LogUnit::Decibels, TokenKind};
+    let kinds: Option<Vec<TokenKind>> = sva_ast::tokenize(raw)
+        .ok()
+        .map(|tokens| tokens.into_iter().map(|t| t.kind).collect());
+    let held = match kinds.as_deref() {
+        Some([TokenKind::Log(v, Decibels)]) => Some(*v),
+        Some([TokenKind::Minus, TokenKind::Log(v, Decibels)]) => Some(-v),
+        _ => None,
+    };
+    match held {
+        Some(v) if v.is_finite() => Ok(v),
+        _ => Err(CliError::usage(
+            "query.bad_value",
+            format!("`{key}` needs a level in decibels, as `-40db`, got `{raw}`"),
+        )),
+    }
+}
+
+fn norm(raw: &str) -> Result<Norm, CliError> {
+    [Norm::L1, Norm::L2]
+        .into_iter()
+        .find(|n| n.key() == raw)
+        .ok_or_else(|| {
+            CliError::usage(
+                "query.bad_value",
+                format!("`norm` is `l1` or `l2`, got `{raw}`"),
+            )
+        })
 }
 
 fn switch(raw: &str, key: &str) -> Result<bool, CliError> {

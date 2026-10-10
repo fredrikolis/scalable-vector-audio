@@ -1,10 +1,12 @@
 // Concern: takes one reading off the representation a node declares, a ledger edge by edge | Non-concern: naming the observations (query.rs), the arithmetic of one | IO: (&Render, node) -> Answer
 
-use std::collections::HashMap;
-
 use sva_formula::closed_form::Edge;
 use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
-use sva_formula::{C64, Line, SpectralSum, Var, d_dt, envelope_read, line_atoms_read};
+use sva_formula::{Line, SpectralSum, Var, d_dt, envelope_read, line_atoms_read};
+use sva_samples::measure::harmony::dissonance::Crowded;
+use sva_samples::measure::harmony::{
+    self, Framing, Moment, chords, dissonance, measured as framed, tonnetz, voice_leading,
+};
 use sva_samples::{
     Buffer, Consumes, Extent, Peak, PitchFrame, Profile, Source, measure::bands, measure::crest,
     measure::envelope, measure::formants, measure::loudness, measure::onsets, measure::pitch,
@@ -12,7 +14,7 @@ use sva_samples::{
 };
 
 use crate::error::{Diagnostic, EngineError, Located};
-use crate::query::{Answer, Atom, DEFAULT_FRAME_SECS, Output, Representation};
+use crate::query::{Answer, Atom, DEFAULT_FRAME_SECS, Harmonic, Output, Representation};
 use crate::refs;
 use crate::render::Render;
 use crate::typing::Value;
@@ -52,7 +54,7 @@ pub fn answer(
                         found = held;
                         &found
                     }
-                    Err(left) => return Err(not_exact(representation, left)),
+                    Err(left) => return Err(unsummed(representation, left)),
                 },
             };
             let (value, listed, source) = exact(render, node, representation, sum)
@@ -127,7 +129,13 @@ fn exact(
         Representation::Pitch { max_notes, .. } => {
             let listed = enumerated()?;
             let held = lines(render, node, sum.var, &listed.atoms)?;
-            let mut found = partials(&held);
+            let mut found: Vec<Peak> = harmony::partials(held.iter().map(|l| (l.hz, l.amp)))
+                .into_iter()
+                .map(|p| Peak {
+                    hz: p.hz,
+                    db: 20.0 * p.amplitude.log10(),
+                })
+                .collect();
             found.sort_by(|a, b| b.db.total_cmp(&a.db));
             let start = render.read_from.ok_or_else(|| {
                 refused(
@@ -166,9 +174,147 @@ fn exact(
                 })?;
             (Output::Symbolic(Box::new(held.squared)), Listed::NONE)
         }
+        Representation::Harmony {
+            reading,
+            frame_secs,
+            floor_db,
+        } => {
+            let (moments, framing, listed) = exact_moments(render, node, sum, frame_secs)?;
+            let value = harmonic(reading, &moments, framing, floor_db)
+                .map_err(|held| crowded(render.tys.name(node), representation, held))?;
+            (value, listed)
+        }
         other => return Err(not_a_closed_form(render, node, other)),
     };
     Ok((value, listed, source))
+}
+
+/// Each instant on the frame grid over the range, its first component's partials exactly:
+/// every atom a partial at its carrier, `omega/2pi`, its complex value there merged with the
+/// others at that carrier, so a decay, polynomial, Gaussian or window weighs it as it stands.
+fn exact_moments(
+    render: &Render,
+    node: sva_formula::NodeId,
+    sum: &SpectralSum,
+    frame_secs: f64,
+) -> Result<(Vec<Moment>, Framing, Listed), EngineError> {
+    let range = match (render.range, &render.unranged) {
+        (Some(range), _) => range,
+        (None, Some(refused)) => return Err(refused.clone()),
+        (None, None) => unreachable!("a harmonic reading decides its range before it answers"),
+    };
+    let rate = f64::from(render.config.rate);
+    let hop = ((frame_secs * rate).round() as usize).max(1);
+    let first = SpectralSum::of(sum.var, sum.lanes.iter().take(1).cloned().collect());
+    let listed = listed(render, node, &first, &render.config.profile)?;
+    let instants: Vec<f64> = (range.start..range.end)
+        .step_by(hop)
+        .map(|n| n as f64 / rate)
+        .collect();
+    let moments = match sum.var {
+        Var::F => {
+            let held = lines(render, node, Var::F, &listed.atoms)?;
+            let partials = harmony::partials(held.iter().map(|l| (l.hz, l.amp)));
+            instants
+                .iter()
+                .map(|t| Moment {
+                    t_secs: *t,
+                    partials: partials.clone(),
+                })
+                .collect()
+        }
+        Var::T => instants
+            .iter()
+            .map(|t| {
+                let carried = listed.atoms.iter().map(|a| {
+                    let value = (!a.is_delta()).then(|| a.smooth_at(*t)).flatten();
+                    let hz = a.exp.map_or(0.0, |e| e.omega / std::f64::consts::TAU);
+                    value
+                        .map(|v| (hz, v))
+                        .ok_or_else(|| no_partial(render, node, a, *t))
+                });
+                Ok(Moment {
+                    t_secs: *t,
+                    partials: harmony::partials(carried.collect::<Result<Vec<_>, _>>()?),
+                })
+            })
+            .collect::<Result<_, EngineError>>()?,
+    };
+    let framing = Framing {
+        hop_secs: hop as f64 / rate,
+        window: None,
+    };
+    Ok((moments, framing, listed))
+}
+
+/// One harmonic reading off a curve of partials, whichever source took them.
+fn harmonic(
+    reading: Harmonic,
+    moments: &[Moment],
+    framing: Framing,
+    floor_db: f64,
+) -> Result<Output, Crowded> {
+    let chords = || chords::segment(moments, framing.hop_secs, floor_db);
+    Ok(match reading {
+        Harmonic::Dissonance { max_pairs } => Output::Dissonance(Box::new(dissonance::measure(
+            moments, framing, floor_db, max_pairs,
+        )?)),
+        Harmonic::VoiceLeading { norm } => Output::VoiceLeading(Box::new(voice_leading::analyze(
+            chords(),
+            framing,
+            floor_db,
+            norm,
+        ))),
+        Harmonic::TonalDistance => {
+            Output::TonalDistance(Box::new(tonnetz::analyze(chords(), framing, floor_db)))
+        }
+    })
+}
+
+/// An impulse stands at no frequency, and a pole has no value at its own instant.
+fn no_partial(
+    render: &Render,
+    node: sva_formula::NodeId,
+    atom: &SpectralAtom,
+    t: f64,
+) -> EngineError {
+    let mut at = render.tys.locate(atom.origin);
+    if at.node.is_empty() {
+        at = Located::at(render.tys.name(node), None);
+    }
+    let message = match atom.is_delta() {
+        true => "this term is an impulse in `t`, which stands at no one frequency, so it is \
+                 no partial"
+            .to_string(),
+        false => {
+            format!("this term has a pole at {t}s, an instant of the curve, where it has no value")
+        }
+    };
+    EngineError::refused(Diagnostic {
+        code: "read.no_partial_at_instant".to_string(),
+        message,
+        location: at,
+        help: "a harmonic reading of `sample(...)` of it, as `sample(@x([0, 1s]))`, is \
+               measured off frames of its samples instead"
+            .to_string(),
+    })
+}
+
+fn crowded(name: &str, representation: Representation, held: Crowded) -> EngineError {
+    let reading = representation.name();
+    EngineError::refused(Diagnostic {
+        code: "read.too_many_partial_pairs".to_string(),
+        message: format!(
+            "at {}s, {} partials may stand over the floor, {} pairs, past the {} asked for",
+            held.t_secs, held.partials, held.pairs, held.cap
+        ),
+        location: Located::at(name, None),
+        help: format!(
+            "ask for more pairs, as `{reading}(pairs={})`, or raise the floor so fewer partials \
+             pair, as `{reading}(floor=-30db)`",
+            held.pairs
+        ),
+    })
 }
 
 /// A closed form's envelope is exact or refused, never measured unasked: a refusal of its
@@ -185,6 +331,29 @@ fn not_exact(representation: Representation, left: EngineError) -> EngineError {
             })
         }
         (_, left) => left,
+    }
+}
+
+/// A closed form with no atom sum has no exact partials; the measured ones are asked for
+/// explicitly, never taken in their place.
+fn unsummed(representation: Representation, left: EngineError) -> EngineError {
+    match (representation, left) {
+        (Representation::Harmony { .. }, EngineError::Refused(cause)) => {
+            EngineError::refused(Diagnostic {
+                message: format!(
+                    "`{}` of a closed form reads its exact partials, and it has none: {}",
+                    representation.name(),
+                    cause.message
+                ),
+                help: format!(
+                    "a measured `{}` is asked for explicitly: read it of `sample(...)` of it, as \
+                     `sample(@x([0, 1s]))`",
+                    representation.name()
+                ),
+                ..*cause
+            })
+        }
+        (_, left) => not_exact(representation, left),
     }
 }
 
@@ -338,31 +507,6 @@ fn not_a_line(
     })
 }
 
-/// Lines at exactly one frequency sum as complex amplitudes, so a cancelled pair is no peak;
-/// a real wave carries half its amplitude in each conjugate line.
-fn partials(held: &[Line]) -> Vec<Peak> {
-    let mut at: HashMap<u64, C64> = HashMap::new();
-    let mut order: Vec<f64> = Vec::new();
-    for line in held {
-        let summed = at.entry(line.hz.to_bits()).or_insert_with(|| {
-            order.push(line.hz);
-            C64::ZERO
-        });
-        *summed = *summed + line.amp;
-    }
-    let modulus = |hz: f64| at.get(&hz.to_bits()).map_or(0.0, |c| c.abs());
-    order
-        .into_iter()
-        .filter(|hz| *hz > 0.0)
-        .map(|hz| (hz, modulus(hz) + modulus(-hz)))
-        .filter(|(_, amplitude)| *amplitude > 0.0)
-        .map(|(hz, amplitude)| Peak {
-            hz,
-            db: 20.0 * amplitude.log10(),
-        })
-        .collect()
-}
-
 /// One atom as the six factors it is present in, which is what `atoms` answers with.
 pub fn sketch_atom(a: &SpectralAtom) -> String {
     let factors: Vec<&'static str> = a.present().iter().map(|f| f.as_str()).collect();
@@ -404,6 +548,7 @@ fn measured(
             return off_buffer(buffer, other).map_err(|fault| match fault {
                 NoReading::NeedsAGraph => not_a_reading(render, node, other),
                 NoReading::TooNarrow { need, held } => too_narrow(render, node, need, held),
+                NoReading::Crowded(held) => crowded(render.tys.name(node), other, held),
             });
         }
     })
@@ -411,10 +556,11 @@ fn measured(
 
 /// Why a buffer answered nothing: the reading needs the tree the node was built from, or
 /// the buffer is narrower than the reading needs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NoReading {
     NeedsAGraph,
     TooNarrow { need: usize, held: usize },
+    Crowded(Crowded),
 }
 
 /// Every reading a buffer answers on its own, with no graph behind it.
@@ -474,6 +620,14 @@ pub fn off_buffer(buffer: &Buffer, representation: Representation) -> Result<Out
         Representation::Loudness => {
             let planes: Vec<&[f64]> = (0..buffer.width()).map(|c| buffer.plane(c)).collect();
             Output::Loudness(Box::new(loudness::analyze(&planes, sr, start)))
+        }
+        Representation::Harmony {
+            reading,
+            frame_secs,
+            floor_db,
+        } => {
+            let (moments, framing) = framed::moments(plane, sr, start, frame_secs);
+            harmonic(reading, &moments, framing, floor_db).map_err(NoReading::Crowded)?
         }
         _ => return Err(NoReading::NeedsAGraph),
     })
@@ -808,6 +962,7 @@ pub fn answer_buffer(
             "type.width_mismatch",
             format!("this reading needs {need} components and the file holds {held}"),
         ),
+        NoReading::Crowded(held) => crowded(name, representation, held),
     })?;
     Ok(Answer::whole(
         value,

@@ -1,6 +1,9 @@
 // Concern: the one table of observations: names, arguments, defaults, what each reads, help; the answer envelope | Non-concern: taking one reading (answer.rs) | IO: (name, Given) -> Representation
 
 use sva_formula::{C64, Line, SpectralSum, Var};
+use sva_samples::measure::harmony::dissonance::Dissonance;
+use sva_samples::measure::harmony::tonnetz::TonalDistance;
+use sva_samples::measure::harmony::voice_leading::{Norm, VoiceLeading};
 use sva_samples::{
     Alias, Bands, Buffer, Consumes, Crest, EnvelopeFrame, FormantFrame, LedgerEntry, Loudness,
     Onsets, PitchFrame, Source, Spectrum, StereoImage,
@@ -16,6 +19,10 @@ pub const DEFAULT_LEDGER_DEPTH: usize = 3;
 pub const DEFAULT_OVERSAMPLE: u32 = 4;
 /// How much audio a live device holds ahead of what it plays, where `samples` names one.
 pub const DEFAULT_BUFFER_SECS: f64 = 0.05;
+/// The amplitude, in dB against full scale, under which a harmonic reading drops a partial.
+pub const DEFAULT_FLOOR_DB: f64 = -40.0;
+/// The most partial pairs one `dissonance` frame sums before it refuses.
+pub const DEFAULT_MAX_PAIRS: usize = 1 << 17;
 
 /// Every named argument a reading may take; the engine reads only those `Given` holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +35,9 @@ pub enum Arg {
     Skim,
     Node,
     Buffer,
+    Floor,
+    Norm,
+    Pairs,
 }
 
 impl Arg {
@@ -41,6 +51,9 @@ impl Arg {
             Arg::Skim => "skim",
             Arg::Node => "node",
             Arg::Buffer => "buffer",
+            Arg::Floor => "floor",
+            Arg::Norm => "norm",
+            Arg::Pairs => "pairs",
         }
     }
 }
@@ -54,6 +67,9 @@ pub struct Given {
     pub frame: Option<f64>,
     pub depth: usize,
     pub oversample: u32,
+    pub floor_db: f64,
+    pub norm: Norm,
+    pub max_pairs: usize,
 }
 
 impl Default for Given {
@@ -63,6 +79,9 @@ impl Default for Given {
             frame: None,
             depth: DEFAULT_LEDGER_DEPTH,
             oversample: DEFAULT_OVERSAMPLE,
+            floor_db: DEFAULT_FLOOR_DB,
+            norm: Norm::L1,
+            max_pairs: DEFAULT_MAX_PAIRS,
         }
     }
 }
@@ -250,6 +269,47 @@ static ALIAS: Reading = Reading {
     },
 };
 
+static DISSONANCE: Reading = Reading {
+    name: "dissonance",
+    takes: &[Arg::Frame, Arg::Floor, Arg::Pairs],
+    reads: Reads::Either,
+    help: "Sethares' sensory roughness per frame of its partials over a floor, with its mean, \
+           max and min",
+    build: |g| Representation::Harmony {
+        reading: Harmonic::Dissonance {
+            max_pairs: g.max_pairs,
+        },
+        frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
+        floor_db: g.floor_db,
+    },
+};
+
+static VOICE_LEADING: Reading = Reading {
+    name: "voice_leading",
+    takes: &[Arg::Frame, Arg::Floor, Arg::Norm],
+    reads: Reads::Either,
+    help: "its chords over time, and the smallest voice leading between each two, l1 or l2 \
+           in semitones",
+    build: |g| Representation::Harmony {
+        reading: Harmonic::VoiceLeading { norm: g.norm },
+        frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
+        floor_db: g.floor_db,
+    },
+};
+
+static TONAL_DISTANCE: Reading = Reading {
+    name: "tonal_distance",
+    takes: &[Arg::Frame, Arg::Floor],
+    reads: Reads::Either,
+    help: "its chords over time, the Tonnetz steps between each two triads and each one's \
+           from the first",
+    build: |g| Representation::Harmony {
+        reading: Harmonic::TonalDistance,
+        frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
+        floor_db: g.floor_db,
+    },
+};
+
 static BINDINGS: Reading = Reading {
     name: "bindings",
     takes: &[Arg::Node],
@@ -267,7 +327,7 @@ static ARGUMENTS: Reading = Reading {
 };
 
 /// Every reading a caller may ask for, in the order a listing prints them.
-pub static READINGS: [&Reading; 17] = [
+pub static READINGS: [&Reading; 20] = [
     &LINES,
     &ATOMS,
     &SPECTRUM,
@@ -283,6 +343,9 @@ pub static READINGS: [&Reading; 17] = [
     &LOUDNESS,
     &ONSETS,
     &ALIAS,
+    &DISSONANCE,
+    &VOICE_LEADING,
+    &TONAL_DISTANCE,
     &BINDINGS,
     &ARGUMENTS,
 ];
@@ -321,8 +384,22 @@ pub enum Representation {
     Alias {
         oversample: u32,
     },
+    /// The partials it is read from step by `frame_secs` and stop at `floor_db`.
+    Harmony {
+        reading: Harmonic,
+        frame_secs: f64,
+        floor_db: f64,
+    },
     Bindings,
     Arguments,
+}
+
+/// The three readings taken off one curve of partials.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Harmonic {
+    Dissonance { max_pairs: usize },
+    VoiceLeading { norm: Norm },
+    TonalDistance,
 }
 
 /// What a caller asked of one node.
@@ -349,6 +426,9 @@ pub enum Output {
     Onsets(Box<Onsets>),
     Alias(Box<Alias>),
     Ledger(Vec<LedgerEntry>),
+    Dissonance(Box<Dissonance>),
+    VoiceLeading(Box<VoiceLeading>),
+    TonalDistance(Box<TonalDistance>),
     Bindings(Vec<Binding>),
     Arguments(Vec<Arguments>),
 }
@@ -418,6 +498,11 @@ impl Representation {
             Representation::Loudness => &LOUDNESS,
             Representation::Onsets => &ONSETS,
             Representation::Alias { .. } => &ALIAS,
+            Representation::Harmony { reading, .. } => match reading {
+                Harmonic::Dissonance { .. } => &DISSONANCE,
+                Harmonic::VoiceLeading { .. } => &VOICE_LEADING,
+                Harmonic::TonalDistance => &TONAL_DISTANCE,
+            },
             Representation::Bindings => &BINDINGS,
             Representation::Arguments => &ARGUMENTS,
         }
