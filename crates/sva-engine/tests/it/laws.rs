@@ -201,6 +201,50 @@ fn pitch_of_a_pure_sine_is_exact() {
     );
 }
 
+/// A series' line lands beside the lane's own at the same frequency, unmerged. Its amplitude
+/// is their complex sum: `sin` less the series' first term at 440 Hz is silence, not +6 dB.
+#[test]
+fn pitch_sums_the_complex_amplitudes_of_lines_at_one_frequency() {
+    let body = "sin(2*pi*440*t) - sum(k, 1, 2, sin(2*pi*440*k*t)/k)\n";
+    let g = graph_of("cancelled", &[("tone", body)]);
+    let asked = |reading: Representation| {
+        let config = RenderConfig::seconds(48_000, 1.0).asking(vec![Ask {
+            node: "tone".to_string(),
+            representation: reading,
+        }]);
+        let held = render(&g, "tone", config, &Tier::default()).expect("a tone");
+        let root = held.id("tone").expect("the root");
+        answer(&held, root, reading)
+            .expect("an exact reading")
+            .value
+    };
+
+    let Output::Lines(lines) = asked(Representation::Lines) else {
+        panic!("expected lines");
+    };
+    let at_440 = lines.iter().filter(|l| l.hz == 440.0).count();
+    assert_eq!(at_440, 2, "the series' line stands unmerged: {lines:?}");
+
+    let Output::Pitch(frames) = asked(Representation::Pitch {
+        max_notes: 4,
+        frame_secs: 0.05,
+    }) else {
+        panic!("expected pitch frames");
+    };
+    let [frame] = frames.as_slice() else {
+        panic!("one frame: {frames:?}");
+    };
+    let [note] = frame.notes.as_slice() else {
+        panic!("440 Hz cancels, 880 Hz is left: {:?}", frame.notes);
+    };
+    assert_eq!(note.hz, 880.0);
+    assert!(
+        (note.db - 20.0 * 0.5f64.log10()).abs() < 1e-12,
+        "{} dB",
+        note.db
+    );
+}
+
 /// `spectrum` of a dual is the exact line list, the same content as `lines`
 /// in spectrum shape. Sixteen of a node's twenty thousand lines is not that content. A peak
 /// budget picks peaks out of an estimate, and a pair's spectrum is not an estimate.

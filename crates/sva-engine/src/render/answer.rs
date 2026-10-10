@@ -1,8 +1,10 @@
 // Concern: takes one reading off the representation a node declares, a ledger edge by edge | Non-concern: naming the observations (query.rs), the arithmetic of one | IO: (&Render, node) -> Answer
 
+use std::collections::HashMap;
+
 use sva_formula::closed_form::Edge;
 use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
-use sva_formula::{Line, SpectralSum, Var, d_dt, envelope_read, line_atoms_read};
+use sva_formula::{C64, Line, SpectralSum, Var, d_dt, envelope_read, line_atoms_read};
 use sva_samples::{
     Buffer, Consumes, Extent, Peak, PitchFrame, Profile, Source, measure::bands, measure::crest,
     measure::envelope, measure::formants, measure::loudness, measure::onsets, measure::pitch,
@@ -194,14 +196,7 @@ fn exact(
         Representation::Pitch { max_notes, .. } => {
             let listed = enumerated()?;
             let held = lines(render, node, sum.var, &listed.atoms)?;
-            let mut found: Vec<Peak> = held
-                .iter()
-                .filter(|l| l.hz > 0.0)
-                .map(|l| Peak {
-                    hz: l.hz,
-                    db: 20.0 * amplitude_at(&held, l.hz).log10(),
-                })
-                .collect();
+            let mut found = partials(&held);
             found.sort_by(|a, b| b.db.total_cmp(&a.db));
             let frame = PitchFrame {
                 t_secs: render
@@ -377,13 +372,29 @@ fn not_a_line(
     })
 }
 
-/// The amplitude a partial sounds at: a real wave carries it in a conjugate pair, half in
-/// each, and a measured peak reads the pair's sum.
-fn amplitude_at(held: &[Line], hz: f64) -> f64 {
-    held.iter()
-        .filter(|l| (l.hz - hz).abs() <= f64::EPSILON * hz.abs() || l.hz == -hz)
-        .map(|l| l.amp.abs())
-        .sum()
+/// Lines at exactly one frequency sum as complex amplitudes, so a cancelled pair is no peak;
+/// a real wave carries half its amplitude in each conjugate line.
+fn partials(held: &[Line]) -> Vec<Peak> {
+    let mut at: HashMap<u64, C64> = HashMap::new();
+    let mut order: Vec<f64> = Vec::new();
+    for line in held {
+        let summed = at.entry(line.hz.to_bits()).or_insert_with(|| {
+            order.push(line.hz);
+            C64::ZERO
+        });
+        *summed = *summed + line.amp;
+    }
+    let modulus = |hz: f64| at.get(&hz.to_bits()).map_or(0.0, |c| c.abs());
+    order
+        .into_iter()
+        .filter(|hz| *hz > 0.0)
+        .map(|hz| (hz, modulus(hz) + modulus(-hz)))
+        .filter(|(_, amplitude)| *amplitude > 0.0)
+        .map(|(hz, amplitude)| Peak {
+            hz,
+            db: 20.0 * amplitude.log10(),
+        })
+        .collect()
 }
 
 /// One atom as the six factors it is present in, which is what `atoms` answers with.
