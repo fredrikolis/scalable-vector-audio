@@ -320,7 +320,7 @@ fn a_finite_sum_lists_every_line() {
     assert_eq!(atoms.len(), 10, "one atom per line, both signs");
 }
 
-/// FORMAT 14.1: a series answers the terms above the audibility floor with the tail beside
+/// A series answers the terms above the audibility floor with the tail beside
 /// them. Three partials round a feedback comb are three waves per echo, and written
 /// associativity is not a fact about how many lines a Neumann series has.
 #[test]

@@ -99,6 +99,9 @@ fn only_one_sampled_ref_read_holds_an_interval() {
         let Err(why) = sva_core::target(refused) else {
             panic!("`{refused}` refuses");
         };
-        assert!(matches!(why, CliError::Usage(_)), "`{refused}`: {why:?}");
+        assert!(
+            matches!(why, CliError::Usage { .. }),
+            "`{refused}`: {why:?}"
+        );
     }
 }

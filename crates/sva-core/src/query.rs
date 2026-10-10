@@ -107,11 +107,14 @@ pub fn asked_all(calls: &[Call]) -> Result<Vec<Asked>, CliError> {
     for call in calls {
         let one = asked(call)?;
         if out.iter().any(|held| held.name == one.name) {
-            return Err(CliError::Usage(format!(
-                "`{}` is asked more than once; ask each reading once, every argument in \
+            return Err(CliError::usage(
+                "query.duplicate",
+                format!(
+                    "`{}` is asked more than once; ask each reading once, every argument in \
                  its one call",
-                one.name
-            )));
+                    one.name
+                ),
+            ));
         }
         out.push(one);
     }
@@ -122,25 +125,32 @@ pub fn asked_all(calls: &[Call]) -> Result<Vec<Asked>, CliError> {
 pub fn asked(call: &Call) -> Result<Asked, CliError> {
     let name = call.name.as_str();
     if let Some(write) = retired(name) {
-        return Err(CliError::Usage(format!(
-            "`{name}` left the language; write `{write}`"
-        )));
+        return Err(CliError::usage(
+            "query.retired",
+            format!("`{name}` left the language; write `{write}`"),
+        ));
     }
     let Some(row) = READINGS.iter().find(|row| row.name == name) else {
         let names: Vec<&str> = READINGS.iter().map(|row| row.name).collect();
-        return Err(CliError::Usage(format!(
-            "unknown representation `{name}`; the representations are {}",
-            names.join(", ")
-        )));
+        return Err(CliError::usage(
+            "query.unknown_representation",
+            format!(
+                "unknown representation `{name}`; the representations are {}",
+                names.join(", ")
+            ),
+        ));
     };
     let (mut given, mut node, mut brief, mut skim) = (Given::default(), None, false, false);
     for (key, raw) in &call.args {
         let Some(arg) = row.takes.iter().find(|arg| arg.key() == key) else {
             let keys: Vec<&str> = row.takes.iter().map(|arg| arg.key()).collect();
-            return Err(CliError::Usage(match keys[..] {
-                [] => format!("`{name}` takes no arguments, not `{key}`"),
-                _ => format!("`{name}` takes {}, not `{key}`", keys.join(", ")),
-            }));
+            return Err(CliError::usage(
+                "query.unknown_argument",
+                match keys[..] {
+                    [] => format!("`{name}` takes no arguments, not `{key}`"),
+                    _ => format!("`{name}` takes {}, not `{key}`", keys.join(", ")),
+                },
+            ));
         };
         match arg {
             Arg::Peaks => given.peaks = count(raw, key)?,
@@ -153,9 +163,10 @@ pub fn asked(call: &Call) -> Result<Asked, CliError> {
         }
     }
     if row.takes.contains(&Arg::Node) && node.is_none() {
-        return Err(CliError::Usage(format!(
-            "`{name}` reads one instance's {name}; name it, as `{name}(node=@voice)`"
-        )));
+        return Err(CliError::usage(
+            "query.missing_argument",
+            format!("`{name}` reads one instance's {name}; name it, as `{name}(node=@voice)`"),
+        ));
     }
     Ok(Asked {
         name: call.name.clone(),
@@ -207,32 +218,41 @@ fn closing(text: &str) -> Option<usize> {
 }
 
 fn unwritten(text: &str, why: &str) -> CliError {
-    CliError::Usage(format!(
-        "`{text}` is no reading: {why}. write a call, as `spectrum(peaks=8, frame=50ms)`, \
-         `=path` after it to write it to a file"
-    ))
+    CliError::usage(
+        "query.malformed",
+        format!(
+            "`{text}` is no reading: {why}. write a call, as `spectrum(peaks=8, frame=50ms)`, \
+             `=path` after it to write it to a file"
+        ),
+    )
 }
 
 pub fn wav_path(raw: &str) -> Result<PathBuf, CliError> {
     match is_wav(Path::new(raw)) {
         true => Ok(PathBuf::from(raw)),
-        false => Err(CliError::Usage(format!(
-            "`{raw}` is no `.wav` file; mp3 and every other format are out of scope"
-        ))),
+        false => Err(CliError::usage(
+            "analyze.not_wav",
+            format!("`{raw}` is no `.wav` file; mp3 and every other format are out of scope"),
+        )),
     }
 }
 
 fn count(raw: &str, key: &str) -> Result<usize, CliError> {
-    raw.parse::<usize>()
-        .map_err(|_| CliError::Usage(format!("`{key}` needs a whole count, got `{raw}`")))
+    raw.parse::<usize>().map_err(|_| {
+        CliError::usage(
+            "query.bad_value",
+            format!("`{key}` needs a whole count, got `{raw}`"),
+        )
+    })
 }
 
 fn factor(raw: &str) -> Result<u32, CliError> {
     match raw.parse::<u32>() {
         Ok(k) if (2..=16).contains(&k) && k.is_power_of_two() => Ok(k),
-        _ => Err(CliError::Usage(format!(
-            "`oversample` needs a power of two from 2 to 16, got `{raw}`"
-        ))),
+        _ => Err(CliError::usage(
+            "query.bad_value",
+            format!("`oversample` needs a power of two from 2 to 16, got `{raw}`"),
+        )),
     }
 }
 
@@ -248,9 +268,10 @@ pub fn seconds(raw: &str, key: &str) -> Result<f64, CliError> {
     };
     match held {
         Some(v) if v > 0.0 && v.is_finite() => Ok(v),
-        _ => Err(CliError::Usage(format!(
-            "`{key}` needs a positive time, as `50ms` or `0.05`, got `{raw}`"
-        ))),
+        _ => Err(CliError::usage(
+            "query.bad_value",
+            format!("`{key}` needs a positive time, as `50ms` or `0.05`, got `{raw}`"),
+        )),
     }
 }
 
@@ -258,9 +279,10 @@ fn switch(raw: &str, key: &str) -> Result<bool, CliError> {
     match raw {
         "1" => Ok(true),
         "0" => Ok(false),
-        _ => Err(CliError::Usage(format!(
-            "`{key}` is `1` or `0`, got `{raw}`"
-        ))),
+        _ => Err(CliError::usage(
+            "query.bad_value",
+            format!("`{key}` is `1` or `0`, got `{raw}`"),
+        )),
     }
 }
 
@@ -268,8 +290,9 @@ fn switch(raw: &str, key: &str) -> Result<bool, CliError> {
 fn node(raw: &str) -> Result<String, CliError> {
     match raw.strip_prefix('@') {
         Some(path) if !path.is_empty() => Ok(path.to_string()),
-        _ => Err(CliError::Usage(format!(
-            "`node` names an instance as a ref, as `@voice`, not `{raw}`"
-        ))),
+        _ => Err(CliError::usage(
+            "query.bad_value",
+            format!("`node` names an instance as a ref, as `@voice`, not `{raw}`"),
+        )),
     }
 }

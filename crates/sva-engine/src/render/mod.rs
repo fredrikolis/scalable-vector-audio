@@ -580,7 +580,7 @@ pub(crate) fn sampled(render: &Render, node: NodeId, over: Extent) -> Result<Buf
     Ok(value_graph.samples(at, over))
 }
 
-/// FORMAT 9.3: the render's own label says where it cut below the silence threshold.
+/// The render's own label says where it cut below the silence threshold.
 fn stamp(held: &mut Render) {
     let root = held.root;
     let Some(label) = held.labels.remove(&root) else {

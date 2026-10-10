@@ -21,7 +21,11 @@ pub struct LintViolation {
 /// Every expected failure mode this crate can hit; none of them a panic.
 #[derive(Debug)]
 pub enum CliError {
-    Usage(String),
+    /// An argument mistake: `code` names which, `message` quotes the text it refuses.
+    Usage {
+        code: &'static str,
+        message: String,
+    },
     Refusals(Vec<Refusal>),
     Engine(EngineError),
     BadTempo(String),
@@ -36,6 +40,15 @@ pub enum CliError {
     },
     /// Every `LintViolation` the scan found, not just the first.
     LintRefused(Vec<LintViolation>),
+}
+
+impl CliError {
+    pub fn usage(code: &'static str, message: impl Into<String>) -> CliError {
+        CliError::Usage {
+            code,
+            message: message.into(),
+        }
+    }
 }
 
 impl From<EngineError> for CliError {
@@ -70,7 +83,7 @@ impl CliError {
     pub fn exit_code(&self) -> u8 {
         match self {
             CliError::Engine(e) if names_no_node(e) => 24,
-            CliError::Usage(_)
+            CliError::Usage { .. }
             | CliError::Refusals(_)
             | CliError::Engine(_)
             | CliError::BadTempo(_)
@@ -85,7 +98,7 @@ impl CliError {
     pub fn code(&self) -> &'static str {
         match self {
             CliError::Engine(e) if names_no_node(e) => "not_found",
-            CliError::Usage(_)
+            CliError::Usage { .. }
             | CliError::Refusals(_)
             | CliError::Engine(_)
             | CliError::BadTempo(_)
@@ -99,7 +112,7 @@ impl CliError {
 
     pub fn message(&self) -> String {
         match self {
-            CliError::Usage(m) => m.clone(),
+            CliError::Usage { message, .. } => message.clone(),
             CliError::Refusals(rs) => format!("{} refusal(s) parsing the composition", rs.len()),
             CliError::Engine(e) => e.to_string(),
             CliError::BadTempo(m) | CliError::BadProbe(m) | CliError::Io(m) => m.clone(),
@@ -133,7 +146,7 @@ impl CliError {
             ],
             CliError::BadProbe(m) => vec![Diagnostic::new("probe.invalid_expression", m.clone())
                 .helped("name a node path that exists, or an expression in the same grammar a node file holds")],
-            CliError::Usage(m) => vec![Diagnostic::new("cli.invalid_argument", without_usage(m))
+            CliError::Usage { code, message } => vec![Diagnostic::new(*code, message.clone())
                 .helped("`sva-cli --help` states every subcommand, its arguments and their defaults")],
             CliError::Conflict { by, message } => vec![
                 Diagnostic::new(format!("{by}.already_exists"), message.clone())
@@ -161,21 +174,6 @@ fn engine_diagnostic(e: &EngineError) -> Diagnostic {
         other => Diagnostic::new(other.code(), other.to_string()),
     };
     held.at(engine_error_path(e), engine_error_span(e))
-}
-
-/// `error.message` already carries the banner; repeating it here doubles a response. Every
-/// `Usage` states its reason first, so a bare banner is a call site that forgot to.
-fn without_usage(message: &str) -> &str {
-    match message.split_once("\nusage:") {
-        Some((reason, _)) => reason,
-        None => {
-            debug_assert!(
-                !message.starts_with("usage:"),
-                "a usage refusal states its reason before the banner"
-            );
-            message
-        }
-    }
 }
 
 /// The one place a `lint` code becomes a diagnostic, so both of `lint`'s response paths
@@ -220,7 +218,7 @@ mod tests {
                 24,
             ),
             (
-                CliError::Usage("bad flag".to_string()),
+                CliError::usage("cli.unknown_flag", "bad flag"),
                 "validation_error",
                 3,
             ),
@@ -246,20 +244,16 @@ mod tests {
         }
     }
 
-    /// A diagnostic's `message` is a one-line summary, so the banner stays out of it.
+    /// Each argument mistake is its own code, its message the one line that names the text.
     #[test]
-    fn an_argument_diagnostic_carries_the_reason_without_the_usage_banner() {
-        for message in [
-            "lint takes only [<node|expression>], not `--path`",
-            "no subcommand given",
-        ] {
-            let full = format!("{message}\nusage: sva-cli render [...]\nquery options: [...]");
-            let [d] = &CliError::Usage(full).diagnostics()[..] else {
-                panic!("a usage refusal carries exactly one diagnostic");
-            };
-            assert_eq!(d.code, "cli.invalid_argument");
-            assert_eq!(d.message, message);
-            assert!(d.help.is_some(), "and says where to look");
-        }
+    fn an_argument_mistake_is_one_diagnostic_under_its_own_code() {
+        let refused = CliError::usage("query.unknown_argument", "`lines` takes no arguments");
+        assert_eq!(refused.message(), "`lines` takes no arguments");
+        let [d] = &refused.diagnostics()[..] else {
+            panic!("an argument mistake carries exactly one diagnostic");
+        };
+        assert_eq!(d.code, "query.unknown_argument");
+        assert_eq!(d.message, "`lines` takes no arguments");
+        assert!(d.help.is_some(), "and says where to look");
     }
 }

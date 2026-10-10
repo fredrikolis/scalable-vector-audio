@@ -439,7 +439,7 @@ fn a_series_no_line_reads_is_counted_off_its_coefficient() {
 }
 
 /// A series whose terms leave A one by one still has a value at every instant: the six rows
-/// hand it to FORMAT 9.1's no-dual row rather than refusing it.
+/// hand it to point sampling, the no-dual row, rather than refusing it.
 #[test]
 fn a_series_of_warped_terms_takes_the_point_row() {
     let k = IndexId(1);
@@ -766,7 +766,7 @@ fn abutting_crops_do_not_double_at_the_seam() {
     }
 }
 
-/// FORMAT 9.1 row three: the tail is the energy the window's own dual carries past the
+/// The cropped-pair row: the tail is the energy the window's own dual carries past the
 /// ceiling, so a longer window, whose dual is narrower, loses less of it.
 #[test]
 fn tail_db_falls_as_the_window_lengthens() {
@@ -1020,7 +1020,7 @@ fn noise_plus_a_sine_is_the_sum_of_its_parts() {
     }
 }
 
-/// FORMAT 9.1 row three: a cropped series is the series of cropped terms, so the window
+/// The cropped-pair row: a cropped series is the series of cropped terms, so the window
 /// stays an indicator on each line rather than a factor point sampling has to discover.
 #[test]
 fn a_cropped_noise_series_evaluates_only_its_window() {

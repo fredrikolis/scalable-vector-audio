@@ -35,5 +35,5 @@ fn refs_into_two_compositions_refuse() {
         two.join("b").display()
     );
     let refused = located(&scratch("third"), &written).expect_err("two compositions");
-    assert!(matches!(refused, CliError::Usage(_)), "{refused:?}");
+    assert!(matches!(refused, CliError::Usage { .. }), "{refused:?}");
 }

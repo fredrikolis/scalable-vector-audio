@@ -519,7 +519,7 @@ const COMB: &str = "sin(2*pi*220*t) + 0.5*self(t - 0.01s)\n";
 const SHIFT: f64 = 0.003;
 
 /// A shift of a Neumann series is a shift of each term — an affine change of the free
-/// variable, not a new shape — so a shifted comb takes the row of FORMAT 9.1 the unshifted
+/// variable, not a new shape — so a shifted comb takes the collapse row the unshifted
 /// one takes, over the terms the unshifted one took, and its window moves with its voice.
 #[test]
 fn a_shifted_comb_costs_its_unshifted_route() {

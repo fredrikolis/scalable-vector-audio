@@ -48,7 +48,7 @@ fn an_interval_anywhere_but_the_targets_own_ref_or_without_units_refuses() {
         "@a([0, 1db])",
     ] {
         assert!(
-            matches!(target(refused), Err(CliError::Usage(_))),
+            matches!(target(refused), Err(CliError::Usage { .. })),
             "`{refused}` refuses"
         );
     }
@@ -83,7 +83,7 @@ fn a_condition_reads_comparisons_over_time_and_level() {
         "t > 1s and",
     ] {
         assert!(
-            matches!(until(refused, 44_100, None), Err(CliError::Usage(_))),
+            matches!(until(refused, 44_100, None), Err(CliError::Usage { .. })),
             "`{refused}` refuses"
         );
     }
@@ -101,7 +101,7 @@ fn a_level_compared_with_a_bare_number_refuses_where_it_is_written() {
         ("envelope(t) < -60", "`-60` (at bytes 14..17)"),
         ("t > 1s or 0.001 > envelope(t)", "`0.001` (at bytes 10..15)"),
     ] {
-        let Err(CliError::Usage(why)) = until(text, 44_100, None) else {
+        let Err(CliError::Usage { message: why, .. }) = until(text, 44_100, None) else {
             panic!("`{text}` compares a level with no unit");
         };
         assert!(why.contains(at), "{why}");
@@ -118,7 +118,7 @@ fn an_interval_that_holds_no_sample_or_names_bars_with_no_tempo_refuses() {
     assert!(execute(asking(&held, "@tone([0, 0.5s])"), &Tier::default()).is_ok());
     assert!(matches!(
         execute(asking(&held, "@tone([1s, 0.5s])"), &Tier::default()),
-        Err(CliError::Usage(_))
+        Err(CliError::Usage { .. })
     ));
     assert!(matches!(
         execute(asking(&held, "@tone([0, 1b])"), &Tier::default()),

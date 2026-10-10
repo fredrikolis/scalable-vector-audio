@@ -184,7 +184,7 @@ fn a_representation_crosses_as_the_object_the_cli_puts_under_data() {
     );
 }
 
-/// FORMAT 14: every name the CLI answers is a name this surface recognizes. Some of them
+/// Every name the CLI answers is a name this surface recognizes. Some of them
 /// refuse on a mono closed form — a stereo image needs two components — but none is unknown here.
 #[wasm_bindgen_test]
 fn every_representation_name_the_cli_answers_crosses_and_the_removed_ones_refuse() {

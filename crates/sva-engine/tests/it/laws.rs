@@ -151,7 +151,7 @@ fn bandpass_db(hz: f64, cutoff: f64, q: f64) -> f64 {
     20.0 * (numerator.abs() / (re * re + im * im).sqrt()).log10()
 }
 
-/// FORMAT 14.2: a reading in both representations runs against whichever the node holds, and a pair
+/// A reading in both representations runs against whichever the node holds, and a pair
 /// holds every partial exactly. An estimator reading 110 Hz as 109.17 is answering a
 /// question about a buffer that this node never had to become.
 #[test]
@@ -201,7 +201,7 @@ fn pitch_of_a_pure_sine_is_exact() {
     );
 }
 
-/// FORMAT 14.1: `spectrum` of a dual is the exact line list, the same content as `lines`
+/// `spectrum` of a dual is the exact line list, the same content as `lines`
 /// in spectrum shape. Sixteen of a node's twenty thousand lines is not that content. A peak
 /// budget picks peaks out of an estimate, and a pair's spectrum is not an estimate.
 #[test]

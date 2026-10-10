@@ -188,8 +188,11 @@ fn spelled(kind: &TokenKind) -> &'static str {
 }
 
 fn refused(text: &str, why: &str) -> CliError {
-    CliError::Usage(format!(
-        "`{text}` is no condition: {why}. write comparisons over `t` and `envelope(t)`, \
+    CliError::usage(
+        "until.bad_condition",
+        format!(
+            "`{text}` is no condition: {why}. write comparisons over `t` and `envelope(t)`, \
          joined by `and`/`or`, as `envelope(t) < -60db and t > 1s`"
-    ))
+        ),
+    )
 }

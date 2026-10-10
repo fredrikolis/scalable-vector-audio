@@ -100,7 +100,7 @@ fn a_ledger_envelope_names_its_target_window_and_every_node_under_it() {
     assert!(!json.contains("\"spectrum\""), "one query, one answer");
 }
 
-/// FORMAT 14.3: a reading off a closed form is exact and rate-free, one off a buffer is measured at
+/// A reading off a closed form is exact and rate-free, one off a buffer is measured at
 /// the rate it ran at, and both name the profile they were taken under.
 #[test]
 fn every_answer_names_its_source_profile_and_rate() {
@@ -411,7 +411,7 @@ fn a_law_answers_lines_with_no_buffer_behind_it() {
     assert_eq!(hz.len(), 2, "two partials, each with its mirror: {hz:?}");
 }
 
-/// FORMAT 14.1: `lines` is the exact line list of a pair, whichever variable the closed form was
+/// `lines` is the exact line list of a pair, whichever variable the closed form was
 /// written in — a turning exponential in `t`, and the delta it duals to in `f`.
 #[test]
 fn lines_reads_a_pair_written_in_either_variable() {
@@ -441,7 +441,7 @@ fn lines_reads_a_pair_written_in_either_variable() {
     assert_eq!(listed("cos(2*pi*185*t)"), vec![-185.0, 185.0]);
 }
 
-/// FORMAT 14: one render, many readings. Two readings off one buffer collapse it once, so the
+/// One render, many readings. Two readings off one buffer collapse it once, so the
 /// render looks that one buffer up once rather than once per representation.
 #[test]
 fn two_readings_share_one_collapse() {

@@ -266,7 +266,7 @@ fn frames_are_held_under_the_window_they_were_read_through() {
     assert_ne!(cold, edited, "editing what was analysed retires the frames");
 }
 
-/// FORMAT 9.3: the label is part of the value a collapse produced, so it is stored with the
+/// The label is part of the value a collapse produced, so it is stored with the
 /// buffer and answered on a hit. Warm and cold are one command answering one way.
 #[test]
 fn a_warm_hit_carries_the_cold_label() {

@@ -157,7 +157,7 @@ fn grouped(
     sum.lanes.iter().map(lane).collect()
 }
 
-/// The rows in FORMAT 9.1's order; the first guard that holds decides.
+/// The rows in order; the first guard that holds decides.
 fn of_sum(
     sum: &SpectralSum,
     grid: Grid,

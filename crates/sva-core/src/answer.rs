@@ -391,7 +391,7 @@ fn line_json(l: &sva_engine::Line) -> String {
     )
 }
 
-/// FORMAT 14.3: every answer says which reading ran, under which profile, and at what rate.
+/// Every answer says which reading ran, under which profile, and at what rate.
 /// A reading that truncated a series names what it left out, so the kept list is never read
 /// as the whole of it.
 pub fn answer_json(answer: &Answer, limit: Option<usize>, skim: bool) -> String {
@@ -452,7 +452,7 @@ fn detail_json(detail: &Detail) -> String {
     }
 }
 
-/// The collapse label beside the reading it belongs to, per FORMAT 9.3. `detail` is the one
+/// The collapse label beside the reading it belongs to. `detail` is the one
 /// place a key may be absent: each `rule` is its own shape, and its fields belong to it.
 pub fn label_json(label: &Label) -> String {
     let detail = detail_json(&label.detail);

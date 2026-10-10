@@ -46,10 +46,10 @@ fn platform() -> Result<PathBuf, CliError> {
         .or_else(|| set("HOME").map(|home| home.join(".cache")))
         .map(|dir| dir.join("sva"))
         .ok_or_else(|| {
-            CliError::Usage(
+            CliError::usage(
+                "cache.no_default_directory",
                 "neither XDG_CACHE_HOME nor HOME is set, so there is no default cache \
-                 directory; pass `--cache <path>` or `--cache none`"
-                    .to_string(),
+                 directory; pass `--cache <path>` or `--cache none`",
             )
         })
 }

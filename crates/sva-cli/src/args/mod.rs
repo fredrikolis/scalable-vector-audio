@@ -9,22 +9,6 @@ mod reading;
 pub(crate) use reading::check_frame;
 use reading::{analyze_args, render_args};
 
-pub const USAGE: &str = "usage: sva-cli render '<expression>' --representation <r>[=<path>][,...] \
-     [--until '<condition>'] [--bits <n>] [--rate <hz>] [--threads <n>] [--cache <path|none>] [--confirm]\n       \
-     sva-cli analyze <file.wav> --representation <r>[=<path>][,...] [--confirm]\n       \
-     sva-cli lint ['<expression>'] [--format <json|text>]\n       \
-     sva-cli trace <node|expression>\n       \
-     sva-cli builtins\n       \
-     sva-cli outline <expression>\n       \
-     sva-cli new <name> [--idempotency-key <key>]\n\
-     a render's target is one expression; `@path` reads a node in the current directory, \
-     `@/abs/path` one anywhere, and its own ref may read an interval: `@piano([0, 2b], f0=C4)`\n\
-     destinations: a `.wav` path takes `samples` as audio; any other path takes JSON; none \
-     puts the reading under `data.representations`\n\
-     verb aliases: `validate`=lint, `list`=builtins, `create`=new, `show`=trace. `render` \
-     and `analyze` take a reading, which the standard's verb list has no word for, so they \
-     keep their own names.";
-
 #[derive(Debug, PartialEq)]
 pub struct RenderArgs {
     /// One expression; its refs name nodes from the current directory or an absolute path.
@@ -115,7 +99,7 @@ pub(crate) fn value<'a>(
 ) -> Result<String, CliError> {
     it.next()
         .cloned()
-        .ok_or_else(|| CliError::Usage(format!("{name} needs a value\n{USAGE}")))
+        .ok_or_else(|| CliError::usage("cli.missing_value", format!("{name} needs a value")))
 }
 
 /// `--version`/`-V` and `--help` are global flags, recognized anywhere in argv (cli standard).
@@ -130,7 +114,7 @@ pub fn parse_args(argv: &[String]) -> Result<Command, CliError> {
     let mut it = argv.iter();
     let subcommand = canonical(
         it.next()
-            .ok_or_else(|| CliError::Usage(format!("no subcommand given\n{USAGE}")))?,
+            .ok_or_else(|| CliError::usage("cli.missing_subcommand", "no subcommand given"))?,
     );
     let rest = it.as_slice();
     match subcommand {
@@ -141,27 +125,30 @@ pub fn parse_args(argv: &[String]) -> Result<Command, CliError> {
         "builtins" => builtins_args(rest),
         "outline" => outline_args(rest),
         "new" => new_args(rest),
-        other => Err(CliError::Usage(format!(
-            "unknown subcommand `{other}`\n{USAGE}"
-        ))),
+        other => Err(CliError::usage(
+            "cli.unknown_subcommand",
+            format!("unknown subcommand `{other}`"),
+        )),
     }
 }
 
 fn builtins_args(rest: &[String]) -> Result<Command, CliError> {
     match rest.first() {
         None => Ok(Command::Builtins),
-        Some(extra) => Err(CliError::Usage(format!(
-            "builtins takes no arguments, not `{extra}`\n{USAGE}"
-        ))),
+        Some(extra) => Err(CliError::usage(
+            "cli.unknown_argument",
+            format!("builtins takes no arguments, not `{extra}`"),
+        )),
     }
 }
 
 fn outline_args(rest: &[String]) -> Result<Command, CliError> {
     match rest {
         [text] => Ok(Command::Outline { text: text.clone() }),
-        _ => Err(CliError::Usage(format!(
-            "outline takes one <expression>, quoted as one argument\n{USAGE}"
-        ))),
+        _ => Err(CliError::usage(
+            "cli.missing_argument",
+            "outline takes one <expression>, quoted as one argument",
+        )),
     }
 }
 
@@ -177,10 +164,11 @@ fn new_args(rest: &[String]) -> Result<Command, CliError> {
                 idempotency_key: Some(key.clone()),
             })
         }
-        [] => Err(CliError::Usage(format!("missing <name>\n{USAGE}"))),
-        _ => Err(CliError::Usage(format!(
-            "new takes one <name> and an optional `--idempotency-key <key>`\n{USAGE}"
-        ))),
+        [] => Err(CliError::usage("cli.missing_argument", "missing <name>")),
+        _ => Err(CliError::usage(
+            "cli.unknown_argument",
+            "new takes one <name> and an optional `--idempotency-key <key>`",
+        )),
     }
 }
 
@@ -198,18 +186,24 @@ fn lint_args(rest: &[String]) -> Result<Command, CliError> {
                     Some("json") => Format::Json,
                     Some("text") => Format::Text,
                     other => {
-                        return Err(CliError::Usage(format!(
-                            "`--format` takes json or text, not `{}`\n{USAGE}",
-                            other.unwrap_or("nothing")
-                        )));
+                        return Err(CliError::usage(
+                            "cli.bad_value",
+                            format!(
+                                "`--format` takes json or text, not `{}`",
+                                other.unwrap_or("nothing")
+                            ),
+                        ));
                     }
                 };
             }
             extra => {
-                return Err(CliError::Usage(format!(
-                    "lint takes only ['<expression>'] and `--format <json|text>`, not \
-                     `{extra}`\n{USAGE}"
-                )));
+                return Err(CliError::usage(
+                    "cli.unknown_argument",
+                    format!(
+                        "lint takes only ['<expression>'] and `--format <json|text>`, not \
+                     `{extra}`"
+                    ),
+                ));
             }
         }
     }
@@ -222,12 +216,14 @@ fn trace_args(rest: &[String]) -> Result<Command, CliError> {
         [target] if !target.starts_with("--") => Ok(Command::Trace {
             target: target.clone(),
         }),
-        [] => Err(CliError::Usage(format!(
-            "missing <node|expression>\n{USAGE}"
-        ))),
-        _ => Err(CliError::Usage(format!(
-            "trace takes one <node|expression> and nothing else\n{USAGE}"
-        ))),
+        [] => Err(CliError::usage(
+            "cli.missing_argument",
+            "missing <node|expression>",
+        )),
+        _ => Err(CliError::usage(
+            "cli.unknown_argument",
+            "trace takes one <node|expression> and nothing else",
+        )),
     }
 }
 
@@ -249,8 +245,100 @@ mod tests {
 
     fn refused(parts: &[&str]) -> String {
         match parse_args(&argv(parts)) {
-            Err(CliError::Usage(message)) => message,
+            Err(CliError::Usage { message, .. }) => message,
             other => panic!("expected a usage refusal, got {other:?}"),
+        }
+    }
+
+    /// Each mistake answers a code a caller branches on, its message quoting the text it
+    /// refuses, and no banner: `--help` is where the whole surface is stated.
+    #[test]
+    fn each_argument_mistake_answers_its_own_code_naming_the_text() {
+        let render = |tail: &[&'static str]| [&["render", "@a"][..], tail].concat();
+        let cases: [(Vec<&str>, &str, &str); 15] = [
+            (
+                render(&["--representation", "spectre"]),
+                "query.unknown_representation",
+                "`spectre`",
+            ),
+            (
+                render(&["--representation", "lines(depth=2)"]),
+                "query.unknown_argument",
+                "`depth`",
+            ),
+            (
+                render(&["--representation", "ledger(depth=many)"]),
+                "query.bad_value",
+                "`many`",
+            ),
+            (
+                render(&["--representation", "lines,lines"]),
+                "query.duplicate",
+                "`lines`",
+            ),
+            (
+                render(&["--representation", "bindings"]),
+                "query.missing_argument",
+                "`bindings`",
+            ),
+            (
+                render(&["--representation", "spectrum(peaks=8"]),
+                "query.malformed",
+                "`spectrum(peaks=8`",
+            ),
+            (
+                render(&["--representation", "exact-envelope"]),
+                "query.retired",
+                "`exact-envelope`",
+            ),
+            (
+                render(&["--representation", "a=x,b=x"]),
+                "query.unknown_representation",
+                "`a`",
+            ),
+            (
+                render(&["--representation", "lines=x.json,atoms=./x.json"]),
+                "query.shared_destination",
+                "x.json",
+            ),
+            (
+                render(&["--representation", "lines", "--bogus"]),
+                "cli.unknown_argument",
+                "`--bogus`",
+            ),
+            (
+                render(&["--representation"]),
+                "cli.missing_value",
+                "--representation",
+            ),
+            (
+                render(&["--representation", "lines", "--rate", "0"]),
+                "cli.bad_value",
+                "`0`",
+            ),
+            (vec!["bench"], "cli.unknown_subcommand", "`bench`"),
+            (
+                vec!["analyze", "/tmp/a.wav", "--representation", "ledger"],
+                "query.not_analyzable",
+                "`ledger`",
+            ),
+            (
+                vec!["analyze", "/tmp/a.flac", "--representation", "bands"],
+                "analyze.not_wav",
+                "`/tmp/a.flac`",
+            ),
+        ];
+        for (parts, code, text) in cases {
+            let Err(CliError::Usage {
+                code: held,
+                message,
+            }) = parse_args(&argv(&parts))
+            else {
+                panic!("{parts:?} refuses as an argument mistake");
+            };
+            assert_eq!(held, code, "{parts:?}: {message}");
+            assert!(message.contains(text), "{parts:?}: {message}");
+            assert!(!message.contains("usage:"), "{parts:?}: {message}");
         }
     }
 

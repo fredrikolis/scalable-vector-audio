@@ -42,12 +42,15 @@ pub fn located(here: &Path, target: &str) -> Result<(PathBuf, String), CliError>
     let mut at = 0;
     for (span, file) in &refs {
         let inside = file.strip_prefix(&root).map_err(|_| {
-            CliError::Usage(format!(
-                "`{target}` reads `{}` and `{}`, which no one composition holds; read one \
+            CliError::usage(
+                "target.two_compositions",
+                format!(
+                    "`{target}` reads `{}` and `{}`, which no one composition holds; read one \
                  composition's nodes at a time",
-                refs[0].1.display(),
-                file.display()
-            ))
+                    refs[0].1.display(),
+                    file.display()
+                ),
+            )
         })?;
         out.push_str(&target[at..span.start]);
         out.push('@');

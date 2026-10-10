@@ -149,9 +149,10 @@ pub fn scaffold(
     idempotency_key: Option<&str>,
 ) -> Result<Scaffolded, CliError> {
     if name.is_empty() || name.contains('/') || name.contains(std::path::MAIN_SEPARATOR) {
-        return Err(CliError::Usage(format!(
-            "`{name}` must be a single directory name, not a path"
-        )));
+        return Err(CliError::usage(
+            "new.bad_name",
+            format!("`{name}` must be a single directory name, not a path"),
+        ));
     }
     let root = dir.join(name);
     if root.exists() {
@@ -303,7 +304,7 @@ mod tests {
         let dir = tmp("pathlike");
         assert!(matches!(
             scaffold(&dir, "a/b", None).unwrap_err(),
-            CliError::Usage(_)
+            CliError::Usage { .. }
         ));
         let _ = std::fs::remove_dir_all(&dir);
     }

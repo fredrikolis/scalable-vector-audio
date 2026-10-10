@@ -81,7 +81,7 @@ pub fn answer(
 }
 
 /// A closed form no atom sum reaches answers no reading symbolically. An envelope is the one
-/// FORMAT 9.3 already names off `sample(...)`, so it is measured here rather than refused.
+/// reading that is also measured off `sample(...)`, so it is measured here rather than refused.
 fn measured_instead(
     render: &Render,
     node: sva_formula::NodeId,
@@ -97,7 +97,7 @@ fn measured_instead(
 }
 
 /// The samples this node reaches: the buffer the render holds, or the collapse it would have run,
-/// down to FORMAT 9.1's row 4 over the written closed form.
+/// down to point sampling the written closed form.
 pub(super) fn on_the_grid(
     render: &Render,
     node: sva_formula::NodeId,
@@ -175,7 +175,7 @@ fn exact(
                     .to_string(),
             }));
         }
-        // FORMAT 14.1: a pair's spectrum is its whole line list; no estimate, no peaks.
+        // A pair's spectrum is its whole line list; no estimate, no peaks.
         Representation::Spectrum {
             frame_secs: None, ..
         } => {
@@ -250,7 +250,7 @@ impl Listed {
         dropped: Vec::new(),
     };
 
-    /// FORMAT 9.3: the tail is the loudest line left out against the loudest one kept, so
+    /// The tail is the loudest line left out against the loudest one kept, so
     /// it is one ratio over the whole answer, never a per-series one carried upward.
     fn tail_db(&self) -> Option<f64> {
         let loudest = |set: &mut dyn Iterator<Item = f64>| set.fold(0.0f64, f64::max);

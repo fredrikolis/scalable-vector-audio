@@ -48,6 +48,25 @@ fn every_response_carries_the_diagnostics_collection_found_or_not() {
     assert!(refused.contains("\"diagnostics\""), "{refused}");
 }
 
+/// An argument mistake keeps the standard's own code and exit code, and puts its own code and
+/// the text it refuses in the one diagnostic it carries.
+#[test]
+fn an_argument_mistake_answers_its_code_in_the_envelope_every_refusal_carries() {
+    let argv = ["render", "@a", "--representation", "spectre"].map(String::from);
+    let refused = sva_cli::parse_args(&argv).expect_err("an unknown reading");
+    assert_eq!(refused.exit_code(), 3);
+    let envelope = error_envelope(refused.code(), &refused.message(), &refused.diagnostics());
+    for held in [
+        "\"code\": \"validation_error\"",
+        "\"code\": \"query.unknown_representation\"",
+        "\"items\": [\"query.unknown_representation\"]",
+        "`spectre`",
+    ] {
+        assert!(envelope.contains(held), "{held}: {envelope}");
+    }
+    assert!(!envelope.contains("usage:"), "no banner: {envelope}");
+}
+
 /// One set of objects, two renderings: a code the envelope carries is a code the terminal
 /// view shows, and neither is reachable without asking for it.
 #[test]

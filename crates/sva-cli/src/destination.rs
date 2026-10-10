@@ -11,12 +11,15 @@ pub fn refuse_inside(dir: &Path, dest: &Path) -> Result<(), CliError> {
     if !under(dir, dest) {
         return Ok(());
     }
-    Err(CliError::Usage(format!(
-        "{} is inside the composition at {}, where it would be read as a node on the next \
+    Err(CliError::usage(
+        "destination.inside_composition",
+        format!(
+            "{} is inside the composition at {}, where it would be read as a node on the next \
          parse; write it outside the composition",
-        dest.display(),
-        dir.display()
-    )))
+            dest.display(),
+            dir.display()
+        ),
+    ))
 }
 
 /// A link at the destination is where the write lands; a path not there yet takes the
@@ -71,9 +74,10 @@ pub(crate) fn refuse_replacing(dest: &Path, replace: bool) -> Result<(), CliErro
 
 /// Argv refuses this pair at parse time; a library caller passed none, so it is refused here.
 fn not_audio(name: &str) -> CliError {
-    CliError::Usage(format!(
-        "`{name}` is not audio, so it has no samples to write to a `.wav` path"
-    ))
+    CliError::usage(
+        "destination.not_audio",
+        format!("`{name}` is not audio, so it has no samples to write to a `.wav` path"),
+    )
 }
 
 /// A `.wav` path takes the samples; any other takes the JSON stdout caps.

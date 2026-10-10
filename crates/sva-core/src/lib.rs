@@ -145,10 +145,13 @@ fn settle(job: &Job) -> Result<(Graph, RenderConfig), CliError> {
     } = range
         && end <= start
     {
-        return Err(CliError::Usage(format!(
-            "`{}` reads an interval from sample {start} to {end}, which holds none",
-            job.target
-        )));
+        return Err(CliError::usage(
+            "render.empty_interval",
+            format!(
+                "`{}` reads an interval from sample {start} to {end}, which holds none",
+                job.target
+            ),
+        ));
     }
     let until = match job.until {
         Some(text) => Some(until(text, rate, per_bar)?),
@@ -360,9 +363,10 @@ fn streamed(
 ) -> Result<(Graph, sva_ast::Expr), CliError> {
     let Target { expr, interval } = target(text)?;
     if interval.is_some() {
-        return Err(CliError::Usage(format!(
-            "`{text}` reads an interval, and a stream keeps its own"
-        )));
+        return Err(CliError::usage(
+            "stream.interval",
+            format!("`{text}` reads an interval, and a stream keeps its own"),
+        ));
     }
     let held = stream.graph();
     let roots = roots_of(source, &expr)?;
@@ -400,9 +404,10 @@ fn streamed(
 fn precision(bits: i32) -> Result<i32, CliError> {
     match (2..=52).contains(&bits) {
         true => Ok(bits),
-        false => Err(CliError::Usage(format!(
-            "`--bits` takes a precision from 2 to 52 bits, not {bits}"
-        ))),
+        false => Err(CliError::usage(
+            "cli.bad_value",
+            format!("`--bits` takes a precision from 2 to 52 bits, not {bits}"),
+        )),
     }
 }
 

@@ -33,7 +33,7 @@ fn a_nonlinearity_over_a_filtered_pair_point_samples() {
     assert!(peak <= 1.0, "sat clamps at one: {peak}");
 }
 
-/// FORMAT 9.1 row 4: point sampling is measured, against the alias the grid lost, for a reading
+/// Point sampling is measured, against the alias the grid lost, for a reading
 /// that asks for the score.
 #[test]
 fn the_point_sampled_label_carries_alias_db() {

@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use sva_core::{Asked, Call, CliError, asked_all, calls, is_wav, wav_path};
 use sva_engine::{DEFAULT_SAMPLE_RATE, MAX_PINNED_FRAME, READINGS, Representation, pinned_frame};
 
-use super::{AnalyzeArgs, CacheAt, Command, RenderArgs, USAGE, value};
+use super::{AnalyzeArgs, CacheAt, Command, RenderArgs, value};
 
 /// What `render` and `analyze` both read: the calls asked for, and `--confirm`.
 #[derive(Default)]
@@ -24,7 +24,7 @@ impl Flags {
     ) -> Result<bool, CliError> {
         match flag {
             "--representation" => {
-                for call in calls(&value(it, "--representation")?).map_err(usage)? {
+                for call in calls(&value(it, "--representation")?)? {
                     refuse_audio_dest(&call.name, call.dest.as_deref())?;
                     self.calls.push(call);
                 }
@@ -37,7 +37,7 @@ impl Flags {
 
     /// `off_file` keeps to the readings a file's samples answer alone.
     fn resolved(&self, off_file: bool) -> Result<Vec<Asked>, CliError> {
-        let out = asked_all(&self.calls).map_err(usage)?;
+        let out = asked_all(&self.calls)?;
         if let Some(one) = out
             .iter()
             .find(|one| off_file && !one.representation.off_samples(true))
@@ -47,21 +47,16 @@ impl Flags {
                 .filter(|row| row.reads.off_samples(true))
                 .map(|row| row.name)
                 .collect();
-            return Err(CliError::Usage(format!(
-                "`analyze` does not answer `{}` — only {} need no rendered graph\n{USAGE}",
-                one.name,
-                answered.join(", ")
-            )));
+            return Err(CliError::usage(
+                "query.not_analyzable",
+                format!(
+                    "`analyze` does not answer `{}` — only {} need no rendered graph",
+                    one.name,
+                    answered.join(", ")
+                ),
+            ));
         }
         Ok(out)
-    }
-}
-
-/// A refusal from the shared parser, with this CLI's usage after it.
-fn usage(e: CliError) -> CliError {
-    match e {
-        CliError::Usage(message) => CliError::Usage(format!("{message}\n{USAGE}")),
-        other => other,
     }
 }
 
@@ -74,9 +69,10 @@ fn positional(arg: Option<&String>) -> Option<String> {
 pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
     let mut it = rest.iter();
     let target = positional(it.next()).ok_or_else(|| {
-        CliError::Usage(format!(
-            "render needs a target expression, as `sva-cli render '@song([0, inf))'`\n{USAGE}"
-        ))
+        CliError::usage(
+            "cli.missing_argument",
+            "render needs a target expression, as `sva-cli render '@song([0, inf))'`",
+        )
     })?;
     let mut flags = Flags::default();
     let (mut until, mut rate, mut bits, mut threads) = (None, None, None, None);
@@ -97,19 +93,21 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
                 };
             }
             other => {
-                return Err(CliError::Usage(format!(
-                    "unknown argument `{other}`\n{USAGE}"
-                )));
+                return Err(CliError::usage(
+                    "cli.unknown_argument",
+                    format!("unknown argument `{other}`"),
+                ));
             }
         }
     }
     let asked = flags.resolved(false)?;
     refuse_shared_destination(asked.iter().filter_map(|a| a.dest.as_deref()))?;
     if asked.is_empty() {
-        return Err(CliError::Usage(format!(
+        return Err(CliError::usage(
+            "cli.missing_argument",
             "render needs at least one `--representation <r>`; `--representation \
-             samples=<path>.wav` writes audio\n{USAGE}"
-        )));
+             samples=<path>.wav` writes audio",
+        ));
     }
     check_frame(&asked, rate.unwrap_or(DEFAULT_SAMPLE_RATE))?;
     Ok(Command::Render(Box::new(RenderArgs {
@@ -128,23 +126,25 @@ pub(super) fn render_args(rest: &[String]) -> Result<Command, CliError> {
 pub(super) fn analyze_args(rest: &[String]) -> Result<Command, CliError> {
     let mut it = rest.iter();
     let path = positional(it.next())
-        .ok_or_else(|| CliError::Usage(format!("missing <file.wav>\n{USAGE}")))?;
-    let path = wav_path(&path).map_err(usage)?;
+        .ok_or_else(|| CliError::usage("cli.missing_argument", "missing <file.wav>"))?;
+    let path = wav_path(&path)?;
     let mut flags = Flags::default();
     while let Some(flag) = it.next() {
         if flags.read(flag, &mut it)? {
             continue;
         }
-        return Err(CliError::Usage(format!(
-            "unknown argument `{flag}`\n{USAGE}"
-        )));
+        return Err(CliError::usage(
+            "cli.unknown_argument",
+            format!("unknown argument `{flag}`"),
+        ));
     }
     let asked = flags.resolved(true)?;
     refuse_shared_destination(asked.iter().filter_map(|a| a.dest.as_deref()))?;
     if asked.is_empty() {
-        return Err(CliError::Usage(format!(
-            "`analyze` needs at least one `--representation <r>`\n{USAGE}"
-        )));
+        return Err(CliError::usage(
+            "cli.missing_argument",
+            "`analyze` needs at least one `--representation <r>`",
+        ));
     }
     Ok(Command::Analyze(Box::new(AnalyzeArgs {
         path,
@@ -160,11 +160,14 @@ fn refuse_shared_destination<'a>(dests: impl Iterator<Item = &'a Path>) -> Resul
     for dest in dests {
         let held = lexical(dest);
         if taken.contains(&held) {
-            return Err(CliError::Usage(format!(
-                "more than one reading names `{}`; each would overwrite the last, so give \
-                 every one its own path\n{USAGE}",
-                dest.display()
-            )));
+            return Err(CliError::usage(
+                "query.shared_destination",
+                format!(
+                    "more than one reading names `{}`; each would overwrite the last, so give \
+                 every one its own path",
+                    dest.display()
+                ),
+            ));
         }
         taken.push(held);
     }
@@ -193,31 +196,40 @@ fn lexical(path: &Path) -> PathBuf {
 fn hertz(raw: &str) -> Result<u32, CliError> {
     match raw.parse::<u32>() {
         Ok(hz) if hz > 0 => Ok(hz),
-        _ => Err(CliError::Usage(format!(
-            "--rate needs a whole number of hertz above zero, got `{raw}`\n{USAGE}"
-        ))),
+        _ => Err(CliError::usage(
+            "cli.bad_value",
+            format!("--rate needs a whole number of hertz above zero, got `{raw}`"),
+        )),
     }
 }
 
 fn count(raw: &str) -> Result<NonZeroUsize, CliError> {
     raw.parse::<NonZeroUsize>().map_err(|_| {
-        CliError::Usage(format!(
-            "--threads needs a whole number of threads above zero, got `{raw}`\n{USAGE}"
-        ))
+        CliError::usage(
+            "cli.bad_value",
+            format!("--threads needs a whole number of threads above zero, got `{raw}`"),
+        )
     })
 }
 
 pub(super) fn whole(raw: &str, flag: &str) -> Result<i32, CliError> {
-    raw.parse::<i32>()
-        .map_err(|_| CliError::Usage(format!("{flag} needs a whole number, got `{raw}`\n{USAGE}")))
+    raw.parse::<i32>().map_err(|_| {
+        CliError::usage(
+            "cli.bad_value",
+            format!("{flag} needs a whole number, got `{raw}`"),
+        )
+    })
 }
 
 fn refuse_audio_dest(name: &str, dest: Option<&Path>) -> Result<(), CliError> {
     if dest.is_some_and(is_wav) && name != "samples" {
-        return Err(CliError::Usage(format!(
-            "a `.wav` destination carries audio, and `{name}` is not audio; write it to a path \
-             with any other extension for JSON\n{USAGE}"
-        )));
+        return Err(CliError::usage(
+            "destination.not_audio",
+            format!(
+                "a `.wav` destination carries audio, and `{name}` is not audio; write it to a path \
+             with any other extension for JSON"
+            ),
+        ));
     }
     Ok(())
 }
@@ -235,10 +247,13 @@ pub(crate) fn check_frame(asked: &[Asked], rate: u32) -> Result<(), CliError> {
         };
         let frame = pinned_frame(secs, sr);
         if frame > MAX_PINNED_FRAME {
-            return Err(CliError::Usage(format!(
-                "`spectrum(frame={secs})` sizes its transform to {frame} samples at {sr} Hz, \
-                 past the {MAX_PINNED_FRAME}-sample bound\n{USAGE}"
-            )));
+            return Err(CliError::usage(
+                "query.bad_value",
+                format!(
+                    "`spectrum(frame={secs})` sizes its transform to {frame} samples at {sr} Hz, \
+                 past the {MAX_PINNED_FRAME}-sample bound"
+                ),
+            ));
         }
     }
     Ok(())

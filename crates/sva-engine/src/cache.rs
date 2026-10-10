@@ -96,7 +96,7 @@ impl Expected {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
     pub payload: Payload,
-    /// FORMAT 9.3: the label is part of the value, so a hit answers with the cold run's.
+    /// The label is part of the value, so a hit answers with the cold run's.
     pub label: Option<Label>,
 }
 

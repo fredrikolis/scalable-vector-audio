@@ -21,7 +21,7 @@ macro_rules! rules {
         }
 
         impl Rule {
-            /// The row of FORMAT 9.1 that ran, as the label prints it.
+            /// The collapse row that ran, as the label prints it.
             pub fn as_str(self) -> &'static str {
                 match self {
                     $(Rule::$variant => $text,)+

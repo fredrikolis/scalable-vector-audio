@@ -193,7 +193,7 @@ fn a_window_bound_that_moves_refuses() {
     assert!(message.contains('a'), "{message}");
 }
 
-/// Point sampling is FORMAT 9.1's no-dual row, so it rescues a nonlinearity written in `t`
+/// Point sampling is the no-dual collapse row, so it rescues a nonlinearity written in `t`
 /// and not one written in `f`, which still names the construct it composed nothing across.
 #[test]
 fn a_nonlinearity_over_a_spectrum_names_the_construct() {

@@ -149,9 +149,10 @@ fn own_read(text: &str, written: &str) -> Result<Target, CliError> {
         ends => edge(text, ends)?,
     };
     if start == Edge::Inf {
-        return Err(CliError::Usage(format!(
-            "`{written}` starts its interval at inf; start it at a time, as `[0, inf)`"
-        )));
+        return Err(CliError::usage(
+            "target.bad_interval",
+            format!("`{written}` starts its interval at inf; start it at a time, as `[0, inf)`"),
+        ));
     }
     let expr = format!(
         "{}t{}",
@@ -235,20 +236,26 @@ fn edge(text: &str, written: &[Token]) -> Result<Edge, CliError> {
                 .first()
                 .zip(written.last())
                 .map_or("", |(a, b)| &text[a.span.start..b.span.end]);
-            return Err(CliError::Usage(format!(
-                "`{spelled}` is no interval edge: write a time with its unit, as `2s`, \
+            return Err(CliError::usage(
+                "target.bad_interval",
+                format!(
+                    "`{spelled}` is no interval edge: write a time with its unit, as `2s`, \
                  `500ms`, `2b` or `88200sp`, or `inf`"
-            )));
+                ),
+            ));
         }
     })
 }
 
 fn misplaced(text: &str) -> CliError {
-    CliError::Usage(format!(
-        "`{text}` holds an interval outside its own ref's argument; write one ref read over \
+    CliError::usage(
+        "target.bad_interval",
+        format!(
+            "`{text}` holds an interval outside its own ref's argument; write one ref read over \
          it, as `@a([0, 2b], vel=0.5)`, or sample that one read, as \
          `sample(@a([0, 2b], vel=0.5))`"
-    ))
+        ),
+    )
 }
 
 fn unparsed(text: &str, why: &str) -> CliError {
