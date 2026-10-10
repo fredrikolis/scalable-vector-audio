@@ -125,6 +125,39 @@ fn every_answer_names_its_source_profile_and_rate() {
     assert!(json.contains("\"rate\": null"));
 }
 
+/// An atom's window is two keys in seconds, each side `null` where nothing bounds it, and a
+/// placed note's is its own window moved by its placement.
+#[test]
+fn atoms_print_each_window_in_seconds_and_null_where_unbounded() {
+    let dir = scratch("atom-windows");
+    put(
+        &dir,
+        "voice",
+        "crop(exp(-t/0.25s), 0s, 0.5s)*sin(2*pi*f0*t)\n",
+    );
+    put(&dir, "x", "0.1*sin(2*pi*50*t) + @voice(t - 1s, f0=330hz)\n");
+    let rendered = probe(&dir, "@x([0, 2s])").expect("a closed form");
+    let json = json_of(&rendered, "atoms", Representation::Atoms);
+    let items: Vec<&str> = json.split("{ \"sketch\": ").skip(1).collect();
+    assert_eq!(items.len(), 4, "two conjugate pairs: {json}");
+    let held = items
+        .iter()
+        .filter(|i| i.contains("\"hz\": 50,") || i.contains("\"hz\": -50,"));
+    for item in held {
+        assert!(
+            item.contains("\"start_secs\": null, \"end_secs\": null"),
+            "{item}"
+        );
+    }
+    let placed = items.iter().filter(|i| i.contains("\"start_secs\": 1,"));
+    for item in placed.clone() {
+        assert!(item.contains("\"end_secs\": 1.5 }"), "{item}");
+        assert!(item.contains("\"decay_per_sec\": 4,"), "{item}");
+        assert!(item.contains("\"decay_from_secs\": 1,"), "{item}");
+    }
+    assert_eq!(placed.count(), 2, "{json}");
+}
+
 /// The point of probing: an effect is measured against the real graph without touching disk.
 #[test]
 fn probe_evaluates_an_argv_expression_in_the_compositions_namespace() {

@@ -401,7 +401,7 @@ fn a_cropped_series_lists_its_terms_under_its_window() {
         "a window drops no term it still contains"
     );
     assert!(
-        held.iter().all(|a| a.contains("indicator")),
+        held.iter().all(|a| a.sketch.contains("indicator")),
         "every term carries the window: {held:?}"
     );
 
@@ -515,6 +515,55 @@ fn lines_under_a_window_are_listed_with_their_width_or_refused_by_name() {
         2,
         "the same term unwindowed is one conjugate pair"
     );
+}
+
+/// Each atom states the window it sounds in: a crop's own bounds, a placed note's moved with
+/// its placement and its decay read from its onset, and no bound where nothing crops it.
+#[test]
+fn each_atom_states_the_window_it_sounds_in() {
+    let held = rendered_of(
+        "atom-windows",
+        &[
+            (
+                "voice",
+                "f0 = C4\ncrop(exp(-t/0.25s), 0s, 0.5s)*sin(2*pi*f0*t)\n",
+            ),
+            (
+                "node",
+                "0.1*sin(2*pi*50*t) + crop(sin(2*pi*440*t), 0.25s, 0.75s) + \
+                 @voice(t - 1s, f0=330hz)\n",
+            ),
+        ],
+        vec!["atoms"],
+    );
+    let id = held.id("node").expect("the root");
+    let Output::Atoms(atoms) = answer(&held, id, Representation::Atoms)
+        .expect("an atom list")
+        .value
+    else {
+        panic!("expected atoms");
+    };
+    // A turn is the atom's radians over 2pi, so 330 Hz may read one ulp under.
+    let at = |hz: f64| {
+        let found: Vec<_> = atoms
+            .iter()
+            .filter(|a| (a.turns.abs() - hz).abs() <= hz * f64::EPSILON)
+            .collect();
+        assert_eq!(found.len(), 2, "{hz} Hz is one conjugate pair: {atoms:?}");
+        found
+    };
+    for a in at(50.0) {
+        assert_eq!((a.start, a.end), (None, None), "nothing crops it: {a:?}");
+        assert_eq!((a.decay, a.degree), (0.0, 0), "a held line: {a:?}");
+    }
+    for a in at(440.0) {
+        assert_eq!((a.start, a.end), (Some(0.25), Some(0.75)), "{a:?}");
+    }
+    for a in at(330.0) {
+        assert_eq!((a.start, a.end), (Some(1.0), Some(1.5)), "{a:?}");
+        assert_eq!((a.decay, a.decay_from), (4.0, 1.0), "{a:?}");
+        assert!(a.sketch.contains("indicator"), "{a:?}");
+    }
 }
 
 /// The same window over a delta train: a delta is at an instant, so a term the window does

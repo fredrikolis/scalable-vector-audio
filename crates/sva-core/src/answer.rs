@@ -341,7 +341,7 @@ fn symbolic_json(n: &SpectralSum) -> String {
 pub fn value_json(output: &Output, limit: Option<usize>, skim: bool) -> String {
     match output {
         Output::Lines(lines) => list(lines, line_json),
-        Output::Atoms(sketches) => crate::json::strings(sketches),
+        Output::Atoms(atoms) => list(atoms, atom_json),
         Output::Symbolic(sum) => symbolic_json(sum),
         Output::Samples(buffer) => samples_json(buffer, limit),
         Output::Ledger(entries) => ledger_json(entries, skim),
@@ -379,6 +379,31 @@ pub fn value_json(output: &Output, limit: Option<usize>, skim: bool) -> String {
         }),
         Output::Formants(frames) => list(frames, formants_json),
     }
+}
+
+/// Each place on the sum's own axis in its unit, and the turn in the unit dual to it: in `t`
+/// seconds and hertz, in `f` the reverse; `null` is a side the window leaves unbounded.
+fn atom_json(a: &sva_engine::Atom) -> String {
+    let (at, per, turns) = match a.var {
+        sva_engine::Var::T => ("secs", "sec", "hz"),
+        sva_engine::Var::F => ("hz", "hz", "secs"),
+    };
+    format!(
+        "\n    {{ \"sketch\": \"{}\", \"{turns}\": {}, \"re\": {}, \"im\": {}, \"db\": {}, \
+         \"decay_per_{per}\": {}, \"decay_from_{at}\": {}, \"degree\": {}, \
+         \"polynomial_at_{at}\": {}, \"start_{at}\": {}, \"end_{at}\": {} }}",
+        escape(&a.sketch),
+        num(a.turns),
+        num(a.amp.re),
+        num(a.amp.im),
+        num(20.0 * a.amp.abs().log10()),
+        num(a.decay),
+        num(a.decay_from),
+        a.degree,
+        num(a.polynomial_at),
+        maybe(a.start),
+        maybe(a.end)
+    )
 }
 
 fn line_json(l: &sva_engine::Line) -> String {

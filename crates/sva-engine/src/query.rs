@@ -2,7 +2,7 @@
 
 use std::mem::discriminant;
 
-use sva_formula::{Line, SpectralSum};
+use sva_formula::{C64, Line, SpectralSum, Var};
 use sva_samples::{
     Alias, Bands, Buffer, Consumes, Crest, EnvelopeFrame, FormantFrame, LedgerEntry, Loudness,
     Onsets, PitchFrame, Source, Spectrum, StereoImage,
@@ -125,7 +125,7 @@ pub const READINGS: [Reading; 17] = [
         name: "atoms",
         takes: &[],
         reads: Reads::ClosedForm,
-        help: "each term of a closed form, sketched",
+        help: "each term of a closed form: its sketch, line, decay, polynomial and window",
         build: |_| Representation::Atoms,
     },
     Reading {
@@ -298,7 +298,7 @@ pub struct Ask {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Output {
     Lines(Vec<Line>),
-    Atoms(Vec<String>),
+    Atoms(Vec<Atom>),
     Symbolic(Box<SpectralSum>),
     Samples(Box<Buffer>),
     Spectrum(Box<Spectrum>),
@@ -314,6 +314,21 @@ pub enum Output {
     Ledger(Vec<LedgerEntry>),
     Bindings(Vec<Binding>),
     Arguments(Vec<Arguments>),
+}
+
+/// `amp (x-polynomial_at)^degree e^(-decay (x-decay_from)) e^(2pi i turns x)` on `[start, end)`
+#[derive(Clone, Debug, PartialEq)]
+pub struct Atom {
+    pub var: Var,
+    pub sketch: String,
+    pub amp: C64,
+    pub turns: f64,
+    pub decay: f64,
+    pub decay_from: f64,
+    pub degree: u16,
+    pub polynomial_at: f64,
+    pub start: Option<f64>,
+    pub end: Option<f64>,
 }
 
 /// Every answer says which reading ran and under which profile, so a caller never has to

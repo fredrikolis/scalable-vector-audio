@@ -1,5 +1,6 @@
 // Concern: takes one reading off the representation a node declares, a ledger edge by edge | Non-concern: naming the observations (query.rs), the arithmetic of one | IO: (&Render, node) -> Answer
 
+use sva_formula::closed_form::Edge;
 use sva_formula::spectral_sum::atom::{Singular, SpectralAtom};
 use sva_formula::{Line, SpectralSum, Var, d_dt, envelope_read, line_atoms_read};
 use sva_samples::{
@@ -9,7 +10,7 @@ use sva_samples::{
 };
 
 use crate::error::{Diagnostic, EngineError, Located};
-use crate::query::{Answer, DEFAULT_FRAME_SECS, Output, Representation};
+use crate::query::{Answer, Atom, DEFAULT_FRAME_SECS, Output, Representation};
 use crate::refs;
 use crate::render::Render;
 use crate::typing::Value;
@@ -186,7 +187,7 @@ fn exact(
         }
         Representation::Atoms => {
             let listed = enumerated()?;
-            let found = listed.atoms.iter().map(sketch_atom).collect();
+            let found = listed.atoms.iter().map(|a| atom_of(sum.var, a)).collect();
             (Output::Atoms(found), listed)
         }
         // A pair states its partials; `max_notes` is the question, not a cut answer.
@@ -389,6 +390,25 @@ fn amplitude_at(held: &[Line], hz: f64) -> f64 {
 pub fn sketch_atom(a: &SpectralAtom) -> String {
     let factors: Vec<&'static str> = a.present().iter().map(|f| f.as_str()).collect();
     format!("{} x {}", a.c.abs(), factors.join(" times "))
+}
+
+/// The atom's own fields, read off as it holds them; a constant turns at zero and decays at
+/// none. Adding zero writes a negative zero as the zero it equals.
+fn atom_of(var: Var, a: &SpectralAtom) -> Atom {
+    let (sigma, omega, mu) = a.exp.map_or((0.0, 0.0, 0.0), |e| (e.sigma, e.omega, e.mu));
+    let bounded = |edge: Edge| Some(edge.value() + 0.0).filter(|x| x.is_finite());
+    Atom {
+        var,
+        sketch: sketch_atom(a),
+        amp: a.c,
+        turns: omega / std::f64::consts::TAU + 0.0,
+        decay: 0.0 - sigma,
+        decay_from: mu + 0.0,
+        degree: a.poly.degree,
+        polynomial_at: a.poly.at + 0.0,
+        start: a.ind.and_then(|i| bounded(i.l)),
+        end: a.ind.and_then(|i| bounded(i.r)),
+    }
 }
 
 fn measured(

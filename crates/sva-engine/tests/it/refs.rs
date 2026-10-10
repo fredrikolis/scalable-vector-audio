@@ -312,7 +312,7 @@ fn a_ref_that_is_not_one_number_composes_as_a_law() {
         panic!("expected an atom list");
     };
     assert!(
-        atoms.iter().any(|a| a.contains("delta")),
+        atoms.iter().any(|a| a.sketch.contains("delta")),
         "a delta ref stays a delta: {atoms:?}"
     );
 }
@@ -455,7 +455,7 @@ fn lines_compose_through_a_join_of_crops() {
     let windows = count("windows");
     assert_eq!(windows.len(), 4, "two cropped lines per lane: {windows:?}");
     assert!(
-        windows.iter().all(|a| a.contains("indicator")),
+        windows.iter().all(|a| a.sketch.contains("indicator")),
         "each carries its window: {windows:?}"
     );
     let shouldered = count("shouldered");
@@ -467,7 +467,7 @@ fn lines_compose_through_a_join_of_crops() {
     assert!(
         shouldered
             .iter()
-            .all(|a| a.contains("exponential") && a.contains("indicator")),
+            .all(|a| a.sketch.contains("exponential") && a.sketch.contains("indicator")),
         "each atom is the tone under its own piece of the window: {shouldered:?}"
     );
     assert_eq!(
@@ -521,7 +521,7 @@ fn a_modal_bank_times_an_envelope_lists_its_modes() {
     assert!(
         voiced
             .iter()
-            .all(|a| a.contains("exponential") && a.contains("indicator")),
+            .all(|a| a.sketch.contains("exponential") && a.sketch.contains("indicator")),
         "each mode rings from the strike under its own decay: {voiced:?}"
     );
     assert_eq!(atoms("echoed").len(), 24, "the bank and its shifted copy");

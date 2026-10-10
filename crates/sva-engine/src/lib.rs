@@ -35,7 +35,7 @@ pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};
 pub use meaning::{Meaning, meaning};
 pub use query::{
-    Answer, Arg, Ask, DEFAULT_FRAME_SECS, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS,
+    Answer, Arg, Ask, Atom, DEFAULT_FRAME_SECS, DEFAULT_LEDGER_DEPTH, DEFAULT_MAX_PEAKS,
     DEFAULT_OVERSAMPLE, Given, Output, READINGS, Reading, Reads, Representation,
 };
 pub use refs::{identity, nodes_in, spectral_sum_of};
