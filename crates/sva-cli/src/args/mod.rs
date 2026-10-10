@@ -714,6 +714,24 @@ mod tests {
     }
 
     #[test]
+    fn periodicity_takes_its_step_window_and_curve() {
+        let args = rendered(&[
+            "render",
+            "@a",
+            "--representation",
+            "periodicity(frame=0.5s, window=8s, curve=1)",
+        ]);
+        assert_eq!(
+            args.asked[0].representation,
+            sva_engine::Representation::Periodicity {
+                frame_secs: 0.5,
+                window_secs: 8.0,
+                curve: true,
+            }
+        );
+    }
+
+    #[test]
     fn bindings_needs_a_node() {
         refused(&["render", "@a", "--representation", "bindings"]);
     }

@@ -5,6 +5,7 @@ use sva_samples::measure::harmony::dissonance::Dissonance;
 use sva_samples::measure::harmony::inharmonicity::Inharmonicity;
 use sva_samples::measure::harmony::tonnetz::TonalDistance;
 use sva_samples::measure::harmony::voice_leading::{Norm, VoiceLeading};
+use sva_samples::measure::periodicity::Periodicity;
 use sva_samples::{
     Alias, Bands, Buffer, Consumes, Crest, EnvelopeFrame, FormantFrame, LedgerEntry, Loudness,
     Onsets, PitchFrame, Source, Spectrum, StereoImage,
@@ -24,6 +25,8 @@ pub const DEFAULT_BUFFER_SECS: f64 = 0.05;
 pub const DEFAULT_FLOOR_DB: f64 = -40.0;
 /// The most partial pairs one `dissonance` frame sums before it refuses.
 pub const DEFAULT_MAX_PAIRS: usize = 1 << 17;
+/// The span of onset-strength envelope one `periodicity` window autocorrelates.
+pub const DEFAULT_PERIODICITY_WINDOW_SECS: f64 = 6.0;
 
 /// Every named argument a reading may take; the engine reads only those `Given` holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +42,8 @@ pub enum Arg {
     Floor,
     Norm,
     Pairs,
+    Window,
+    Curve,
 }
 
 impl Arg {
@@ -55,6 +60,8 @@ impl Arg {
             Arg::Floor => "floor",
             Arg::Norm => "norm",
             Arg::Pairs => "pairs",
+            Arg::Window => "window",
+            Arg::Curve => "curve",
         }
     }
 }
@@ -71,6 +78,8 @@ pub struct Given {
     pub floor_db: f64,
     pub norm: Norm,
     pub max_pairs: usize,
+    pub window_secs: f64,
+    pub curve: bool,
 }
 
 impl Default for Given {
@@ -83,6 +92,8 @@ impl Default for Given {
             floor_db: DEFAULT_FLOOR_DB,
             norm: Norm::L1,
             max_pairs: DEFAULT_MAX_PAIRS,
+            window_secs: DEFAULT_PERIODICITY_WINDOW_SECS,
+            curve: false,
         }
     }
 }
@@ -324,6 +335,20 @@ static INHARMONICITY: Reading = Reading {
     },
 };
 
+static PERIODICITY: Reading = Reading {
+    name: "periodicity",
+    takes: &[Arg::Frame, Arg::Window, Arg::Curve],
+    reads: Reads::Samples,
+    help: "how strongly its onset strength repeats per sliding window, broadband, under 150 Hz \
+           and over: the leading periods in seconds and bpm, their autocorrelation heights, \
+           the drift between windows",
+    build: |g| Representation::Periodicity {
+        frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
+        window_secs: g.window_secs,
+        curve: g.curve,
+    },
+};
+
 static BINDINGS: Reading = Reading {
     name: "bindings",
     takes: &[Arg::Node],
@@ -341,7 +366,7 @@ static ARGUMENTS: Reading = Reading {
 };
 
 /// Every reading a caller may ask for, in the order a listing prints them.
-pub static READINGS: [&Reading; 21] = [
+pub static READINGS: [&Reading; 22] = [
     &LINES,
     &ATOMS,
     &SPECTRUM,
@@ -361,6 +386,7 @@ pub static READINGS: [&Reading; 21] = [
     &VOICE_LEADING,
     &TONAL_DISTANCE,
     &INHARMONICITY,
+    &PERIODICITY,
     &BINDINGS,
     &ARGUMENTS,
 ];
@@ -405,6 +431,12 @@ pub enum Representation {
         frame_secs: f64,
         floor_db: f64,
     },
+    /// Windows of `window_secs` centred every `frame_secs`; `curve` adds each one's heights.
+    Periodicity {
+        frame_secs: f64,
+        window_secs: f64,
+        curve: bool,
+    },
     Bindings,
     Arguments,
 }
@@ -446,6 +478,7 @@ pub enum Output {
     VoiceLeading(Box<VoiceLeading>),
     TonalDistance(Box<TonalDistance>),
     Inharmonicity(Box<Inharmonicity>),
+    Periodicity(Box<Periodicity>),
     Bindings(Vec<Binding>),
     Arguments(Vec<Arguments>),
 }
@@ -521,6 +554,7 @@ impl Representation {
                 Harmonic::TonalDistance => &TONAL_DISTANCE,
                 Harmonic::Inharmonicity => &INHARMONICITY,
             },
+            Representation::Periodicity { .. } => &PERIODICITY,
             Representation::Bindings => &BINDINGS,
             Representation::Arguments => &ARGUMENTS,
         }

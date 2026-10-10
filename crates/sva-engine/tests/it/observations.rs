@@ -649,6 +649,7 @@ fn one_table_says_what_every_named_reading_consumes() {
         "voice_leading",
         "tonal_distance",
         "inharmonicity",
+        "periodicity",
         "bindings",
         "arguments",
     ];
@@ -752,4 +753,52 @@ fn a_refusal_off_a_twins_sum_names_the_twin_asked() {
         };
         assert_eq!(d.location.node, twin, "{twin}: {refused}");
     }
+}
+
+fn periodicity_of(name: &str, secs: f64) -> (Render, Representation) {
+    let asked = Representation::Periodicity {
+        frame_secs: 0.5,
+        window_secs: 4.0,
+        curve: false,
+    };
+    let g = graph_of(
+        name,
+        &[("node", "sin(2*pi*1000*t)*(0.5 + 0.5*cos(2*pi*2*t))\n")],
+    );
+    let config = RenderConfig::seconds(8_192, secs).asking(vec![Ask {
+        node: "node".to_string(),
+        representation: asked,
+    }]);
+    let law = render(&g, "node", config, &Tier::default()).unwrap_or_else(|e| panic!("{e}"));
+    (law, asked)
+}
+
+/// A closed form swelling twice a second is read off its rendered samples, never exactly:
+/// its onset strength repeats every 0.5 s, 1024 lags of the 2048 Hz envelope, in every window
+/// clear of the opening rise from silence.
+#[test]
+fn a_closed_forms_periodicity_is_measured_off_its_samples() {
+    let (law, asked) = periodicity_of("periodic-swell", 8.0);
+    let found = answer(&law, law.id("node").expect("the root"), asked).expect("8 s holds 4 s");
+    assert_eq!((found.source, found.rate), (Source::Measured, Some(8_192)));
+    let Output::Periodicity(p) = found.value else {
+        panic!("periodicity answers its windows, not {:?}", found.value)
+    };
+    for track in p.tracks.iter().filter(|t| t.group.key() != "low") {
+        for w in track.windows.iter().filter(|w| w.from_secs >= 0.5) {
+            assert_eq!(w.peaks[0].bpm, 120.0, "{}: {w:?}", track.group.key());
+        }
+    }
+}
+
+/// A target under the window refuses under its own code, naming the interval and the window
+/// that would read.
+#[test]
+fn periodicity_of_a_target_under_its_window_names_both_remedies() {
+    let (law, asked) = periodicity_of("periodic-short", 1.0);
+    let refused = answer(&law, law.id("node").expect("the root"), asked).expect_err("1 s < 4 s");
+    assert_eq!(refused.code(), "read.periodicity_target_under_window");
+    let said = format!("{refused}");
+    assert!(said.contains("([0, 4s])"), "{said}");
+    assert!(said.contains("periodicity(window=4s)"), "{said}");
 }

@@ -218,7 +218,7 @@ impl std::error::Error for EngineError {}
 
 /// Every code a judgment in this engine can refuse under, with what trips it. The prefix
 /// says which judgment refused, per FORMAT 16.
-pub static REGISTRY: [(&str, &str); 88] = [
+pub static REGISTRY: [(&str, &str); 90] = [
     (
         "type.no_overload",
         "a builtin applied to operand types no row names",
@@ -445,6 +445,14 @@ pub static REGISTRY: [(&str, &str); 88] = [
     (
         "read.too_many_partial_pairs",
         "a harmonic reading of a frame whose partials over the floor pair past the cap",
+    ),
+    (
+        "read.periodicity_window_under_two_periods",
+        "a periodicity window under twice the longest period it reads",
+    ),
+    (
+        "read.periodicity_target_under_window",
+        "a periodicity reading of a target shorter than its window",
     ),
     (
         "engine.bad_crop_shoulder",

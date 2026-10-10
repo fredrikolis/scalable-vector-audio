@@ -15,6 +15,7 @@ use sva_engine::harmony::dissonance::{self, Dissonance, Extreme};
 use sva_engine::harmony::inharmonicity::{self, Inharmonicity, Series, Weighted};
 use sva_engine::harmony::tonnetz::{self, Quality, TonalDistance, Triad};
 use sva_engine::harmony::voice_leading::{self, VoiceLeading};
+use sva_engine::periodicity::{self, Periodicity, Stats, Track, Window};
 use sva_engine::pitch as pitch_names;
 
 use crate::json::{NONE, capped, escape, latest, list, num};
@@ -474,6 +475,74 @@ fn inharmonicity_json(r: &Inharmonicity) -> String {
     )
 }
 
+fn spread_json(s: Option<Stats>) -> String {
+    s.map_or(NONE.to_string(), |s| {
+        format!(
+            "{{ \"mean\": {}, \"min\": {}, \"max\": {} }}",
+            num(s.mean),
+            extreme_json(Some(s.min)),
+            extreme_json(Some(s.max))
+        )
+    })
+}
+
+/// `curve` is left out where not asked, and each of its heights null where the envelope is
+/// constant.
+fn periodicity_window_json(w: &Window) -> String {
+    let curve = w.curve.as_ref().map_or(String::new(), |c| {
+        let heights: Vec<String> = c.iter().map(|h| num(*h)).collect();
+        format!(", \"curve\": [{}]", heights.join(", "))
+    });
+    format!(
+        "\n      {{ \"t\": {}, \"from\": {}, \"to\": {}, \"drift_bpm\": {}, \"peaks\": {}{curve} }}",
+        num(w.t_secs),
+        num(w.from_secs),
+        num(w.to_secs),
+        maybe(w.drift_bpm),
+        list(&w.peaks, |p| format!(
+            "{{ \"period_secs\": {}, \"bpm\": {}, \"height\": {} }}",
+            num(p.period_secs),
+            num(p.bpm),
+            num(p.height)
+        ))
+    )
+}
+
+fn periodicity_track_json(t: &Track) -> String {
+    let centres: Vec<String> = t.centres_hz.iter().map(|hz| num(*hz)).collect();
+    format!(
+        "\n    {{ \"group\": \"{}\", \"centres_hz\": [{}], \"summary\": {{ \
+         \"windows_with_peak\": {}, \"bpm\": {}, \"height\": {}, \"drift_bpm\": {} }}, \
+         \"windows\": {} }}",
+        t.group.key(),
+        centres.join(", "),
+        t.summary.windows_with_peak,
+        spread_json(t.summary.bpm),
+        spread_json(t.summary.height),
+        spread_json(t.summary.drift_bpm),
+        list(&t.windows, periodicity_window_json)
+    )
+}
+
+fn periodicity_json(p: &Periodicity) -> String {
+    format!(
+        "{{ \"model\": \"{}\", \"hop_secs\": {}, \"window_secs\": {}, \"envelope_hz\": {}, \
+         \"lag_step_secs\": {}, \"min_period_secs\": {}, \"max_period_secs\": {}, \
+         \"split_hz\": {}, \"smoothing\": {{ \"hz\": {}, \"poles\": {} }}, \"tracks\": {} }}",
+        escape(periodicity::MODEL),
+        num(p.hop_secs),
+        num(p.window_secs),
+        num(p.envelope_hz),
+        num(p.lag_step_secs),
+        num(p.min_period_secs),
+        num(p.max_period_secs),
+        num(periodicity::SPLIT_HZ),
+        maybe(periodicity::SMOOTHING.hz),
+        periodicity::SMOOTHING.poles,
+        list(&p.tracks, periodicity_track_json)
+    )
+}
+
 fn binding_json(b: &Binding) -> String {
     format!(
         "\n    {{ \"name\": \"{}\", \"source\": \"{}\" }}",
@@ -572,6 +641,7 @@ pub fn value_json(output: &Output, limit: Option<usize>, skim: bool) -> String {
         Output::VoiceLeading(v) => voice_leading_json(v),
         Output::TonalDistance(d) => tonal_distance_json(d),
         Output::Inharmonicity(r) => inharmonicity_json(r),
+        Output::Periodicity(p) => periodicity_json(p),
         Output::Bindings(b) => list(b, binding_json),
         Output::Arguments(a) => list(a, arguments_json),
         Output::Envelope(frames) => list(frames, |f: &EnvelopeFrame| {

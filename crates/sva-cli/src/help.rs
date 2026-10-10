@@ -3,8 +3,8 @@
 use sva_core::DEFAULT_STORE_BYTES;
 use sva_engine::{
     DEFAULT_BUFFER_SECS, DEFAULT_FLOOR_DB, DEFAULT_FRAME_SECS, DEFAULT_LEDGER_DEPTH,
-    DEFAULT_MAX_PAIRS, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, DEFAULT_SAMPLE_RATE,
-    PSYCHOACOUSTIC_V1, READINGS, Reads,
+    DEFAULT_MAX_PAIRS, DEFAULT_MAX_PEAKS, DEFAULT_OVERSAMPLE, DEFAULT_PERIODICITY_WINDOW_SECS,
+    DEFAULT_SAMPLE_RATE, PSYCHOACOUSTIC_V1, READINGS, Reads,
 };
 
 /// Read off the constants the parser itself defaults to, so a printed default cannot drift
@@ -309,6 +309,11 @@ DEFAULTS:
   voice_leading(norm=<l1|l2>) how a voice leading's moves add up. Default l1.
   dissonance(pairs=<n>) the most partial pairs one frame sums before it refuses.
                        Default {DEFAULT_MAX_PAIRS}.
+  periodicity(window=<t>) the span of onset strength one window autocorrelates,
+                       in seconds, at least twice the longest period it reads.
+                       Default {DEFAULT_PERIODICITY_WINDOW_SECS}.
+  periodicity(curve=<0|1>) `1` adds every window's height at every lag.
+                       Default 0.
   bindings(node=@<path>) the instance whose bindings are read; required.
   samples(buffer=<t>)  how much an `alsa:` device holds ahead of what it plays,
                        in seconds. Default {DEFAULT_BUFFER_SECS}; only a device

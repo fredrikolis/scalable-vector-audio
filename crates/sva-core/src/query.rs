@@ -208,6 +208,8 @@ pub fn asked(call: &Call) -> Result<Asked, CliError> {
             Arg::Floor => given.floor_db = decibels(raw, key)?,
             Arg::Norm => given.norm = norm(raw)?,
             Arg::Pairs => given.max_pairs = count(raw, key)?,
+            Arg::Window => given.window_secs = seconds(raw, key)?,
+            Arg::Curve => given.curve = switch(raw, key)?,
         }
     }
     if row.takes.contains(&Arg::Node) && node.is_none() {

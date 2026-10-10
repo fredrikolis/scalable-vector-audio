@@ -19,6 +19,7 @@ mod measure_inharmonicity;
 mod measure_ledger;
 mod measure_loudness;
 mod measure_onsets;
+mod measure_periodicity;
 mod measure_pitch;
 mod measure_spectrum;
 mod measure_stereo;

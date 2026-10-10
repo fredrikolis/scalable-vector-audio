@@ -129,6 +129,7 @@ fn analyze_takes_only_the_readings_a_buffer_answers_and_needs_a_wav() {
             "inharmonicity",
             "loudness",
             "onsets",
+            "periodicity",
             "pitch",
             "samples",
             "spectrum",

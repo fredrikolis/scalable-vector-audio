@@ -58,36 +58,55 @@ pub struct Bands {
     pub bands: Vec<BandTrack>,
 }
 
+/// `hz: None` is the band's own ERB, capped at a quarter of the decimated rate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Smoothing {
+    pub hz: Option<f64>,
+    pub poles: usize,
+}
+
+const OWN_WIDTH: Smoothing = Smoothing { hz: None, poles: 1 };
+
 /// Squaring rectifies; the root at decimation makes the track an RMS.
 struct Chain {
     pass: Coeffs,
     smooth: Coeffs,
     a: State,
     b: State,
-    energy: State,
+    energy: Vec<State>,
 }
 
 impl Chain {
-    fn new(centre_hz: f64, sr: f64) -> Chain {
+    fn new(centre_hz: f64, sr: f64, smoothing: Smoothing) -> Chain {
         let erb = erb_hz(centre_hz);
+        let hz = smoothing.hz.unwrap_or(erb.min(DECIMATED_HZ / 4.0));
         Chain {
             pass: design(Shape::Bandpass, centre_hz, centre_hz / erb, 0.0, sr),
-            smooth: design(Shape::OnePole, erb.min(DECIMATED_HZ / 4.0), 0.0, 0.0, sr),
+            smooth: design(Shape::OnePole, hz, 0.0, 0.0, sr),
             a: State::default(),
             b: State::default(),
-            energy: State::default(),
+            energy: vec![State::default(); smoothing.poles],
         }
     }
 
     #[inline]
     fn step(&mut self, x: f64) -> f64 {
         let banded = self.b.step(&self.pass, self.a.step(&self.pass, x));
-        self.energy.step(&self.smooth, banded * banded)
+        self.energy
+            .iter_mut()
+            .fold(banded * banded, |e, pole| pole.step(&self.smooth, e))
     }
 }
 
-fn trace(centre_hz: f64, sr: f64, hop: usize, n: usize, at: impl Fn(usize) -> f64) -> Vec<f64> {
-    let mut chain = Chain::new(centre_hz, sr);
+fn trace(
+    centre_hz: f64,
+    sr: f64,
+    smoothing: Smoothing,
+    hop: usize,
+    n: usize,
+    at: impl Fn(usize) -> f64,
+) -> Vec<f64> {
+    let mut chain = Chain::new(centre_hz, sr, smoothing);
     let mut out = Vec::with_capacity(n / hop + 1);
     for i in 0..n {
         let energy = chain.step(at(i));
@@ -127,9 +146,11 @@ fn stats(track: &[f64], rate: f64) -> (f64, Option<f64>, Option<f64>) {
     (peak, Some(at as f64 / rate), rise)
 }
 
-fn floor_of(centre_hz: f64, sr: f64, hop: usize, rate: f64) -> BandFloor {
+fn floor_of(centre_hz: f64, sr: f64, smoothing: Smoothing, hop: usize, rate: f64) -> BandFloor {
     let n = (floor_secs(erb_hz(centre_hz)) * sr).round().max(4.0) as usize;
-    let track = trace(centre_hz, sr, hop, n, |i| f64::from(u8::from(i == 0)));
+    let track = trace(centre_hz, sr, smoothing, hop, n, |i| {
+        f64::from(u8::from(i == 0))
+    });
     let (peak, at, rise) = stats(&track, rate);
     BandFloor {
         peak,
@@ -147,6 +168,10 @@ fn centres(sr: f64) -> Vec<f64> {
 }
 
 pub fn analyze(samples: &[f64], sr: f64, start_secs: f64) -> Bands {
+    smoothed(samples, sr, start_secs, OWN_WIDTH)
+}
+
+pub fn smoothed(samples: &[f64], sr: f64, start_secs: f64, smoothing: Smoothing) -> Bands {
     let hop = (sr / DECIMATED_HZ).round().max(1.0) as usize;
     let rate = sr / hop as f64;
     Bands {
@@ -155,7 +180,7 @@ pub fn analyze(samples: &[f64], sr: f64, start_secs: f64) -> Bands {
         bands: centres(sr)
             .into_iter()
             .map(|centre_hz| {
-                let track = trace(centre_hz, sr, hop, samples.len(), |i| samples[i]);
+                let track = trace(centre_hz, sr, smoothing, hop, samples.len(), |i| samples[i]);
                 let (peak, at, rise) = stats(&track, rate);
                 let erb = erb_hz(centre_hz);
                 BandTrack {
@@ -166,7 +191,7 @@ pub fn analyze(samples: &[f64], sr: f64, start_secs: f64) -> Bands {
                     peak,
                     time_to_peak_secs: at,
                     rise_10_90_secs: rise,
-                    floor: floor_of(centre_hz, sr, hop, rate),
+                    floor: floor_of(centre_hz, sr, smoothing, hop, rate),
                     rms: track,
                 }
             })

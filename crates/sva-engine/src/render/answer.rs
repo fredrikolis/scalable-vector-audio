@@ -8,6 +8,7 @@ use sva_samples::measure::harmony::{
     self, Framing, Moment, chords, dissonance, inharmonicity, measured as framed, tonnetz,
     voice_leading,
 };
+use sva_samples::measure::periodicity;
 use sva_samples::{
     Buffer, Consumes, Extent, Peak, PitchFrame, Profile, Source, measure::bands, measure::crest,
     measure::envelope, measure::formants, measure::loudness, measure::onsets, measure::pitch,
@@ -321,6 +322,39 @@ fn crowded(name: &str, representation: Representation, held: Crowded) -> EngineE
     })
 }
 
+/// Each names the window that would read, and `longer` how to hand it a target that long.
+fn unread(name: &str, why: periodicity::Unread, longer: impl Fn(f64) -> String) -> EngineError {
+    let least = periodicity::MIN_WINDOW_SECS;
+    let (code, message, help) = match why {
+        periodicity::Unread::WindowUnderTwoPeriods { window_secs } => (
+            "read.periodicity_window_under_two_periods",
+            format!(
+                "a {window_secs}s window holds under twice the longest period read, {}s, so a \
+                 lag there would overlap under half its window",
+                periodicity::MAX_PERIOD_SECS
+            ),
+            format!("ask a window of {least}s or longer, as `periodicity(window={least}s)`"),
+        ),
+        periodicity::Unread::TargetShorterThanWindow {
+            held_secs,
+            window_secs,
+        } => (
+            "read.periodicity_target_under_window",
+            format!("the target holds {held_secs}s, under the {window_secs}s window"),
+            format!(
+                "{}, or ask a window as short as {least}s, as `periodicity(window={least}s)`",
+                longer(window_secs)
+            ),
+        ),
+    };
+    EngineError::refused(Diagnostic {
+        code: code.to_string(),
+        message,
+        location: Located::at(name, None),
+        help,
+    })
+}
+
 /// A closed form's envelope is exact or refused, never measured unasked: a refusal of its
 /// sum says so, and names `sample(...)` as the way to ask for the measured one.
 fn not_exact(representation: Representation, left: EngineError) -> EngineError {
@@ -553,6 +587,11 @@ fn measured(
                 NoReading::NeedsAGraph => not_a_reading(render, node, other),
                 NoReading::TooNarrow { need, held } => too_narrow(render, node, need, held),
                 NoReading::Crowded(held) => crowded(render.tys.name(node), other, held),
+                NoReading::Unread(why) => unread(render.tys.name(node), why, |secs| {
+                    format!(
+                        "render an interval of at least {secs}s, as `@x([0, {secs}s])` writes one"
+                    )
+                }),
             });
         }
     })
@@ -565,6 +604,7 @@ pub enum NoReading {
     NeedsAGraph,
     TooNarrow { need: usize, held: usize },
     Crowded(Crowded),
+    Unread(periodicity::Unread),
 }
 
 /// Every reading a buffer answers on its own, with no graph behind it.
@@ -633,6 +673,14 @@ pub fn off_buffer(buffer: &Buffer, representation: Representation) -> Result<Out
             let (moments, framing) = framed::moments(plane, sr, start, frame_secs);
             harmonic(reading, &moments, framing, floor_db).map_err(NoReading::Crowded)?
         }
+        Representation::Periodicity {
+            frame_secs,
+            window_secs,
+            curve,
+        } => Output::Periodicity(Box::new(
+            periodicity::measure(plane, sr, start, frame_secs, window_secs, curve)
+                .map_err(NoReading::Unread)?,
+        )),
         _ => return Err(NoReading::NeedsAGraph),
     })
 }
@@ -967,6 +1015,9 @@ pub fn answer_buffer(
             format!("this reading needs {need} components and the file holds {held}"),
         ),
         NoReading::Crowded(held) => crowded(name, representation, held),
+        NoReading::Unread(why) => unread(name, why, |secs| {
+            format!("analyze a file holding at least {secs}s")
+        }),
     })?;
     Ok(Answer::whole(
         value,

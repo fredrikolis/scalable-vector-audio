@@ -100,7 +100,7 @@ fn flux_of(frames: &[SpectralFrame], floor: f64) -> Vec<f64> {
         .collect()
 }
 
-fn spectral_flux(prev: &[f64], curr: &[f64]) -> f64 {
+pub(crate) fn spectral_flux(prev: &[f64], curr: &[f64]) -> f64 {
     prev.iter().zip(curr).map(|(&p, &c)| (c - p).max(0.0)).sum()
 }
 
