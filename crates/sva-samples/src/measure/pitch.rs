@@ -9,6 +9,7 @@ pub const LOWEST_HZ: f64 = 25.0;
 pub const HIGHEST_HZ: f64 = 5000.0;
 const HARMONIC_TOLERANCE: f64 = 0.04;
 const HIGHEST_HARMONIC: f64 = 8.0;
+const COMPRESSION: f64 = 0.84;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Note {
@@ -52,18 +53,19 @@ pub fn name_peaks(found: &[Peak], max_notes: usize) -> Vec<Note> {
     name_all(found, max_notes)
 }
 
-/// A peak sitting at a near-integer multiple of a LOUDER peak is reported as that peak's
-/// harmonic, so a saw's partials never read as a chord of their own.
+/// A note at a near-whole multiple of a lower one in its series is reported as its harmonic.
 fn name_all(found: &[Peak], max_notes: usize) -> Vec<Note> {
-    let audible: Vec<&Peak> = found
+    let listed: Vec<&Peak> = found
         .iter()
         .filter(|p| (LOWEST_HZ..=HIGHEST_HZ).contains(&p.hz))
-        .collect();
-
-    audible
-        .iter()
         .take(max_notes)
-        .map(|p| {
+        .collect();
+    let roots = series_roots(&listed);
+
+    listed
+        .iter()
+        .zip(roots)
+        .map(|(p, harmonic_of)| {
             let midi = midi_of(p.hz);
             let nearest = midi.round();
             Note {
@@ -71,7 +73,7 @@ fn name_all(found: &[Peak], max_notes: usize) -> Vec<Note> {
                 name: note_name(nearest as i64),
                 cents: (midi - nearest) * 100.0,
                 db: p.db,
-                harmonic_of: harmonic_of(p, &audible),
+                harmonic_of,
             }
         })
         .collect()
@@ -89,13 +91,65 @@ pub fn class_name(midi: i64) -> &'static str {
     NAMES[midi.rem_euclid(12) as usize]
 }
 
-fn harmonic_of(peak: &Peak, louder_first: &[&Peak]) -> Option<f64> {
-    louder_first
-        .iter()
-        .take_while(|other| other.db > peak.db)
-        .find(|other| {
-            let n = peak.hz / other.hz;
-            (1.5..=HIGHEST_HARMONIC).contains(&n) && (n - n.round()).abs() < HARMONIC_TOLERANCE
-        })
-        .map(|other| other.hz)
+/// Klapuri's iterative cancellation (ISMIR 2006): the note with the greatest subharmonic sum
+/// (Hermes, JASA 83(1), 1988) roots a series, and the rest go round again. A note at 2 to 8
+/// times a louder member joins it, or the root itself if their pair's sum at the root is at
+/// least the note's own amplitude: so a weak fundamental heads its octave.
+fn series_roots(notes: &[&Peak]) -> Vec<Option<f64>> {
+    let mut joined = vec![None; notes.len()];
+    let mut left: Vec<usize> = (0..notes.len()).collect();
+    while let Some(root) = most_salient(notes, &left) {
+        left.retain(|&i| i != root);
+        let joins = |m: usize, i: usize| {
+            multiple(notes[i].hz, notes[m].hz).is_some_and(|k| {
+                let (under, over) = (amp(notes[m].db), amp(notes[i].db));
+                k >= 2
+                    && (under > over
+                        || m == root && under + COMPRESSION.powi(k as i32 - 1) * over >= over)
+            })
+        };
+        let mut series = vec![root];
+        while let Some((at, m)) = left
+            .iter()
+            .enumerate()
+            .find_map(|(at, &i)| series.iter().find(|&&m| joins(m, i)).map(|&m| (at, m)))
+        {
+            let i = left.remove(at);
+            joined[i] = Some(notes[m].hz);
+            series.push(i);
+        }
+    }
+    joined
+}
+
+fn amp(db: f64) -> f64 {
+    10f64.powf(db / 20.0)
+}
+
+fn most_salient(notes: &[&Peak], left: &[usize]) -> Option<usize> {
+    let salience = |c: usize| {
+        let mut strongest = [0.0f64; HIGHEST_HARMONIC as usize];
+        for &i in left {
+            if let Some(k) = multiple(notes[i].hz, notes[c].hz) {
+                let at = &mut strongest[k as usize - 1];
+                *at = at.max(amp(notes[i].db));
+            }
+        }
+        strongest
+            .iter()
+            .enumerate()
+            .map(|(k, a)| COMPRESSION.powi(k as i32) * a)
+            .sum::<f64>()
+    };
+    left.iter()
+        .map(|&c| (c, salience(c)))
+        .max_by(|(a, sa), (b, sb)| sa.total_cmp(sb).then(notes[*b].hz.total_cmp(&notes[*a].hz)))
+        .map(|(c, _)| c)
+}
+
+fn multiple(hz: f64, root: f64) -> Option<u32> {
+    let n = hz / root;
+    let k = n.round();
+    ((1.0..=HIGHEST_HARMONIC).contains(&k) && (n - k).abs() < HARMONIC_TOLERANCE)
+        .then_some(k as u32)
 }

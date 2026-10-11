@@ -200,7 +200,7 @@ const PINNED: &str = r#"
 6 envelope 510b9276d5e7c870
 6 derivative 2ada75b05fe73a68
 6 ledger e296c7b26fd92e2f
-6 pitch a85c437e57a71a1b
+6 pitch 916761bc560ab4ec
 6 formants 4a5877c3e5e367d9
 6 stereo refused "type.width_mismatch"
 6 bands 5f534aa9aa3bbcd7
@@ -292,7 +292,7 @@ const PINNED: &str = r#"
 11 envelope 7c67a5d377431f4e
 11 derivative 0234ccb44aa74534
 11 ledger 85f91208b93bf675
-11 pitch a6e83767e84bbfcd
+11 pitch 4b1e30edd8024b2e
 11 formants ab893e9880a0ad66
 11 stereo refused "type.width_mismatch"
 11 bands 8f984c522da9befa
@@ -311,7 +311,7 @@ const PINNED: &str = r#"
 12 envelope 1b9d192b3e91dcb6
 12 derivative 52556069c8911ad2
 12 ledger 9521693f05bf90e3
-12 pitch 1d30dc6280f7904d
+12 pitch ad91031a72ab646d
 12 formants f63e3f59fb8ff19a
 12 stereo refused "type.width_mismatch"
 12 bands 8d953bbc6e7a6774
@@ -330,7 +330,7 @@ const PINNED: &str = r#"
 13 envelope c7477734fba002a5
 13 derivative e43d66b13cd27645
 13 ledger 1a738c8d556a802e
-13 pitch 83182618c03136b8
+13 pitch bcdc0c08ebe1e42a
 13 formants e82d2ddad859d9c3
 13 stereo refused "type.width_mismatch"
 13 bands ff24830f55ca7d97
@@ -351,7 +351,7 @@ const PINNED: &str = r#"
 14 envelope 88f602a703affc7c
 14 derivative 2f09043a08b9ee72
 14 ledger 3ce3405aef9719b3
-14 pitch 19a8fbcf05c93fab
+14 pitch e4528f67c76d7459
 14 formants 07b076a9b2773249
 14 stereo refused "type.width_mismatch"
 14 bands e59cf9c09fde48fd
@@ -391,7 +391,7 @@ const PINNED: &str = r#"
 16 envelope eedb58d4e0ba84e8
 16 derivative 70b92325601c8608
 16 ledger e9282e1791e85be2
-16 pitch 3b95b17357b12acb
+16 pitch c34b5010d79ff1a8
 16 formants 6f05c52bc183f345
 16 stereo refused "type.width_mismatch"
 16 bands a3d90ca6090450f6

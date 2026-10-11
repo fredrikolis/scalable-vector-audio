@@ -5,8 +5,9 @@ use crate::measure::pitch::{Note, midi_of, name_peaks};
 use crate::measure::spectrum::{Peak, db};
 
 pub const METHOD: &str = "per moment: the partials at or above the floor, named as `pitch` names \
-                          peaks (25 Hz to 5 kHz, a peak at a near-whole multiple of a louder one \
-                          dropped as its harmonic), each rounded to its nearest equal-tempered \
+                          peaks (25 Hz to 5 kHz, a peak at a near-whole multiple of another in \
+                          the series the greatest subharmonic sum heads dropped as its \
+                          harmonic), each rounded to its nearest equal-tempered \
                           note; consecutive moments naming one set are one chord, and a moment \
                           naming none ends one; a note whose partial's frequency bounds round \
                           to another note in any of its moments is listed as unresolved";
@@ -26,7 +27,7 @@ fn nearest(hz: f64) -> i64 {
 }
 
 /// The partials at or above the floor that `pitch` names, loudest first, each with its name:
-/// a note, or the harmonic of a louder partial. Partials outside its band are left out.
+/// a note, or a harmonic in a series. Partials outside its band are left out.
 pub fn named(moment: &Moment, floor_db: f64) -> Vec<(Partial, Note)> {
     let mut kept = above(moment, floor_db);
     kept.sort_by(|a, b| b.amplitude.total_cmp(&a.amplitude));

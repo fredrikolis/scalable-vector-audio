@@ -61,15 +61,43 @@ fn a_note_that_is_no_whole_multiple_of_a_louder_one_stands_on_its_own() {
     assert_eq!(named[1].harmonic_of, None, "{:?} is a fifth", named[1]);
 }
 
-/// `harmonic_of` reads down the list only while each peak is louder than the one being
-/// named, so a caller handing it any other order gets no harmonic found rather than a
-/// wrong one. `peaks()` sorts loudest first; a hand-built list must do the same.
+/// Which note heads a series is decided by the notes, not by the order they arrive in.
 #[test]
-fn naming_reads_a_list_that_is_not_loudest_first_as_nobodys_harmonic() {
+fn which_note_heads_a_series_does_not_depend_on_the_order_peaks_arrive_in() {
     let named = name_peaks(&[peak(440.0, -9.0), peak(220.0, -3.0)], 8);
-    assert_eq!(
-        named[0].harmonic_of, None,
-        "the louder 220 sits past where the scan stops"
+    assert_eq!(named[0].harmonic_of, Some(220.0), "{named:?}");
+    assert_eq!(named[1].harmonic_of, None, "{named:?}");
+}
+
+/// A breathy voice's fundamental is often weaker than its octave, which must not read as
+/// the pitch.
+#[test]
+fn a_fundamental_weaker_than_its_octave_still_heads_its_series() {
+    let named = name_peaks(
+        &[
+            peak(440.0, -6.0),
+            peak(660.0, -12.0),
+            peak(880.0, -14.0),
+            peak(220.0, -18.0),
+        ],
+        8,
+    );
+    let heads: Vec<f64> = named
+        .iter()
+        .filter(|n| n.harmonic_of.is_none())
+        .map(|n| n.hz)
+        .collect();
+    assert_eq!(heads, [220.0], "one series under 220 Hz: {named:?}");
+}
+
+/// The subharmonic sum weights each higher multiple less, so a faint note an octave under a
+/// strong one explains it worse than the strong one explains itself.
+#[test]
+fn a_faint_note_an_octave_down_does_not_claim_a_strong_one() {
+    let named = name_peaks(&[peak(440.0, -3.0), peak(220.0, -40.0)], 8);
+    assert!(
+        named.iter().all(|n| n.harmonic_of.is_none()),
+        "two notes, neither the other's partial: {named:?}"
     );
 }
 
@@ -112,6 +140,34 @@ fn a_tone_is_tracked_frame_by_frame_from_the_instant_it_was_read_at() {
             "the loudest thing in a 440 Hz tone: {:?}",
             frame.notes
         );
+    }
+}
+
+/// The same off samples: a tone whose fundamental sits 12 dB under its octave is tracked as
+/// its fundamental in every frame, every partial over it named its harmonic.
+#[test]
+fn a_tone_with_a_weak_fundamental_is_tracked_as_its_fundamental() {
+    let rate = 44100.0;
+    let partials = [(220.0, 0.25), (440.0, 1.0), (660.0, 0.5), (880.0, 0.25)];
+    let n = (rate * 0.4) as usize;
+    let tone: Vec<f64> = (0..n)
+        .map(|k| {
+            let t = k as f64 / rate;
+            partials
+                .iter()
+                .map(|(hz, a)| a * (std::f64::consts::TAU * hz * t).sin())
+                .sum()
+        })
+        .collect();
+    for frame in track(&tone, rate, 0.0, 0.1, 4) {
+        let heads: Vec<&str> = frame
+            .notes
+            .iter()
+            .filter(|n| n.harmonic_of.is_none())
+            .map(|n| n.name.as_str())
+            .collect();
+        assert_eq!(heads, ["A3"], "220 Hz heads the tone: {:?}", frame.notes);
+        assert_eq!(frame.notes.len(), 4, "{:?}", frame.notes);
     }
 }
 

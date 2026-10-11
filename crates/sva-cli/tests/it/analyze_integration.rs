@@ -1,6 +1,6 @@
 // Concern: exercises `analyze` over a written WAV, the one reading path with no graph behind it | Non-concern: rendering one (render_integration.rs) | IO: (a .wav) -> an Answer or CliError
 
-use crate::helpers::scratch;
+use crate::helpers::{fixture, scratch};
 
 use sva_cli::{SampleEncoding, parse_args, write_channels};
 use sva_engine::{Buffer, Output, PSYCHOACOUSTIC_V1, Representation, Source, answer_buffer};
@@ -472,4 +472,54 @@ fn a_missing_wav_is_not_found() {
     };
     assert_eq!(refused.code(), "not_found");
     assert_eq!(refused.exit_code(), 24);
+}
+
+/// Breathy voiced speech rendered by voice research, its fundamental often weaker than its
+/// octave, with the F0 that research logged for each file. Each speech frame's fundamental is
+/// the note heading its longest harmonic series; over the file their median lands within two
+/// semitones (12 %) of that F0, not an octave up.
+#[test]
+fn breathy_speech_reads_its_fundamental_not_its_octave() {
+    for (name, known) in [("phrase", 223.0), ("millennials", 233.0), ("dont", 261.0)] {
+        let path = fixture(&format!("voice/{name}.wav"));
+        let reading = Representation::Pitch {
+            max_notes: 16,
+            frame_secs: 0.05,
+        };
+        let found = answer_buffer("in.wav", &decoded(&path), reading, PSYCHOACOUSTIC_V1.name)
+            .expect("a pitch reading");
+        let Output::Pitch(frames) = found.value else {
+            panic!("expected pitch frames");
+        };
+        let loudest = frames
+            .iter()
+            .filter_map(|f| f.notes.first().map(|n| n.db))
+            .fold(f64::NEG_INFINITY, f64::max);
+        let mut fundamentals: Vec<f64> = frames
+            .iter()
+            .filter(|f| f.notes.first().is_some_and(|n| n.db > loudest - 15.0))
+            .filter_map(|f| {
+                let head = |mut hz: f64| {
+                    while let Some(lower) = f.notes.iter().find(|n| n.hz == hz)?.harmonic_of {
+                        hz = lower;
+                    }
+                    Some(hz)
+                };
+                let heads: Vec<f64> = f.notes.iter().filter_map(|n| head(n.hz)).collect();
+                f.notes
+                    .iter()
+                    .filter(|n| n.harmonic_of.is_none())
+                    .map(|n| (heads.iter().filter(|&&h| h == n.hz).count(), n.hz))
+                    .filter(|(members, _)| *members > 1)
+                    .max_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)))
+                    .map(|(_, hz)| hz)
+            })
+            .collect();
+        fundamentals.sort_by(f64::total_cmp);
+        let median = fundamentals[fundamentals.len() / 2];
+        assert!(
+            (median / known - 1.0).abs() < 0.12,
+            "{name}: median fundamental {median} Hz, not {known} Hz, over {fundamentals:?}"
+        );
+    }
 }

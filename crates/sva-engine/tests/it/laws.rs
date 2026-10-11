@@ -201,6 +201,41 @@ fn pitch_of_a_pure_sine_is_exact() {
     );
 }
 
+/// The exact path names its lines as the measured one names peaks: a fundamental a quarter
+/// the amplitude of its octave still heads the series, so the octave is not read as the pitch.
+#[test]
+fn an_exact_pitch_names_a_weak_fundamental_as_the_head_of_its_series() {
+    let body = "0.25*sin(2*pi*220*t) + sin(2*pi*440*t) + 0.5*sin(2*pi*660*t)\n";
+    let g = graph_of("weak-fundamental", &[("tone", body)]);
+    let reading = Representation::Pitch {
+        max_notes: 4,
+        frame_secs: 0.05,
+    };
+    let config = RenderConfig::seconds(48_000, 1.0).asking(vec![Ask {
+        node: "tone".to_string(),
+        representation: reading,
+    }]);
+    let held = render(&g, "tone", config, &Tier::default()).expect("a tone");
+    let root = held.id("tone").expect("the root");
+    let found = answer(&held, root, reading).expect("an exact pitch");
+    let Output::Pitch(frames) = &found.value else {
+        panic!("expected pitch frames");
+    };
+    let [frame] = frames.as_slice() else {
+        panic!("one frame: {frames:?}");
+    };
+    let named: Vec<(&str, Option<f64>)> = frame
+        .notes
+        .iter()
+        .map(|n| (n.name.as_str(), n.harmonic_of))
+        .collect();
+    assert_eq!(
+        named,
+        [("A4", Some(220.0)), ("E5", Some(220.0)), ("A3", None)],
+        "loudest first, both partials 220 Hz's"
+    );
+}
+
 /// A series' line lands beside the lane's own at the same frequency, unmerged. Its amplitude
 /// is their complex sum: `sin` less the series' first term at 440 Hz is silence, not +6 dB.
 #[test]

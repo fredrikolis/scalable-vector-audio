@@ -4,17 +4,23 @@ use super::chords::named;
 use super::dissonance::Extreme;
 use super::{Framing, Moment, Partial};
 
-pub const MODEL: &str = "per moment, the series `pitch` names: each partial it names as a note \
-                         roots one, and a partial it names the harmonic of a louder one joins \
-                         that one's series, its harmonic number n = round(f / f1) over the root \
-                         f1; only partials from 25 Hz to 5 kHz at or above the floor are read. \
-                         That naming's tolerance, a ratio within 0.04 of a whole number from 1.5 \
-                         to 8 over a louder partial, bounds how stretched a member may be, and a \
-                         partial stretched past it, or a harmonic past the 8th with no louder \
-                         partial at a divisor (a saw's 11th), roots a series of its own; a root \
-                         is the partial named, so a series whose fundamental is quieter than its \
-                         2nd harmonic splits in two; and a noise's many peaks fall within the \
-                         tolerance by chance, so noise reads partly grouped, with many series. \
+pub const MODEL: &str = "per moment, the series `pitch` names: the partial with the greatest \
+                         subharmonic sum (Hermes, D. J. (1988), Measurement of pitch by \
+                         subharmonic summation, J. Acoust. Soc. Am. 83(1) 257-264, the k-th \
+                         multiple's amplitude weighted 0.84^(k-1)) roots a series, a partial left \
+                         at a ratio within 0.04 of a whole number from 2 to 8 over a louder \
+                         member joins it, or over the root if the pair's sum at the root is at \
+                         least that partial's amplitude, and the rest go round again (Klapuri, A. (2006), Multiple \
+                         fundamental frequency estimation by summing harmonic amplitudes, ISMIR); \
+                         a member's harmonic number n = round(f / f1) over the root f1; only \
+                         partials from 25 Hz to 5 kHz at or above the floor are read. That \
+                         tolerance bounds how stretched a member may be, and a partial stretched \
+                         past it, or a harmonic past the 8th with no member at a divisor (a saw's \
+                         11th), roots a series of its own; a fundamental quieter than its 2nd \
+                         harmonic roots their series if its subharmonic sum is the greater and \
+                         it is within 16 dB of that harmonic, else the two split; and \
+                         a noise's many peaks fall within the tolerance by chance, so noise reads \
+                         partly grouped, with many series. \
                          cents = 1200 log2(f / (n f1)); a series' and the moment's `cents` are \
                          the amplitude-weighted mean of |cents| over members n >= 2, null with \
                          none. fit: Fletcher, H. (1964), Normal vibration frequencies of a stiff \
@@ -227,26 +233,32 @@ fn fit(points: &[(u32, Partial)]) -> Option<Fit> {
 
 fn series_of(moment: &Moment, floor_db: f64) -> Vec<(Partial, Vec<(u32, Partial)>)> {
     let named = named(moment, floor_db);
-    let mut roots: Vec<(Partial, Vec<(u32, Partial)>)> = Vec::new();
-    let mut joined: Vec<usize> = Vec::with_capacity(named.len());
-    for (partial, note) in &named {
+    let mut roots: Vec<(Partial, Vec<(u32, Partial)>)> = named
+        .iter()
+        .filter(|(_, note)| note.harmonic_of.is_none())
+        .map(|(partial, _)| (*partial, vec![(1, *partial)]))
+        .collect();
+    let mut by_hz: Vec<_> = named.iter().collect();
+    by_hz.sort_by(|a, b| a.0.hz.total_cmp(&b.0.hz));
+    let mut root_of: Vec<(f64, usize)> = Vec::with_capacity(named.len());
+    for (partial, note) in by_hz {
         let at = match note.harmonic_of {
-            None => {
-                roots.push((*partial, vec![(1, *partial)]));
-                roots.len() - 1
-            }
+            None => roots
+                .iter()
+                .position(|(root, _)| root.hz == partial.hz)
+                .expect("a note naming no harmonic heads a series"),
             Some(hz) => {
-                let louder = named
+                let at = root_of
                     .iter()
-                    .position(|(p, _)| p.hz == hz)
-                    .expect("a harmonic names a louder named partial");
-                let at = joined[louder];
+                    .find(|(lower, _)| *lower == hz)
+                    .map(|(_, at)| *at)
+                    .expect("a harmonic names a lower note of its series");
                 let n = (partial.hz / roots[at].0.hz).round() as u32;
                 roots[at].1.push((n, *partial));
                 at
             }
         };
-        joined.push(at);
+        root_of.push((partial.hz, at));
     }
     for (_, members) in &mut roots {
         members.sort_by(|a, b| a.1.hz.total_cmp(&b.1.hz));
