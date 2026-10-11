@@ -1,4 +1,4 @@
-// Concern: what modulation owes tremolo, a static tone, a swept saw, silence, refusals | Non-concern: the band filters | IO: (samples) -> asserts
+// Concern: what modulation owes tremolo across rates, a static tone, a swept saw, silence, refusals | Non-concern: the band filters | IO: (samples) -> asserts
 
 use std::f64::consts::TAU;
 
@@ -48,6 +48,63 @@ fn tremolo_at_4_hz_reads_4_hz_at_its_depth() {
         let centroid = w.centroid.as_ref().expect("energy throughout");
         let swing = centroid.peaks.first().map_or(0.0, |p| p.depth);
         assert!(swing < 1.0, "{w:?}");
+    }
+}
+
+fn within(bounds: Option<(f64, f64)>, x: f64) -> bool {
+    bounds.is_some_and(|(lo, hi)| lo <= x && x <= hi)
+}
+
+/// Tremolo on 1320 Hz, its sidebands passed evenly, 0.73 to 19.9 Hz: truth inside the bounds.
+#[test]
+fn tremolo_across_rates_reads_rate_and_depth_inside_its_bounds() {
+    for hz in [0.73, 4.0, 12.9, 19.9] {
+        for depth in [0.2, 0.5] {
+            let m = read(
+                &tone(8.0, |t| {
+                    (1.0 + depth * (TAU * hz * t).sin()) * (TAU * 1320.0 * t).sin()
+                }),
+                Some(120.0),
+            );
+            for w in &track(&m, Group::Mid).windows {
+                let lead = w.peaks[0];
+                if w.to_secs - w.from_secs < m.window_secs {
+                    assert!(lead.hz_bounds.is_none() && lead.depth_bounds.is_none());
+                    continue;
+                }
+                if w.from_secs < 0.5 || w.to_secs > 7.5 {
+                    continue;
+                }
+                assert!(within(lead.hz_bounds, hz), "{hz} {depth}: {w:?}");
+                assert!(
+                    within(lead.period_beats_bounds, 2.0 / hz),
+                    "{hz} {depth}: {w:?}"
+                );
+                assert!(within(lead.depth_bounds, depth), "{hz} {depth}: {w:?}");
+                let (lo, hi) = lead.depth_bounds.expect("a whole window");
+                assert!(depth > 0.3 || hi - lo < 0.01, "{hz} {depth}: {w:?}");
+            }
+        }
+    }
+}
+
+/// At 19.9 Hz the corrected depth stands within a quarter of the 2% passband loss of 0.2.
+#[test]
+fn near_20_hz_the_depth_is_corrected_for_the_passband() {
+    let m = read(
+        &tone(8.0, |t| {
+            (1.0 + 0.2 * (TAU * 19.9 * t).sin()) * (TAU * 1320.0 * t).sin()
+        }),
+        None,
+    );
+    let loss = 0.2 * (1.0 - m.passband_gain_at_max_hz);
+    assert!(loss > 0.003, "{loss}");
+    for w in track(&m, Group::Mid)
+        .windows
+        .iter()
+        .filter(|w| w.from_secs >= 0.5 && w.to_secs <= 7.5)
+    {
+        assert!((w.peaks[0].depth - 0.2).abs() < loss / 4.0, "{w:?}");
     }
 }
 

@@ -3,12 +3,13 @@
 use std::f64::consts::{PI, TAU};
 use std::ops::Range;
 
+use sva_formula::C64;
 use sva_formula::filter::Shape;
 
 use super::bands::{self, Bands, Smoothing};
 use super::periodicity::SPLIT_HZ;
 use super::sliding::{self, Span, Stats, Unread, stats};
-use crate::biquad::{design, magnitude_db};
+use crate::biquad::{Coeffs, design};
 use crate::fft::fft;
 use crate::stft::hann_periodic;
 
@@ -46,10 +47,12 @@ pub const MODEL: &str = "modulation spectrum: the spectrum of each band's amplit
                          harmonic analysis with the discrete Fourier transform, Proc. IEEE \
                          66(1) 51-83: stopband some 74 dB down, from about 71 Hz, so what \
                          would fold into 0-20 Hz is that far down), the taps renormalized \
-                         where they reach past the target. `passband_gain_at_max_hz` is the \
-                         two lowpasses' gain on the energy at `max_hz`, computed off their \
-                         coefficients: a modulation that fast reads that much shallower, a \
-                         slower one less so, and no depth is corrected for it. The first \
+                         where they reach past the target. G(f) = |H(f)| L(f), H the \
+                         smoothing's response on the energy and L the 50 Hz lowpass's on the \
+                         envelope, off their coefficients, is what a modulation at f keeps to \
+                         first order, and each envelope peak's depth is divided by G at its \
+                         rate, a centroid peak's by L; `passband_gain_at_max_hz` is G at \
+                         `max_hz`. The first \
                          component alone. Groups: a band is `low` where its centre is under \
                          `splits_hz[0]`, `mid` under `splits_hz[1]` and `high` from it; the \
                          filters' skirts overlap, so a tone leaks attenuated into the \
@@ -65,10 +68,49 @@ pub const MODEL: &str = "modulation spectrum: the spectrum of each band's amplit
                          bands' indices, magnitudes summed so bands moving out of phase, as \
                          under a filter sweep, do not cancel; an envelope near silent \
                          between swells reads past 1, up to 2 for a pulse train. `level` is \
-                         the sum of c, linear amplitude. peaks: local maxima of depth from `min_hz` to `max_hz`, \
-                         the highest three, highest first, each at the quadratic through the \
-                         log depth of its bin and the two beside it (Smith, J. O. and Serra, \
-                         X. (1987), PARSHL, Proc. ICMC); a strong peak's Hann sidelobes, some \
+                         the sum of c, linear amplitude. peaks: the three local maxima of \
+                         depth from `min_hz` to `max_hz` whose bins read deepest, the deepest \
+                         after correction first, each placed by inverting the periodic Hann's \
+                         exact transform W through its bin and the deeper neighbour, as \
+                         Grandke, T. (1983), Interpolation algorithms for discrete Fourier \
+                         transforms of weighted signals, IEEE Trans. Instrum. Meas. 32(2) \
+                         350-355, does between unpadded bins: the offset u, within q of the \
+                         bin, where |W(q - u)| / |W(u)| is the two bins' ratio, q the padded \
+                         bin in window bins, that ratio rising with u; its depth the bin's \
+                         over |W(u)| / W(0), then over G. Bounds: under the model that in the \
+                         window each band's envelope ahead of the smoothing is a carrier's \
+                         amplitude c (1 + m cos(2 pi f t + phi)), one m <= 1 in every band, \
+                         the carrier's ripple wholly removed by the smoothing, and a centroid \
+                         is mean + depth cos(2 pi f t + phi), the two bins read the main lobe \
+                         moved by: the modulation's image at -f and the removed mean, at most \
+                         r(2 (x - q)) + 2 r(x - q)^2 of its amplitude, x the bin in window \
+                         bins, r(y) the transform's envelope over its sidelobes (|W| with \
+                         |sin pi y| taken as 1, falling for 1 < y < n/2), the mean also moving \
+                         the level by m r(x - q); and for an envelope the square law: the \
+                         smoothing h, positive of unit sum, acts on energy, so each envelope \
+                         is h * a plus d, 0 <= d = var_h(a) / (sqrt(h * a^2) + h * a) <= c \
+                         min(m^2 V / (2 (1 - m)), m sqrt V), V = (1 - |H(f)|^2 + |H(2f) - \
+                         H(f)^2|) / 2 at the bin's rate plus q, V rising with f, so the \
+                         lowpass (S the sum of its taps' magnitudes) moves a bin by at most \
+                         (1 + 3 r(x - q)) S c min(...) and the level by S c min(...). The \
+                         ratio widened by those, \
+                         inverted, gives `hz_bounds`; the bin over the kernel's most and \
+                         least across them and over G's (|H| falling with f, L moving no \
+                         faster than its taps' slope) gives `depth_bounds`; m's ceiling is \
+                         1, or lower where the square law's sqrt V branch bounds it, and each \
+                         round's depth ceiling bounds the next. `period_beats_bounds` follow \
+                         from `hz_bounds`. They cover the bins, the interpolation, the \
+                         correction and the square law alone, under that model: a tone's \
+                         sidebands f either side meet each band's skirt unevenly, so the \
+                         bands' envelopes carry a tone's index changed, by up to several \
+                         percent near `max_hz` with where the tone falls among the bands, \
+                         which is the bands' view and not an error the bounds cover; a second \
+                         modulation, partial or component near f is outside the model. They \
+                         are null where the window is clipped, where no round bounds the \
+                         peak (the perturbations swamping the main lobe), or where the \
+                         depth's floor stands over its ceiling, refuting the model. Deep, fast \
+                         modulation bounds wide: near `max_hz` the square law's bound reaches \
+                         a fifth of m. A strong peak's Hann sidelobes, some \
                          31 dB under it and 1.5 / window beside it, read as peaks of their \
                          own; a modulation that is no sinusoid reads at its rate and its \
                          harmonics; two modulations closer than \
@@ -114,12 +156,16 @@ impl Group {
     }
 }
 
-/// `depth` is a modulation index for an envelope, Hz for a centroid.
+/// `depth` is a modulation index for an envelope, Hz for a centroid. Each bound is MODEL's,
+/// `None` where the window leaves or refutes MODEL's lone modulation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Peak {
     pub hz: f64,
+    pub hz_bounds: Option<(f64, f64)>,
     pub period_beats: Option<f64>,
+    pub period_beats_bounds: Option<(f64, f64)>,
     pub depth: f64,
+    pub depth_bounds: Option<(f64, f64)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -202,6 +248,11 @@ pub fn measure(
         bins: 1..((MAX_HZ / step).ceil() as usize + 2).min(n / 2),
         n,
         bpm,
+        size,
+        rate,
+        sample_rate,
+        smoothing: design(Shape::OnePole, SMOOTHING_HZ, 0.0, 0.0, sample_rate),
+        lowpass: &lowpass,
     };
     let tracks = Group::ALL
         .into_iter()
@@ -216,8 +267,6 @@ pub fn measure(
             }
         })
         .collect();
-    let smoothing = design(Shape::OnePole, SMOOTHING_HZ, 0.0, 0.0, sample_rate);
-    let smoothing_db = SMOOTHING.poles as f64 * magnitude_db(&smoothing, MAX_HZ, sample_rate);
     Ok(Modulation {
         hop_secs: grid.hop_secs,
         window_secs: grid.window_secs,
@@ -227,7 +276,7 @@ pub fn measure(
         min_hz: MIN_HZ.max(2.0 / grid.window_secs),
         max_hz: MAX_HZ,
         bpm,
-        passband_gain_at_max_hz: 10f64.powf(smoothing_db / 20.0) * lowpass.gain(MAX_HZ),
+        passband_gain_at_max_hz: read.gain(MAX_HZ, Kind::Envelope),
         tracks,
     })
 }
@@ -269,6 +318,20 @@ impl Lowpass {
             .enumerate()
             .map(|(i, h)| h * (TAU * hz * (i as f64 - HALF_TAPS as f64) / self.rate).cos())
             .sum()
+    }
+
+    /// Over the gain's slope in hz: each tap's cosine turns no faster than its lag.
+    fn slope(&self) -> f64 {
+        self.taps
+            .iter()
+            .enumerate()
+            .map(|(i, h)| h.abs() * TAU * (i as f64 - HALF_TAPS as f64).abs() / self.rate)
+            .sum()
+    }
+
+    /// The most the output can swing for an input swinging over a unit range.
+    fn spread(&self) -> f64 {
+        self.taps.iter().map(|h| h.abs()).sum()
     }
 
     /// Centred on each kept sample, the taps past either end left out and the rest
@@ -330,15 +393,31 @@ fn grouped(split: &Bands, lowpass: &Lowpass) -> Vec<Held> {
         .collect()
 }
 
-struct Read {
+struct Read<'a> {
     step: f64,
     /// From the first bin past 0 Hz to one past `MAX_HZ`.
     bins: Range<usize>,
     n: usize,
     bpm: Option<f64>,
+    /// A whole window's envelope samples.
+    size: usize,
+    rate: f64,
+    sample_rate: f64,
+    smoothing: Coeffs,
+    lowpass: &'a Lowpass,
 }
 
-impl Read {
+/// An envelope's depth is an index under the smoothing's square law; a centroid's is Hz.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    Envelope,
+    Centroid,
+}
+
+/// Each round of `Read::bounded` tightens the index's ceiling the last one bounded.
+const ROUNDS: usize = 8;
+
+impl Read<'_> {
     fn window(&self, held: &Held, s: &Span) -> Window {
         let w = hann_periodic(s.to - s.from);
         let total: f64 = w.iter().sum();
@@ -354,7 +433,7 @@ impl Read {
                         *d += 2.0 * m / (total * level);
                     }
                 }
-                self.peaks(&depth, lowest)
+                self.peaks(&depth, lowest, s, Kind::Envelope)
             }
             false => Vec::new(),
         };
@@ -365,7 +444,7 @@ impl Read {
             let depth: Vec<f64> = spectrum.into_iter().map(|m| 2.0 * m / total).collect();
             Centroid {
                 mean_hz,
-                peaks: self.peaks(&depth, lowest),
+                peaks: self.peaks(&depth, lowest, s, Kind::Centroid),
             }
         });
         Window {
@@ -412,44 +491,210 @@ impl Read {
         out
     }
 
-    /// `depth` is indexed from `bins.start`; each peak is placed by the quadratic through
-    /// the log of its bin and its two neighbours.
-    fn peaks(&self, depth: &[f64], lowest: f64) -> Vec<Peak> {
+    /// `depth` is indexed from `bins.start`: the three local maxima whose bins read deepest,
+    /// each located as MODEL states, the deepest first.
+    fn peaks(&self, depth: &[f64], lowest: f64, s: &Span, kind: Kind) -> Vec<Peak> {
         let first = self.bins.start;
-        let mut found: Vec<(f64, f64)> = (1..depth.len().saturating_sub(1))
+        let mut found: Vec<usize> = (1..depth.len().saturating_sub(1))
             .filter(|&i| {
                 let hz = (first + i) as f64 * self.step;
                 (lowest..=MAX_HZ).contains(&hz)
                     && depth[i] > depth[i - 1]
                     && depth[i] >= depth[i + 1]
             })
-            .map(|i| {
-                let (a, b, c) = (depth[i - 1], depth[i], depth[i + 1]);
-                let (shift, top) = match a > 0.0 && c > 0.0 {
-                    true => {
-                        let (a, b, c) = (a.ln(), b.ln(), c.ln());
-                        let shift = 0.5 * (a - c) / (a - 2.0 * b + c);
-                        (shift, (b - 0.25 * (a - c) * shift).exp())
-                    }
-                    false => (0.0, b),
-                };
-                ((first + i) as f64 + shift, top)
-            })
             .collect();
-        found.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.total_cmp(&b.0)));
-        found
+        found.sort_by(|a, b| depth[*b].total_cmp(&depth[*a]).then(a.cmp(b)));
+        let mut peaks: Vec<Peak> = found
             .into_iter()
             .take(PEAKS)
-            .map(|(bin, depth)| {
-                let hz = bin * self.step;
-                Peak {
-                    hz,
-                    period_beats: self.bpm.map(|bpm| bpm / (60.0 * hz)),
-                    depth,
-                }
-            })
-            .collect()
+            .map(|i| self.located(depth, i, s.to - s.from, kind))
+            .collect();
+        peaks.sort_by(|a, b| b.depth.total_cmp(&a.depth).then(a.hz.total_cmp(&b.hz)));
+        peaks
     }
+
+    /// The Hann kernel inverted through the deepest bin and its deeper neighbour, and MODEL's
+    /// bounds where the window holds its whole span.
+    fn located(&self, depth: &[f64], i: usize, size: usize, kind: Kind) -> Peak {
+        let q = size as f64 / self.n as f64;
+        let x = (self.bins.start + i) as f64 * q;
+        let side = match depth[i + 1] >= depth[i - 1] {
+            true => 1.0,
+            false => -1.0,
+        };
+        let d0 = depth[i];
+        let ratio = depth[(i as f64 + side) as usize] / d0;
+        let u = offset(ratio, q, size);
+        let hz = (x + side * u) * self.rate / size as f64;
+        let bounds = match size == self.size {
+            true => self.bounded(d0, ratio, x, side, size, kind),
+            false => None,
+        };
+        let beats = |hz: f64| self.bpm.map(|bpm| bpm / (60.0 * hz));
+        Peak {
+            hz,
+            hz_bounds: bounds.map(|b| b.0),
+            period_beats: beats(hz),
+            period_beats_bounds: bounds.and_then(|((lo, hi), _)| beats(hi).zip(beats(lo))),
+            depth: d0 / kernel(u, size) / self.gain(hz, kind),
+            depth_bounds: bounds.map(|b| b.1),
+        }
+    }
+
+    /// MODEL's (hz, depth) bounds for a peak at natural bin `x` reading `d0`, its neighbour on
+    /// `side` reading `ratio` of that; `None` where no round can bound it.
+    fn bounded(
+        &self,
+        d0: f64,
+        ratio: f64,
+        x: f64,
+        side: f64,
+        size: usize,
+        kind: Kind,
+    ) -> Option<((f64, f64), (f64, f64))> {
+        let q = size as f64 / self.n as f64;
+        let to_hz = |nu: f64| nu * self.rate / size as f64;
+        let kappa = reach(x - q, size);
+        let lambda = reach(2.0 * (x - q), size) + 2.0 * kappa * kappa;
+        let spread = self.lowpass.spread();
+        let v = match kind {
+            Kind::Envelope => self.square_law(to_hz(x + q)),
+            Kind::Centroid => 0.0,
+        };
+        let law = |m: f64| {
+            let tight = match m < 1.0 {
+                true => m * m * v / (2.0 * (1.0 - m)),
+                false => f64::INFINITY,
+            };
+            tight.min(m * v.sqrt())
+        };
+        let square = |m: f64| (1.0 + 3.0 * kappa) * spread * law(m);
+        let mut m = match kind {
+            Kind::Envelope => {
+                let (lo, _) = self.gains((to_hz(x - q), to_hz(x + q)), kind);
+                let room = lo * kernel(q, size)
+                    - d0 * (kappa + spread * v.sqrt())
+                    - spread * lambda
+                    - square(1.0);
+                match room > 0.0 {
+                    true => (d0 / room).min(1.0),
+                    false => 1.0,
+                }
+            }
+            Kind::Centroid => f64::INFINITY,
+        };
+        let mut out = None;
+        for _ in 0..ROUNDS {
+            let (level, amp) = match kind {
+                Kind::Envelope => (m * kappa + spread * law(m), m * spread),
+                Kind::Centroid => (0.0, d0 / (kernel(q, size) - lambda)),
+            };
+            let e = amp * lambda + square(m);
+            let floor = d0 * (1.0 - level) - e;
+            if !(floor > 0.0 && amp > 0.0 && amp.is_finite()) {
+                break;
+            }
+            let wide = (1.0 + ratio) * e / floor;
+            let (ua, ub) = (offset(ratio - wide, q, size), offset(ratio + wide, q, size));
+            let near = match ua <= 0.0 && ub >= 0.0 {
+                true => 0.0,
+                false => ua.abs().min(ub.abs()),
+            };
+            let far = ua.abs().max(ub.abs());
+            let (ha, hb) = (to_hz(x + side * ua), to_hz(x + side * ub));
+            let hz = (ha.min(hb), ha.max(hb));
+            let g = self.gains(hz, kind);
+            let amps = (
+                floor / kernel(near, size),
+                (d0 * (1.0 + level) + e) / kernel(far, size),
+            );
+            let depth = (amps.0 / g.1, amps.1 / g.0);
+            if depth.0 > m {
+                return None;
+            }
+            out = Some((hz, (depth.0, depth.1.min(m))));
+            if kind == Kind::Centroid || depth.1 >= m {
+                break;
+            }
+            m = depth.1;
+        }
+        out
+    }
+
+    /// The smoothing's response on energy at `hz`.
+    fn smoothed(&self, hz: f64) -> C64 {
+        let w = TAU * hz / self.sample_rate;
+        let back = C64::new(w.cos(), -w.sin()).scale(self.smoothing.a1);
+        (C64::real(self.smoothing.b0) / (C64::ONE + back)).powi(SMOOTHING.poles as u32)
+    }
+
+    /// What a lone modulation at `hz` keeps to first order: the smoothing's gain on energy
+    /// and the lowpass's for an envelope, the lowpass's alone for a centroid.
+    fn gain(&self, hz: f64, kind: Kind) -> f64 {
+        match kind {
+            Kind::Envelope => self.smoothed(hz).abs() * self.lowpass.gain(hz),
+            Kind::Centroid => self.lowpass.gain(hz),
+        }
+    }
+
+    /// `gain`'s least and most over `hz`: the smoothing's falls with hz, the lowpass's moves
+    /// no faster than its slope from the middle.
+    fn gains(&self, hz: (f64, f64), kind: Kind) -> (f64, f64) {
+        let (mid, half) = ((hz.0 + hz.1) / 2.0, (hz.1 - hz.0) / 2.0);
+        let pass = self.lowpass.gain(mid);
+        let moved = self.lowpass.slope() * half;
+        let (lo, hi) = (pass - moved, pass + moved);
+        match kind {
+            Kind::Envelope => (
+                self.smoothed(hz.1).abs() * lo,
+                self.smoothed(hz.0).abs() * hi,
+            ),
+            Kind::Centroid => (lo, hi),
+        }
+    }
+
+    /// V at `hz`: (1 - |H(f)|^2 + |H(2f) - H(f)^2|) / 2, H the smoothing on energy.
+    fn square_law(&self, hz: f64) -> f64 {
+        let (one, two) = (self.smoothed(hz), self.smoothed(2.0 * hz));
+        (1.0 - one.norm_sqr() + (two - one * one).abs()) / 2.0
+    }
+}
+
+/// The periodic Hann over `n` samples, its transform as three Dirichlet kernels: at `x` of
+/// its bins, sin(pi x) times this.
+fn dirichlet(x: f64, n: usize) -> C64 {
+    let n = n as f64;
+    let turn = C64::new((PI / n).cos(), (PI / n).sin());
+    let s = |y: f64| (PI * y / n).sin();
+    C64::real(0.5 / s(x)) - turn.conj().over(4.0 * s(x - 1.0)) - turn.over(4.0 * s(x + 1.0))
+}
+
+/// |W(x)| / W(0), W the periodic Hann's transform over `n` samples at `x` of its bins: exact.
+fn kernel(x: f64, n: usize) -> f64 {
+    match x.abs() {
+        0.0 => 1.0,
+        1.0 => 0.5,
+        x => 2.0 / n as f64 * (PI * x).sin().abs() * dirichlet(x, n).abs(),
+    }
+}
+
+/// `kernel` with |sin(pi x)| taken as 1: over it, and falling, for 1 < x < n / 2.
+fn reach(x: f64, n: usize) -> f64 {
+    2.0 / n as f64 * dirichlet(x, n).abs()
+}
+
+/// The u in [-q, q] where kernel(q - u) / kernel(u) is `ratio`, by bisection; that ratio rises
+/// with u, so a ratio past either end gives that end.
+fn offset(ratio: f64, q: f64, n: usize) -> f64 {
+    let (mut lo, mut hi) = (-q, q);
+    for _ in 0..60 {
+        let mid = (lo + hi) / 2.0;
+        match kernel(q - mid, n) / kernel(mid, n) < ratio {
+            true => lo = mid,
+            false => hi = mid,
+        }
+    }
+    (lo + hi) / 2.0
 }
 
 fn weighted_mean(w: &[f64], x: &[f64]) -> f64 {
@@ -475,5 +720,53 @@ fn summary(windows: &[Window]) -> Summary {
         centroid_depth_hz: stats(
             centroids().filter_map(|(t, c)| c.peaks.first().map(|p| (t, p.depth))),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The closed form against the transform summed sample by sample; `reach` over it and
+    /// falling on (1, n/2); V rising with f to `MAX_HZ`: what MODEL's bounds lean on.
+    #[test]
+    fn the_kernel_its_reach_and_the_square_law_hold_as_model_states() {
+        for n in [250, 400, 401] {
+            let w = hann_periodic(n);
+            let total: f64 = w.iter().sum();
+            for x in [0.0, 0.01, 0.39, 0.5, 1.0, 1.7, 2.3, 7.5, 61.2] {
+                let summed = w.iter().enumerate().fold(C64::ZERO, |acc, (k, h)| {
+                    let turn = -TAU * x * k as f64 / n as f64;
+                    acc + C64::new(turn.cos(), turn.sin()).scale(*h)
+                });
+                assert!(
+                    (kernel(x, n) - summed.abs() / total).abs() < 1e-12,
+                    "{n} {x}"
+                );
+            }
+            let ys: Vec<f64> = (1..(n * 5)).map(|k| 1.0 + k as f64 / 10.0).collect();
+            for pair in ys.windows(2).filter(|p| p[1] < n as f64 / 2.0) {
+                assert!(reach(pair[1], n) < reach(pair[0], n), "{n} {pair:?}");
+                assert!(kernel(pair[1], n) <= reach(pair[1], n) * (1.0 + 1e-12));
+            }
+        }
+        let lowpass = Lowpass::new(2000.0);
+        for sample_rate in [8_192.0, 16_000.0, 44_100.0, 48_000.0, 96_000.0] {
+            let read = Read {
+                step: 1.0,
+                bins: 1..2,
+                n: 2,
+                bpm: None,
+                size: 1,
+                rate: 100.0,
+                sample_rate,
+                smoothing: design(Shape::OnePole, SMOOTHING_HZ, 0.0, 0.0, sample_rate),
+                lowpass: &lowpass,
+            };
+            let v: Vec<f64> = (1..=2000)
+                .map(|k| read.square_law(k as f64 * 0.01))
+                .collect();
+            assert!(v.windows(2).all(|p| p[1] > p[0]), "{sample_rate}");
+        }
     }
 }

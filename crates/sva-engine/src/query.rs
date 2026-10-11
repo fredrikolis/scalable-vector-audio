@@ -378,8 +378,8 @@ static MODULATION: Reading = Reading {
     reads: Reads::Samples,
     help: "how its band envelopes move per sliding window, under 150 Hz, to 2 kHz and over: \
            the leading modulation rates from 0.5 to 20 Hz, in beats where `bpm` is given, \
-           their depth as a modulation index, the level, and the spectral centroid's mean \
-           and its own swing in Hz",
+           their depth as a modulation index, each with its bounds, the level, and the \
+           spectral centroid's mean and its own swing in Hz",
     build: |g| Representation::Modulation {
         frame_secs: g.frame.unwrap_or(DEFAULT_FRAME_SECS),
         window_secs: g.window.unwrap_or(DEFAULT_MODULATION_WINDOW_SECS),

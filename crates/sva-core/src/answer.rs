@@ -549,15 +549,23 @@ fn periodicity_json(p: &Periodicity) -> String {
     )
 }
 
-/// `period_beats` is left out where no `bpm` was asked; `depth_key` names the depth's unit.
+/// `period_beats` and its bounds are left out where no `bpm` was asked; `depth_key` names the
+/// depth's unit.
 fn modulation_peak_json(p: &modulation::Peak, depth_key: &str) -> String {
-    let beats = p
-        .period_beats
-        .map_or(String::new(), |b| format!(", \"period_beats\": {}", num(b)));
+    let beats = p.period_beats.map_or(String::new(), |b| {
+        format!(
+            ", \"period_beats\": {}, \"period_beats_bounds\": {}",
+            num(b),
+            bounds_json(p.period_beats_bounds)
+        )
+    });
     format!(
-        "{{ \"hz\": {}{beats}, \"{depth_key}\": {} }}",
+        "{{ \"hz\": {}, \"hz_bounds\": {}{beats}, \"{depth_key}\": {}, \
+         \"{depth_key}_bounds\": {} }}",
         num(p.hz),
-        num(p.depth)
+        bounds_json(p.hz_bounds),
+        num(p.depth),
+        bounds_json(p.depth_bounds)
     )
 }
 
