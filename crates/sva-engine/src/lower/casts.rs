@@ -174,7 +174,22 @@ impl Lowering<'_> {
             );
             return Err(self.refuse(crate::vocabulary::shape_name(shape), &m, Some(span)));
         }
-        let response = Body::Rational(in_frequency(design(shape, cutoff, q, gain)));
+        let prototype = design(shape, cutoff, q, gain);
+        let roots = prototype.zeros.iter().chain(&prototype.poles);
+        if !(prototype.gain.is_finite() && roots.into_iter().all(|z| z.is_finite())) {
+            let name = crate::vocabulary::shape_name(shape);
+            return Err(self.refused_at(
+                "engine.filter_without_response",
+                format!(
+                    "`{name}` reads `cutoff={cutoff:?}`, `q={q:?}` and `gain={gain:?}`, and its \
+                     response has no finite pole, zero or gain there: q divides the damping, \
+                     and a gain in dB is raised to a power."
+                ),
+                "write a q that is not zero and a gain whose power of ten is a finite number",
+                Some(span),
+            ));
+        }
+        let response = Body::Rational(in_frequency(prototype));
         let spectrum = match var {
             Var::F => source,
             Var::T => self.register(

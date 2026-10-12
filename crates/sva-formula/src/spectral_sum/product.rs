@@ -108,6 +108,18 @@ fn smooth_times(a: &SpectralAtom, b: &SpectralAtom, poly: Poly) -> Result<Vec<Sp
         (x, y) => x.or(y),
     };
 
+    let sketch = match (exp, gauss) {
+        (Some(e), _) if !(e.sigma.is_finite() && e.omega.is_finite() && e.mu.is_finite()) => {
+            Some(AtomSketch::pair(Factor::Exponential, Factor::Exponential))
+        }
+        (_, Some(g)) if !(g.a.is_finite() && g.mu.is_finite()) => {
+            Some(AtomSketch::pair(Factor::Gaussian, Factor::Gaussian))
+        }
+        _ => None,
+    };
+    if let Some(sketch) = sketch {
+        return Err(Left::new(a.origin, sketch, LeftReason::NotFinite));
+    }
     let base = Factors {
         poly,
         exp,

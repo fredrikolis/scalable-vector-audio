@@ -120,6 +120,38 @@ fn a_constant_that_names_no_number_refuses() {
     }
 }
 
+/// A time constant of zero, as a glide of no length is, divides the instant by zero, and a q
+/// of zero divides a filter's damping by it: each is refused in writing, never a panic.
+#[test]
+fn a_rate_or_a_damping_divided_by_zero_refuses() {
+    for (written, code) in [
+        (
+            "gt = 0\ncrop(sin(2*pi*300*t)*exp(-t/gt), 0s, 1s)\n",
+            "collapse.not_evaluable",
+        ),
+        ("crop(sin(t/0), 0s, 1s)\n", "collapse.not_evaluable"),
+        (
+            "crop(exp(-t*t*1e200*1e200), 0s, 1s)\n",
+            "collapse.not_evaluable",
+        ),
+        (
+            "crop(lowpass(sin(2*pi*300*t), cutoff=500, q=0), 0s, 1s)\n",
+            "engine.filter_without_response",
+        ),
+    ] {
+        let g = graph_of("no-rate", &[("body", written)]);
+        let Err(refused) = render(
+            &g,
+            "body",
+            RenderConfig::seconds(44_100, 0.01),
+            &Tier::default(),
+        ) else {
+            panic!("{written} names no number and renders nothing");
+        };
+        assert_eq!(refused.code(), code, "{written}: {refused}");
+    }
+}
+
 #[test]
 fn an_argument_that_names_no_number_refuses() {
     let g = graph_of(

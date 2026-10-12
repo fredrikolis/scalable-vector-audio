@@ -25,6 +25,15 @@ pub fn constant(var: Var, c: C64, origin: Origin) -> Result<SpectralSum, Left> {
     }
 }
 
+/// A rate, a width or an instant an atom is built on is a finite double or the atom is none:
+/// `t/0` and a slope past the largest double name no line to build one on.
+pub fn held(origin: Origin, first: Factor, values: &[f64]) -> Result<(), Left> {
+    match values.iter().all(|v| v.is_finite()) {
+        true => Ok(()),
+        false => Err(left(origin, first, LeftReason::NotFinite)),
+    }
+}
+
 pub fn one(var: Var, atom: SpectralAtom) -> SpectralSum {
     let mut lane = Lane::of(vec![atom]);
     simplify(&mut lane);
@@ -44,10 +53,14 @@ pub fn apply(
     {
         return constant(var, apply_scalar(op, b), origin);
     }
+    if let Some((a, b)) = affine {
+        held(arg.origin, Factor::Value, &[a.re, a.im, b.re, b.im])?;
+    }
     if op == Unary::Exp
         && affine.is_none()
         && let Some(q) = completed_square_read(&arg.body, reads)
     {
+        held(arg.origin, Factor::Gaussian, &[q.a, q.mu, q.omega])?;
         return Ok(one(
             var,
             SpectralAtom::new(
@@ -100,6 +113,7 @@ fn exp_atom(a: C64, b: C64, origin: Origin) -> Result<SpectralAtom, Left> {
         };
     }
     let mu = -b.re / a.re;
+    held(origin, Factor::Exponential, &[mu])?;
     let factors = Factors {
         exp: Some(Exp {
             sigma: a.re,
@@ -151,6 +165,7 @@ pub fn fold(
 /// `delta^(k)(a*x + b)` places one delta at the argument's zero, scaled by `a^k * |a|`.
 pub fn delta(at: &Part, order: u16, var: Var, reads: &dyn Reads) -> Result<SpectralSum, Left> {
     let (a, b) = real_affine(at, reads)?;
+    held(at.origin, Factor::Delta, &[-b / a])?;
     let scale = a.powi(i32::from(order)) * a.abs();
     Ok(one(
         var,
@@ -165,6 +180,7 @@ pub fn delta(at: &Part, order: u16, var: Var, reads: &dyn Reads) -> Result<Spect
 
 pub fn principal_value(at: &Part, var: Var, reads: &dyn Reads) -> Result<SpectralSum, Left> {
     let (a, b) = real_affine(at, reads)?;
+    held(at.origin, Factor::PrincipalValue, &[-b / a])?;
     Ok(one(
         var,
         SpectralAtom::new(

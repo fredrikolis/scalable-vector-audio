@@ -163,6 +163,7 @@ pub enum LeftReason {
     HilbertOfPolynomial,
     NotInTable,
     NoValue,
+    NotFinite,
     Overflow,
     Unsubstituted,
 }
@@ -217,6 +218,10 @@ impl LeftReason {
             }
             LeftReason::NoValue => {
                 "a division or a remainder by zero names no number, and no atom holds one"
+            }
+            LeftReason::NotFinite => {
+                "a rate, a width or an instant that is not a finite double names no number: \
+                 it was divided by zero or it passed the largest double, and no atom holds one"
             }
             LeftReason::Overflow => {
                 "a growing exponential passes the largest double inside its window, so its \

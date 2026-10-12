@@ -8,7 +8,7 @@ use crate::rational::expand;
 use crate::refusal::{AtomSketch, Factor, Left, LeftReason};
 use crate::spectral_sum::atom::{Exp, Factors, Indicator, Pole, Singular, SpectralAtom};
 use crate::spectral_sum::image::{
-    affine_atoms, apply, constant, crop, crop_window, delta, derive, fold, left, one,
+    affine_atoms, apply, constant, crop, crop_window, delta, derive, fold, held, left, one,
     principal_value, shift,
 };
 use crate::spectral_sum::merge::simplify;
@@ -406,13 +406,15 @@ fn power(
     let Some((a, b)) = affine_atoms(&inner) else {
         return Err(left(origin, Factor::Pole, LeftReason::Reciprocal));
     };
+    let at = -b / a;
+    held(origin, Factor::Pole, &[at.re, at.im])?;
     Ok(one(
         var,
         SpectralAtom::new(
             a.powi(u32::from(order)).inv(),
             Factors {
                 pole: Some(Pole {
-                    at: -b / a,
+                    at,
                     order,
                     pv: false,
                 }),
