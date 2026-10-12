@@ -230,7 +230,7 @@ pub fn resolve_ref_path(referencing: &str, ref_path: &str) -> Result<String, Eng
 pub const SIGNAL_PARAM: &str = "x";
 
 /// Bounds BREADTH: a chain of functions each invoking the next several times multiplies.
-pub const MAX_INSTANCES: usize = 4096;
+pub const MAX_INSTANCES: usize = 65_536;
 
 /// A `Read` names the child INSTANCE, so this is reachable only past [`Instances::follow`].
 #[derive(Clone, Copy)]
