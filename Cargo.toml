@@ -29,3 +29,6 @@ sva-wasm = { path = "crates/sva-wasm", version = "0.9.3" }
 
 [profile.dev]
 debug = "line-tables-only"
+
+[profile.release]
+codegen-units = 1
