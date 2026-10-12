@@ -38,7 +38,7 @@ const SHIFTED: f64 = 1e80;
 const REACHED: f64 = 1e100;
 
 /// Each support found.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Memo(HashMap<NodeId, Extent>);
 
 impl Memo {

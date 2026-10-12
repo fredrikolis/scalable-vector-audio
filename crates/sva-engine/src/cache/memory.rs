@@ -127,6 +127,10 @@ enum Source {
     Disk {
         head: Box<Header>,
         chunks: Vec<Arc<Buffer>>,
+        /// The node as a value told it since: where the samples the disk lacks of it are.
+        more: Option<(Box<Stored>, Offered)>,
+        /// Whether memory sent the disk more of it, so its header names a layout now gone.
+        rewritten: bool,
     },
     Offered {
         stored: Box<Stored>,
@@ -267,6 +271,11 @@ impl State {
         self.entries.get(&key)?.item.node.as_ref()
     }
 
+    fn source_mut(&mut self, key: Hash) -> Option<&mut Source> {
+        let node = self.entries.get_mut(&key)?.item.node.as_mut()?;
+        Some(&mut node.source)
+    }
+
     fn stands(&self, key: Hash) -> bool {
         let bound = |at: &Hash| self.node(*at).is_some_and(|node| node.bound);
         self.doomed(key).iter().any(bound)
@@ -341,13 +350,35 @@ impl State {
             return false;
         }
         let doomed = self.doomed(key);
-        for at in &doomed {
+        let extending = self.extending(&doomed);
+        for at in doomed.iter().chain(&extending) {
             self.flush(*at);
+        }
+        for at in extending {
+            if let Some(Source::Disk { more, .. }) = self.source_mut(at) {
+                *more = None;
+            }
         }
         for at in doomed {
             self.discard(at);
         }
         true
+    }
+
+    /// Each node the disk holds whose samples past it are any of `going`'s, moved: it stays, as
+    /// the disk holds it.
+    fn extending(&self, going: &[Hash]) -> Vec<Hash> {
+        let moves = |held: &Held| match &held.item.node.as_ref()?.source {
+            Source::Disk {
+                more: Some((_, Offered::Moves { of, .. })),
+                ..
+            } => Some(*of),
+            _ => None,
+        };
+        let reading = self.entries.iter().filter(|(at, held)| {
+            !going.contains(at) && moves(held).is_some_and(|of| going.contains(&of))
+        });
+        reading.map(|(at, _)| *at).collect()
     }
 
     fn discard(&mut self, key: Hash) {
@@ -389,18 +420,26 @@ impl State {
             return;
         };
         *dirty = false;
-        if let Some(back) = self.written(key) {
+        let back = self.written(key);
+        if let (Some(_), Some(Source::Disk { rewritten, .. })) = (&back, self.source_mut(key)) {
+            *rewritten = true;
+        }
+        if let Some(back) = back {
             self.pending.push(back);
         }
     }
 
+    /// A node no disk holds, whole; of one the disk holds, only the samples it lacks, and
+    /// nothing where it lacks none or refers to them where they are.
     fn written(&self, key: Hash) -> Option<Writeback> {
-        let Some(Node {
-            source: Source::Offered { stored, offered },
-            ..
-        }) = self.node(key)
-        else {
-            return None;
+        let (stored, offered, on_disk) = match &self.node(key)?.source {
+            Source::Offered { stored, offered } => (stored, offered, None),
+            Source::Disk {
+                head,
+                more: Some((stored, offered)),
+                ..
+            } => (stored, offered, Some(head)),
+            Source::Disk { more: None, .. } => return None,
         };
         let head = |samples| Header::new((**stored).clone(), samples);
         let referred = match offered {
@@ -411,20 +450,37 @@ impl State {
             },
             _ => None,
         };
-        Some(match referred {
-            Some((of, by)) => Writeback {
+        let refers = |to: (Hash, i64)| match on_disk.map(|head| head.samples()) {
+            Some(Samples::Entry { file, shift, .. }) => (*file, -*shift) == to,
+            _ => false,
+        };
+        let own = on_disk.is_some_and(|head| match head.samples() {
+            Samples::Entry { file, .. } | Samples::Staged { file, .. } => *file == key,
+            Samples::None | Samples::Of { .. } => false,
+        });
+        match referred {
+            Some(to) if refers(to) => None,
+            Some((of, by)) if !own => Some(Writeback {
                 key,
                 head: head(Samples::Of { key: of, by }),
                 parts: Vec::new(),
-            },
-            None => Writeback {
-                key,
-                head: head(Samples::None),
-                parts: self
-                    .offered_parts(key, offered, Extent::EVERYWHERE)
-                    .unwrap_or_default(),
-            },
-        })
+            }),
+            _ => {
+                let parts = self.offered_parts(key, offered, Extent::EVERYWHERE);
+                let mut parts = parts.unwrap_or_default();
+                if let Some(on_disk) = on_disk {
+                    parts.retain(|part| !on_disk.stored().holds(part.extent()));
+                    if parts.is_empty() {
+                        return None;
+                    }
+                }
+                Some(Writeback {
+                    key,
+                    head: head(Samples::None),
+                    parts,
+                })
+            }
+        }
     }
 
     fn moving(&self, key: Hash) -> Option<(Hash, i64, bool)> {
@@ -472,7 +528,7 @@ impl State {
 
     /// The node `stored` names, as `offered` says, in place of the last one under its key, and,
     /// `sole`, with no samples to keep, under its slot; whether memory writes it to the disk. A
-    /// node the disk holds stays as the disk holds it.
+    /// node the disk holds stays as the disk holds it, and is written what it lacks.
     fn noded(
         &mut self,
         stored: Stored,
@@ -480,7 +536,14 @@ impl State {
         (slot, sole, facts): (Option<Hash>, bool, Facts),
     ) -> bool {
         let key = stored.key;
-        if self.node(key).is_some_and(|node| node.head().is_some()) {
+        if let Some(node) = self
+            .entries
+            .get_mut(&key)
+            .and_then(|h| h.item.node.as_mut())
+            && let Source::Disk { more, .. } = &mut node.source
+        {
+            *more = Some((Box::new(stored), offered));
+            node.dirty = true;
             return true;
         }
         let bound = self.disk && writes(&stored, facts);
@@ -629,7 +692,7 @@ impl State {
             Source::Offered { offered, .. } => {
                 Some((self.offered_parts(key, offered, over)?, None))
             }
-            Source::Disk { head, chunks } => {
+            Source::Disk { head, chunks, .. } => {
                 let meets = |b: &&Arc<Buffer>| !b.extent().intersect(over).is_empty();
                 let parts: Vec<Arc<Buffer>> = chunks.iter().filter(meets).cloned().collect();
                 let mut lacks = Vec::new();
@@ -666,6 +729,9 @@ impl State {
 
     /// A node off the disk keeps its header.
     fn evict(&mut self, key: Hash) {
+        if matches!(self.source_mut(key), Some(Source::Disk { .. })) {
+            self.flush(key);
+        }
         let Some(held) = self.entries.get_mut(&key) else {
             return;
         };
@@ -962,6 +1028,8 @@ impl Memory {
             source: Source::Disk {
                 head: Box::new(head),
                 chunks: Vec::new(),
+                more: None,
+                rewritten: false,
             },
             dirty: false,
             bound: true,
@@ -1112,16 +1180,28 @@ impl Memory {
         self.locked().failed.1.is_some()
     }
 
-    /// The disk committed what was staged: a header that named staged samples names nothing
-    /// now.
+    /// The disk committed what was staged: a header that named staged samples, or an entry
+    /// memory sent more of since, names nothing now.
     pub(crate) fn committed(&self) {
         let mut state = self.locked();
         let staged: Vec<Hash> = state
             .entries
             .iter()
             .filter(|(_, held)| {
-                let head = held.item.node.as_ref().and_then(Node::head);
-                head.is_some_and(|head| matches!(head.samples(), Samples::Staged { .. }))
+                let node = held.item.node.as_ref();
+                let staged = node.and_then(Node::head);
+                let staged =
+                    staged.is_some_and(|head| matches!(head.samples(), Samples::Staged { .. }));
+                let rewritten = |node: &Node| {
+                    matches!(
+                        node.source,
+                        Source::Disk {
+                            rewritten: true,
+                            ..
+                        }
+                    )
+                };
+                staged || node.is_some_and(rewritten)
             })
             .map(|(key, _)| *key)
             .collect();

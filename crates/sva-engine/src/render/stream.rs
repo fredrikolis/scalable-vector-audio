@@ -267,7 +267,7 @@ impl Stream {
         let short = value_graph.short((root, future, Past::Stored));
         let opened = short
             .into_iter()
-            .try_for_each(|at| value_graph.read_on(&self.world.typing, at));
+            .try_for_each(|at| value_graph.read_on(&self.world.typing, at, &BTreeMap::new()));
         if let Err(e) = opened {
             let freed = self.world.abort();
             self.driver.value_graph.abort(&freed);
@@ -465,7 +465,7 @@ impl Stream {
             return Ok(());
         }
         for short in value_graph.short((value_graph.root, asked_range, Past::Held)) {
-            value_graph.read_on(&self.world.typing, short)?;
+            value_graph.read_on(&self.world.typing, short, &BTreeMap::new())?;
             let landed = value_graph.landed(short);
             let carried = value_graph.settled(value_graph.root, &[], (landed, self.live));
             for silent in carried.silent {

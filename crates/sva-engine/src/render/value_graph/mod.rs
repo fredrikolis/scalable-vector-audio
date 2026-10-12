@@ -186,13 +186,23 @@ impl ValueGraph {
             .collect()
     }
 
-    pub(crate) fn read_on(&mut self, tys: &Typing, at: usize) -> Result<(), EngineError> {
+    pub(crate) fn answered(&self, tys: &Typing, at: usize) -> NodeId {
         let mut id = self.values[at].node.expect("a node memory answered");
         while let Some(source) = refs::passes(tys, id) {
             id = source;
         }
-        let none = (1, true, &BTreeMap::new());
-        let live = self.grown(tys, Start::Own(id), (none, false))?;
+        id
+    }
+
+    /// `at` reads on from its node's own value, each node in `hits` on memory's samples.
+    pub(crate) fn read_on(
+        &mut self,
+        tys: &Typing,
+        at: usize,
+        hits: &BTreeMap<NodeId, Arc<Stored>>,
+    ) -> Result<(), EngineError> {
+        let id = self.answered(tys, at);
+        let live = self.grown(tys, Start::Own(id), ((1, true, hits), false))?;
         self.values.hold(live);
         self.values[at].reads = vec![live];
         self.values.behind(at);
@@ -1280,6 +1290,7 @@ fn place(values: &Values, value: &Value, profile: &Profile) -> store::Place {
         looked: false,
         offer: None,
         told: false,
+        movers: Vec::new(),
         landed: i64::MIN,
     }
 }

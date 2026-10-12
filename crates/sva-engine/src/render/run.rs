@@ -80,10 +80,17 @@ pub async fn render_in<B: Backend>(
     let id = typed
         .id(&root)
         .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;
-    let (config, decided) = ended(typed, id, config);
+    let profile = config.profile;
+    let (config, decided) = ended(typed, id, config, world.bounds(id, &profile));
+    world.bound(id, &profile, &decided);
     let lowered = typed.lowered().to_vec();
     let round = tier.begin();
-    let found = walked(world, (&root, &config), (tier, round, &mut recording)).await;
+    let found = walked(
+        world,
+        (&root, &config, false),
+        (tier, round, &mut recording),
+    )
+    .await;
     let tys = typed.clone();
     if dropped(&config) && found.held.contains_key(&root) {
         let schedule = schedule::plan(&tys, id, &config.asks);
@@ -104,6 +111,9 @@ pub async fn render_in<B: Backend>(
         (config, &mut *stand_in, memory.clone()),
         (decided, &hits),
     )?;
+    if let Some(value_graph) = &held.value_graph {
+        world.bound(id, &profile, &(value_graph.supports.clone(), None));
+    }
     let mut retyped = lowered;
     retyped.append(&mut held.stand_in_typed);
     if let (Some(value_graph), Some(range)) = (&mut held.value_graph, held.range) {
@@ -121,7 +131,16 @@ pub async fn render_in<B: Backend>(
                 break;
             }
             for at in short {
-                value_graph.read_on(&held.tys, at)?;
+                let under = held
+                    .tys
+                    .name(value_graph.answered(&held.tys, at))
+                    .to_string();
+                let walking = (under.as_str(), &held.config, true);
+                let found = walked(world, walking, (tier, round, &mut recording)).await;
+                let hits = found.held.iter();
+                let hits = hits
+                    .filter_map(|(path, stored)| Some((held.tys.id(path)?, Arc::clone(stored))));
+                value_graph.read_on(&held.tys, at, &hits.collect())?;
             }
             value_graph.settled(value_graph.root, &[], (range.start, false));
             value_graph.refuse_endless(range)?;
@@ -166,16 +185,18 @@ pub async fn render_in<B: Backend>(
     Ok(held)
 }
 
-/// What memory answers from `root` down, each key it cannot answer looked up this round.
+/// What memory answers from `root` down, or `under` it alone, each key it cannot answer looked
+/// up this round.
 async fn walked<B: Backend>(
     world: &World,
-    (root, config): (&str, &RenderConfig),
+    (root, config, under): (&str, &RenderConfig, bool),
     (tier, round, seen): (&Tier<B>, u64, &mut Recording),
 ) -> Reached {
     let walking = Walking {
         root,
         config,
         whole: true,
+        under,
     };
     loop {
         let memory = tier.memory();

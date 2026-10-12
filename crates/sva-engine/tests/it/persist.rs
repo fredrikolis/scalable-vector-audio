@@ -461,6 +461,92 @@ fn a_node_persisted_twice_holds_what_both_persists_sent() {
     assert_eq!(samples(&cold), samples(&warm));
 }
 
+/// A node rendered short and persisted, then rendered longer by another process over the same
+/// disk, is sent what the disk lacks of it: the next process reads the longer range back.
+#[test]
+fn a_node_the_disk_holds_short_is_written_what_a_later_store_computes_past_it() {
+    let memory = Memory::default();
+    let graph = two_voices("short-then-long", 330);
+    for seconds in [0.5, 2.0] {
+        let store = opened(&memory, u64::MAX);
+        rendered_over(&graph, &store, seconds);
+        now(store.persist()).expect("persisted");
+    }
+    let cold = rendered_over(&graph, &opened(&Memory::default(), u64::MAX), 2.0);
+    let warm = rendered_over(&graph, &opened(&memory, u64::MAX), 2.0);
+    assert_eq!(stats(&warm).computed(), 0, "{:?}", stats(&warm));
+    assert_eq!(bits(&cold), bits(&warm));
+}
+
+/// `master` only moves `mix`, a value one reader reads and no state writes, so the store holds
+/// `master` alone, as samples of its own; `top` is `mix`, as a target naming it is.
+fn moved_mix(name: &str) -> Graph {
+    graph_of(
+        name,
+        &[
+            (
+                "f",
+                "lowpass(sample(sin(2*pi*220*t)), cutoff=2000, q=0.7)\n",
+            ),
+            ("mix", "@f*0.5\n"),
+            ("master", "crop(@mix(t + 0.01s), 0s, 1.9s)\n"),
+            ("top", "@mix\n"),
+        ],
+    )
+}
+
+fn in_turn(seconds: f64) -> RenderConfig {
+    RenderConfig {
+        threads: NonZeroUsize::new(1).expect("one"),
+        ..RenderConfig::seconds(RATE, seconds)
+    }
+}
+
+/// A target that moves a value memory lets go of block by block, under a cap a few blocks
+/// wide, is stored whole: the next process reads every sample of it back.
+#[test]
+fn a_target_moving_a_value_memory_evicts_as_it_renders_is_stored_whole() {
+    let graph = moved_mix("moved-evicted");
+    let cold = now(render_over(
+        &graph,
+        "master",
+        in_turn(1.9),
+        &Tier::default(),
+    ));
+    let cold = cold.expect("a render");
+
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    store.set_max_bytes(3 * 4096 * 8);
+    now(render_over(&graph, "master", in_turn(1.9), &store)).expect("a render");
+    assert!(store.counters().evictions() > 0, "memory passed its cap");
+    now(store.persist()).expect("persisted");
+
+    let next = opened(&memory, u64::MAX);
+    let warm = now(render_over(&graph, "master", in_turn(1.9), &next)).expect("a render");
+    assert_eq!(stats(&warm).computed(), 0, "{:?}", stats(&warm));
+    assert_eq!(bits(&cold), bits(&warm));
+}
+
+/// A stored node asked past the samples the store holds of it reads on over what the store
+/// holds under it: `f`, stored whole, is a hit, and only the rest of `mix` is computed.
+#[test]
+fn a_stored_node_asked_past_its_samples_reads_what_the_store_holds_under_it() {
+    let graph = moved_mix("read-on-under");
+    let memory = Memory::default();
+    let store = opened(&memory, u64::MAX);
+    now(render_over(&graph, "f", in_turn(2.0), &store)).expect("a render");
+    now(render_over(&graph, "top", in_turn(0.5), &store)).expect("a render");
+    now(store.persist()).expect("persisted");
+
+    let cold = now(render_over(&graph, "top", in_turn(2.0), &Tier::default()));
+    let next = opened(&memory, u64::MAX);
+    let warm = now(render_over(&graph, "top", in_turn(2.0), &next)).expect("a render");
+    assert_eq!(outcomes(stats(&warm), "f"), [Outcome::Hit]);
+    assert_eq!(warm.work().computed_samples, 12_000, "the rest of `mix`");
+    assert_eq!(bits(&cold.expect("a render")), bits(&warm));
+}
+
 /// A value larger than the store's whole budget is never stored, and the persist counts it.
 #[test]
 fn a_value_past_the_whole_budget_is_refused_and_counted() {

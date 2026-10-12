@@ -1,15 +1,18 @@
 // Concern: the version a render or stream plays, advanced per edit, and its walk to what memory answers | Non-concern: the value graph | IO: (an edit) -> a version; (a root) -> hits; commit, abort
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use sva_ast::{Expr, Graph, Held};
-use sva_formula::Hash;
+use sva_formula::{Hash, NodeId};
 
-use sva_samples::Extent;
+use sva_samples::{Extent, Profile};
 
+use super::end::End;
 use super::terms::{Handle, NOTES, Terms, is_term};
-use super::{RenderConfig, default_end, start_over};
+use super::value_graph::support::Memo;
+use super::{Decided, RenderConfig, default_end, start_over};
 use crate::cache::{Known as Answer, Stored};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::Instances;
@@ -31,6 +34,15 @@ pub(super) struct World {
     /// defines none.
     pub(super) notes: bool,
     replaced: Option<Instances>,
+    bounds: RefCell<Bounds>,
+}
+
+/// What a render found of nodes this version still holds, each a function of its node alone:
+/// its support, and where it ends read open under a profile. A node let go forgets its.
+#[derive(Default)]
+struct Bounds {
+    supports: Memo,
+    ends: HashMap<NodeId, (Profile, End)>,
 }
 
 #[derive(Clone)]
@@ -93,6 +105,31 @@ impl World {
             edits: Vec::new(),
             notes,
             replaced: None,
+            bounds: RefCell::default(),
+        }
+    }
+
+    /// The supports found so far, and where `root` read open under `profile` ends, if found.
+    pub(super) fn bounds(&self, root: NodeId, profile: &Profile) -> Decided {
+        let bounds = self.bounds.borrow();
+        let end = bounds.ends.get(&root).filter(|(under, _)| under == profile);
+        (bounds.supports.clone(), end.map(|(_, end)| *end))
+    }
+
+    /// What a render found, kept for the next.
+    pub(super) fn bound(&self, root: NodeId, profile: &Profile, (found, end): &Decided) {
+        let mut bounds = self.bounds.borrow_mut();
+        bounds.supports.extend(found.clone());
+        if let Some(end) = end {
+            bounds.ends.insert(root, (*profile, *end));
+        }
+    }
+
+    fn unbound(&mut self, freed: &[NodeId]) {
+        let bounds = self.bounds.get_mut();
+        bounds.supports.forget(freed);
+        for id in freed {
+            bounds.ends.remove(id);
         }
     }
 
@@ -232,6 +269,7 @@ impl World {
             root: STREAMED,
             config,
             whole: false,
+            under: false,
         };
         let reached = match self.reach(&walking, Some(&advance), found) {
             Reach::Asks(keys) => return Walked::Asks(keys),
@@ -390,6 +428,7 @@ impl World {
         }
         self.typing.hide(removed.iter().cloned());
         let freed = self.typing.commit(&self.instances);
+        self.unbound(&freed);
         self.known.extend(found);
         for path in &removed {
             self.known.remove(path);
@@ -404,6 +443,7 @@ impl World {
     /// Everything since the last commit undone; the draft typing's ids.
     pub(super) fn abort(&mut self) -> Vec<sva_formula::NodeId> {
         let freed = self.typing.abort();
+        self.unbound(&freed);
         self.instances.abort();
         if let Some(old) = self.replaced.take() {
             self.instances = old;
@@ -421,6 +461,9 @@ pub(super) struct Walking<'w> {
     pub(super) config: &'w RenderConfig,
     /// A render's: every node from the root looked up anew, the root answering over its range.
     pub(super) whole: bool,
+    /// From what the root reads down, the root itself never looked up: under a node memory
+    /// answered short of what is asked.
+    pub(super) under: bool,
 }
 
 pub(super) struct Reached {
@@ -498,7 +541,14 @@ impl Walk<'_> {
         let (mut visited, mut asks) = (BTreeSet::new(), Vec::new());
         let mut held: BTreeMap<String, Arc<Stored>> = BTreeMap::new();
         let (config, whole) = (self.walking.config, self.walking.whole);
-        let mut stack = vec![Visit(self.walking.root.to_string(), false)];
+        let mut stack = match self.walking.under {
+            false => vec![Visit(self.walking.root.to_string(), false)],
+            true => {
+                visited.insert(self.walking.root.to_string());
+                let reads = self.world.instances.deps(self.walking.root).iter().rev();
+                reads.map(|read| Visit(read.clone(), false)).collect()
+            }
+        };
         while let Some(Visit(path, anew)) = stack.pop() {
             let mut known = self.known(&path);
             let pinned = known.pinned || self.pins.holds(&path);

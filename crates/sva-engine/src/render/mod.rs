@@ -30,7 +30,7 @@ use crate::schedule::{self, Schedule};
 use crate::typing::{self, Typing};
 use end::Ending;
 use value_graph::ValueGraph;
-use value_graph::support::Supports;
+use value_graph::support::{Memo, Supports};
 
 /// Where a target is read, in samples from t = 0. Unstated, the root's own support.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -272,7 +272,7 @@ fn planned(
         root,
     } = prepared;
     let config = (config, &mut None, memory);
-    let none = (None, &BTreeMap::new());
+    let none = ((Memo::default(), None), &BTreeMap::new());
     planned_over((graph, target, &instances), (tys, root), config, none)
 }
 
@@ -280,7 +280,7 @@ fn planned_over(
     (graph, target, instances): (&Graph, &str, &instantiate::Instances),
     (tys, root): (Typing, NodeId),
     (config, stand_in, memory): (RenderConfig, &mut Option<world::World>, Memory),
-    (decided, hits): (Option<end::End>, &BTreeMap<NodeId, Arc<Stored>>),
+    (decided, hits): (Decided, &BTreeMap<NodeId, Arc<Stored>>),
 ) -> Result<Render, EngineError> {
     let schedule = schedule::plan(&tys, root, &config.asks);
     let bindings = tys
@@ -331,25 +331,35 @@ pub fn ends(
 }
 
 /// An open render's end, found on what each node computes, never on what memory answers.
+/// `found` are the supports and `end` the end a session found of nodes it still holds.
 pub(crate) fn ended(
     tys: &Typing,
     root: NodeId,
     mut config: RenderConfig,
-) -> (RenderConfig, Option<end::End>) {
+    (mut found, end): Decided,
+) -> (RenderConfig, Decided) {
     if config.range.end.is_some() {
-        return (config, None);
+        return (config, (found, None));
     }
-    let supports = Supports::new(tys);
-    let end = Ending::new(tys, &config.profile, &supports).of(root);
+    let end = end.unwrap_or_else(|| {
+        let supports = Supports::over(tys, Some(&found));
+        let end = Ending::new(tys, &config.profile, &supports).of(root);
+        let more = supports.into_memo();
+        found.extend(more);
+        end
+    });
     config.range.end = default_end(end.support);
-    (config, Some(end))
+    (config, (found, Some(end)))
 }
+
+/// Each support found so far, and where an open render's root ends, once decided.
+pub(crate) type Decided = (Memo, Option<end::End>);
 
 /// A reading of samples needs the range; lines and structure never do.
 /// `decided`: where an open render's root ends, found before it was planned.
 fn ranged(
     held: &mut Render,
-    (decided, hits): (Option<end::End>, &BTreeMap<NodeId, Arc<Stored>>),
+    ((mut found, decided), hits): (Decided, &BTreeMap<NodeId, Arc<Stored>>),
 ) -> Result<(), EngineError> {
     let asked = |of: fn(&Representation) -> bool| {
         held.config.asks.iter().any(|ask| of(&ask.representation))
@@ -365,7 +375,7 @@ fn ranged(
     if !tabled && !envelope && !pitch {
         return Ok(());
     }
-    let supports = Supports::new(&held.tys);
+    let supports = Supports::over(&held.tys, Some(&found));
     let end = match (held.config.range.end, decided) {
         (_, Some(end)) => end,
         (Some(_), None) => Ending::new(&held.tys, &held.config.profile, &supports).exact(held.root),
@@ -390,7 +400,8 @@ fn ranged(
         return Ok(());
     }
     held.range = Some(range?);
-    let found = supports.into_memo();
+    let more = supports.into_memo();
+    found.extend(more);
     let wanted: Vec<NodeId> = held.schedule.wanted.clone();
     let root = (held.root, wanted.as_slice());
     let value_graph = ValueGraph::bounded(&held.tys, root, &held.config.profile, (found, hits))?;

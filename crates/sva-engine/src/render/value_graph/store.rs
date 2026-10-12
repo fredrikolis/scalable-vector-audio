@@ -32,6 +32,8 @@ pub(crate) struct Place {
     pub(crate) offer: Option<Offer>,
     /// Whether memory was told of that node.
     pub(crate) told: bool,
+    /// Each value whose node answers with these samples, moved.
+    pub(crate) movers: Vec<usize>,
     /// The sample the change that made it landed at.
     pub(crate) landed: i64,
 }
@@ -345,6 +347,13 @@ impl ValueGraph {
         let (value, place) = self.values.placed(at);
         let kept = samples(value, place, computed);
         let (slot, label) = (place.slot, value.label.clone());
+        let movers = match kept.is_empty() {
+            true => Vec::new(),
+            false => place.movers.clone(),
+        };
+        for mover in &movers {
+            self.told(*mover, (memory, &mut *seen));
+        }
         let mut node = self.node(at, !kept.is_empty());
         for (key, payload) in kept {
             let keep = Keep {
@@ -365,15 +374,36 @@ impl ValueGraph {
             };
             memory.keep(key, keep, seen);
         }
+        for mover in movers.into_iter().filter(|mover| *mover != at) {
+            self.told(mover, (memory, &mut *seen));
+        }
     }
 
-    /// The node to tell memory of now: with each keep of its own samples, else once.
+    /// Told before a keep, so memory writes back what it lets go; after, so it answers.
+    fn told(&mut self, at: usize, (memory, seen): (&Memory, &mut Recording)) {
+        if !self.values.holds(at) {
+            return;
+        }
+        let slot = self.values.place(at).slot;
+        if let Some(node) = self.node(at, true) {
+            let key = node.0.key;
+            let keep = Keep {
+                samples: None,
+                label: None,
+                slot,
+                node: Some(node),
+            };
+            memory.keep(key, keep, seen);
+        }
+    }
+
+    /// The node to tell memory of now: with each keep of its samples, else once.
     fn node(&mut self, at: usize, keeping: bool) -> Option<(Stored, Offered, Facts)> {
         let label = self.label(at);
         let value = &self.values[at];
         let place = self.values.place(at);
         let offer = place.offer.as_ref()?;
-        if !value.pure || (place.told && !(keeping && offer.offered == Some(Offered::Own))) {
+        if !value.pure || (place.told && !(keeping && offer.offered.is_some())) {
             return None;
         }
         let offered = match &offer.offered {
@@ -415,7 +445,10 @@ impl ValueGraph {
         let root = live(self.root);
         let mut named: BTreeMap<usize, Stored> = BTreeMap::new();
         for (id, at) in self.nodes.clone() {
-            let at = live(at);
+            let (id, at) = match live(at) {
+                read_on if read_on != at => (self.answered(tys, at), read_on),
+                _ => (id, at),
+            };
             if named.contains_key(&at) {
                 continue;
             }
@@ -424,6 +457,9 @@ impl ValueGraph {
             }
         }
         let feet = self.values.feet();
+        for at in self.values.ordered().collect::<Vec<_>>() {
+            self.values.place_mut(at).movers.clear();
+        }
         for (at, stored) in named.iter() {
             let foot = feet.get(at).copied();
             let moved = foot.and_then(|(foot, by)| {
@@ -454,6 +490,10 @@ impl ValueGraph {
                 over,
                 facts,
             };
+            if matches!(offer.offered, Some(Offered::Moves { .. })) {
+                let (held, _) = foot.unwrap_or((*at, 0));
+                self.values.place_mut(held).movers.push(*at);
+            }
             self.values.place_mut(*at).offer = Some(offer);
         }
     }
