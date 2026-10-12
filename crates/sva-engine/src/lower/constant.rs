@@ -102,6 +102,28 @@ pub fn swamped(body: &Body, reach: f64) -> Option<f64> {
     (sum.is_infinite() && reached.is_some_and(|r| r < f64::MAX / 4.0)).then_some(sum)
 }
 
+/// The double a two-operand sum or product of reals is in every arithmetic. Not zero (no
+/// atom; a written 0 is one), two negatives' product (imaginary -0) or a quotient.
+pub fn plain(body: &Body) -> Option<f64> {
+    plain_or_zero(body).filter(|v| *v != 0.0)
+}
+
+fn plain_or_zero(body: &Body) -> Option<f64> {
+    let pair = |parts: &[Part]| match parts {
+        [a, b] => Some((plain_or_zero(&a.body)?, plain_or_zero(&b.body)?)),
+        _ => None,
+    };
+    let held = match body {
+        Body::Const(c) if c.im.to_bits() == 0 => c.re,
+        Body::Add(parts) => pair(parts).map(|(a, b)| a + b)?,
+        Body::Mul(parts) => pair(parts)
+            .filter(|(a, b)| !(*a < 0.0 && *b < 0.0))
+            .map(|(a, b)| a * b)?,
+        _ => return None,
+    };
+    held.is_finite().then_some(held)
+}
+
 pub fn holds_infinite(f: &Body) -> bool {
     matches!(f, Body::Const(c) if !c.is_finite())
         || children(f).iter().any(|p| holds_infinite(&p.body))

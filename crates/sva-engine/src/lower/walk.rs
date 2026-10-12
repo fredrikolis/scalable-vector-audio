@@ -284,6 +284,9 @@ impl Lowering<'_> {
     /// `0*inf` refuse; so is a sum of `inf` and terms finite at every instant, as `t - inf` is
     /// `-inf`. Anything else stays the body it was built as.
     pub(super) fn folded(&self, body: Body, var: Var) -> Result<Piece, EngineError> {
+        if let Some(v) = constant::plain(&body) {
+            return Ok(Piece::ClosedForm(Body::Const(C64::real(v))));
+        }
         let reach = (var == Var::T).then(|| i64::MAX as f64 / self.grid.sr());
         let swamped = || reach.and_then(|reach| constant::swamped(&body, reach));
         match constant::unbounded(&body).or_else(swamped) {

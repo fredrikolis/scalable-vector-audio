@@ -447,6 +447,38 @@ fn reads_of_a_stateful_node_at_any_offset_share_one_value() {
     assert!(!later.is_empty() && later.iter().all(hit), "{later:?}");
 }
 
+/// A sum or product of written numbers is the one double it holds, so a detune of zero up and
+/// down names one value.
+#[test]
+fn spellings_of_one_number_share_a_key() {
+    let dir = dir_of(
+        "spelled",
+        &[
+            ("up", "sin(2*pi*(55*(1 + 0))*t)\n"),
+            ("down", "sin(2*pi*(55*(1 - 0))*t)\n"),
+            ("plain", "sin(2*pi*55*t)\n"),
+            ("sum", "sin(2*pi*(0.1 + 0.2)*t)\n"),
+            ("double", "sin(2*pi*0.30000000000000004*t)\n"),
+            ("near", "sin(2*pi*0.3*t)\n"),
+        ],
+    );
+    let root = |node: &str| {
+        let held = rendered(&dir, node, &Tier::default());
+        let id = held.id(node).expect("the root types");
+        let key = sva_engine::identity(&held.tys, id).expect("an identity");
+        (held.output(id).expect("a buffer").plane(0).to_vec(), key)
+    };
+    let bits = |plane: &[f64]| plane.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let (plain, plain_key) = root("plain");
+    for spelled in ["up", "down"] {
+        let (samples, key) = root(spelled);
+        assert_eq!(key, plain_key, "{spelled}");
+        assert_eq!(bits(&samples), bits(&plain), "{spelled}");
+    }
+    assert_eq!(root("sum").1, root("double").1, "0.1 + 0.2 is its double");
+    assert_ne!(root("sum").1, root("near").1, "which is not 0.3");
+}
+
 /// A series' index is numbered by the typing that lowers it, so a node lowered after another
 /// series holds other numbers; its key is the node's own, wherever it is read from.
 #[test]
