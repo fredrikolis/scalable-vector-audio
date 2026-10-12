@@ -28,6 +28,74 @@ pub struct Lookup {
     pub key: Hash,
     pub kind: PayloadKind,
     pub outcome: Outcome,
+    /// The disk answered it for the call that looked it up.
+    pub from_store: bool,
+}
+
+/// Lookups by what each came to. An extended value was found short and written again, so it is
+/// both a miss and new.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tally {
+    pub hit: usize,
+    /// The hits the disk answered; the rest memory held.
+    pub from_store: usize,
+    pub miss: usize,
+    pub prefix: usize,
+    pub new: usize,
+    pub reused: usize,
+}
+
+impl Tally {
+    pub fn of<'l>(lookups: impl IntoIterator<Item = &'l Lookup>) -> Tally {
+        let mut tally = Tally::default();
+        for lookup in lookups {
+            tally = tally.plus(Tally::one(lookup));
+        }
+        tally
+    }
+
+    fn one(lookup: &Lookup) -> Tally {
+        let outcome = lookup.outcome;
+        let is = |held: bool| usize::from(held);
+        Tally {
+            hit: is(outcome == Outcome::Hit),
+            from_store: is(outcome == Outcome::Hit && lookup.from_store),
+            prefix: is(outcome == Outcome::Prefix),
+            reused: is(outcome == Outcome::Reused),
+            miss: is(!matches!(
+                outcome,
+                Outcome::Hit | Outcome::Prefix | Outcome::Reused
+            )),
+            new: is(matches!(
+                outcome,
+                Outcome::ComputedStored | Outcome::ComputedReplaced | Outcome::Extended
+            )),
+        }
+    }
+
+    pub fn looked(&self) -> usize {
+        self.hit + self.miss + self.prefix
+    }
+
+    pub fn plus(self, more: Tally) -> Tally {
+        self.each(more, usize::wrapping_add)
+    }
+
+    /// Wrapping, so a tally that fell meanwhile adds back as the fall.
+    pub fn minus(self, less: Tally) -> Tally {
+        self.each(less, usize::wrapping_sub)
+    }
+
+    fn each(self, other: Tally, by: fn(usize, usize) -> usize) -> Tally {
+        Tally {
+            hit: by(self.hit, other.hit),
+            from_store: by(self.from_store, other.from_store),
+            miss: by(self.miss, other.miss),
+            prefix: by(self.prefix, other.prefix),
+            new: by(self.new, other.new),
+            reused: by(self.reused, other.reused),
+        }
+    }
 }
 
 /// Every lookup in order, or a stream's latest, and memory as the render left it.
@@ -84,6 +152,10 @@ impl CacheStats {
         self.count(|o| o == Outcome::Reused)
     }
 
+    pub fn tally(&self) -> Tally {
+        Tally::of(&self.lookups)
+    }
+
     fn count(&self, of: impl Fn(Outcome) -> bool) -> usize {
         self.lookups.iter().filter(|l| of(l.outcome)).count()
     }
@@ -94,6 +166,7 @@ pub(crate) struct Recording {
     since: Counters,
     failures: u64,
     lookups: Recent<Lookup>,
+    shed: Tally,
     reached: Option<Vec<(i64, usize)>>,
     /// Each key's latest lookup still held, and the change that made it.
     looked: HashMap<Hash, (u64, usize)>,
@@ -106,6 +179,7 @@ impl Recording {
             since: memory.counters(),
             failures: memory.failures().0,
             lookups: Recent::keeping(usize::MAX),
+            shed: Tally::default(),
             reached: Some(Vec::new()),
             looked: HashMap::new(),
             change: 0,
@@ -159,8 +233,25 @@ impl Recording {
         memory.counters().since(self.since)
     }
 
+    pub(crate) fn tally(&self) -> Tally {
+        self.shed.plus(Tally::of(self.lookups.iter()))
+    }
+
+    fn made(&mut self, lookup: Lookup) -> usize {
+        let (at, shed) = self.lookups.pushed(lookup);
+        if let Some(shed) = shed {
+            self.shed = self.shed.plus(Tally::one(&shed));
+        }
+        at
+    }
+
     /// Asked again in one change, a key's lookup is settled by what any answer found.
-    pub(super) fn answered(&mut self, key: Hash, node: &str, kind: PayloadKind, outcome: Outcome) {
+    pub(super) fn answered(
+        &mut self,
+        (key, node): (Hash, &str),
+        kind: PayloadKind,
+        (outcome, from_store): (Outcome, bool),
+    ) {
         let now = self.change;
         let held = self.looked(key).filter(|(change, _)| *change == now);
         if let Some(lookup) = held.and_then(|(_, at)| self.lookups.get_mut(at)) {
@@ -171,7 +262,7 @@ impl Recording {
             };
             lookup.kind = kind;
             if found(outcome) > found(lookup.outcome) {
-                lookup.outcome = outcome;
+                (lookup.outcome, lookup.from_store) = (outcome, from_store);
             }
             return;
         }
@@ -180,8 +271,9 @@ impl Recording {
             key,
             kind,
             outcome,
+            from_store,
         };
-        let at = self.lookups.push(lookup);
+        let at = self.made(lookup);
         self.looked.insert(key, (self.change, at));
     }
 
@@ -204,11 +296,12 @@ impl Recording {
         if self.looked(key).is_none() {
             return;
         }
-        self.lookups.push(Lookup {
+        self.made(Lookup {
             node: node.to_string(),
             key,
             kind,
             outcome: Outcome::Reused,
+            from_store: false,
         });
     }
 

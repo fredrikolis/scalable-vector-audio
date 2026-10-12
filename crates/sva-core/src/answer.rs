@@ -4,9 +4,9 @@ use std::path::Path;
 
 use sva_engine::{
     Alias, AliasBand, Answer, Arguments, BandCrest, BandTrack, Bands, Binding, Buffer, CacheStats,
-    Counters, Crest, CuttingBelowSilenceThreshold, Detail, EnvelopeFrame, FormantFrame, Label,
-    LedgerEntry, Loudness, LoudnessFrame, Onsets, Outcome, Output, PayloadKind, Source,
-    SpectralSum, Spectrum, StereoFrame, StereoImage, Work,
+    Counters, Crest, CuttingBelowSilenceThreshold, Detail, EngineStats, EnvelopeFrame,
+    FormantFrame, Kind, Label, LedgerEntry, Loudness, LoudnessFrame, Onsets, Outcome, Output,
+    PayloadKind, Phase, Source, SpectralSum, Spectrum, StereoFrame, StereoImage, Work, Worked,
 };
 
 use sva_engine::harmony::Framing;
@@ -1070,6 +1070,69 @@ pub fn counters_json(counters: &Counters) -> String {
         counters.evictions(),
         counters.probation_evictions,
         counters.protected_evictions
+    )
+}
+
+fn worked_json(worked: &Worked) -> String {
+    let lookups = worked.lookups;
+    format!(
+        "\"samples\": {}, \"computed_samples\": {}, \"lookups\": {{ \"hit\": {}, \
+         \"from_memory\": {}, \"from_store\": {}, \"prefix\": {}, \"miss\": {}, \"new\": {}, \
+         \"reused\": {} }}, \"tier\": {}",
+        worked.samples,
+        worked.computed_samples,
+        lookups.hit,
+        lookups.hit - lookups.from_store,
+        lookups.from_store,
+        lookups.prefix,
+        lookups.miss,
+        lookups.new,
+        lookups.reused,
+        counters_json(&worked.tier)
+    )
+}
+
+/// One report of the engine-stats subscription, as `sva-wasm` declares `EngineStats`.
+pub fn engine_stats_json(stats: &EngineStats) -> String {
+    let call = stats.call.as_ref().map_or("null".to_string(), |call| {
+        let kind = match call.kind {
+            Kind::Render => "render",
+            Kind::Stream => "stream",
+            Kind::Edit => "edit",
+            Kind::Persist => "persist",
+        };
+        let phase = match call.phase {
+            Phase::Parsing => "parsing",
+            Phase::Typing => "typing",
+            Phase::LookingUp => "looking_up",
+            Phase::Planning => "planning",
+            Phase::Fetching => "fetching",
+            Phase::Delivering => "delivering",
+            Phase::Finishing => "finishing",
+            Phase::Storing => "storing",
+            Phase::Done => "done",
+            Phase::Failed => "failed",
+            Phase::Abandoned => "abandoned",
+        };
+        let total = call
+            .total_samples
+            .map_or("null".to_string(), |total| total.to_string());
+        format!(
+            "{{ \"id\": {}, \"kind\": \"{kind}\", \"target\": \"{}\", \"phase\": \"{phase}\", \
+             \"total_samples\": {total}, {} }}",
+            call.id,
+            escape(&call.target),
+            worked_json(&call.counts)
+        )
+    });
+    let state = match stats.working {
+        0 => "idle",
+        _ => "working",
+    };
+    format!(
+        "{{ \"state\": \"{state}\", \"working\": {}, \"call\": {call}, \"totals\": {{ {} }} }}",
+        stats.working,
+        worked_json(&stats.totals)
     )
 }
 

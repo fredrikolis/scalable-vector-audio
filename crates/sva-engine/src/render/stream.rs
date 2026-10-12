@@ -16,7 +16,9 @@ use super::value_graph::support::Supports;
 use super::value_graph::{Past, ValueGraph};
 use super::world::{Plan, Root, STREAMED, Walked, Wanted, World};
 use super::{Ends, RenderConfig, range_over};
-use crate::cache::{Backend, CacheStats, Counters, Memory, Recording, Stored, Tier};
+use crate::cache::{
+    Backend, CacheStats, Call, Counters, Kind, Memory, Phase, Recording, Stored, Tier,
+};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::recent::Recent;
 
@@ -59,6 +61,7 @@ pub struct Stream {
     late: usize,
     built: Built,
     demands: usize,
+    call: Call,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -95,6 +98,19 @@ impl Stream {
         config: StreamConfig,
         tier: &Tier<B>,
     ) -> Result<Stream, EngineError> {
+        let call = tier.call(Kind::Stream, STREAMED, Phase::Typing);
+        Stream::open_called(graph, target, config, tier, call).await
+    }
+
+    /// `open` reporting as `call`, one its caller began: every read reports under it.
+    pub async fn open_called<B: Backend>(
+        graph: &Graph,
+        target: &Expr,
+        config: StreamConfig,
+        tier: &Tier<B>,
+        call: Call,
+    ) -> Result<Stream, EngineError> {
+        call.phase(Phase::Typing);
         let render = blocked(&config)?.render.clone();
         if graph.defines(STREAMED) {
             return Err(refusal(format!(
@@ -126,6 +142,7 @@ impl Stream {
             built: Built::default(),
             demands: 0,
             config,
+            call,
         };
         let opening = Prospect {
             target: target.clone(),
@@ -141,8 +158,14 @@ impl Stream {
         loop {
             match stream.attempt(&opening, &mut local, (tier.memory(), round))? {
                 Attempt::Landed(_) => break,
-                Attempt::Asks(keys) => local.look(keys, tier, round).await,
-                Attempt::Reads(wants) => local.read(wants, tier).await,
+                Attempt::Asks(keys) => {
+                    stream.call.phase(Phase::LookingUp);
+                    local.look(keys, tier, round).await
+                }
+                Attempt::Reads(wants) => {
+                    stream.call.phase(Phase::Fetching);
+                    local.read(wants, tier).await
+                }
                 Attempt::Moved => unreachable!("nothing plays a stream before it opens"),
             }
         }
@@ -154,7 +177,21 @@ impl Stream {
             }
             needs = fetched.left;
         }
+        stream.call.rest();
+        stream.delivered();
         Ok(stream)
+    }
+
+    /// Where it stands, told to its call's subscriber; its total is unknown while its end is.
+    fn delivered(&self) {
+        let driver = &self.driver;
+        let last = driver.end().unwrap_or(driver.last());
+        let total = (last != i64::MAX).then(|| (last - driver.start) as u64);
+        let every = u64::from(self.config.render.rate / 10);
+        let samples = (driver.at - driver.start) as u64;
+        self.call.delivered((samples, total, every), || {
+            (driver.work.computed_samples, driver.recording.tally())
+        });
     }
 
     pub fn graph(&self) -> &Graph {
@@ -452,6 +489,7 @@ impl Stream {
         self.reads_on(n)?;
         let block = self.driver.read(n)?;
         self.retire_terms_below_silence_threshold();
+        self.delivered();
         Ok(block.map(|b| widened(b, self.width)))
     }
 
@@ -737,8 +775,22 @@ impl Local {
 /// stream changed under it.
 pub async fn change<E: From<EngineError>, B: Backend>(
     stream: &RefCell<Stream>,
-    mut build: impl FnMut(&Stream) -> Result<Change, E>,
+    build: impl FnMut(&Stream) -> Result<Change, E>,
     tier: &Tier<B>,
+) -> Result<Changed, E> {
+    let target = stream.borrow().call.target().to_string();
+    let call = tier.call(Kind::Edit, &target, Phase::Typing);
+    let changed = changing(stream, build, (tier, &call)).await;
+    if changed.is_ok() {
+        call.end(Phase::Done);
+    }
+    changed
+}
+
+async fn changing<E: From<EngineError>, B: Backend>(
+    stream: &RefCell<Stream>,
+    mut build: impl FnMut(&Stream) -> Result<Change, E>,
+    (tier, call): (&Tier<B>, &Call),
 ) -> Result<Changed, E> {
     let mut local = Local {
         issued: stream.borrow().driver.at,
@@ -764,8 +816,14 @@ pub async fn change<E: From<EngineError>, B: Backend>(
             match attempt {
                 Attempt::Landed(answer) => return Ok(answer),
                 Attempt::Moved => break,
-                Attempt::Asks(keys) => local.look(keys, tier, round).await,
-                Attempt::Reads(wants) => local.read(wants, tier).await,
+                Attempt::Asks(keys) => {
+                    call.phase(Phase::LookingUp);
+                    local.look(keys, tier, round).await
+                }
+                Attempt::Reads(wants) => {
+                    call.phase(Phase::Fetching);
+                    local.read(wants, tier).await
+                }
             }
         }
     }

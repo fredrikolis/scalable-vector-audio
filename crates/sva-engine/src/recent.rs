@@ -20,12 +20,16 @@ impl<T> Recent<T> {
 
     /// Its place among every entry made.
     pub(crate) fn push(&mut self, item: T) -> usize {
+        self.pushed(item).0
+    }
+
+    pub(crate) fn pushed(&mut self, item: T) -> (usize, Option<T>) {
         self.items.push_back(item);
-        if self.items.len() > self.kept {
-            self.items.pop_front();
-            self.shed += 1;
-        }
-        self.made() - 1
+        let shed = (self.items.len() > self.kept)
+            .then(|| self.items.pop_front())
+            .flatten();
+        self.shed += usize::from(shed.is_some());
+        (self.made() - 1, shed)
     }
 
     /// `None` where the entry at `at` was shed.

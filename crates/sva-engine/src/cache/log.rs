@@ -3,56 +3,13 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use super::{CacheStats, Lookup, Outcome};
+use super::{CacheStats, Lookup, Tally};
 
-#[derive(Default)]
-struct Tally {
-    hit: usize,
-    miss: usize,
-    prefix: usize,
-    new: usize,
-    reused: usize,
-}
-
-impl Tally {
-    fn of<'l>(lookups: impl IntoIterator<Item = &'l Lookup>) -> Tally {
-        let mut tally = Tally::default();
-        for lookup in lookups {
-            tally.add(lookup);
-        }
-        tally
-    }
-
-    /// An extended value was found short and written again, so it is both a miss and new.
-    fn add(&mut self, lookup: &Lookup) {
-        let outcome = lookup.outcome;
-        match outcome {
-            Outcome::Hit => self.hit += 1,
-            Outcome::Prefix => self.prefix += 1,
-            Outcome::Reused => self.reused += 1,
-            _ => self.miss += 1,
-        }
-        if matches!(
-            outcome,
-            Outcome::ComputedStored | Outcome::ComputedReplaced | Outcome::Extended
-        ) {
-            self.new += 1;
-        }
-    }
-
-    fn looked(&self) -> usize {
-        self.hit + self.miss + self.prefix
-    }
-}
-
-impl std::fmt::Display for Tally {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "hit={} miss={} prefix={} new={} reused={}",
-            self.hit, self.miss, self.prefix, self.new, self.reused
-        )
-    }
+fn line(tally: &Tally) -> String {
+    format!(
+        "hit={} miss={} prefix={} new={} reused={}",
+        tally.hit, tally.miss, tally.prefix, tally.new, tally.reused
+    )
 }
 
 fn percent(part: usize, whole: usize) -> f64 {
@@ -88,20 +45,23 @@ pub fn cache_log(stats: &CacheStats, rate: u32) -> String {
         let tally = Tally::of(&lookups[from..to]);
         (hits, looked) = (hits + tally.hit, looked + tally.looked());
         let cum = percent(hits, looked);
+        let tally = line(&tally);
         let _ = writeln!(out, "sva-cache {label} {tally} cum-hit={cum:.1}%");
         from = to;
     }
-    let mut nodes: BTreeMap<&str, Tally> = BTreeMap::new();
+    let mut nodes: BTreeMap<&str, Vec<&Lookup>> = BTreeMap::new();
     for lookup in lookups {
-        nodes.entry(&lookup.node).or_default().add(lookup);
+        nodes.entry(&lookup.node).or_default().push(lookup);
     }
-    for (node, tally) in &nodes {
+    for (node, lookups) in &nodes {
+        let tally = line(&Tally::of(lookups.iter().copied()));
         let _ = writeln!(out, "sva-cache node {tally} {node}");
     }
     let total = Tally::of(lookups);
     let _ = writeln!(
         out,
-        "sva-cache total {total} hit-rate={:.1}% nodes={} entries={} bytes={}",
+        "sva-cache total {} hit-rate={:.1}% nodes={} entries={} bytes={}",
+        line(&total),
         percent(total.hit, total.looked()),
         nodes.len(),
         stats.entries,

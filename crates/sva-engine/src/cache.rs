@@ -8,17 +8,19 @@ mod persist;
 mod stats;
 mod stored;
 mod tier;
+mod watch;
 
 pub use codec::STORE_FORMAT;
 pub use memory::{Counters, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY};
 pub(crate) use memory::{Facts, Keep, Known, Memory, Offered};
 pub use persist::{Backend, DEFAULT_STORE_BYTES, INDEX_NAME, Persisted, Store};
 pub(crate) use stats::Recording;
-pub use stats::{CacheStats, Lookup, Outcome};
+pub use stats::{CacheStats, Lookup, Outcome, Tally};
 pub use stored::{Cut, Stored};
 pub use sva_formula::Hash;
 pub(crate) use tier::now;
 pub use tier::{FETCH_READS, Nothing, Tier};
+pub use watch::{Call, CallStats, EngineStats, Kind, Phase, Worked};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

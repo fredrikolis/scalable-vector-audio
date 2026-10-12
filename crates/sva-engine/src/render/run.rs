@@ -14,7 +14,7 @@ use super::world::{Reach, Reached, Walking, World};
 use super::{
     Render, RenderConfig, closed, cut_of, driving, dropped, drove, ended, planned_over, told_end,
 };
-use crate::cache::{Backend, Known, Recording, Stored, Tier};
+use crate::cache::{Backend, Call, Kind, Known, Phase, Recording, Stored, Tier};
 use crate::error::EngineError;
 use crate::schedule;
 
@@ -73,8 +73,50 @@ pub async fn render_in<B: Backend>(
     target: &str,
     config: RenderConfig,
     tier: &Tier<B>,
-    (abandon, hear): (&dyn Abandon, Option<&dyn Hear>),
+    hooks: (&dyn Abandon, Option<&dyn Hear>),
 ) -> Result<Render, EngineError> {
+    let call = tier.call(Kind::Render, target, Phase::Typing);
+    render_called(session, graph, target, config, tier, hooks, call).await
+}
+
+/// `render_in` reporting as `call`, one its caller began.
+pub async fn render_called<B: Backend>(
+    session: &mut Session,
+    graph: &Graph,
+    target: &str,
+    config: RenderConfig,
+    tier: &Tier<B>,
+    (abandon, hear): (&dyn Abandon, Option<&dyn Hear>),
+    call: Call,
+) -> Result<Render, EngineError> {
+    let hooks = (abandon, hear, &call);
+    let done = run(session, (graph, target), config, tier, hooks).await;
+    call.end(match &done {
+        Ok(_) => Phase::Done,
+        Err(EngineError::Abandoned) => Phase::Abandoned,
+        Err(_) => Phase::Failed,
+    });
+    done
+}
+
+/// Where `driver` stands, told to `call`'s subscriber once `every` samples passed.
+fn delivered(call: &Call, driver: &super::drive::Driver, every: u64) {
+    let to = driver.end().unwrap_or(driver.at);
+    let last = driver.end().unwrap_or(driver.last());
+    let (samples, total) = ((to - driver.start) as u64, (last - driver.start) as u64);
+    call.delivered((samples, Some(total), every), || {
+        (driver.work.computed_samples, driver.recording.tally())
+    });
+}
+
+async fn run<B: Backend>(
+    session: &mut Session,
+    (graph, target): (&Graph, &str),
+    config: RenderConfig,
+    tier: &Tier<B>,
+    (abandon, hear, call): (&dyn Abandon, Option<&dyn Hear>, &Call),
+) -> Result<Render, EngineError> {
+    call.phase(Phase::Typing);
     let memory = tier.memory();
     let mut recording = Recording::over(memory);
     let Session { own, stand_in } = session;
@@ -88,6 +130,7 @@ pub async fn render_in<B: Backend>(
     let (mut supports, mut end) = world.bounds(id, &profile);
     let known = supports.len();
     let mut told = 0;
+    call.phase(Phase::LookingUp);
     if end.is_none() && config.range.end.is_none() {
         let stored = root_stored(world, &root, &config, (tier, round)).await;
         let stated = stored.and_then(|stored| Some((stored.support, told_end(&stored, &profile)?)));
@@ -106,6 +149,7 @@ pub async fn render_in<B: Backend>(
         (tier, round, &mut recording),
     )
     .await;
+    call.looked(Phase::Planning, || recording.tally());
     let tys = Rc::clone(typed);
     if dropped(&config) && found.held.contains_key(&root) {
         let schedule = schedule::plan(&tys, id, &config.asks);
@@ -145,6 +189,7 @@ pub async fn render_in<B: Backend>(
                     value_graph.took(key, &parts);
                 }
                 needs = fetched.left;
+                call.looked(Phase::Fetching, || recording.tally());
             }
             let short = value_graph.short((value_graph.root, range, value_graph::Past::Held));
             if short.is_empty() {
@@ -176,6 +221,8 @@ pub async fn render_in<B: Backend>(
     let walked = recording.stats(memory);
     match driving(&mut held, (memory, recording))? {
         Some(mut driver) => {
+            let every = u64::from(held.config.rate / 10);
+            delivered(call, &driver, every);
             loop {
                 if abandon.abandoned().await {
                     return Err(EngineError::Abandoned);
@@ -191,7 +238,12 @@ pub async fn render_in<B: Backend>(
                 for (key, parts) in tier.fetch(&needs).await.handed {
                     driver.value_graph.took(key, &parts);
                 }
+                delivered(call, &driver, every);
             }
+            if driver.stop().is_some() {
+                delivered(call, &driver, 0);
+            }
+            call.phase(Phase::Finishing);
             drove(&mut held, driver);
         }
         None => held.cache_stats = Some(walked),

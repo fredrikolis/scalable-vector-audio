@@ -14,8 +14,8 @@ mod tempo;
 mod until;
 
 pub use answer::{
-    Played, Printed, Report, SAMPLE_LIMIT, answer_json, counters_json, label_json, query_data,
-    stats_json, stream_stats_json, value_json, work_json,
+    Played, Printed, Report, SAMPLE_LIMIT, answer_json, counters_json, engine_stats_json,
+    label_json, query_data, stats_json, stream_stats_json, value_json, work_json,
 };
 pub use builtins::{Builtins, Callable, Crossing, builtins, builtins_data};
 pub use cli_error::{CliError, LintViolation, lint_diagnostic};
@@ -36,16 +36,16 @@ use std::path::Path;
 
 use sva_ast::{Dir, Graph, Refusal, Source};
 use sva_engine::{
-    Ask, Change, Changed, DEFAULT_SAMPLE_RATE, EngineError, PSYCHOACOUSTIC_V1, Range, RenderConfig,
-    StreamConfig, render, render_in,
+    Ask, Change, Changed, DEFAULT_SAMPLE_RATE, EngineError, Kind, PSYCHOACOUSTIC_V1, Phase, Range,
+    RenderConfig, StreamConfig, render, render_called,
 };
 
 pub use sva_engine::{Abandon, Handle, Hear, Never, Out, Placed, Session, Stream, Until};
 
 pub use sva_engine::{Answer, Extent, Label, Output, Representation};
 pub use sva_engine::{
-    Backend, CacheStats, Counters, DEFAULT_CACHE_BYTES, DEFAULT_STORE_BYTES, FETCH_READS, Nothing,
-    Persisted, Store, Tier,
+    Backend, CacheStats, Counters, DEFAULT_CACHE_BYTES, DEFAULT_STORE_BYTES, EngineStats,
+    FETCH_READS, Nothing, Persisted, Store, Tier,
 };
 
 pub const ROOT: &str = "master";
@@ -228,16 +228,10 @@ pub async fn execute_over<B: Backend>(
     tier: &Tier<B>,
     session: &mut Session,
 ) -> Result<Rendered, CliError> {
+    let call = tier.call(Kind::Render, job.target, Phase::Parsing);
     let (graph, config) = settle(&job)?;
-    let render = render_in(
-        session,
-        &graph,
-        PROBE,
-        config,
-        tier,
-        (job.abandon, job.hear),
-    )
-    .await;
+    let hooks = (job.abandon, job.hear);
+    let render = render_called(session, &graph, PROBE, config, tier, hooks, call).await;
     rendered(&job, graph, render)
 }
 
@@ -275,6 +269,7 @@ pub async fn stream<B: Backend>(
     (block, channels): (usize, Option<usize>),
     tier: &Tier<B>,
 ) -> Result<Stream, CliError> {
+    let call = tier.call(Kind::Stream, job.target, Phase::Parsing);
     let (graph, config) = settle(job)?;
     let target = graph
         .expr(PROBE)
@@ -285,7 +280,7 @@ pub async fn stream<B: Backend>(
         channels,
         render: config,
     };
-    Stream::open(&graph, &target, config, tier)
+    Stream::open_called(&graph, &target, config, tier, call)
         .await
         .map_err(|e| CliError::Engine(as_written(e, job.target)))
 }

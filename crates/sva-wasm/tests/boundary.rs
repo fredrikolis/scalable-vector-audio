@@ -2046,3 +2046,238 @@ fn a_signal_that_is_no_abort_signal_refuses() {
         Some("validation_error")
     );
 }
+
+/// Every report a subscription to `held` hears from here on.
+fn subscribed(held: &Composition) -> js_sys::Array {
+    let heard = js_sys::Array::new();
+    let push = js_sys::Function::new_with_args("stats", "this.push(stats)");
+    held.subscribe(push.bind0(&heard));
+    heard
+}
+
+fn count(of: &JsValue, path: &[&str]) -> f64 {
+    let at = path.iter().fold(of.clone(), |at, name| field(&at, name));
+    at.as_f64()
+        .unwrap_or_else(|| unreachable!("{path:?} is a number in {}", as_text(of)))
+}
+
+/// Two seconds of `@master` heard through `heard`: the reports of its one call, held to what a
+/// subscriber may draw from them and to what the finished render states of itself. Its last.
+async fn reported(held: &Composition, heard: &js_sys::Array) -> JsValue {
+    let from = heard.length();
+    let render = held
+        .render("@master([0, 2s])", None, options(&[]))
+        .await
+        .unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)));
+    let reports: Vec<JsValue> = heard.iter().skip(from as usize).collect();
+    let (first, last) = (&reports[0], &reports[reports.len() - 1]);
+    let all = as_text(heard);
+    assert_eq!(
+        field(first, "state").as_string().as_deref(),
+        Some("working")
+    );
+    assert_eq!(field(last, "state").as_string().as_deref(), Some("idle"));
+    assert_eq!(count(last, &["working"]), 0.0);
+    let call = |report: &JsValue| field(report, "call");
+    let text = |of: &JsValue, name: &str| field(of, name).as_string().unwrap_or_default();
+    assert_eq!(text(&call(first), "phase"), "parsing", "{all}");
+    assert_eq!(text(&call(last), "phase"), "done", "{all}");
+    assert_eq!(text(&call(last), "kind"), "render");
+    assert_eq!(text(&call(last), "target"), "@master([0, 2s])");
+    let mut at = 0.0;
+    let mut delivering = 0;
+    for report in &reports {
+        let call = call(report);
+        assert_eq!(
+            count(&call, &["id"]),
+            count(first, &["call", "id"]),
+            "{all}"
+        );
+        let samples = count(&call, &["samples"]);
+        assert!(samples >= at, "samples fell: {all}");
+        at = samples;
+        match text(&call, "phase").as_str() {
+            "delivering" => {
+                delivering += 1;
+                assert_eq!(count(&call, &["total_samples"]), 16000.0, "{all}");
+            }
+            "parsing" | "typing" | "looking_up" => {
+                assert!(field(&call, "total_samples").is_null(), "{all}");
+            }
+            _ => {}
+        }
+    }
+    assert!(delivering > 2, "progress arrives while it delivers: {all}");
+    let done = call(last);
+    assert_eq!(count(&done, &["samples"]), 16000.0, "{all}");
+    assert_eq!(count(&done, &["total_samples"]), 16000.0, "{all}");
+
+    let stats = render.stats().unwrap_or_else(|_| unreachable!("stats"));
+    let work = render.work().unwrap_or_else(|_| unreachable!("work"));
+    let state = format!("{} against {}", as_text(&done), as_text(&stats));
+    let lookups = |name: &str| count(&done, &["lookups", name]);
+    let ended = |name: &str| count(&stats, &[name]);
+    assert_eq!(
+        count(&done, &["computed_samples"]),
+        count(&work, &["computed_samples"])
+    );
+    assert_eq!(lookups("hit"), ended("hits"), "{state}");
+    assert_eq!(
+        lookups("from_memory") + lookups("from_store"),
+        ended("hits")
+    );
+    assert_eq!(lookups("miss") + lookups("prefix"), ended("computed"));
+    let new = ended("stored") + ended("replaced") + ended("extended");
+    assert_eq!(lookups("new"), new, "{state}");
+    assert_eq!(lookups("reused"), ended("reused"), "{state}");
+    for name in [
+        "disk_lookups",
+        "disk_reads",
+        "disk_read_bytes",
+        "promotions",
+    ] {
+        let told = count(&done, &["tier", name]);
+        assert_eq!(told, count(&stats, &["tier", name]), "{name}: {state}");
+    }
+    last.clone()
+}
+
+#[wasm_bindgen_test]
+async fn a_subscriber_hears_each_render_work_then_rest_with_the_counts_it_ends_at() {
+    let dir = fake_directory();
+    let cold = over_store(&dir).await;
+    let heard = subscribed(&cold);
+    let opening = heard.get(0);
+    assert_eq!(heard.length(), 1, "a subscription is answered at once");
+    assert_eq!(
+        field(&opening, "state").as_string().as_deref(),
+        Some("idle")
+    );
+    assert!(field(&opening, "call").is_null());
+
+    let computed = reported(&cold, &heard).await;
+    let of = |report: &JsValue, path: &[&str]| count(report, path);
+    assert!(of(&computed, &["call", "lookups", "miss"]) > 0.0);
+    assert_eq!(of(&computed, &["call", "lookups", "hit"]), 0.0);
+    assert!(of(&computed, &["call", "computed_samples"]) >= 16000.0);
+
+    let before = heard.length();
+    persisted(&cold).await;
+    let storing: Vec<JsValue> = heard.iter().skip(before as usize).collect();
+    let phases: Vec<String> = storing
+        .iter()
+        .filter_map(|report| field(&field(report, "call"), "phase").as_string())
+        .collect();
+    assert_eq!(phases, ["storing", "done"], "{}", as_text(&heard));
+
+    let warm = over_store(&dir).await;
+    let heard = subscribed(&warm);
+    let stored = reported(&warm, &heard).await;
+    let state = as_text(&stored);
+    assert!(
+        of(&stored, &["call", "lookups", "from_store"]) > 0.0,
+        "{state}"
+    );
+    assert_eq!(
+        of(&stored, &["call", "lookups", "from_memory"]),
+        0.0,
+        "{state}"
+    );
+    assert_eq!(of(&stored, &["call", "computed_samples"]), 0.0, "{state}");
+    assert!(
+        of(&stored, &["call", "tier", "disk_read_bytes"]) > 0.0,
+        "{state}"
+    );
+
+    let resident = reported(&warm, &heard).await;
+    let state = as_text(&resident);
+    assert!(
+        of(&resident, &["call", "lookups", "from_memory"]) > 0.0,
+        "{state}"
+    );
+    assert_eq!(
+        of(&resident, &["call", "lookups", "from_store"]),
+        0.0,
+        "{state}"
+    );
+    assert_eq!(of(&resident, &["call", "computed_samples"]), 0.0, "{state}");
+    assert_eq!(
+        of(&resident, &["call", "tier", "disk_reads"]),
+        0.0,
+        "{state}"
+    );
+    assert_eq!(of(&resident, &["totals", "samples"]), 32000.0, "{state}");
+    let both =
+        of(&stored, &["call", "lookups", "hit"]) + of(&resident, &["call", "lookups", "hit"]);
+    assert_eq!(
+        of(&resident, &["totals", "lookups", "hit"]),
+        both,
+        "{state}"
+    );
+
+    warm.unsubscribe();
+    let before = heard.length();
+    stored_render(&warm).await;
+    assert_eq!(heard.length(), before, "unsubscribed, it hears no more");
+}
+
+/// Each report from `from` on, as `kind phase state`.
+fn told(heard: &js_sys::Array, from: u32) -> Vec<String> {
+    let text = |of: &JsValue, name: &str| field(of, name).as_string().unwrap_or_default();
+    let reports = heard.iter().skip(from as usize);
+    let line = |report: JsValue| {
+        let call = field(&report, "call");
+        let (kind, phase) = (text(&call, "kind"), text(&call, "phase"));
+        format!("{kind} {phase} {}", text(&report, "state"))
+    };
+    reports.map(line).collect()
+}
+
+#[wasm_bindgen_test]
+async fn a_subscriber_hears_a_stream_its_edit_and_a_render_that_fails_or_is_abandoned() {
+    let mut held = page();
+    filtered(&mut held);
+    let heard = subscribed(&held);
+
+    let stream = opened(&held, "partials/one");
+    let opening = told(&heard, 1);
+    assert_eq!(opening[0], "stream parsing working", "{opening:?}");
+    assert_eq!(opening[opening.len() - 1], "stream delivering idle");
+    let open = field(&heard.get(heard.length() - 1), "call");
+    assert_eq!(count(&open, &["total_samples"]), 32000.0);
+
+    blocks(&stream, 8);
+    let read = field(&heard.get(heard.length() - 1), "call");
+    let state = as_text(&read);
+    assert_eq!(count(&read, &["id"]), count(&open, &["id"]), "{state}");
+    assert!(count(&read, &["samples"]) > 0.0, "{state}");
+    assert!(count(&read, &["computed_samples"]) > 0.0, "{state}");
+
+    let before = heard.length();
+    now(stream.edit("@partials/one*0.5")).unwrap_or_else(|_| unreachable!("it edits"));
+    let edit = told(&heard, before);
+    assert_eq!(edit[0], "edit typing working", "{edit:?}");
+    assert_eq!(edit[edit.len() - 1], "edit done idle", "{edit:?}");
+    let edited = field(&heard.get(before), "call");
+    assert!(count(&edited, &["id"]) > count(&open, &["id"]));
+
+    let before = heard.length();
+    drop(stream);
+    assert_eq!(told(&heard, before), ["stream done idle"]);
+
+    assert!(held.rendered("@unreached", None, options(&[])).is_err());
+    let failed = told(&heard, before + 1);
+    assert_eq!(failed[failed.len() - 1], "render failed idle", "{failed:?}");
+
+    let before = heard.length();
+    let signal = aborting_after(2);
+    assert!(
+        work_of(&held, options(&[("signal", signal)]))
+            .await
+            .is_err()
+    );
+    let stopped = told(&heard, before);
+    let last = &stopped[stopped.len() - 1];
+    assert_eq!(last, "render abandoned idle", "{stopped:?}");
+    assert!(stopped.contains(&"render delivering working".to_string()));
+}

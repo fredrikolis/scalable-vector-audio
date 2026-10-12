@@ -207,6 +207,7 @@ struct State {
     entries: HashMap<Hash, Held>,
     slots: HashMap<Hash, Hash>,
     misses: HashMap<Hash, u64>,
+    found: HashMap<Hash, u64>,
     pending: Vec<Writeback>,
     bytes: u64,
     max_bytes: u64,
@@ -961,6 +962,7 @@ impl Memory {
         state.round += 1;
         let round = state.round;
         state.misses.retain(|_, met| *met + 1 >= round);
+        state.found.retain(|_, met| *met + 1 >= round);
         round
     }
 
@@ -1004,8 +1006,9 @@ impl Memory {
             .get(&key)
             .and_then(|held| held.item.payload.as_ref());
         let kind = held.map_or(PayloadKind::Segments, Payload::kind);
+        let from_store = state.found.get(&key) == Some(&round);
         drop(state);
-        seen.answered(key, node, kind, outcome);
+        seen.answered((key, node), kind, (outcome, from_store));
         known
     }
 
@@ -1016,13 +1019,14 @@ impl Memory {
     }
 
     /// A header the disk answered, resident from now on, unless memory took the node meanwhile.
-    pub(crate) fn promote(&self, head: Header) {
+    pub(crate) fn promote(&self, head: Header, round: u64) {
         let mut state = self.locked();
         let (key, read) = (head.stored().key, state.tick());
         if state.node(key).is_some() {
             return;
         }
         state.misses.remove(&key);
+        state.found.insert(key, round);
         state.counters.promotions += 1;
         let node = Node {
             source: Source::Disk {
@@ -1222,7 +1226,7 @@ impl Memory {
             Some(_) => Outcome::Hit,
             None => Outcome::ComputedNotStored,
         };
-        seen.answered(key, node, expected.kind(), outcome);
+        seen.answered((key, node), expected.kind(), (outcome, false));
         entry
     }
 
@@ -1252,7 +1256,7 @@ impl Memory {
             _ => Outcome::Prefix,
         };
         let last = *keys.last().expect("a run of a segment or more");
-        seen.answered(last, node, PayloadKind::Run, outcome);
+        seen.answered((last, node), PayloadKind::Run, (outcome, false));
     }
 
     fn entry(&self, key: Hash, expected: Expected) -> Option<Entry> {

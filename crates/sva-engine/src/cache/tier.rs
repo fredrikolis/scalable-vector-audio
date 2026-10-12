@@ -8,6 +8,7 @@ use sva_samples::{Buffer, Extent};
 
 use super::memory::{Counters, DEFAULT_CACHE_BYTES, Known, Memory};
 use super::persist::{Backend, Persisted, Store};
+use super::watch::{Call, EngineStats, Kind, Phase, Watch};
 
 /// No disk: memory over nothing never waits.
 pub enum Nothing {}
@@ -65,6 +66,7 @@ pub struct Tier<B = Nothing> {
     disk: Option<Store<B>>,
     /// Memory's clock where the disk last heard of its reads.
     reported: AtomicU64,
+    watch: Arc<Watch>,
 }
 
 impl Default for Tier {
@@ -81,19 +83,33 @@ impl Tier {
 
 impl<B: Backend> Tier<B> {
     pub fn alone(max_bytes: u64) -> Tier<B> {
+        Tier::held(Memory::holding(max_bytes), None)
+    }
+
+    pub fn over(disk: Store<B>, max_bytes: u64) -> Tier<B> {
+        Tier::held(Memory::over_disk(max_bytes), Some(disk))
+    }
+
+    fn held(memory: Memory, disk: Option<Store<B>>) -> Tier<B> {
         Tier {
-            memory: Memory::holding(max_bytes),
-            disk: None,
+            watch: Arc::new(Watch::over(memory.clone())),
+            memory,
+            disk,
             reported: AtomicU64::new(0),
         }
     }
 
-    pub fn over(disk: Store<B>, max_bytes: u64) -> Tier<B> {
-        Tier {
-            memory: Memory::over_disk(max_bytes),
-            disk: Some(disk),
-            reported: AtomicU64::new(0),
-        }
+    /// In place of the last subscriber: told at once, then by each call, on its own thread.
+    pub fn subscribe(&self, hears: impl Fn(&EngineStats) + Send + Sync + 'static) {
+        self.watch.subscribe(Arc::new(hears));
+    }
+
+    pub fn unsubscribe(&self) {
+        self.watch.unsubscribe();
+    }
+
+    pub fn call(&self, kind: Kind, target: &str, phase: Phase) -> Call {
+        Call::begin(&self.watch, kind, target, phase)
     }
 
     pub fn disk(&self) -> Option<&Store<B>> {
@@ -121,7 +137,7 @@ impl<B: Backend> Tier<B> {
             None => None,
         };
         match found {
-            Some(head) => self.memory.promote(head),
+            Some(head) => self.memory.promote(head, round),
             None => self.memory.miss(key, round),
         }
     }
@@ -203,6 +219,7 @@ impl<B: Backend> Tier<B> {
         let Some(disk) = &self.disk else {
             return Ok(Persisted::default());
         };
+        let call = self.call(Kind::Persist, "", Phase::Storing);
         let (read, now) = self
             .memory
             .read_since(self.reported.load(Ordering::Relaxed));
@@ -216,6 +233,7 @@ impl<B: Backend> Tier<B> {
         }
         let done = disk.persist().await?;
         self.memory.committed();
+        call.end(Phase::Done);
         Ok(done)
     }
 
