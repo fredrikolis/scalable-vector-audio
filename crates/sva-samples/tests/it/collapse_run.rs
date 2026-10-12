@@ -5,7 +5,7 @@ use std::f64::consts::{FRAC_1_SQRT_2, PI, TAU};
 
 use sva_formula::{Body, Bound, C64, IndexId, Mirror, Part, Run, Series, Unary};
 use sva_samples::PSYCHOACOUSTIC_V1;
-use sva_samples::collapse::run;
+use sva_samples::collapse::run::{self, Width};
 
 const RATE: u32 = 44_100;
 
@@ -252,8 +252,8 @@ fn a_conjugate_mirror_sums_as_its_amplitudes_spelled_out_do() {
     }
 }
 
-#[test]
-fn a_run_summed_at_many_instants_at_once_is_each_summed_alone() {
+/// A deep ladder under each mirror and a ladder of one, with instants out to an hour.
+fn shapes() -> (Vec<(&'static str, Run)>, Vec<f64>) {
     let held = runs("saw", 43.654).remove(0);
     let spelled = Run {
         mirror: Mirror::Held(held.mirrored().expect("a mirror")),
@@ -269,21 +269,48 @@ fn a_run_summed_at_many_instants_at_once_is_each_summed_alone() {
         .flat_map(|(from, to)| instants(from, to))
         .collect();
     assert!(t.len() > 128, "past two whole groups of instants");
-    for (name, r) in [
+    let shapes = vec![
         ("conjugate", held),
         ("held", spelled),
         ("lone", lone),
         ("one line", one),
-    ] {
+    ];
+    (shapes, t)
+}
+
+fn bits(sums: &[C64]) -> Vec<(u64, u64)> {
+    sums.iter()
+        .map(|c| (c.re.to_bits(), c.im.to_bits()))
+        .collect()
+}
+
+#[test]
+fn a_run_summed_at_many_instants_at_once_is_each_summed_alone() {
+    let (shapes, t) = shapes();
+    for (name, r) in shapes {
         let mut together = vec![C64::ZERO; t.len()];
         run::each(&r, &t, &mut together);
-        for (t, together) in t.iter().zip(together) {
-            let alone = run::at(&r, *t);
-            assert_eq!(
-                (together.re.to_bits(), together.im.to_bits()),
-                (alone.re.to_bits(), alone.im.to_bits()),
-                "{name} at {t}"
-            );
+        let alone: Vec<C64> = t.iter().map(|t| run::at(&r, *t)).collect();
+        assert_eq!(bits(&together), bits(&alone), "{name}");
+    }
+}
+
+/// Compares the widths the test machine has: one without AVX2 compares the built width alone.
+#[test]
+fn every_width_this_cpu_runs_sums_a_run_to_the_same_bits() {
+    let (shapes, t) = shapes();
+    let widths = Width::all();
+    eprintln!("widths compared: {widths:?}");
+    assert_eq!(widths[0], Width::BUILT);
+    for (name, r) in shapes {
+        for n in [1, 2, 3, 5, 7, 63, 64, 65, t.len()] {
+            let mut built = vec![C64::ZERO; n];
+            run::each_at(Width::BUILT, &r, &t[..n], &mut built);
+            for width in &widths[1..] {
+                let mut wide = vec![C64::ZERO; n];
+                run::each_at(*width, &r, &t[..n], &mut wide);
+                assert_eq!(bits(&wide), bits(&built), "{name}, {n} instants, {width:?}");
+            }
         }
     }
 }

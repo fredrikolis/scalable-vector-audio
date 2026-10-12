@@ -13,15 +13,52 @@ pub fn at(run: &Run, t: f64) -> C64 {
 
 /// `at` at each of `t`: every instant's sum takes the operations `at` does, in its order.
 pub fn each(run: &Run, t: &[f64], out: &mut [C64]) {
+    each_at(Width::widest(), run, t, out);
+}
+
+pub fn each_at(width: Width, run: &Run, t: &[f64], out: &mut [C64]) {
     for (t, out) in t.chunks(LANES).zip(out.chunks_mut(LANES)) {
-        side_by_side(run, t, out);
+        side_by_side(width, run, t, out);
+    }
+}
+
+/// Instants a ladder instruction steps: an instant's IEEE operations and their order are the
+/// same at every width, none fused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Width(Kind);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// SSE2 on x86-64, SIMD128 on wasm32.
+    Built,
+    #[cfg(target_arch = "x86_64")]
+    Avx2,
+}
+
+impl Width {
+    pub const BUILT: Width = Width(Kind::Built);
+
+    pub fn widest() -> Width {
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx2") {
+            return Width(Kind::Avx2);
+        }
+        Width::BUILT
+    }
+
+    pub fn all() -> Vec<Width> {
+        let mut all = vec![Width::BUILT];
+        if Width::widest() != Width::BUILT {
+            all.push(Width::widest());
+        }
+        all
     }
 }
 
 /// Instants summed side by side: one instant's sum waits on its own last product alone.
 const LANES: usize = 64;
 
-fn side_by_side(run: &Run, t: &[f64], out: &mut [C64]) {
+fn side_by_side(width: Width, run: &Run, t: &[f64], out: &mut [C64]) {
     let n = t.len();
     let (mut rotor, mut z) = ([C64::ZERO; LANES], [C64::ZERO; LANES]);
     for ((rotor, z), t) in rotor.iter_mut().zip(&mut z).zip(t) {
@@ -35,11 +72,11 @@ fn side_by_side(run: &Run, t: &[f64], out: &mut [C64]) {
         };
     }
     let mut up = [C64::ZERO; LANES];
-    horner(&run.amps, &z[..n], &mut up[..n]);
+    horner(width, &run.amps, &z[..n], &mut up[..n]);
     let mut down = [C64::ZERO; LANES];
     if let Mirror::Held(amps) = &run.mirror {
         z.iter_mut().for_each(|z| *z = z.conj());
-        horner(amps, &z[..n], &mut down[..n]);
+        horner(width, amps, &z[..n], &mut down[..n]);
     }
     for (i, out) in out.iter_mut().enumerate() {
         let up = rotor[i] * up[i];
@@ -98,7 +135,24 @@ const STEP_ROTOR: f64 = 24.0 * U;
 
 const PRODUCT_AND_SUM: f64 = (2.236_067_977_499_8 + 1.0) * U;
 
-fn horner(amps: &[C64], z: &[C64], out: &mut [C64]) {
+fn horner(width: Width, amps: &[C64], z: &[C64], out: &mut [C64]) {
+    match width.0 {
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: `widest` builds this kind once the CPU reports AVX2.
+        Kind::Avx2 => unsafe { ladder_avx2(amps, z, out) },
+        Kind::Built => ladder(amps, z, out),
+    }
+}
+
+/// FMA stays off, so no product and sum can fuse.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn ladder_avx2(amps: &[C64], z: &[C64], out: &mut [C64]) {
+    ladder(amps, z, out);
+}
+
+#[inline(always)]
+fn ladder(amps: &[C64], z: &[C64], out: &mut [C64]) {
     let n = z.len();
     let mut rest = amps.iter().rev();
     let last = rest.next().copied().unwrap_or(C64::ZERO);
