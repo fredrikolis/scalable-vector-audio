@@ -441,6 +441,14 @@ impl Col {
         }
     }
 
+    /// `set` for a value no refusal reached.
+    fn clean(&mut self, i: usize, v: C64) {
+        match v.is_finite() {
+            true => self.v[i] = v,
+            false => self.fail(i, INFINITE),
+        }
+    }
+
     fn get(&self, i: usize) -> Result<C64, &CollapseError> {
         match self.err(i) {
             Some(e) => Err(e),
@@ -684,8 +692,11 @@ impl Columns<'_> {
             }
             Op::Run { time, run } => {
                 self.need(*time, a, b);
-                for i in a..b {
-                    out.set(i, Ok(super::run::at(run, self.cols[*time].v[i].re)));
+                let t: Vec<f64> = self.cols[*time].v[a..b].iter().map(|t| t.re).collect();
+                let mut summed = vec![C64::ZERO; b - a];
+                super::run::each(run, &t, &mut summed);
+                for (i, v) in (a..b).zip(summed) {
+                    out.set(i, Ok(v));
                 }
             }
             Op::Bound(k) => out.v[a..b].fill(C64::real(self.bound[*k])),
@@ -699,6 +710,13 @@ impl Columns<'_> {
     }
 
     fn map(&mut self, x: usize, out: &mut Col, (a, b): (usize, usize), f: impl Fn(C64) -> C64) {
+        self.need(x, a, b);
+        if self.cols[x].err.is_empty() {
+            for (i, x) in (a..b).zip(&self.cols[x].v[a..b]) {
+                out.clean(i, f(*x));
+            }
+            return;
+        }
         self.map_or(x, out, (a, b), |x| Ok(f(x)));
     }
 
@@ -738,6 +756,22 @@ impl Columns<'_> {
             while lo < hi && zeroed[hi - 1 - a] {
                 hi -= 1;
             }
+        }
+        // Every lane outside `[lo, hi)` is zeroed, and every factor was evaluated inside it.
+        if parts.iter().all(|p| self.cols[*p].err.is_empty()) {
+            out.v[a..b].fill(C64::ZERO);
+            let mut held = vec![C64::ONE; hi - lo];
+            for p in parts.iter().filter(|_| lo < hi) {
+                for (held, v) in held.iter_mut().zip(&self.cols[*p].v[lo..hi]) {
+                    *held = *held * *v;
+                }
+            }
+            for (i, held) in (lo..hi).zip(held) {
+                if !zeroed[i - a] {
+                    out.clean(i, held);
+                }
+            }
+            return;
         }
         for i in a..b {
             if zeroed[i - a] {

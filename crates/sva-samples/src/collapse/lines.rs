@@ -267,6 +267,19 @@ impl Direct {
         self.level + moving
     }
 
+    /// `at` at each of `t`: every run's real part added in run order, onto the empty sum.
+    pub(crate) fn each(&self, t: &[f64]) -> Vec<f64> {
+        let mut moving = vec![std::iter::empty::<f64>().sum::<f64>(); t.len()];
+        let mut run = vec![C64::ZERO; t.len()];
+        for held in &self.runs {
+            super::run::each(held, t, &mut run);
+            for (moving, run) in moving.iter_mut().zip(&run) {
+                *moving += run.re;
+            }
+        }
+        moving.iter().map(|moving| self.level + moving).collect()
+    }
+
     /// How far `at` sits from the exact sum at any instant.
     pub(crate) fn bound(&self) -> f64 {
         let runs: f64 = self.runs.iter().map(super::run::bound).sum();

@@ -345,25 +345,13 @@ fn values(
 ) -> Result<Vec<f64>, CollapseError> {
     let n = (to - from) as usize;
     Ok(match row {
-        Row::Lines(lanes) => (from..to)
-            .map(|i| {
-                let mut held = 0.0;
-                if let Some(direct) = &lanes[c] {
-                    held += direct.at(grid.instant(i));
-                }
-                held
-            })
-            .collect(),
+        Row::Lines(lanes) => summed(lanes[c].as_ref(), (from, to), grid),
         // Each group's sum from +0, times its factor.
         Row::Grouped(lanes) => {
             let mut out = vec![0.0; n];
             for g in &lanes[c] {
                 let (a, b) = active::meet((from, to), g.live);
-                for m in a..b {
-                    let summed = g
-                        .direct
-                        .as_ref()
-                        .map_or(0.0, |d| 0.0 + d.at(grid.instant(m)));
+                for (m, summed) in (a..b).zip(summed(g.direct.as_ref(), (a, b), grid)) {
                     out[(m - from) as usize] += summed
                         * point::eval_atom_on(&g.factor, grid.instant(m), Some((grid, m)))?.re;
                 }
@@ -410,6 +398,21 @@ fn values(
 
 /// Lanes a written form is evaluated over at once.
 const CHUNK: i64 = 256;
+
+/// A lane's lines summed from +0 at each sample of `[from, to)`.
+fn summed(direct: Option<&Direct>, (from, to): SampleInterval, grid: Grid) -> Vec<f64> {
+    let Some(direct) = direct else {
+        return vec![0.0; (to - from).max(0) as usize];
+    };
+    let mut out = Vec::with_capacity((to - from).max(0) as usize);
+    for at in (from..to).step_by(CHUNK as usize) {
+        let t: Vec<f64> = (at..(at + CHUNK).min(to))
+            .map(|n| grid.instant(n))
+            .collect();
+        out.extend(direct.each(&t).into_iter().map(|v| 0.0 + v));
+    }
+    out
+}
 
 /// Samples `[from, to)` of a written form's component, from the whole form, or, given each
 /// addend's interval, summed from +0 in order over the addends live at each sample: one left

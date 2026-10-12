@@ -6,19 +6,48 @@ use sva_formula::{C64, Mirror, Run};
 
 /// Horner's rule in the rotor, whose turns are reduced from the exact product.
 pub fn at(run: &Run, t: f64) -> C64 {
-    let step = turns(run.step, t);
-    let start = wrap(turns(run.offset, t) + wrap(run.first as f64 * step));
-    let rotor = cis(start);
-    let z = match (run.amps.len(), start.to_bits() == step.to_bits()) {
-        (1, _) => C64::ONE,
-        (_, true) => rotor,
-        (_, false) => cis(step),
-    };
-    let up = rotor * horner(&run.amps, z);
-    match &run.mirror {
-        Mirror::None => up,
-        Mirror::Conjugate => up + up.conj(),
-        Mirror::Held(amps) => up + rotor.conj() * horner(amps, z.conj()),
+    let mut out = [C64::ZERO];
+    each(run, &[t], &mut out);
+    out[0]
+}
+
+/// `at` at each of `t`: every instant's sum takes the operations `at` does, in its order.
+pub fn each(run: &Run, t: &[f64], out: &mut [C64]) {
+    for (t, out) in t.chunks(LANES).zip(out.chunks_mut(LANES)) {
+        side_by_side(run, t, out);
+    }
+}
+
+/// Instants summed side by side: one instant's sum waits on its own last product alone.
+const LANES: usize = 64;
+
+fn side_by_side(run: &Run, t: &[f64], out: &mut [C64]) {
+    let n = t.len();
+    let (mut rotor, mut z) = ([C64::ZERO; LANES], [C64::ZERO; LANES]);
+    for ((rotor, z), t) in rotor.iter_mut().zip(&mut z).zip(t) {
+        let step = turns(run.step, *t);
+        let start = wrap(turns(run.offset, *t) + wrap(run.first as f64 * step));
+        *rotor = cis(start);
+        *z = match (run.amps.len(), start.to_bits() == step.to_bits()) {
+            (1, _) => C64::ONE,
+            (_, true) => *rotor,
+            (_, false) => cis(step),
+        };
+    }
+    let mut up = [C64::ZERO; LANES];
+    horner(&run.amps, &z[..n], &mut up[..n]);
+    let mut down = [C64::ZERO; LANES];
+    if let Mirror::Held(amps) = &run.mirror {
+        z.iter_mut().for_each(|z| *z = z.conj());
+        horner(amps, &z[..n], &mut down[..n]);
+    }
+    for (i, out) in out.iter_mut().enumerate() {
+        let up = rotor[i] * up[i];
+        *out = match &run.mirror {
+            Mirror::None => up,
+            Mirror::Conjugate => up + up.conj(),
+            Mirror::Held(_) => up + rotor[i].conj() * down[i],
+        };
     }
 }
 
@@ -69,13 +98,26 @@ const STEP_ROTOR: f64 = 24.0 * U;
 
 const PRODUCT_AND_SUM: f64 = (2.236_067_977_499_8 + 1.0) * U;
 
-fn horner(amps: &[C64], z: C64) -> C64 {
+fn horner(amps: &[C64], z: &[C64], out: &mut [C64]) {
+    let n = z.len();
     let mut rest = amps.iter().rev();
-    let mut acc = rest.next().copied().unwrap_or(C64::ZERO);
-    for a in rest {
-        acc = acc * z + *a;
+    let last = rest.next().copied().unwrap_or(C64::ZERO);
+    let (mut zr, mut zi) = ([0.0; LANES], [0.0; LANES]);
+    for ((zr, zi), z) in zr.iter_mut().zip(&mut zi).zip(z) {
+        (*zr, *zi) = (z.re, z.im);
     }
-    acc
+    let (mut re, mut im) = ([last.re; LANES], [last.im; LANES]);
+    for a in rest {
+        let lanes = re[..n].iter_mut().zip(&mut im[..n]);
+        for ((re, im), (zr, zi)) in lanes.zip(zr[..n].iter().zip(&zi[..n])) {
+            let (r, i) = (*re, *im);
+            *re = (r * zr - i * zi) + a.re;
+            *im = (r * zi + i * zr) + a.im;
+        }
+    }
+    for ((out, re), im) in out.iter_mut().zip(re).zip(im) {
+        *out = C64::new(re, im);
+    }
 }
 
 fn turns(x: f64, t: f64) -> f64 {

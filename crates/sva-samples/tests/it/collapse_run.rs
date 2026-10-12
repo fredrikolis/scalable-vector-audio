@@ -253,6 +253,42 @@ fn a_conjugate_mirror_sums_as_its_amplitudes_spelled_out_do() {
 }
 
 #[test]
+fn a_run_summed_at_many_instants_at_once_is_each_summed_alone() {
+    let held = runs("saw", 43.654).remove(0);
+    let spelled = Run {
+        mirror: Mirror::Held(held.mirrored().expect("a mirror")),
+        ..held.clone()
+    };
+    let lone = Run {
+        mirror: Mirror::None,
+        ..held.clone()
+    };
+    let one = runs("saw", 15_000.0).remove(0);
+    let t: Vec<f64> = [(0.0, 60.0), (60.0, 3_540.0), (3_540.0, 3_600.0)]
+        .into_iter()
+        .flat_map(|(from, to)| instants(from, to))
+        .collect();
+    assert!(t.len() > 128, "past two whole groups of instants");
+    for (name, r) in [
+        ("conjugate", held),
+        ("held", spelled),
+        ("lone", lone),
+        ("one line", one),
+    ] {
+        let mut together = vec![C64::ZERO; t.len()];
+        run::each(&r, &t, &mut together);
+        for (t, together) in t.iter().zip(together) {
+            let alone = run::at(&r, *t);
+            assert_eq!(
+                (together.re.to_bits(), together.im.to_bits()),
+                (alone.re.to_bits(), alone.im.to_bits()),
+                "{name} at {t}"
+            );
+        }
+    }
+}
+
+#[test]
 fn loose_lines_are_runs_of_one_and_a_skipped_index_breaks_a_ladder() {
     let bare = [
         sva_formula::Line::bare(440.0, C64::real(0.5)),
