@@ -137,19 +137,28 @@ RENDER:
   `idx(t - 5ms - 2ms*sin(2*pi*t))`, is read sample by sample. An edit to a
   stream plays from the next sample on.
 
-  Every node's value a render computes is kept in a store on disk, named by
-  what it computes: never its file's name, directory, comments, spacing, or
-  the order its named arguments are written in, so a renamed or moved copy, a
-  constant lifted into a default, an expression split into a file of its own or
-  written back inline, and two addends swapped all read one entry. The next
-  render of anything that reads the same value reads it back, bit for bit, and
-  computes nothing under it. The store is on by default, at
-  `$XDG_CACHE_HOME/sva`, else `~/.cache/sva`; `--cache <path>` moves it (a
-  `/dev/shm` path keeps it in memory) and `--cache none` turns it off. It holds
-  at most {store_gb} GB, the least recently used values going first, and a
-  store another build of sva-cli wrote is emptied when opened. A render stages
-  what it computes beside the store as it goes, and the store itself is written
-  once, when the render ends, fails, or is stopped by SIGINT or SIGTERM.
+  A render keeps in a store on disk its target and, under it, each node of
+  samples that holds state (a filter, a discrete loop or a solver in it) or
+  that two or more nodes read. Nothing else is kept. A closed form, `sample`
+  of one and `rand` have a value at any instant and are computed where read.
+  A node without state that one node alone reads, however many times, is
+  computed again by that reader from what the node itself reads: no other
+  reader could ask for it, and without state it restarts at any sample, where
+  a filter or a loop must run from its start. So a stage worth keeping is a
+  node of its own that ends in a filter or a loop, or one two nodes read. A
+  kept value is named by what it computes: never its file's name, directory,
+  comments, spacing, or the order its named arguments are written in, so a
+  renamed or moved copy, a constant lifted into a default, an expression split
+  into a file of its own or written back inline, and two addends swapped all
+  read one entry. The next render of anything that reads the same value reads
+  it back, bit for bit, and computes nothing under it. The store is on by
+  default, at `$XDG_CACHE_HOME/sva`, else `~/.cache/sva`; `--cache <path>`
+  moves it (a `/dev/shm` path keeps it in memory) and `--cache none` turns it
+  off. It holds at most {store_gb} GB, the least recently used values going
+  first, and a store another build of sva-cli wrote is emptied when opened. A
+  render stages what it computes beside the store as it goes, and the store
+  itself is written once, when the render ends, fails, or is stopped by SIGINT
+  or SIGTERM.
 
   `ledger` prints one row per node under the target. A row's `share` is the
   part of its reader's own energy that row accounts for, so one reader's refs
@@ -362,8 +371,9 @@ ENVIRONMENT:
                        `pass` is what was looked up before the first block.
                        Each value is looked up once: a `hit` was answered by
                        the store, `prefix` found a stored run up to a switch,
-                       `miss` computed it, `new` kept it for the store. Each
-                       read of a value past its first is `reused`.
+                       `miss` computed it, `new` held it in memory, where the
+                       store takes what it keeps from. Each read of a value
+                       past its first is `reused`.
 
 EXIT CODES:
   0  success (error.code absent)
