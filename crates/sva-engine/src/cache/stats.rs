@@ -164,6 +164,8 @@ impl CacheStats {
 /// What the memo told one render or stream: one lookup per key a change asks.
 pub(crate) struct Recording {
     since: Counters,
+    /// Memory's clock where it began.
+    began: u64,
     failures: u64,
     lookups: Recent<Lookup>,
     shed: Tally,
@@ -177,6 +179,7 @@ impl Recording {
     pub(crate) fn over(memory: &Memory) -> Recording {
         Recording {
             since: memory.counters(),
+            began: memory.clock(),
             failures: memory.failures().0,
             lookups: Recent::keeping(usize::MAX),
             shed: Tally::default(),
@@ -227,6 +230,16 @@ impl Recording {
             unstaged: why.filter(|_| failed || memory.blocked()),
             unslotted: None,
         }
+    }
+
+    pub(crate) fn began(&self) -> u64 {
+        self.began
+    }
+
+    /// Whether the disk answered `key`'s lookup.
+    pub(crate) fn stored(&self, key: Hash) -> bool {
+        let lookup = self.looked(key).and_then(|(_, at)| self.lookups.get(at));
+        lookup.is_some_and(|lookup| lookup.from_store)
     }
 
     pub(crate) fn since(&self, memory: &Memory) -> Counters {

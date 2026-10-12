@@ -7,7 +7,7 @@ use sva_samples::{Buffer, Extent};
 use super::RenderConfig;
 use super::until::{Known, Until};
 use super::value_graph::{Pulled, ValueGraph, blocks_end};
-use crate::cache::{Memory, Recording};
+use crate::cache::{Gauge, Memory, Progress, Recording};
 use crate::error::EngineError;
 use crate::query::{DEFAULT_FRAME_SECS, Representation};
 
@@ -17,6 +17,9 @@ pub struct Work {
     pub samples: u64,
     pub computed_samples: u64,
 }
+
+/// Hears where a call's work stands inside a pull; with none, no cached sample is counted.
+pub(super) type Hears<'h> = Option<&'h dyn Fn(Progress)>;
 
 pub(super) struct Driver {
     pub(super) value_graph: ValueGraph,
@@ -35,7 +38,8 @@ pub(super) struct Driver {
     heard: i64,
     output: bool,
     most_bytes: usize,
-    pub(super) work: Work,
+    samples: u64,
+    gauge: Gauge,
     pub(super) memory: Memory,
     pub(super) recording: Recording,
 }
@@ -78,7 +82,8 @@ impl Driver {
             stop: None,
             end: None,
             most_bytes: 0,
-            work: Work::default(),
+            samples: 0,
+            gauge: Gauge::default(),
             memory,
             recording,
         }
@@ -109,15 +114,15 @@ impl Driver {
 
     /// `n` samples from where it stands, cut where its range ends; `None` from there on. A
     /// pull may drop the last one's samples, so each is taken first.
-    pub(super) fn read(&mut self, n: usize) -> Result<Option<Buffer>, EngineError> {
+    pub(super) fn read(&mut self, n: usize, heard: Hears) -> Result<Option<Buffer>, EngineError> {
         let (from, to) = (self.at, self.next_to(n));
-        if !self.pulled(n)? {
+        if !self.pulled(n, heard)? {
             return Ok(None);
         }
         let mut out = self.played(from);
         while self.at < to {
             let at = self.at;
-            if !self.pulled((to - at) as usize)? {
+            if !self.pulled((to - at) as usize, heard)? {
                 break;
             }
             let more = self.played(at);
@@ -153,12 +158,42 @@ impl Driver {
         Ok(silenced)
     }
 
-    pub(super) fn pull(&mut self) -> Result<bool, EngineError> {
-        self.pulled(self.block)
+    pub(super) fn pull(&mut self, heard: Hears) -> Result<bool, EngineError> {
+        self.pulled(self.block, heard)
+    }
+
+    /// The work done, and all its range comes to as its values now stand: `None` where the
+    /// range has no end.
+    pub(super) fn progress(&self) -> Progress {
+        let work = self.gauge;
+        let end = self.end.unwrap_or(self.last);
+        let left = match self.at < end {
+            false => Some(Gauge::default()),
+            true if end == i64::MAX => None,
+            true => {
+                let rest = Extent::new(self.at, end);
+                let held = (&self.memory, &self.recording);
+                match self.at == self.start {
+                    true => self.value_graph.ahead((self.next(), rest), held),
+                    false => self.value_graph.remaining(rest, held),
+                }
+            }
+        };
+        Progress {
+            work,
+            planned_samples: left.map(|left| work.done() + left.done()),
+        }
+    }
+
+    pub(super) fn work(&self) -> Work {
+        Work {
+            samples: self.samples,
+            computed_samples: self.gauge.computed_samples,
+        }
     }
 
     /// Up to `n` samples on, within a grid block per thread; false once it ended.
-    pub(super) fn pulled(&mut self, n: usize) -> Result<bool, EngineError> {
+    pub(super) fn pulled(&mut self, n: usize, heard: Hears) -> Result<bool, EngineError> {
         let from = self.at;
         if self.end.is_some_and(|end| from >= end) {
             return Ok(false);
@@ -166,22 +201,35 @@ impl Driver {
         let to = self.next_to(n).min(blocks_end(from, self.threads));
         self.recording.reach(from);
         let asked_range = Extent::new(from, to);
+        let planned_samples = heard.and_then(|_| self.progress().planned_samples);
+        let hears = |before: Gauge| {
+            move |work: Gauge| {
+                let work = before.plus(work);
+                let progress = Progress {
+                    work,
+                    planned_samples,
+                };
+                heard.into_iter().for_each(|heard| heard(progress));
+            }
+        };
         if from == self.start {
+            let hears = hears(self.gauge);
             let history = self.value_graph.history(
                 asked_range,
                 self.block as i64,
                 (&self.memory, &mut self.recording),
-                self.threads,
+                (self.threads, heard.map(|_| &hears as &dyn Fn(Gauge))),
             )?;
             self.counted(&history);
         }
+        let hears = hears(self.gauge);
         let pulled = self.value_graph.pull(
             asked_range,
             (&self.memory, &mut self.recording),
-            self.threads,
+            (self.threads, heard.map(|_| &hears as &dyn Fn(Gauge))),
         )?;
         self.counted(&pulled);
-        self.work.samples += (to - from) as u64;
+        self.samples += (to - from) as u64;
         self.at = to;
         self.settle(from, to);
         let future = (to < self.last).then(|| Extent::new(to, self.last));
@@ -195,7 +243,7 @@ impl Driver {
     }
 
     fn counted(&mut self, pulled: &Pulled) {
-        self.work.computed_samples += pulled.computed_samples;
+        self.gauge = self.gauge.plus(pulled.work);
         self.most_bytes = self.most_bytes.max(pulled.most_bytes);
     }
 

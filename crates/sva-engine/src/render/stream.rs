@@ -190,7 +190,7 @@ impl Stream {
         let every = u64::from(self.config.render.rate / 10);
         let samples = (driver.at - driver.start) as u64;
         self.call.delivered((samples, total, every), || {
-            (driver.work.computed_samples, driver.recording.tally())
+            (driver.progress(), driver.recording.tally())
         });
     }
 
@@ -281,6 +281,7 @@ impl Stream {
             term: prospect.term.as_ref().map(|(h, e)| (*h, e)),
             from: prospect.from.as_ref().map(|(g, roots)| (g, roots.clone())),
             whole: false,
+            told: None,
         };
         let seen = &mut self.driver.recording;
         let mut found = |node: &str, key: Hash| memory.answered((key, round), (node, &mut *seen));
@@ -479,7 +480,9 @@ impl Stream {
                 while self.driver.at < at {
                     let step = block.min((at - self.driver.at) as usize);
                     self.reads_on(step)?;
-                    if !self.driver.pulled(step)? {
+                    let hears = |progress| self.call.worked(progress);
+                    let heard = self.call.subscribed().then_some(&hears as &dyn Fn(_));
+                    if !self.driver.pulled(step, heard)? {
                         return Ok(None);
                     }
                     self.retire_terms_below_silence_threshold();
@@ -487,7 +490,9 @@ impl Stream {
             }
         }
         self.reads_on(n)?;
-        let block = self.driver.read(n)?;
+        let hears = |progress| self.call.worked(progress);
+        let heard = self.call.subscribed().then_some(&hears as &dyn Fn(_));
+        let block = self.driver.read(n, heard)?;
         self.retire_terms_below_silence_threshold();
         self.delivered();
         Ok(block.map(|b| widened(b, self.width)))
@@ -651,7 +656,7 @@ impl Stream {
     }
 
     pub fn work(&self) -> Work {
-        self.driver.work
+        self.driver.work()
     }
 
     pub fn stats(&self) -> CacheStats {

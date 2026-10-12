@@ -729,7 +729,7 @@ mod tests {
         spectral_sum_of(&tys, a, Var::T).expect("a sum");
         let before = composings(&tys);
         let changed = [vec!["b".to_string()], vec!["mix".to_string()]];
-        tys.lower(&inst, &changed).expect("lowered anew");
+        tys.lower(&inst, &changed, &|_| ()).expect("lowered anew");
         tys.commit(&inst);
         spectral_sum_of(&tys, a, Var::T).expect("a sum");
         assert_eq!(composings(&tys), before, "`a` composes from what it kept");

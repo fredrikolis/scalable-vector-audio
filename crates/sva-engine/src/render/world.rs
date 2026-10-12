@@ -14,7 +14,7 @@ use super::end::End;
 use super::terms::{Handle, NOTES, Terms, is_term};
 use super::value_graph::support::Memo;
 use super::{Decided, RenderConfig, default_end, start_over};
-use crate::cache::{Known as Answer, Stored};
+use crate::cache::{Known as Answer, Stored, Typed};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate::Instances;
 use crate::query::Representation;
@@ -72,6 +72,8 @@ pub(super) struct Wanted<'a> {
     pub(super) from: Option<(&'a Graph, Vec<String>)>,
     /// Whether `from` holds all there is, so a node it lacks is gone.
     pub(super) whole: bool,
+    /// Hears how far its typing got.
+    pub(super) told: Option<&'a dyn Fn(Typed)>,
 }
 
 pub(super) struct Advance {
@@ -141,7 +143,7 @@ impl World {
         world: &'w mut Option<World>,
         graph: &Graph,
         target: &str,
-        rate: u32,
+        (rate, told): (u32, Option<&dyn Fn(Typed)>),
     ) -> Result<(&'w World, String), EngineError> {
         let world = match world.take() {
             Some(held) if held.instances.rate() == rate => world.insert(held),
@@ -153,6 +155,7 @@ impl World {
             term: None,
             from: Some((graph, vec![target.to_string()])),
             whole: true,
+            told,
         };
         match world.advanced(&wanted) {
             Ok(advance) => {
@@ -241,8 +244,19 @@ impl World {
             named.retain(|path| !held(path));
         }
         let region = self.region(&named, &rescanned);
+        let (instances, nodes) = (self.instances.count(), region.iter().map(Vec::len).sum());
+        let told = |typed: usize| {
+            if let Some(told) = wanted.told {
+                told(Typed {
+                    instances,
+                    nodes,
+                    typed,
+                });
+            }
+        };
+        told(0);
         if !(region.is_empty() && self.typing.lowered().is_empty()) {
-            own(&mut self.typing).lower(&self.instances, &region)?;
+            own(&mut self.typing).lower(&self.instances, &region, &told)?;
         }
         if self.notes {
             wanted.terms.name(own(&mut self.typing));

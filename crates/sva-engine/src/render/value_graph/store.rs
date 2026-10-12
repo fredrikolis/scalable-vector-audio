@@ -36,6 +36,10 @@ pub(crate) struct Place {
     pub(crate) movers: Vec<usize>,
     /// The sample the change that made it landed at.
     pub(crate) landed: i64,
+    /// What memory held of it before its call began: the disk's where `.1`.
+    pub(crate) cached: Option<(Segments, bool)>,
+    /// Its samples counted as its call's work.
+    pub(crate) counted: Segments,
 }
 
 /// The node a value's samples answer, as the value graph named it.
@@ -94,6 +98,33 @@ pub(crate) fn load(
         return laid(value, &parts);
     }
     place.looked = true;
+    let had = value.holding();
+    let loaded = loaded(value, place, (memory, seen));
+    let keys = place.segments.iter().map(|(_, key)| *key);
+    let mut keys = keys.chain([place.key]);
+    if loaded && !keys.any(|key| memory.kept_since(key, seen.began())) {
+        place.cached = Some((value.holding().minus(&had), false));
+    }
+    loaded
+}
+
+/// What memory answers a value with that its own call kept none of.
+pub(crate) fn cached(
+    value: &Value,
+    place: &Place,
+    (memory, seen): (&Memory, &Recording),
+) -> Option<(Segments, bool)> {
+    let Kind::Resident(stored) = &value.kind else {
+        return place.cached.clone();
+    };
+    match &place.cached {
+        Some(cached) => Some(cached.clone()),
+        None if memory.kept_since(stored.key, seen.began()) => None,
+        None => Some((value.covers(), seen.stored(stored.key))),
+    }
+}
+
+fn loaded(value: &mut Value, place: &Place, (memory, seen): (&Memory, &mut Recording)) -> bool {
     let kind = Place::kind(value);
     let (rate, width) = (value.grid.rate, value.width);
     if kind == PayloadKind::Run {

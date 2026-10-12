@@ -32,6 +32,10 @@ impl<T> Recent<T> {
         (self.made() - 1, shed)
     }
 
+    pub(crate) fn get(&self, at: usize) -> Option<&T> {
+        self.items.get(at.checked_sub(self.shed)?)
+    }
+
     /// `None` where the entry at `at` was shed.
     pub(crate) fn get_mut(&mut self, at: usize) -> Option<&mut T> {
         self.items.get_mut(at.checked_sub(self.shed)?)

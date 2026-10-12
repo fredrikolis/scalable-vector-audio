@@ -2086,7 +2086,9 @@ async fn reported(held: &Composition, heard: &js_sys::Array) -> JsValue {
     assert_eq!(text(&call(last), "target"), "@master([0, 2s])");
     let mut at = 0.0;
     let mut delivering = 0;
+    let (mut worked, mut typed) = (0.0, 0.0);
     for report in &reports {
+        assert!(field(report, "boot").is_null(), "{all}");
         let call = call(report);
         assert_eq!(
             count(&call, &["id"]),
@@ -2096,13 +2098,31 @@ async fn reported(held: &Composition, heard: &js_sys::Array) -> JsValue {
         let samples = count(&call, &["samples"]);
         assert!(samples >= at, "samples fell: {all}");
         at = samples;
+        let work = count(&call, &["cached_samples"]) + count(&call, &["computed_samples"]);
+        assert!(work >= worked, "work done fell: {all}");
+        worked = work;
+        let typing = field(&call, "typing");
+        if !typing.is_null() {
+            let (now, nodes) = (count(&typing, &["typed"]), count(&typing, &["nodes"]));
+            assert!(
+                now >= typed && now <= nodes,
+                "typing fell or overran: {all}"
+            );
+            typed = now;
+        }
         match text(&call, "phase").as_str() {
             "delivering" => {
                 delivering += 1;
                 assert_eq!(count(&call, &["total_samples"]), 16000.0, "{all}");
+                assert!(!field(&call, "planned_samples").is_null(), "{all}");
             }
-            "parsing" | "typing" | "looking_up" => {
+            "parsing" => {
+                assert!(typing.is_null(), "{all}");
+                assert!(field(&call, "planned_samples").is_null(), "{all}");
+            }
+            "typing" | "looking_up" => {
                 assert!(field(&call, "total_samples").is_null(), "{all}");
+                assert!(field(&call, "planned_samples").is_null(), "{all}");
             }
             _ => {}
         }
@@ -2111,6 +2131,8 @@ async fn reported(held: &Composition, heard: &js_sys::Array) -> JsValue {
     let done = call(last);
     assert_eq!(count(&done, &["samples"]), 16000.0, "{all}");
     assert_eq!(count(&done, &["total_samples"]), 16000.0, "{all}");
+    assert_eq!(worked, count(&done, &["planned_samples"]), "{all}");
+    assert_eq!(typed, count(&done, &["typing", "nodes"]), "{all}");
 
     let stats = render.stats().unwrap_or_else(|_| unreachable!("stats"));
     let work = render.work().unwrap_or_else(|_| unreachable!("work"));
@@ -2160,6 +2182,8 @@ async fn a_subscriber_hears_each_render_work_then_rest_with_the_counts_it_ends_a
     assert!(of(&computed, &["call", "lookups", "miss"]) > 0.0);
     assert_eq!(of(&computed, &["call", "lookups", "hit"]), 0.0);
     assert!(of(&computed, &["call", "computed_samples"]) >= 16000.0);
+    assert_eq!(of(&computed, &["call", "cached_samples"]), 0.0);
+    assert!(of(&computed, &["call", "typing", "nodes"]) > 0.0);
 
     let before = heard.length();
     persisted(&cold).await;
@@ -2184,6 +2208,13 @@ async fn a_subscriber_hears_each_render_work_then_rest_with_the_counts_it_ends_a
         "{state}"
     );
     assert_eq!(of(&stored, &["call", "computed_samples"]), 0.0, "{state}");
+    let read_back = of(&stored, &["call", "cached_samples"]);
+    assert_eq!(read_back, 16000.0, "{state}");
+    assert_eq!(
+        of(&stored, &["call", "cached_from_store_samples"]),
+        read_back,
+        "{state}"
+    );
     assert!(
         of(&stored, &["call", "tier", "disk_read_bytes"]) > 0.0,
         "{state}"
@@ -2202,6 +2233,22 @@ async fn a_subscriber_hears_each_render_work_then_rest_with_the_counts_it_ends_a
     );
     assert_eq!(of(&resident, &["call", "computed_samples"]), 0.0, "{state}");
     assert_eq!(
+        of(&resident, &["call", "cached_samples"]),
+        16000.0,
+        "{state}"
+    );
+    assert_eq!(
+        of(&resident, &["call", "cached_from_store_samples"]),
+        0.0,
+        "{state}"
+    );
+    assert_eq!(of(&resident, &["call", "typing", "nodes"]), 0.0, "{state}");
+    assert_eq!(
+        of(&resident, &["totals", "cached_samples"]),
+        32000.0,
+        "{state}"
+    );
+    assert_eq!(
         of(&resident, &["call", "tier", "disk_reads"]),
         0.0,
         "{state}"
@@ -2218,6 +2265,137 @@ async fn a_subscriber_hears_each_render_work_then_rest_with_the_counts_it_ends_a
     warm.unsubscribe();
     let before = heard.length();
     stored_render(&warm).await;
+    assert_eq!(heard.length(), before, "unsubscribed, it hears no more");
+}
+
+/// The last report of `target` rendered over `held`: its call's.
+async fn last_call(held: &Composition, heard: &js_sys::Array, target: &str) -> JsValue {
+    held.render(target, None, options(&[]))
+        .await
+        .unwrap_or_else(|e| unreachable!("it renders: {}", as_text(&e)));
+    field(&heard.get(heard.length() - 1), "call")
+}
+
+#[wasm_bindgen_test]
+async fn a_turned_parameter_computes_its_readers_and_reads_the_rest_back() {
+    let mut held = page();
+    held.insert("tone", "sample(sin(2*pi*100*t))\n");
+    held.insert("wet", "lowpass(@tone, cutoff=1000)\n");
+    held.insert("mix", "g = 0.5\n@wet*g\n");
+    let heard = subscribed(&held);
+    let work = |call: &JsValue, name: &str| count(call, &[name]);
+
+    let cold = last_call(&held, &heard, "@mix([0, 1s])").await;
+    let all = as_text(&heard);
+    assert_eq!(work(&cold, "cached_samples"), 0.0, "{all}");
+    assert!(work(&cold, "computed_samples") > 8000.0, "{all}");
+    assert_eq!(
+        work(&cold, "planned_samples"),
+        work(&cold, "computed_samples"),
+        "{all}"
+    );
+
+    let turned = last_call(&held, &heard, "@mix([0, 1s], g=0.25)").await;
+    let state = as_text(&turned);
+    let (cached, computed) = (
+        work(&turned, "cached_samples"),
+        work(&turned, "computed_samples"),
+    );
+    assert_eq!(
+        cached, 8000.0,
+        "the filter's samples are read back: {state}"
+    );
+    assert_eq!(computed, 8000.0, "the gain alone is computed: {state}");
+    assert_eq!(
+        work(&turned, "planned_samples"),
+        cached + computed,
+        "{state}"
+    );
+    assert_eq!(work(&turned, "cached_from_store_samples"), 0.0, "{state}");
+
+    let back = last_call(&held, &heard, "@mix([0, 1s])").await;
+    let state = as_text(&back);
+    assert_eq!(work(&back, "computed_samples"), 0.0, "{state}");
+    assert_eq!(work(&back, "cached_samples"), 8000.0, "{state}");
+    assert_eq!(work(&back, "planned_samples"), 8000.0, "{state}");
+}
+
+/// Each report's boot phase, or `call` for one of a call and `rest` for one of neither.
+fn steps(heard: &js_sys::Array, from: u32) -> Vec<String> {
+    let reports = heard.iter().skip(from as usize);
+    let step = |report: JsValue| {
+        let (boot, call) = (field(&report, "boot"), field(&report, "call"));
+        match (boot.is_null(), call.is_null()) {
+            (false, _) => field(&boot, "phase").as_string().unwrap_or_default(),
+            (true, false) => "call".to_string(),
+            (true, true) => "rest".to_string(),
+        }
+    };
+    reports.map(step).collect()
+}
+
+#[wasm_bindgen_test]
+async fn the_modules_subscriber_hears_the_boot_then_every_composition() {
+    let heard = js_sys::Array::new();
+    let push = js_sys::Function::new_with_args("stats", "this.push(stats)");
+    sva_wasm::subscribe(push.bind0(&heard));
+    assert_eq!(heard.length(), 0, "nothing is open yet");
+
+    let dir = fake_directory();
+    let cold = over_store(&dir).await;
+    let opening = [
+        "opening_store",
+        "reading_index",
+        "index_read",
+        "opened",
+        "rest",
+    ];
+    assert_eq!(steps(&heard, 0), opening, "{}", as_text(&heard));
+    let states: Vec<String> = heard
+        .iter()
+        .filter_map(|report| field(&report, "state").as_string())
+        .collect();
+    let all = as_text(&heard);
+    assert_eq!(
+        states,
+        ["booting", "booting", "booting", "idle", "idle"],
+        "{all}"
+    );
+    let store = |report: u32| field(&field(&heard.get(report), "boot"), "store");
+    assert!(field(&store(0), "entries").is_null(), "{all}");
+    assert!(count(&store(0), &["max_bytes"]) > 0.0, "{all}");
+    assert_eq!(count(&store(2), &["entries"]), 0.0, "{all}");
+    assert_eq!(count(&store(3), &["bytes"]), 0.0, "{all}");
+
+    stored_render(&cold).await;
+    let calls = steps(&heard, opening.len() as u32);
+    assert!(calls.len() > 2 && calls.iter().all(|step| step == "call"));
+    persisted(&cold).await;
+
+    let before = heard.length();
+    let warm = over_store(&dir).await;
+    assert_eq!(steps(&heard, before), opening, "{}", as_text(&heard));
+    let read = field(&field(&heard.get(before + 2), "boot"), "store");
+    let state = as_text(&read);
+    assert!(count(&read, &["entries"]) > 0.0, "{state}");
+    assert!(count(&read, &["bytes"]) > 0.0, "{state}");
+    assert!(count(&read, &["index_bytes"]) > 0.0, "{state}");
+
+    let before = heard.length();
+    let own = subscribed(&warm);
+    stored_render(&warm).await;
+    assert_eq!(heard.length(), before, "its own subscriber hears it");
+    assert!(own.length() > 1);
+    warm.unsubscribe();
+    assert_eq!(steps(&heard, before), ["rest"], "the module's again");
+    let unstored = page();
+    assert_eq!(steps(&heard, before + 1), ["rest"], "one made later too");
+
+    sva_wasm::unsubscribe();
+    let before = heard.length();
+    render(&unstored, "master");
+    stored_render(&warm).await;
+    over_store(&fake_directory()).await;
     assert_eq!(heard.length(), before, "unsubscribed, it hears no more");
 }
 

@@ -294,6 +294,10 @@ impl Instances {
         }
     }
 
+    pub(crate) fn count(&self) -> usize {
+        self.nodes.len()
+    }
+
     pub(crate) fn rate(&self) -> u32 {
         self.rate
     }

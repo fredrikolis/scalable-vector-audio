@@ -31,6 +31,7 @@ impl Stream {
             term: None,
             from: None,
             whole: false,
+            told: None,
         };
         let mut missed = |_: &str, _| crate::cache::Known::Miss;
         match fresh.plan(&wanted, render, &mut missed) {

@@ -64,6 +64,18 @@ pub struct Store<B> {
     written: Mutex<u64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opening {
+    Locking,
+    ReadingIndex,
+    /// The entries it names and their bytes: none of an index another format wrote.
+    IndexRead {
+        index_bytes: u64,
+        entries: usize,
+        bytes: u64,
+    },
+}
+
 enum Prepared {
     Ready { bytes: u64 },
     Dropped,
@@ -86,9 +98,20 @@ impl<B: Backend> Store<B> {
     /// Over another format's index, a fresh one: what that format left is neither read nor
     /// removed, nor counted against the budget.
     pub async fn open(backend: B, max_bytes: u64) -> Result<Store<B>, String> {
+        Store::open_told(backend, max_bytes, &|_| ()).await
+    }
+
+    pub async fn open_told(
+        backend: B,
+        max_bytes: u64,
+        told: &dyn Fn(Opening),
+    ) -> Result<Store<B>, String> {
         let version = version();
+        told(Opening::Locking);
         let held = backend.lock().await?;
+        told(Opening::ReadingIndex);
         let found = backend.get(INDEX_NAME).await?;
+        let index_bytes = found.as_ref().map_or(0, |text| text.len() as u64);
         let index = match found.and_then(|text| Index::read(&text, &version)) {
             Some(index) => index,
             None => {
@@ -99,6 +122,11 @@ impl<B: Backend> Store<B> {
                 empty
             }
         };
+        told(Opening::IndexRead {
+            index_bytes,
+            entries: index.held.len(),
+            bytes: index.bytes,
+        });
         let staging = backend.staging().await?;
         drop(held);
         Ok(Store {

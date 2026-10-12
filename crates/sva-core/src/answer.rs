@@ -3,10 +3,11 @@
 use std::path::Path;
 
 use sva_engine::{
-    Alias, AliasBand, Answer, Arguments, BandCrest, BandTrack, Bands, Binding, Buffer, CacheStats,
-    Counters, Crest, CuttingBelowSilenceThreshold, Detail, EngineStats, EnvelopeFrame,
-    FormantFrame, Kind, Label, LedgerEntry, Loudness, LoudnessFrame, Onsets, Outcome, Output,
-    PayloadKind, Phase, Source, SpectralSum, Spectrum, StereoFrame, StereoImage, Work, Worked,
+    Alias, AliasBand, Answer, Arguments, BandCrest, BandTrack, Bands, Binding, Boot, BootPhase,
+    Buffer, CacheStats, Counters, Crest, CuttingBelowSilenceThreshold, Detail, EngineStats,
+    EnvelopeFrame, FormantFrame, Kind, Label, LedgerEntry, Loudness, LoudnessFrame, Onsets,
+    Outcome, Output, PayloadKind, Phase, Source, SpectralSum, Spectrum, StereoFrame, StereoImage,
+    Work, Worked,
 };
 
 use sva_engine::harmony::Framing;
@@ -1076,11 +1077,14 @@ pub fn counters_json(counters: &Counters) -> String {
 fn worked_json(worked: &Worked) -> String {
     let lookups = worked.lookups;
     format!(
-        "\"samples\": {}, \"computed_samples\": {}, \"lookups\": {{ \"hit\": {}, \
+        "\"samples\": {}, \"cached_samples\": {}, \"cached_from_store_samples\": {}, \
+         \"computed_samples\": {}, \"lookups\": {{ \"hit\": {}, \
          \"from_memory\": {}, \"from_store\": {}, \"prefix\": {}, \"miss\": {}, \"new\": {}, \
          \"reused\": {} }}, \"tier\": {}",
         worked.samples,
-        worked.computed_samples,
+        worked.work.cached_samples,
+        worked.work.stored_samples,
+        worked.work.computed_samples,
         lookups.hit,
         lookups.hit - lookups.from_store,
         lookups.from_store,
@@ -1114,25 +1118,66 @@ pub fn engine_stats_json(stats: &EngineStats) -> String {
             Phase::Failed => "failed",
             Phase::Abandoned => "abandoned",
         };
-        let total = call
-            .total_samples
-            .map_or("null".to_string(), |total| total.to_string());
+        let count = |n: Option<u64>| n.map_or("null".to_string(), |n| n.to_string());
+        let (total, planned) = (count(call.total_samples), count(call.planned_samples));
+        let typing = call.typing.map_or("null".to_string(), |typing| {
+            format!(
+                "{{ \"instances\": {}, \"nodes\": {}, \"typed\": {} }}",
+                typing.instances, typing.nodes, typing.typed
+            )
+        });
         format!(
             "{{ \"id\": {}, \"kind\": \"{kind}\", \"target\": \"{}\", \"phase\": \"{phase}\", \
-             \"total_samples\": {total}, {} }}",
+             \"total_samples\": {total}, \"planned_samples\": {planned}, \"typing\": {typing}, \
+             {} }}",
             call.id,
             escape(&call.target),
             worked_json(&call.counts)
         )
     });
-    let state = match stats.working {
-        0 => "idle",
-        _ => "working",
+    let boot = stats
+        .boot
+        .map_or("null".to_string(), |boot| boot_json(&boot));
+    let state = match (
+        stats.boot.is_some_and(|boot| boot.under_way()),
+        stats.working,
+    ) {
+        (true, _) => "booting",
+        (false, 0) => "idle",
+        (false, _) => "working",
     };
     format!(
-        "{{ \"state\": \"{state}\", \"working\": {}, \"call\": {call}, \"totals\": {{ {} }} }}",
+        "{{ \"state\": \"{state}\", \"working\": {}, \"boot\": {boot}, \"call\": {call}, \
+         \"totals\": {{ {} }} }}",
         stats.working,
         worked_json(&stats.totals)
+    )
+}
+
+fn boot_json(boot: &Boot) -> String {
+    let phase = match boot.phase {
+        BootPhase::StartingThreads => "starting_threads",
+        BootPhase::ThreadsStarted => "threads_started",
+        BootPhase::ThreadsFailed => "threads_failed",
+        BootPhase::OpeningStore => "opening_store",
+        BootPhase::ReadingIndex => "reading_index",
+        BootPhase::IndexRead => "index_read",
+        BootPhase::StoreFailed => "store_failed",
+        BootPhase::Opened => "opened",
+    };
+    let count = |n: Option<u64>| n.map_or("null".to_string(), |n| n.to_string());
+    let store = boot.store.map_or("null".to_string(), |store| {
+        format!(
+            "{{ \"max_bytes\": {}, \"index_bytes\": {}, \"entries\": {}, \"bytes\": {} }}",
+            store.max_bytes,
+            count(store.read.map(|read| read.0)),
+            count(store.read.map(|read| read.1 as u64)),
+            count(store.read.map(|read| read.2)),
+        )
+    });
+    format!(
+        "{{ \"phase\": \"{phase}\", \"threads\": {}, \"store\": {store} }}",
+        count(boot.threads.map(|n| n as u64))
     )
 }
 

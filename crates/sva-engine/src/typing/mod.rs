@@ -605,21 +605,25 @@ impl Env for TypedNodesEnv<'_> {
 /// Dependencies first, so a ref reads a type already decided.
 pub fn infer_all(inst: &Instances, order: &Order) -> Result<Typing, EngineError> {
     let mut typing = Typing::default();
-    typing.lower(inst, &order.groups)?;
+    typing.lower(inst, &order.groups, &|_| ())?;
     typing.commit(inst);
     Ok(typing)
 }
 
 impl Typing {
-    /// Lowers `groups`, dependencies first, beside what is held, each path hidden first.
+    /// Lowers `groups`, dependencies first, beside what is held, each path hidden first; how
+    /// many paths are lowered is told to `told` group by group.
     pub(crate) fn lower(
         &mut self,
         inst: &Instances,
         groups: &[Vec<String>],
+        told: &dyn Fn(usize),
     ) -> Result<(), EngineError> {
         self.lowered.clear();
         self.hide(groups.iter().flatten().cloned());
+        let mut typed = 0;
         for group in groups {
+            typed += group.len();
             match crate::schedule::is_loop(inst, group) {
                 true => settle_loop(self, inst, group)?,
                 false => {
@@ -628,6 +632,7 @@ impl Typing {
                     }
                 }
             }
+            told(typed);
         }
         Ok(())
     }

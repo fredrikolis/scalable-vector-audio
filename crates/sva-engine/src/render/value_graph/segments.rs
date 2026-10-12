@@ -72,6 +72,16 @@ impl Segments {
         Segments(out)
     }
 
+    pub(crate) fn meet(&self, other: &Segments) -> Segments {
+        self.minus(&self.minus(other))
+    }
+
+    /// How many samples it holds; `None` where it has no end.
+    pub(crate) fn samples(&self) -> Option<u64> {
+        let bounded = self.0.iter().all(Extent::is_bounded);
+        bounded.then(|| self.0.iter().map(|e| e.len() as u64).sum())
+    }
+
     pub(crate) fn covers(&self, other: &Segments) -> bool {
         other.minus(self).is_empty()
     }

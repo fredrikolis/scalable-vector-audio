@@ -5,9 +5,11 @@
 //! `refusal` the envelope it would print.
 
 mod opfs;
+mod stats;
 mod threads;
 
 pub use opfs::DirectoryHandle;
+pub use stats::{subscribe, unsubscribe};
 pub use threads::start_threads;
 
 use std::borrow::Cow;
@@ -17,13 +19,13 @@ use std::pin::Pin;
 use std::rc::Rc;
 
 use sva_core::{
-    Asked, CliError, Diagnostic, EngineStats, Job, Out, Printed, Rendered, Report, Representation,
-    SAMPLE_LIMIT, counters_json, engine_stats_json, error_envelope, execute_over, query_data,
-    stats_json, stream_stats_json, work_json,
+    Asked, CliError, Diagnostic, Job, Out, Printed, Rendered, Report, Representation, SAMPLE_LIMIT,
+    counters_json, error_envelope, execute_over, query_data, stats_json, stream_stats_json,
+    work_json,
 };
 use sva_engine::{
-    Abandon, CacheStats, DEFAULT_STORE_BYTES, EngineError, Handle, Never, Placed, Session, Store,
-    Tier,
+    Abandon, BootPhase, CacheStats, DEFAULT_STORE_BYTES, EngineError, Handle, Never, Placed,
+    Session, Store, StoreBoot, Tier,
 };
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
@@ -69,123 +71,6 @@ extern "C" {
 
     #[wasm_bindgen(method)]
     fn close(this: &MessagePort);
-}
-
-#[wasm_bindgen(typescript_custom_section)]
-const ENGINE_STATS: &str = r#"
-/** What one call did so far, or every call since `subscribe`. */
-export interface EngineWork {
-    /** Samples of the target delivered. */
-    samples: number;
-    /** Samples computed meanwhile, summed over every value: 0 when all was read back. */
-    computed_samples: number;
-    /**
-     * Lookups by what each came to, the counts `Rendering.stats()` ends at. Cached: `hit`
-     * (`from_memory` + `from_store`) and `reused`. Uncached: `miss`, and `prefix` (found only in
-     * part). `new`: misses kept for the next call. A count may fall as a lookup settles.
-     */
-    lookups: {
-        hit: number; from_memory: number; from_store: number;
-        prefix: number; miss: number; new: number; reused: number;
-    };
-    /** Memory's disk traffic meanwhile, whichever call asked: `Rendering.stats().tier`. */
-    tier: {
-        disk_lookups: number; disk_reads: number; disk_read_bytes: number; promotions: number;
-        writebacks: number; hits: number; evictions: number;
-        probation_evictions: number; protected_evictions: number;
-    };
-}
-
-/** One call: a render, a stream from its open on, one stream edit, or a persist. */
-export interface EngineCall extends EngineWork {
-    /** Counted from 1 over the composition, never given twice. */
-    id: number;
-    kind: "render" | "stream" | "edit" | "persist";
-    /** As the page wrote it; a persist's is empty. */
-    target: string;
-    /**
-     * Samples are delivered in `delivering` alone. `done`, `failed` and `abandoned` end the call:
-     * its last report.
-     */
-    phase: "parsing" | "typing" | "looking_up" | "planning" | "fetching" | "delivering"
-        | "finishing" | "storing" | "done" | "failed" | "abandoned";
-    /**
-     * What `samples` counts up to. null until the range is decided (before `delivering`), and
-     * for a stream whose end is open.
-     */
-    total_samples: number | null;
-}
-
-/**
- * One report of `Composition.subscribe`. A call reports when it begins, at each new phase, per
- * fetch from the store while `fetching`, while `delivering` at block boundaries no more than ten
- * times per second of samples delivered, and when it ends. The callback runs inside the call, on the thread
- * that made it, never on a render thread: a worker forwards each report with `postMessage`. A
- * page on the engine's own thread hears every report as it is made, but paints nothing until the
- * call yields to the event loop, which a render does between blocks only when given a `signal`
- * or reading a store. What the callback throws is logged, and stops nothing.
- */
-export interface EngineStats {
-    /**
-     * "working" while a render, a stream's open, an edit or a persist is in flight. A stream's
-     * reads never count: what they report says "idle" unless such a call is in flight beside it.
-     */
-    state: "working" | "idle";
-    /** How many such calls are in flight. */
-    working: number;
-    /** The call this report is about; null in the one report `subscribe` answers with. */
-    call: EngineCall | null;
-    /** Every call's work since `subscribe`. */
-    totals: EngineWork;
-}
-"#;
-
-thread_local! {
-    /// Each subscribed page function on this thread: the engine's subscriber crosses threads, a
-    /// JS function cannot.
-    static HEARD: RefCell<Vec<(u32, js_sys::Function)>> = const { RefCell::new(Vec::new()) };
-    static SUBSCRIPTIONS: Cell<u32> = const { Cell::new(0) };
-}
-
-/// One composition's place in `HEARD`, emptied with it.
-#[derive(Default)]
-struct Subscription(Cell<Option<u32>>);
-
-impl Subscription {
-    fn hold(&self, callback: Option<js_sys::Function>) -> Option<u32> {
-        HEARD.with(|heard| {
-            let mut heard = heard.borrow_mut();
-            if let Some(last) = self.0.take() {
-                heard.retain(|(id, _)| *id != last);
-            }
-            let id = SUBSCRIPTIONS.replace(SUBSCRIPTIONS.get() + 1);
-            heard.push((id, callback?));
-            self.0.set(Some(id));
-            Some(id)
-        })
-    }
-}
-
-impl Drop for Subscription {
-    fn drop(&mut self) {
-        self.hold(None);
-    }
-}
-
-/// A report handed to the page function held as `id`; what it throws is logged, and stops nothing.
-fn told(id: u32, stats: &EngineStats) {
-    let found = |heard: &RefCell<Vec<(u32, js_sys::Function)>>| {
-        let heard = heard.borrow();
-        let held = heard.iter().find(|(held, _)| *held == id);
-        held.map(|(_, callback)| callback.clone())
-    };
-    let Some(callback) = HEARD.with(found) else {
-        return;
-    };
-    let report = parse(&engine_stats_json(stats)).expect("a report is JSON");
-    if let Err(thrown) = callback.call1(&JsValue::NULL, &report) {
-        logged(&format!("the engine-stats subscriber threw: {thrown:?}"));
-    }
 }
 
 /// Resolves once the page's queued tasks ran, a message an abort sends among them.
@@ -435,7 +320,7 @@ pub struct Composition {
     /// A render in flight holds it; one beside it types in a session of its own.
     session: Cell<Session>,
     threads: Option<NonZeroUsize>,
-    subscription: Subscription,
+    subscription: Rc<stats::Subscription>,
 }
 
 fn unstored(why: String) -> JsValue {
@@ -454,33 +339,33 @@ impl Composition {
 
     fn over(name: Option<String>, tier: Tier<opfs::Opfs>) -> Composition {
         let inner = sva_ast::Composition::new();
+        let (tier, subscription) = (Rc::new(tier), Rc::default());
+        stats::joined(&tier, &subscription);
         Composition {
             inner: Live(Rc::new(RefCell::new(match name {
                 Some(name) => inner.named(name),
                 None => inner,
             }))),
-            tier: Rc::new(tier),
+            tier,
             session: Cell::default(),
             threads: None,
-            subscription: Subscription::default(),
+            subscription,
         }
     }
 
-    /// `callback`, in place of the last one, hears an `EngineStats` at once, then from every
-    /// render, stream, edit and persist of this composition while it works and when it ends.
+    /// `callback`, in place of the last one and of the module's, hears an `EngineStats` at
+    /// once, then from every call of this composition.
     pub fn subscribe(
         &self,
         #[wasm_bindgen(unchecked_param_type = "(stats: EngineStats) => void")]
         callback: js_sys::Function,
     ) {
-        if let Some(id) = self.subscription.hold(Some(callback)) {
-            self.tier.subscribe(move |stats| told(id, stats));
-        }
+        stats::heard_by(&self.tier, &self.subscription, Some(callback));
     }
 
+    /// The module's subscriber, where there is one, hears it from here on.
     pub fn unsubscribe(&self) {
-        self.tier.unsubscribe();
-        self.subscription.hold(None);
+        stats::heard_by(&self.tier, &self.subscription, None);
     }
 
     /// Memory over the store in `dir`, an origin-private file system directory; alone where
@@ -492,19 +377,34 @@ impl Composition {
         options: JsValue,
     ) -> Result<Composition, JsValue> {
         let options = options_of(&options, &["store_max_bytes", "threads"])?;
+        let mut opened = None;
         let tier = match dir {
             None => Tier::alone(DEFAULT_CACHE_BYTES),
             Some(dir) => {
                 let budget = options.store_max_bytes.unwrap_or(DEFAULT_STORE_BYTES);
-                match Store::open(opfs::Opfs { dir }, budget).await {
-                    Ok(store) => Tier::over(store, DEFAULT_CACHE_BYTES),
+                let opening = Cell::new(StoreBoot {
+                    max_bytes: budget,
+                    read: None,
+                });
+                let told = |step| {
+                    let (phase, store) = stats::stepped(opening.get(), step);
+                    opening.set(store);
+                    stats::booted(phase, None, Some(store));
+                };
+                match Store::open_told(opfs::Opfs { dir }, budget, &told).await {
+                    Ok(store) => {
+                        opened = Some(opening.get());
+                        Tier::over(store, DEFAULT_CACHE_BYTES)
+                    }
                     Err(why) => {
                         logged(&format!("the store would not open, so none is kept: {why}"));
+                        stats::booted(BootPhase::StoreFailed, None, Some(opening.get()));
                         Tier::alone(DEFAULT_CACHE_BYTES)
                     }
                 }
             }
         };
+        stats::booted(BootPhase::Opened, None, opened);
         Ok(Composition {
             threads: options.threads,
             ..Composition::over(name, tier)

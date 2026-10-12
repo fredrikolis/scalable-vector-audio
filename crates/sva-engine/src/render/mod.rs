@@ -496,7 +496,7 @@ fn endless(name: &str) -> EngineError {
 #[cfg(test)]
 fn pulled(held: &mut Render, memo: (&Memory, Recording)) -> Result<(), EngineError> {
     if let Some(mut driver) = driving(held, memo)? {
-        while driver.pull()? {}
+        while driver.pull(None)? {}
         drove(held, driver);
     }
     Ok(())
@@ -531,7 +531,7 @@ fn drove(held: &mut Render, driver: drive::Driver) {
     let keep = !dropped(&held.config);
     let range = held.range.expect("a pulled render has a range");
     held.held_bytes = driver.most_bytes();
-    held.computed_samples = driver.work.computed_samples;
+    held.computed_samples = driver.work().computed_samples;
     held.cache_stats = Some(driver.recording.stats(&driver.memory));
     if let Some(stop) = driver.stop().filter(|stop| *stop < range.end) {
         held.range = Some(Extent::new(range.start, stop));
@@ -569,7 +569,11 @@ pub(crate) fn finer(
     let at = value_graph.root;
     let memory = &render.memory;
     let threads = render.config.threads;
-    value_graph.pull(over, (memory, &mut Recording::over(memory)), threads)?;
+    value_graph.pull(
+        over,
+        (memory, &mut Recording::over(memory)),
+        (threads, None),
+    )?;
     let mut held = value_graph.samples(at, over);
     held.rate = render.config.rate * fine;
     Ok(held)
@@ -632,7 +636,11 @@ pub(crate) fn sampled(render: &Render, node: NodeId, over: Extent) -> Result<Buf
     let at = value_graph.root;
     let memory = &render.memory;
     let threads = render.config.threads;
-    value_graph.pull(over, (memory, &mut Recording::over(memory)), threads)?;
+    value_graph.pull(
+        over,
+        (memory, &mut Recording::over(memory)),
+        (threads, None),
+    )?;
     Ok(value_graph.samples(at, over))
 }
 

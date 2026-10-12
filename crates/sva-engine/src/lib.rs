@@ -27,9 +27,10 @@ pub use arguments::{Argument, Arguments, Called, Chosen};
 pub use bindings::Binding;
 pub use cache::log::cache_log;
 pub use cache::{
-    Backend, CacheStats, Call, CallStats, Counters, Cut, DEFAULT_CACHE_BYTES, DEFAULT_MARK_EVERY,
-    DEFAULT_STORE_BYTES, EngineStats, FETCH_READS, Hash, INDEX_NAME, Kind, Lookup, Nothing,
-    Outcome, PayloadKind, Persisted, Phase, STORE_FORMAT, Store, Stored, Tally, Tier, Worked,
+    Backend, Boot, BootPhase, CacheStats, Call, CallStats, Counters, Cut, DEFAULT_CACHE_BYTES,
+    DEFAULT_MARK_EVERY, DEFAULT_STORE_BYTES, EngineStats, FETCH_READS, Gauge, Hash, INDEX_NAME,
+    Kind, Lookup, Nothing, Opening, Outcome, PayloadKind, Persisted, Phase, Progress, STORE_FORMAT,
+    Store, StoreBoot, Stored, Tally, Tier, Typed, Worked,
 };
 pub use cast::Cast;
 pub use error::{BindingFault, Diagnostic, EngineError, Located, REGISTRY};

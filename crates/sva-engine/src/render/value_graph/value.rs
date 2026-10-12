@@ -251,6 +251,19 @@ impl Value {
         out
     }
 
+    /// What `retain` would leave of `holding`, were that what it held.
+    pub(crate) fn retained(&self, holding: &Segments, kept: &Segments) -> Segments {
+        match &self.holding {
+            Holding::Segments(_) => holding.meet(kept),
+            Holding::Run { .. } => {
+                let from = kept.iter().next().map_or(i64::MAX, |first| first.start);
+                holding.intersect(Extent::new(from, i64::MAX))
+            }
+            Holding::Frames(_) if kept.is_empty() => Segments::default(),
+            Holding::Frames(_) => holding.clone(),
+        }
+    }
+
     /// A run keeps everything from `kept`'s first sample on.
     pub(crate) fn retain(&mut self, kept: &Segments) {
         match &mut self.holding {

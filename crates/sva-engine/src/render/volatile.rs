@@ -96,7 +96,7 @@ fn at_stand_in<'t>(
         Some(Expr::Lit(Literal::Num(STAND_IN + at as f64)))
     };
     let rebound = graph.rebound(&held);
-    let (world, root) = World::rendered(stand_in, &rebound, target, config.rate)?;
+    let (world, root) = World::rendered(stand_in, &rebound, target, (config.rate, None))?;
     let tys = &world.typing;
     let at = tys.id(&root).ok_or(EngineError::UnknownNode(root))?;
     Ok((tys, at))

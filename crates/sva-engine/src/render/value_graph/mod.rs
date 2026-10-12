@@ -27,7 +27,7 @@ pub(crate) use demand::Need;
 pub(crate) use value::{Holding, Key, Kind, Value};
 pub(crate) use values::Values;
 
-use crate::cache::{Memory, Question, Recording, Shape, Stored};
+use crate::cache::{Gauge, Memory, Question, Recording, Shape, Stored};
 use crate::cast::Cast;
 use crate::error::EngineError;
 use crate::refs;
@@ -318,9 +318,100 @@ impl ValueGraph {
         &mut self,
         asked_range: Extent,
         (memory, seen): (&Memory, &mut Recording),
-        threads: NonZeroUsize,
+        (threads, heard): (NonZeroUsize, Heard),
     ) -> Result<Pulled, EngineError> {
-        self.pulled(&self.asked(asked_range), (memory, seen), threads)
+        self.pulled(&self.asked(asked_range), (memory, seen), (threads, heard))
+    }
+
+    /// The work `asked_range` has left: `None` where a value has no end there.
+    pub(crate) fn remaining(
+        &self,
+        asked_range: Extent,
+        held: (&Memory, &Recording),
+    ) -> Option<Gauge> {
+        let needs = demand::planned(&self.values, &self.asked(asked_range), &demand::as_held);
+        self.tallied(&needs, None, held)
+    }
+
+    /// `remaining` before the first pull, which runs each history ahead of `first` and lets go
+    /// of what `first` reads none of: the history's work, then the range's over what it leaves.
+    pub(crate) fn ahead(
+        &self,
+        (first, asked_range): (Extent, Extent),
+        held: (&Memory, &Recording),
+    ) -> Option<Gauge> {
+        let before = self.asked(first);
+        let spans = self.histories(&demand::planned(&self.values, &before, &demand::as_held));
+        if spans.is_empty() {
+            return self.remaining(asked_range, held);
+        }
+        let run = demand::planned(&self.values, &spans, &demand::as_held);
+        let history = self.tallied(&run, None, held)?;
+        let stepped = |at: usize, value: &Value| {
+            let (mut holding, end) = demand::as_held(at, value);
+            let computed = &run[at].compute;
+            if value.alias().is_none() {
+                holding.union(computed);
+            }
+            let stateful = matches!(&value.kind, Kind::MachineRun(p) if p.stateful());
+            let ran = (stateful && !computed.is_empty()).then(|| computed.hull().end);
+            (holding, ran.or(end))
+        };
+        let read = demand::planned(&self.values, &before, &stepped);
+        let reach = demand::reach(&self.values, &before);
+        let stands = |at: usize, value: &Value| stepped(at, value).1;
+        let kept = self.keeps((read, reach), Extent::NOWHERE, Some(first.start), &stands);
+        let kept: HashMap<usize, Segments> = kept.into_iter().collect();
+        let left = |at: usize, value: &Value| {
+            let (holding, end) = stepped(at, value);
+            let left = kept.get(&at).map(|kept| value.retained(&holding, kept));
+            (left.unwrap_or(holding), end)
+        };
+        let needs = demand::planned(&self.values, &self.asked(asked_range), &left);
+        Some(history.plus(self.tallied(&needs, Some(&run), held)?))
+    }
+
+    /// The samples `needs` compute, and those memory answers that none counted before.
+    fn tallied(
+        &self,
+        needs: &[Need],
+        counted: Option<&[Need]>,
+        held: (&Memory, &Recording),
+    ) -> Option<Gauge> {
+        let mut work = Gauge::default();
+        for (at, value) in self.values.iter() {
+            if value.alias().is_some() {
+                continue;
+            }
+            let (need, place) = (&needs[at], self.values.place(at));
+            if !matches!(value.kind, Kind::Resident(_)) {
+                work.computed_samples += need.compute.samples()?;
+            }
+            if let Some((cached, from_store)) = store::cached(value, place, held) {
+                let mut answered = need.hold.meet(&cached).minus(&need.compute);
+                answered = answered.minus(&place.counted);
+                if let Some(counted) = counted {
+                    answered = answered.minus(&counted[at].hold);
+                }
+                let answered = answered.samples()?;
+                work.cached_samples += answered;
+                work.stored_samples += if from_store { answered } else { 0 };
+            }
+        }
+        Some(work)
+    }
+
+    /// Each stateful value `needs` compute from before what they hold of it, and that stretch.
+    fn histories(&self, needs: &[Need]) -> Vec<(usize, Extent)> {
+        self.values
+            .iter()
+            .filter(|(_, value)| matches!(&value.kind, Kind::MachineRun(p) if p.stateful()))
+            .filter_map(|(at, _)| {
+                let need = &needs[at];
+                let span = Extent::new(need.compute.hull().start, need.hold.hull().start);
+                (!need.compute.is_empty() && !span.is_empty()).then_some((at, span))
+            })
+            .collect()
     }
 
     /// The history each stateful value runs through before what `asked_range` holds of it, pulled
@@ -331,19 +422,9 @@ impl ValueGraph {
         asked_range: Extent,
         block: i64,
         (memory, seen): (&Memory, &mut Recording),
-        threads: NonZeroUsize,
+        (threads, heard): (NonZeroUsize, Heard),
     ) -> Result<Pulled, EngineError> {
-        let needs = self.bounded_demand(asked_range)?;
-        let spans: Vec<(usize, Extent)> = self
-            .values
-            .iter()
-            .filter(|(_, value)| matches!(&value.kind, Kind::MachineRun(p) if p.stateful()))
-            .filter_map(|(at, _)| {
-                let need = &needs[at];
-                let span = Extent::new(need.compute.hull().start, need.hold.hull().start);
-                (!need.compute.is_empty() && !span.is_empty()).then_some((at, span))
-            })
-            .collect();
+        let spans = self.histories(&self.bounded_demand(asked_range)?);
         let over = spans
             .iter()
             .fold(Extent::NOWHERE, |held, (_, s)| held.hull(*s));
@@ -361,12 +442,14 @@ impl ValueGraph {
                 .saturating_add(block)
                 .min(blocks_end(from, threads))
                 .min(over.end);
+            let before = pulled.work;
+            let told = |work: Gauge| heard.into_iter().for_each(|heard| heard(before.plus(work)));
             let done = self.pulled(
                 &within(Extent::new(from, to)),
                 (memory, &mut *seen),
-                threads,
+                (threads, heard.map(|_| &told as &dyn Fn(Gauge))),
             )?;
-            pulled.computed_samples += done.computed_samples;
+            pulled.work = pulled.work.plus(done.work);
             pulled.most_bytes = pulled.most_bytes.max(done.most_bytes);
             let mut later = within(Extent::new(to, i64::MAX));
             later.extend(self.asked(asked_range));
@@ -410,7 +493,7 @@ impl ValueGraph {
         &mut self,
         asked: &[(usize, Extent)],
         (memory, seen): (&Memory, &mut Recording),
-        threads: NonZeroUsize,
+        (threads, heard): (NonZeroUsize, Heard),
     ) -> Result<Pulled, EngineError> {
         let mut needs = demand::demand(&self.values, asked);
         let order: Vec<usize> = self.values.ordered().collect();
@@ -435,6 +518,25 @@ impl ValueGraph {
             .into_iter()
             .filter(|at| !(needs[*at].hold.is_empty() && needs[*at].compute.is_empty()))
             .collect();
+        let counted = asked.iter().copied().filter(|_| heard.is_some());
+        for at in counted {
+            let (value, place) = self.values.placed(at);
+            if value.alias().is_some() {
+                continue;
+            }
+            let Some((cached, from_store)) = store::cached(value, place, (memory, &*seen)) else {
+                continue;
+            };
+            let met = needs[at].hold.meet(&cached);
+            let answered = met.minus(&needs[at].compute).minus(&place.counted);
+            let answered = answered.samples().unwrap_or(0);
+            pulled.work.cached_samples += answered;
+            pulled.work.stored_samples += if from_store { answered } else { 0 };
+            place.counted.union(&met);
+            place.cached = Some((cached, from_store));
+        }
+        let heard = |work: Gauge| heard.into_iter().for_each(|heard| heard(work));
+        heard(pulled.work);
         for wave in waves::waves(&self.values, &asked) {
             let computing: Vec<usize> = wave
                 .iter()
@@ -449,10 +551,12 @@ impl ValueGraph {
                 }
                 let computed: Vec<Extent> = needs[at].compute.iter().collect();
                 if !matches!(self.values[at].kind, Kind::Resident(_)) {
-                    pulled.computed_samples += computed.iter().map(|e| e.len() as u64).sum::<u64>();
+                    pulled.work.computed_samples +=
+                        computed.iter().map(|e| e.len() as u64).sum::<u64>();
                 }
                 self.kept(at, &computed, (memory, &mut *seen));
             }
+            heard(pulled.work);
         }
         pulled.most_bytes = self.bytes();
         Ok(pulled)
@@ -477,14 +581,23 @@ impl ValueGraph {
         self.released(asked, keep, since);
     }
 
-    /// A wanted value keeps everything, as a wanted reader's rerun reads it from its start;
-    /// the target's own value, which no wanted value reads, keeps only the output's samples.
-    fn released(
-        &mut self,
+    fn released(&mut self, asked: (Vec<Need>, Vec<Segments>), keep: Extent, since: Option<i64>) {
+        let ends = |_: usize, value: &Value| value.end();
+        for (at, kept) in self.keeps(asked, keep, since, &ends) {
+            self.values[at].retain(&kept);
+        }
+    }
+
+    /// What a release keeps of each value, `ends` where each run stands. A wanted value keeps
+    /// everything, as a wanted reader's rerun reads it from its start; the target's own value,
+    /// which no wanted value reads, keeps only the output's samples.
+    fn keeps(
+        &self,
         (mut needs, reach): (Vec<Need>, Vec<Segments>),
         keep: Extent,
         since: Option<i64>,
-    ) {
+        ends: &dyn Fn(usize, &Value) -> Option<i64>,
+    ) -> Vec<(usize, Segments)> {
         let (mut root, mut by) = (self.root, 0);
         while let Some((read, shift)) = self.values[root].alias() {
             (root, by) = (read, by + shift);
@@ -494,7 +607,8 @@ impl ValueGraph {
             .iter()
             .any(|w| *w != root && self.values[*w].reads.contains(&root));
         let wholes = self.wholes();
-        for at in self.values.ordered().collect::<Vec<_>>() {
+        let mut out = Vec::new();
+        for at in self.values.ordered() {
             let need = std::mem::take(&mut needs[at]);
             let whole = wholes.contains(&at) && !(output && at == root);
             let value = &self.values[at];
@@ -508,13 +622,13 @@ impl ValueGraph {
                     kept.add(Extent::new(since, i64::MAX).shifted(by));
                 }
             }
-            let value = &mut self.values[at];
-            if let (Kind::MachineRun(machine_run), Some(end)) = (&value.kind, value.end()) {
+            if let (Kind::MachineRun(machine_run), Some(end)) = (&value.kind, ends(at, value)) {
                 kept.add(Extent::new(end.saturating_sub(machine_run.own), end));
                 kept.union(&reach[at].intersect(Extent::new(i64::MIN, end)));
             }
-            value.retain(&kept);
+            out.push((at, kept));
         }
+        out
     }
 
     /// Each wanted value, and each one a wanted value only moves: held over the whole range.
@@ -684,10 +798,13 @@ impl ValueGraph {
     }
 }
 
-/// What one pull computed: the samples its values computed, nothing memory answered.
-#[derive(Default)]
+/// Hears a pull's work so far, wave by wave; with none, a pull counts no cached sample.
+pub(crate) type Heard<'h> = Option<&'h dyn Fn(Gauge)>;
+
+/// What one pull came to: the samples its values computed, and those memory answered.
+#[derive(Clone, Copy, Default)]
 pub(crate) struct Pulled {
-    pub(crate) computed_samples: u64,
+    pub(crate) work: Gauge,
     /// The most bytes the value graph held once a block was computed.
     pub(crate) most_bytes: usize,
 }
@@ -1292,6 +1409,8 @@ fn place(values: &Values, value: &Value, profile: &Profile) -> store::Place {
         told: false,
         movers: Vec::new(),
         landed: i64::MIN,
+        cached: None,
+        counted: Segments::default(),
     }
 }
 

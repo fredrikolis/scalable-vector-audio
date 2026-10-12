@@ -105,7 +105,7 @@ fn delivered(call: &Call, driver: &super::drive::Driver, every: u64) {
     let last = driver.end().unwrap_or(driver.last());
     let (samples, total) = ((to - driver.start) as u64, (last - driver.start) as u64);
     call.delivered((samples, Some(total), every), || {
-        (driver.work.computed_samples, driver.recording.tally())
+        (driver.progress(), driver.recording.tally())
     });
 }
 
@@ -120,7 +120,8 @@ async fn run<B: Backend>(
     let memory = tier.memory();
     let mut recording = Recording::over(memory);
     let Session { own, stand_in } = session;
-    let (world, root) = World::rendered(own, graph, target, config.rate)?;
+    let typed = |typed| call.typed(typed);
+    let (world, root) = World::rendered(own, graph, target, (config.rate, Some(&typed)))?;
     let (instances, typed) = (&world.instances, &world.typing);
     let id = typed
         .id(&root)
@@ -158,6 +159,10 @@ async fn run<B: Backend>(
         stats.typed = lowered;
         stats.analysed = decided.0.len().saturating_sub(known + told);
         held.cache_stats = Some(stats);
+        let stored = &found.held[&root];
+        let answered = stored.extents().iter().map(|e| e.len() as u64).sum();
+        let from_store = recording.stored(stored.key);
+        call.answered(answered, from_store, recording.tally());
         return Ok(held);
     }
     let hits: BTreeMap<NodeId, Arc<Stored>> = found
@@ -228,7 +233,9 @@ async fn run<B: Backend>(
                     return Err(EngineError::Abandoned);
                 }
                 let from = driver.at;
-                if !driver.pull()? {
+                let hears = |progress| call.worked(progress);
+                let heard = call.subscribed().then_some(&hears as &dyn Fn(_));
+                if !driver.pull(heard)? {
                     break;
                 }
                 if hear.is_some_and(|hear| !hear.heard(&driver.played(from))) {

@@ -16,8 +16,24 @@ pub(crate) struct Need {
     pub(crate) restart: bool,
 }
 
+/// What a value holds and where its run stands, real or supposed.
+pub(crate) type Held<'h> = &'h dyn Fn(usize, &Value) -> (Segments, Option<i64>);
+
+pub(crate) fn as_held(_: usize, value: &Value) -> (Segments, Option<i64>) {
+    (value.holding(), value.end())
+}
+
 /// Readers first, so a value is asked everything before it asks its own reads.
 pub(crate) fn demand(values: &Values, asked: &[(usize, Extent)]) -> Vec<Need> {
+    asking(values, asked, false, &as_held)
+}
+
+/// `demand` once each node memory holds laid in what it covers, over `held`.
+pub(crate) fn planned(values: &Values, asked: &[(usize, Extent)], held: Held) -> Vec<Need> {
+    asking(values, asked, true, held)
+}
+
+fn asking(values: &Values, asked: &[(usize, Extent)], laid: bool, held: Held) -> Vec<Need> {
     let mut holds = vec![Segments::default(); values.span()];
     for (v, asked_range) in asked {
         holds[*v].add(*asked_range);
@@ -29,12 +45,14 @@ pub(crate) fn demand(values: &Values, asked: &[(usize, Extent)]) -> Vec<Need> {
         if let Some(period) = value.period {
             hold = hold.folded(period);
         }
+        let (holding, end) = held(v, value);
         let (compute, restart) = match &value.kind {
             Kind::MachineRun(machine_run) if machine_run.stateful() => {
-                stateful(value, machine_run, &hold)
+                stateful(machine_run, &hold, (&holding, end))
             }
-            Kind::Frames { .. } | Kind::Istft => whole(value, &hold),
-            _ => (hold.minus(&value.holding()), false),
+            Kind::Frames { .. } | Kind::Istft => whole(value, &hold, &holding),
+            Kind::Resident(_) if laid => (hold.minus(&holding).minus(&value.covers()), false),
+            _ => (hold.minus(&holding), false),
         };
         match &value.kind {
             Kind::MachineRun(machine_run) => {
@@ -95,7 +113,11 @@ pub(crate) fn reach(values: &Values, asked: &[(usize, Extent)]) -> Vec<Segments>
     reach
 }
 
-fn stateful(value: &Value, machine_run: &MachineRun, hold: &Segments) -> (Segments, bool) {
+fn stateful(
+    machine_run: &MachineRun,
+    hold: &Segments,
+    (holding, end): (&Segments, Option<i64>),
+) -> (Segments, bool) {
     if hold.is_empty() {
         return (Segments::default(), false);
     }
@@ -105,11 +127,11 @@ fn stateful(value: &Value, machine_run: &MachineRun, hold: &Segments) -> (Segmen
         .expect("a stateful machine run")
         .min(first);
     let last = hold.hull().end;
-    let (from, restart) = match value.end() {
+    let (from, restart) = match end {
         None => (start, true),
         Some(end) => {
             let before = hold.intersect(Extent::new(i64::MIN, end));
-            match value.holding().covers(&before) {
+            match holding.covers(&before) {
                 true => (end, false),
                 false => (start, true),
             }
@@ -122,9 +144,9 @@ fn stateful(value: &Value, machine_run: &MachineRun, hold: &Segments) -> (Segmen
 }
 
 /// Over its whole support, which its build refused unbounded.
-fn whole(value: &Value, hold: &Segments) -> (Segments, bool) {
+fn whole(value: &Value, hold: &Segments, holding: &Segments) -> (Segments, bool) {
     debug_assert!(value.support().is_bounded(), "a whole value's support ends");
-    match hold.is_empty() || !value.holding().is_empty() {
+    match hold.is_empty() || !holding.is_empty() {
         true => (Segments::default(), false),
         false => (Segments::of(value.support()), false),
     }

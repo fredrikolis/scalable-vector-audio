@@ -176,6 +176,8 @@ struct Held {
     item: Item,
     read: u64,
     since: u64,
+    /// The clock where a value last kept samples here.
+    kept: u64,
     hit_round: u64,
     protected: bool,
 }
@@ -186,6 +188,7 @@ impl Held {
             item,
             read: at,
             since: at,
+            kept: 0,
             hit_round: 0,
             protected: false,
         }
@@ -549,6 +552,7 @@ impl State {
         }
         let bound = self.disk && writes(&stored, facts);
         let read = self.tick();
+        let own = matches!(offered, Offered::Held(_));
         let same = self.node(key).is_some_and(|node| match &node.source {
             Source::Offered {
                 stored: had,
@@ -575,6 +579,9 @@ impl State {
                 held.item.node = Some(node);
                 held.item.slot = slot;
                 held.read = read;
+                if own {
+                    held.kept = read;
+                }
                 let after = held.bytes();
                 self.bytes = self.bytes - before + after;
                 self.links.get_mut().evict(key);
@@ -586,7 +593,11 @@ impl State {
                     slot,
                     node: Some(node),
                 };
-                let held = Held::admitted(item, read);
+                let kept = if own { read } else { 0 };
+                let held = Held {
+                    kept,
+                    ..Held::admitted(item, read)
+                };
                 self.bytes += held.bytes();
                 self.admit(key, held);
             }
@@ -956,6 +967,17 @@ impl Memory {
         self.locked().max_bytes > 0
     }
 
+    pub(crate) fn clock(&self) -> u64 {
+        self.locked().clock
+    }
+
+    /// Whether a value kept samples after `clock` that `key` answers with.
+    pub(crate) fn kept_since(&self, key: Hash, clock: u64) -> bool {
+        let state = self.locked();
+        let kept = |at: &Hash| state.entries.get(at).is_some_and(|held| held.kept > clock);
+        state.under(key).iter().any(kept)
+    }
+
     /// A new round of lookups: what any earlier round missed is asked again.
     pub(crate) fn begin(&self) -> u64 {
         let mut state = self.locked();
@@ -1309,7 +1331,7 @@ impl Memory {
                 };
                 match payload {
                     None => {
-                        held.read = tick;
+                        (held.read, held.kept) = (tick, tick);
                         let after = held.bytes();
                         Ok((before, after))
                     }
@@ -1371,15 +1393,20 @@ impl Memory {
             slot,
             node,
         };
+        let kept = read;
         let held = match earned {
             Some((read, since, hit_round, protected)) if item.node.is_some() => Held {
                 item,
                 read,
                 since,
+                kept,
                 hit_round,
                 protected,
             },
-            _ => Held::admitted(item, read),
+            _ => Held {
+                kept,
+                ..Held::admitted(item, read)
+            },
         };
         state.bytes += held.bytes();
         state.admit(key, held);
