@@ -10,9 +10,10 @@ use crate::disk::{Held, Memory, disk, now, opened};
 use crate::fixtures::{added, graph_of, next, replaced, samples};
 use sva_ast::Graph;
 use sva_engine::{
-    Ask, Backend, CacheStats, Change, Changed, EngineError, Handle, Hash, INDEX_NAME, Out, Outcome,
-    Persisted, Placed, Range, Render, RenderConfig, Representation, STORE_FORMAT, Store, Stream,
-    StreamConfig, Tier, change, render, render_over,
+    Ask, Backend, Buffer, CacheStats, Change, Changed, EngineError, Handle, Hash, Hear, INDEX_NAME,
+    Never, Out, Outcome, Persisted, Placed, Range, Render, RenderConfig, Representation,
+    STORE_FORMAT, Session, Store, Stream, StreamConfig, Tier, change, render, render_in,
+    render_over,
 };
 use sva_formula::FOURIER_DUAL_RULES_VERSION;
 
@@ -2261,4 +2262,68 @@ fn memory_writes_the_target_shared_and_stateful_nodes_and_no_lone_one() {
         !warm("lone").contains(&Outcome::Hit),
         "`lone` was not written"
     );
+}
+
+/// A filtered voice `x` under a master, `late` beside a second one.
+fn voices(late: bool) -> Graph {
+    let voice =
+        |f: u32| format!("lowpass(sample(crop(sin(2*pi*{f}*t), 0s, 4s)), cutoff=2000, q=0.7)\n");
+    let (x, y) = (voice(220), voice(330));
+    match late {
+        false => graph_of("voices", &[("x", &x), ("master", "@x*0.5\n")]),
+        true => graph_of(
+            "voices-late",
+            &[("x", &x), ("y", &y), ("master", "@x*0.5 + @y*0.25\n")],
+        ),
+    }
+}
+
+/// From second 1, so `y`'s filter has a history to run before the first block.
+fn from_second_one() -> RenderConfig {
+    let mut config = RenderConfig::at(RATE);
+    config.range = Range {
+        start: Some(i64::from(RATE)),
+        end: Some(4 * i64::from(RATE)),
+    };
+    config.threads = NonZeroUsize::MIN;
+    config
+}
+
+/// Memory lets go of all it holds once the first block is heard.
+struct LetsGo<'t, B: Backend>(&'t Tier<B>);
+
+impl<B: Backend> Hear for LetsGo<'_, B> {
+    fn heard(&self, _: &Buffer) -> bool {
+        self.0.set_max_bytes(0);
+        true
+    }
+}
+
+fn read_to_its_end<B: Backend>(tier: &Tier<B>) {
+    let rendered = |late: bool, config: RenderConfig, hear: Option<&dyn Hear>| {
+        let (mut session, graph) = (Session::default(), voices(late));
+        let render = render_in(&mut session, &graph, "master", config, tier, (&Never, hear));
+        now(render).expect("a render")
+    };
+    let whole = RenderConfig {
+        threads: NonZeroUsize::MIN,
+        ..RenderConfig::seconds(RATE, 4.0)
+    };
+    rendered(false, whole, None);
+    let over = rendered(true, from_second_one(), Some(&LetsGo(tier)));
+    let stats = over.cache_stats.as_ref().expect("a render over memory");
+    let x = stats.lookups.iter().find(|l| l.node == "x");
+    assert_eq!(x.map(|l| l.outcome), Some(Outcome::Hit), "{stats:?}");
+    assert!(tier.evictions() > 0, "memory let go of what it held");
+    let alone =
+        render(&voices(true), "master", from_second_one(), &Tier::default()).expect("a render");
+    assert_eq!(samples(&over)["master"], samples(&alone)["master"]);
+}
+
+/// A render reads a node memory answered to its range's end, though it runs a history first
+/// and memory lets the node go before its later blocks: over memory alone and over a disk.
+#[test]
+fn a_node_memory_answered_is_read_to_the_ranges_end_though_memory_lets_it_go_meanwhile() {
+    read_to_its_end(&Tier::default());
+    read_to_its_end(&opened(&Memory::default(), u64::MAX));
 }

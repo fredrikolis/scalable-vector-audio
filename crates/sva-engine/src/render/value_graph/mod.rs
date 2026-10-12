@@ -415,11 +415,12 @@ impl ValueGraph {
     }
 
     /// The history each stateful value runs through before what `asked_range` holds of it, pulled
-    /// up to `block` samples and a grid block per thread at a time, each dropped once no later
-    /// one reads it: the state a late range starts from, streamed as a render streams it.
+    /// up to `block` samples and a grid block per thread at a time, each dropped once neither a
+    /// later one nor the range on to `last` reads it: the state a late range starts from,
+    /// streamed as a render streams it.
     pub(crate) fn history(
         &mut self,
-        asked_range: Extent,
+        (asked_range, last): (Extent, i64),
         block: i64,
         (memory, seen): (&Memory, &mut Recording),
         (threads, heard): (NonZeroUsize, Heard),
@@ -452,7 +453,7 @@ impl ValueGraph {
             pulled.work = pulled.work.plus(done.work);
             pulled.most_bytes = pulled.most_bytes.max(done.most_bytes);
             let mut later = within(Extent::new(to, i64::MAX));
-            later.extend(self.asked(asked_range));
+            later.extend(self.asked(Extent::new(asked_range.start, last)));
             let asked = (
                 demand::demand(&self.values, &later),
                 demand::reach(&self.values, &later),

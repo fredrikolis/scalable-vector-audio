@@ -215,7 +215,7 @@ impl Driver {
         if from == self.start {
             let hears = hears(self.gauge);
             let history = self.value_graph.history(
-                asked_range,
+                (asked_range, self.last),
                 self.block as i64,
                 (&self.memory, &mut self.recording),
                 (self.threads, heard.map(|_| &hears as &dyn Fn(Gauge))),
