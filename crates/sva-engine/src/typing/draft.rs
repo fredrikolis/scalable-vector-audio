@@ -53,6 +53,10 @@ pub(crate) struct Mark {
 }
 
 impl Typing {
+    pub(crate) fn drafting(&self) -> bool {
+        self.draft != Draft::default()
+    }
+
     /// Hides each of `paths` from what is held: each is lowered anew, or let go on commit.
     pub(crate) fn hide(&mut self, paths: impl IntoIterator<Item = String>) {
         self.draft.hidden.extend(paths);
@@ -130,17 +134,14 @@ impl Typing {
             self.copies.remove(path);
             self.arguments.remove(path);
         }
-        for entry in draft.journal {
-            let (unit, (path, grid)) = match entry {
-                Entry::Node(id, at) => ((Some(id), None), at),
-                Entry::Origin(token, at) => ((None, Some(token)), at),
-                _ => continue,
-            };
+        for ((path, grid), made) in made_together(draft.journal) {
             let units = self.units.entry(path.to_string()).or_insert_with(|| Units {
                 file: inst.origin(&path).unwrap_or(&path).to_string(),
                 grids: Vec::new(),
             });
-            touched.insert(units.file.clone());
+            if !touched.contains(&units.file) {
+                touched.insert(units.file.clone());
+            }
             let held = match units.grids.iter().position(|(g, _)| *g == grid) {
                 Some(at) => &mut units.grids[at].1,
                 None => {
@@ -148,11 +149,8 @@ impl Typing {
                     &mut units.grids.last_mut().expect("just pushed").1
                 }
             };
-            match unit {
-                (Some(id), _) => held.nodes.push(id),
-                (_, Some(token)) => held.origins.push(token),
-                _ => {}
-            }
+            held.nodes.extend(made.nodes);
+            held.origins.extend(made.origins);
         }
         self.by_path.extend(draft.by_path);
         for ((path, grid), id) in draft.copies {
@@ -202,6 +200,26 @@ impl Typing {
             self.free_sites.push(site);
         }
     }
+}
+
+/// What a journal made, in order, each run of one path on one grid as one.
+fn made_together(journal: Vec<Entry>) -> Vec<((Arc<str>, Grid), Unit)> {
+    let mut runs: Vec<((Arc<str>, Grid), Unit)> = Vec::new();
+    for entry in journal {
+        let (id, token, at) = match entry {
+            Entry::Node(id, at) => (Some(id), None, at),
+            Entry::Origin(token, at) => (None, Some(token), at),
+            _ => continue,
+        };
+        let same = |(held, grid): &(Arc<str>, Grid)| Arc::ptr_eq(held, &at.0) && *grid == at.1;
+        if !runs.last().is_some_and(|(held, _)| same(held)) {
+            runs.push((at, Unit::default()));
+        }
+        let (_, unit) = runs.last_mut().expect("a run");
+        unit.nodes.extend(id);
+        unit.origins.extend(token);
+    }
+    runs
 }
 
 fn restore<K: Ord, V>(map: &mut BTreeMap<K, V>, key: K, old: Option<V>) {

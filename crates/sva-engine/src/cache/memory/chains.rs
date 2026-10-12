@@ -20,6 +20,7 @@ fn stored(key: Hash) -> Stored {
         moved: 0.0,
         readable: true,
         sampled: true,
+        cut: None,
         held: Vec::new(),
     }
 }

@@ -8,10 +8,10 @@ use sva_samples::{
 use sva_formula::{FOURIER_DUAL_RULES_VERSION, Hash};
 
 use super::Stored;
-use super::stored::{Header, Laid, Samples};
+use super::stored::{Cut, Header, Laid, Samples};
 
 /// Bumped by, and only by, a change to a stored value's bytes or to the key it is stored under.
-pub const STORE_FORMAT: u32 = 45;
+pub const STORE_FORMAT: u32 = 46;
 
 /// Every entry opens with its format and Fourier dual rules version, so one another wrote is
 /// never read as a value.
@@ -113,6 +113,17 @@ fn header(head: &Header, laid: &[Laid]) -> Vec<u8> {
     word(&mut out, stored.moved.to_bits());
     out.push(u8::from(stored.readable));
     out.push(u8::from(stored.sampled));
+    match stored.cut {
+        None => out.push(0),
+        Some(cut) => {
+            out.push(1);
+            word(&mut out, cut.silence_threshold_dbfs.to_bits());
+            maybe(
+                &mut out,
+                cut.treated_as_silent_from_sample.map(|at| at as u64),
+            );
+        }
+    }
     match head.samples() {
         &Samples::Of { key, by } => {
             out.push(1);
@@ -169,6 +180,14 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Header, u64)> {
     let moved = f64::from_bits(r.word()?);
     let readable = r.flag()?;
     let sampled = r.flag()?;
+    let cut = match r.byte()? {
+        0 => None,
+        1 => Some(Cut {
+            silence_threshold_dbfs: f64::from_bits(r.word()?),
+            treated_as_silent_from_sample: r.maybe()?.map(|at| at as i64),
+        }),
+        _ => return None,
+    };
     let of = match r.byte()? {
         0 => None,
         1 => Some(Samples::Of {
@@ -223,6 +242,7 @@ pub(crate) fn read_head(bytes: &[u8], file: Hash) -> Option<(Header, u64)> {
         moved,
         readable,
         sampled,
+        cut,
         held: Vec::new(),
     };
     let whole = runs_whole(count, &samples) && r.0.is_empty();

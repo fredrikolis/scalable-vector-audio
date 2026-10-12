@@ -15,7 +15,7 @@ pub(crate) use memory::{Facts, Keep, Known, Memory, Offered};
 pub use persist::{Backend, DEFAULT_STORE_BYTES, INDEX_NAME, Persisted, Store};
 pub(crate) use stats::Recording;
 pub use stats::{CacheStats, Lookup, Outcome};
-pub use stored::Stored;
+pub use stored::{Cut, Stored};
 pub use sva_formula::Hash;
 pub(crate) use tier::now;
 pub use tier::{FETCH_READS, Nothing, Tier};

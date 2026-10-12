@@ -38,6 +38,7 @@ mod segments;
 mod session;
 mod skip;
 mod skipping_exact_zero_work;
+mod stated;
 mod stats;
 mod stores;
 mod stream;

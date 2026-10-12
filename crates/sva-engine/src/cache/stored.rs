@@ -17,7 +17,15 @@ pub struct Stored {
     pub moved: f64,
     pub readable: bool,
     pub sampled: bool,
+    pub cut: Option<Cut>,
     pub(crate) held: Vec<Extent>,
+}
+
+/// Where a node read open ends, as a render found: a function of its key and this threshold.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cut {
+    pub silence_threshold_dbfs: f64,
+    pub treated_as_silent_from_sample: Option<i64>,
 }
 
 impl Stored {

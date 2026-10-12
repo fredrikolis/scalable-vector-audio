@@ -45,6 +45,8 @@ pub struct CacheStats {
     pub reached: Vec<(i64, usize)>,
     pub typed: Vec<String>,
     pub planned: Vec<String>,
+    /// Supports found by analysis: none a stored node told.
+    pub analysed: usize,
     /// Why memory stopped writing to the disk meanwhile.
     pub unstaged: Option<String>,
     pub unslotted: Option<String>,
@@ -147,6 +149,7 @@ impl Recording {
             reached: self.reached.clone().unwrap_or_default(),
             typed: Vec::new(),
             planned: Vec::new(),
+            analysed: 0,
             unstaged: why.filter(|_| failed || memory.blocked()),
             unslotted: None,
         }

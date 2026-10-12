@@ -11,7 +11,7 @@ use super::eval::Marks;
 use super::segments::Segments;
 use super::value::{Holding, Kind, Value};
 use crate::cache::{
-    Expected, Facts, Keep, Memory, Offered, Payload, PayloadKind, Recording, Run, Stored,
+    Cut, Expected, Facts, Keep, Memory, Offered, Payload, PayloadKind, Recording, Run, Stored,
 };
 use crate::typing::Typing;
 
@@ -435,8 +435,9 @@ impl ValueGraph {
     }
 
     /// Each value an instance's own node holds named by that node; a value that only moves
-    /// another is answered as what it moves.
-    pub(crate) fn offers(&mut self, tys: &Typing, range: Extent) {
+    /// another is answered as what it moves. The root's node states `cut`, where the render
+    /// read it open.
+    pub(crate) fn offers(&mut self, tys: &Typing, range: Extent, cut: Option<Cut>) {
         let under = Under::of(self);
         let live = |at: usize| match (&self.values[at].kind, &self.values[at].reads[..]) {
             (Kind::Resident(_), [live]) => *live,
@@ -452,7 +453,8 @@ impl ValueGraph {
             if named.contains_key(&at) {
                 continue;
             }
-            if let Some(stored) = self.offerable(tys, (id, at), &under) {
+            if let Some(mut stored) = self.offerable(tys, (id, at), &under) {
+                stored.cut = cut.filter(|_| at == root);
                 named.insert(at, stored);
             }
         }
@@ -520,6 +522,7 @@ impl ValueGraph {
             moved: under.moved[at],
             readable: super::readable(tys, id) && value.alias().is_none(),
             sampled: ty.held == Representation::Sampled,
+            cut: None,
             held: Vec::new(),
         })
     }

@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use sva_ast::Graph;
@@ -10,8 +11,10 @@ use sva_samples::Buffer;
 
 use super::value_graph;
 use super::world::{Reach, Reached, Walking, World};
-use super::{Render, RenderConfig, closed, driving, dropped, drove, ended, planned_over};
-use crate::cache::{Backend, Recording, Stored, Tier};
+use super::{
+    Render, RenderConfig, closed, cut_of, driving, dropped, drove, ended, planned_over, told_end,
+};
+use crate::cache::{Backend, Known, Recording, Stored, Tier};
 use crate::error::EngineError;
 use crate::schedule;
 
@@ -81,22 +84,35 @@ pub async fn render_in<B: Backend>(
         .id(&root)
         .ok_or_else(|| EngineError::UnknownNode(root.clone()))?;
     let profile = config.profile;
-    let (config, decided) = ended(typed, id, config, world.bounds(id, &profile));
-    world.bound(id, &profile, &decided);
-    let lowered = typed.lowered().to_vec();
     let round = tier.begin();
+    let (mut supports, mut end) = world.bounds(id, &profile);
+    let known = supports.len();
+    let mut told = 0;
+    if end.is_none() && config.range.end.is_none() {
+        let stored = root_stored(world, &root, &config, (tier, round)).await;
+        let stated = stored.and_then(|stored| Some((stored.support, told_end(&stored, &profile)?)));
+        if let Some((support, stated)) = stated {
+            told += usize::from(supports.told(id, support));
+            end = Some(stated);
+        }
+    }
+    let (config, mut decided) = ended(typed, id, config, (supports, end));
+    world.bound(id, &profile, &decided);
+    let cut = decided.1.map(|end| cut_of(&end, &profile));
+    let lowered = typed.lowered().to_vec();
     let found = walked(
         world,
         (&root, &config, false),
         (tier, round, &mut recording),
     )
     .await;
-    let tys = typed.clone();
+    let tys = Rc::clone(typed);
     if dropped(&config) && found.held.contains_key(&root) {
         let schedule = schedule::plan(&tys, id, &config.asks);
         let mut held = Render::shell((tys, id), (config, schedule), memory.clone());
         let mut stats = recording.stats(memory);
         stats.typed = lowered;
+        stats.analysed = decided.0.len().saturating_sub(known + told);
         held.cache_stats = Some(stats);
         return Ok(held);
     }
@@ -105,6 +121,10 @@ pub async fn render_in<B: Backend>(
         .iter()
         .filter_map(|(path, stored)| Some((tys.id(path)?, Arc::clone(stored))))
         .collect();
+    for (hit, stored) in &hits {
+        told += usize::from(decided.0.told(*hit, stored.support));
+    }
+    let mut analysed = decided.0.len();
     let mut held = planned_over(
         (graph, target, instances),
         (tys, id),
@@ -140,13 +160,19 @@ pub async fn render_in<B: Backend>(
                 let hits = found.held.iter();
                 let hits = hits
                     .filter_map(|(path, stored)| Some((held.tys.id(path)?, Arc::clone(stored))));
-                value_graph.read_on(&held.tys, at, &hits.collect())?;
+                let hits: BTreeMap<NodeId, Arc<Stored>> = hits.collect();
+                for (hit, stored) in &hits {
+                    told += usize::from(value_graph.supports.told(*hit, stored.support));
+                }
+                value_graph.read_on(&held.tys, at, &hits)?;
             }
             value_graph.settled(value_graph.root, &[], (range.start, false));
             value_graph.refuse_endless(range)?;
         }
-        value_graph.offers(&held.tys, range);
+        value_graph.offers(&held.tys, range, cut);
+        analysed = value_graph.supports.len();
     }
+    let analysed = analysed.saturating_sub(known + told);
     let walked = recording.stats(memory);
     match driving(&mut held, (memory, recording))? {
         Some(mut driver) => {
@@ -179,10 +205,28 @@ pub async fn render_in<B: Backend>(
     if let Some(stats) = &mut held.cache_stats {
         stats.typed = retyped;
         stats.planned = computed;
+        stats.analysed = analysed;
         stats.unslotted = held.unslotted.clone();
     }
     closed(&mut held)?;
     Ok(held)
+}
+
+/// `root`'s own node as stored, asked before the walk: its end decides the range walked.
+async fn root_stored<B: Backend>(
+    world: &World,
+    root: &str,
+    config: &RenderConfig,
+    (tier, round): (&Tier<B>, u64),
+) -> Option<Arc<Stored>> {
+    let key = world.root_key(root, config)?;
+    loop {
+        match tier.memory().answer(key, round) {
+            Known::Hit(stored) => return Some(stored),
+            Known::Miss => return None,
+            Known::Unknown => tier.lookup(key, round).await,
+        }
+    }
 }
 
 /// What memory answers from `root` down, or `under` it alone, each key it cannot answer looked

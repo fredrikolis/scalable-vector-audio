@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use sva_ast::{Expr, Graph, Held};
@@ -27,7 +28,7 @@ pub(super) type Found<'f> = &'f mut dyn FnMut(&str, Hash) -> Answer;
 pub(super) struct World {
     pub(super) graph: Graph,
     pub(super) instances: Instances,
-    pub(super) typing: Typing,
+    pub(super) typing: Rc<Typing>,
     known: BTreeMap<String, Known>,
     edits: Vec<(String, Option<Held>)>,
     /// Whether it writes `@notes` as the sum of its terms: a stream's, over a composition that
@@ -100,7 +101,7 @@ impl World {
         World {
             graph: graph.clone(),
             instances: Instances::new(rate),
-            typing: Typing::default(),
+            typing: Rc::default(),
             known: BTreeMap::new(),
             edits: Vec::new(),
             notes,
@@ -240,9 +241,11 @@ impl World {
             named.retain(|path| !held(path));
         }
         let region = self.region(&named, &rescanned);
-        self.typing.lower(&self.instances, &region)?;
+        if !(region.is_empty() && self.typing.lowered().is_empty()) {
+            own(&mut self.typing).lower(&self.instances, &region)?;
+        }
         if self.notes {
-            wanted.terms.name(&mut self.typing);
+            wanted.terms.name(own(&mut self.typing));
         }
         let (found, changed) = self.named(&region);
         let mut fresh: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -301,6 +304,13 @@ impl World {
             found,
         };
         walk.walked()
+    }
+
+    /// The key a walk looks `root` up under, if it does.
+    pub(super) fn root_key(&self, root: &str, config: &RenderConfig) -> Option<Hash> {
+        let known = self.known.get(root)?;
+        let pinned = known.pinned || Pins::of(&self.instances, config).holds(root);
+        self.keyed(root, known, config).filter(|_| !pinned)
     }
 
     /// What memory holds `known`'s own value under; none where its identity refuses.
@@ -426,8 +436,14 @@ impl World {
             let gone = old.paths().filter(|p| !self.instances.holds(p));
             removed.extend(gone.map(str::to_string));
         }
-        self.typing.hide(removed.iter().cloned());
-        let freed = self.typing.commit(&self.instances);
+        let freed = match removed.is_empty() && !self.typing.drafting() {
+            true => Vec::new(),
+            false => {
+                let typing = own(&mut self.typing);
+                typing.hide(removed.iter().cloned());
+                typing.commit(&self.instances)
+            }
+        };
         self.unbound(&freed);
         self.known.extend(found);
         for path in &removed {
@@ -442,7 +458,10 @@ impl World {
 
     /// Everything since the last commit undone; the draft typing's ids.
     pub(super) fn abort(&mut self) -> Vec<sva_formula::NodeId> {
-        let freed = self.typing.abort();
+        let freed = match self.typing.drafting() || !self.typing.lowered().is_empty() {
+            true => own(&mut self.typing).abort(),
+            false => Vec::new(),
+        };
         self.unbound(&freed);
         self.instances.abort();
         if let Some(old) = self.replaced.take() {
@@ -453,6 +472,14 @@ impl World {
         }
         freed
     }
+}
+
+/// The shared typing to change: a copy of its own while a render holds this one.
+fn own(typing: &mut Rc<Typing>) -> &mut Typing {
+    if Rc::get_mut(typing).is_none() {
+        *typing = Rc::new(typing.parted());
+    }
+    Rc::get_mut(typing).expect("held by the world alone")
 }
 
 /// How a walk asks memory: from which root, at which rate and profile, for which readings.

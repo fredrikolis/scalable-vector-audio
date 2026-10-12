@@ -146,6 +146,14 @@ pub(crate) enum SumSlot {
 }
 
 impl Typing {
+    /// A copy to change while a render still holds this one: the copy takes every fold, and
+    /// this one folds anew.
+    pub(crate) fn parted(&self) -> Typing {
+        let mut copy = self.clone();
+        copy.folds = self.folds.parted();
+        copy
+    }
+
     /// `node` named by its terms in place.
     pub(crate) fn name_sum(&mut self, node: NodeId, slots: Vec<SumSlot>) {
         self.draft.sum = Some(Some((node, slots)));

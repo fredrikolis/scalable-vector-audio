@@ -14,6 +14,7 @@ mod world;
 
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use sva_ast::Graph;
@@ -21,7 +22,7 @@ use sva_formula::{NodeId, SpectralSum};
 use sva_samples::{Buffer, Extent, FilterTrace, Frames, Label, PSYCHOACOUSTIC_V1, Profile};
 
 use crate::bindings::Binding;
-use crate::cache::{CacheStats, Memory, Recording, Stored, Tier, now};
+use crate::cache::{CacheStats, Cut, Memory, Recording, Stored, Tier, now};
 use crate::error::{Diagnostic, EngineError, Located};
 use crate::instantiate;
 use crate::query::{Ask, Representation};
@@ -107,7 +108,8 @@ pub use world::STREAMED;
 
 pub struct Render {
     pub root: NodeId,
-    pub tys: Typing,
+    /// Shared with the session that typed it.
+    pub tys: Rc<Typing>,
     pub buffers: BTreeMap<NodeId, Buffer>,
     pub frames: BTreeMap<NodeId, Frames>,
     pub symbolic: BTreeMap<NodeId, SpectralSum>,
@@ -138,7 +140,7 @@ pub struct Render {
 
 impl Render {
     pub(crate) fn shell(
-        (tys, root): (Typing, NodeId),
+        (tys, root): (Rc<Typing>, NodeId),
         (config, schedule): (RenderConfig, Schedule),
         memory: Memory,
     ) -> Self {
@@ -273,12 +275,17 @@ fn planned(
     } = prepared;
     let config = (config, &mut None, memory);
     let none = ((Memo::default(), None), &BTreeMap::new());
-    planned_over((graph, target, &instances), (tys, root), config, none)
+    planned_over(
+        (graph, target, &instances),
+        (Rc::new(tys), root),
+        config,
+        none,
+    )
 }
 
 fn planned_over(
     (graph, target, instances): (&Graph, &str, &instantiate::Instances),
-    (tys, root): (Typing, NodeId),
+    (tys, root): (Rc<Typing>, NodeId),
     (config, stand_in, memory): (RenderConfig, &mut Option<world::World>, Memory),
     (decided, hits): (Decided, &BTreeMap<NodeId, Arc<Stored>>),
 ) -> Result<Render, EngineError> {
@@ -350,6 +357,28 @@ pub(crate) fn ended(
     });
     config.range.end = default_end(end.support);
     (config, (found, Some(end)))
+}
+
+/// Where a stored node read open ends, where a render stated it at `profile`'s threshold.
+pub(crate) fn told_end(stored: &Stored, profile: &Profile) -> Option<end::End> {
+    let silence_threshold = profile.silence_threshold_dbfs.to_bits();
+    let cut = stored
+        .cut
+        .filter(|cut| cut.silence_threshold_dbfs.to_bits() == silence_threshold)?;
+    let at = cut.treated_as_silent_from_sample;
+    Some(end::End {
+        support: at.map_or(stored.support, |at| {
+            stored.support.intersect(Extent::new(i64::MIN, at))
+        }),
+        treated_as_silent_from_sample: at,
+    })
+}
+
+pub(crate) fn cut_of(end: &end::End, profile: &Profile) -> Cut {
+    Cut {
+        silence_threshold_dbfs: profile.silence_threshold_dbfs,
+        treated_as_silent_from_sample: end.treated_as_silent_from_sample,
+    }
 }
 
 /// Each support found so far, and where an open render's root ends, once decided.

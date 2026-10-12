@@ -46,6 +46,21 @@ impl Memo {
         self.0.extend(more.0);
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// The support a stored node states of `id`, where none is found yet; whether it was taken.
+    pub(crate) fn told(&mut self, id: NodeId, support: Extent) -> bool {
+        match self.0.entry(id) {
+            std::collections::hash_map::Entry::Occupied(_) => false,
+            std::collections::hash_map::Entry::Vacant(at) => {
+                at.insert(support);
+                true
+            }
+        }
+    }
+
     /// Each support found of `freed`, nodes let go, forgotten.
     pub(crate) fn forget(&mut self, freed: &[NodeId]) {
         for id in freed {

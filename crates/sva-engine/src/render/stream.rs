@@ -341,7 +341,9 @@ impl Stream {
             .driver
             .value_graph
             .settled(root, &freed, (now, self.live));
-        self.driver.value_graph.offers(&self.world.typing, range);
+        self.driver
+            .value_graph
+            .offers(&self.world.typing, range, None);
         for (key, parts) in &local.fetched {
             self.driver.value_graph.took(*key, parts);
         }
@@ -471,7 +473,7 @@ impl Stream {
             for silent in carried.silent {
                 self.dropped.push(value_graph.values[silent].name.clone());
             }
-            value_graph.offers(&self.world.typing, range);
+            value_graph.offers(&self.world.typing, range, None);
         }
         Ok(())
     }

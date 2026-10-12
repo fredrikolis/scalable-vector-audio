@@ -133,6 +133,22 @@ enum View {
 }
 
 impl Kept {
+    /// Every answer it holds, moved out: this one answers anew.
+    pub fn parted(&self) -> Kept {
+        Kept {
+            lowered: RefCell::new(self.lowered.take()),
+            polynomials: RefCell::new(self.polynomials.take()),
+            timeless: RefCell::new(self.timeless.take()),
+            key_moves: RefCell::new(self.key_moves.take()),
+            mentions_line: RefCell::new(self.mentions_line.take()),
+            axes: RefCell::new(self.axes.take()),
+            lines: RefCell::new(self.lines.take()),
+            kinks: RefCell::new(self.kinks.take()),
+            views: RefCell::new(self.views.take()),
+            growths: RefCell::new(self.growths.take()),
+        }
+    }
+
     /// Every answer about a node `gone` names let go; the rest kept.
     pub fn forget(&mut self, gone: &dyn Fn(NodeId) -> bool) {
         self.lowered.get_mut().retain(|(id, _), _| !gone(*id));

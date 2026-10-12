@@ -34,6 +34,20 @@ impl PartialEq for Folds {
 }
 
 impl Folds {
+    /// Every fold it holds, moved out: this one folds anew.
+    pub(crate) fn parted(&self) -> Folds {
+        Folds {
+            numbers: RefCell::new(self.numbers.take()),
+            identities: RefCell::new(self.identities.take()),
+            composed: RefCell::new(self.composed.take()),
+            refused: RefCell::new(self.refused.take()),
+            inlinable: RefCell::new(self.inlinable.take()),
+            written: self.written.parted(),
+            #[cfg(test)]
+            composings: std::cell::Cell::new(self.composings.get()),
+        }
+    }
+
     /// Every fold of a node in `gone`, and each sum no held identity names, let go.
     pub(crate) fn forget(&mut self, gone: &BTreeSet<NodeId>) {
         let out = |id: NodeId| gone.contains(&id);

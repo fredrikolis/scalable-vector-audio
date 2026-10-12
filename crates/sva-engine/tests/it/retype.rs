@@ -81,6 +81,19 @@ fn a_repeated_render_in_a_session_types_nothing() {
     }
 }
 
+/// A render keeps the version it was rendered from while its session renders an edit: each
+/// names and reads its own composition.
+#[test]
+fn a_render_keeps_its_version_while_its_session_renders_an_edit() {
+    let mut session = Session::default();
+    let tier = Tier::default();
+    let (before, edited) = (mixed("retype-kept", 220), mixed("retype-kept-edit", 440));
+    let first = rendered(&mut session, &before, &tier);
+    let second = rendered(&mut session, &edited, &tier);
+    same_as_alone(&first, &before);
+    same_as_alone(&second, &edited);
+}
+
 /// An edit of one node types that node and each node reading it, and no other.
 #[test]
 fn a_render_after_an_edit_types_only_the_edited_node_and_its_readers() {
