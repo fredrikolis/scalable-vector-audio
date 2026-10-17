@@ -14,7 +14,7 @@ members = [
 [workspace.package]
 version = "0.9.8"
 license = "MIT"
-repository = "https://github.com/fredrikolis/scalable-vector-audio"
+repository = "https://github.com/fredrikryden/scalable-vector-audio"
 edition = "2024"
 
 # cargo publish needs a version on each path dep; keep it the one above.

@@ -2,7 +2,7 @@
 
 # SVA: Scalable Vector Audio
 
-[![Release](https://github.com/fredrikolis/scalable-vector-audio/actions/workflows/release.yml/badge.svg)](https://github.com/fredrikolis/scalable-vector-audio/actions/workflows/release.yml) [![crates.io](https://img.shields.io/crates/v/sva-cli)](https://crates.io/crates/sva-cli) [![npm sva-cli](https://img.shields.io/npm/v/@scalable-vector-audio/sva-cli?label=npm%20sva-cli)](https://www.npmjs.com/package/@scalable-vector-audio/sva-cli) [![npm sva-wasm](https://img.shields.io/npm/v/@scalable-vector-audio/sva-wasm?label=npm%20sva-wasm)](https://www.npmjs.com/package/@scalable-vector-audio/sva-wasm)
+[![Release](https://github.com/fredrikryden/scalable-vector-audio/actions/workflows/release.yml/badge.svg)](https://github.com/fredrikryden/scalable-vector-audio/actions/workflows/release.yml) [![crates.io](https://img.shields.io/crates/v/sva-cli)](https://crates.io/crates/sva-cli) [![npm sva-cli](https://img.shields.io/npm/v/@scalable-vector-audio/sva-cli?label=npm%20sva-cli)](https://www.npmjs.com/package/@scalable-vector-audio/sva-cli) [![npm sva-wasm](https://img.shields.io/npm/v/@scalable-vector-audio/sva-wasm?label=npm%20sva-wasm)](https://www.npmjs.com/package/@scalable-vector-audio/sva-wasm)
 
 Sounds written as equations. $`\sin(2\pi \cdot 440\,t)`$ is a 440 Hz tone. Rendering samples an equation at any rate, so the sound is a scalable vector.
 

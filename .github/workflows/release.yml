@@ -149,7 +149,7 @@ jobs:
           TAG="${REF#refs/tags/}"
           V="${TAG#v}"
           DESC="$(sed -n '/^\[package\]/,/^\[/s/^description = "\(.*\)"$/\1/p' crates/sva-cli/Cargo.toml | head -1)"
-          REPO_URL="https://github.com/fredrikolis/scalable-vector-audio"
+          REPO_URL="https://github.com/fredrikryden/scalable-vector-audio"
           SCOPE="@scalable-vector-audio" # every name below is published under it; dirs stay bare
           STAGE="$RUNNER_TEMP/npm"
           mkdir -p "$STAGE"
