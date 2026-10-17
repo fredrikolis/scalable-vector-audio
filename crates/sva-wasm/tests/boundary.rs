@@ -2459,3 +2459,32 @@ async fn a_subscriber_hears_a_stream_its_edit_and_a_render_that_fails_or_is_aban
     assert_eq!(last, "render abandoned idle", "{stopped:?}");
     assert!(stopped.contains(&"render delivering working".to_string()));
 }
+
+#[wasm_bindgen_test]
+fn a_nodes_outline_is_its_bodys_parse_tree() {
+    let text = "; Models: a voice | Neglects: all | IO: (t) -> amplitude\nf0 = C4\nsin(f0*t)\n";
+    let tree = sva_wasm::outline(text).unwrap_or_else(|_| unreachable!("a body parses"));
+    assert_eq!(
+        field(&tree, "text").as_string().as_deref(),
+        Some("sin(f0*t)\n")
+    );
+    let root = field(&tree, "outline");
+    assert_eq!(field(&root, "kind").as_string().as_deref(), Some("call"));
+    assert!(
+        sva_wasm::outline("sin(").is_err(),
+        "a parse refusal crosses"
+    );
+}
+
+#[wasm_bindgen_test]
+fn every_reading_a_render_answers_is_listed() {
+    let listed = sva_wasm::readings().unwrap_or_else(|_| unreachable!("the table crosses"));
+    let names: Vec<String> = listed
+        .iter()
+        .filter_map(|row| field(&row, "name").as_string())
+        .collect();
+    assert_eq!(names.len() as u32, listed.length());
+    for name in ["lines", "samples", "ledger", "bindings"] {
+        assert!(names.iter().any(|n| n == name), "{name} in {names:?}");
+    }
+}

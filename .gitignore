@@ -5,3 +5,6 @@
 /.claude
 *.wav
 !crates/**/tests/**/*.wav
+/play/node_modules
+/play/package-lock.json
+/play/package.json

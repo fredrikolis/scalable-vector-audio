@@ -31,7 +31,7 @@ pub use graph::{
     Defined, Graph, Held, PerBar, VARIABLES, load, load_beside, load_reaching, names_a_node,
     reads_of, resolve_ref_path,
 };
-pub use ingest::{Parsed, occurs_free, parse_file};
+pub use ingest::{Parsed, body_at, occurs_free, parse_file};
 pub use lexer::{
     LogUnit, Token, TokenKind, ref_spans, strip_line_comment, tokenize, whole_ref_path,
 };

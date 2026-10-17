@@ -37,6 +37,10 @@ jobs:
             ~/.cargo/.crates2.json
           key: cargo-bin-${{ runner.os }}-annotated-tree-${{ env.ANNOTATED_TREE_VERSION }}-comment-crusher-${{ env.COMMENT_CRUSHER_VERSION }}
       - run: cargo install --locked annotated-tree@${{ env.ANNOTATED_TREE_VERSION }} comment-crusher@${{ env.COMMENT_CRUSHER_VERSION }}
+      # The README's [Play] links are checked with node's CompressionStream.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
       - run: ./.githooks/pre-commit
 
   wasm:

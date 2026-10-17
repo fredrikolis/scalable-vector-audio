@@ -4,19 +4,19 @@
 
 [![Release](https://github.com/fredrikryden/scalable-vector-audio/actions/workflows/release.yml/badge.svg)](https://github.com/fredrikryden/scalable-vector-audio/actions/workflows/release.yml) [![crates.io](https://img.shields.io/crates/v/sva-cli)](https://crates.io/crates/sva-cli) [![npm sva-cli](https://img.shields.io/npm/v/@scalable-vector-audio/sva-cli?label=npm%20sva-cli)](https://www.npmjs.com/package/@scalable-vector-audio/sva-cli) [![npm sva-wasm](https://img.shields.io/npm/v/@scalable-vector-audio/sva-wasm?label=npm%20sva-wasm)](https://www.npmjs.com/package/@scalable-vector-audio/sva-wasm)
 
-Sounds written as equations. $`\sin(2\pi \cdot 440\,t)`$ is a 440 Hz tone. Rendering samples an equation at any rate, so the sound is a scalable vector.
+Sounds written as equations. $`\sin(2\pi \cdot 440\,t)`$ is a 440 Hz tone [Play](https://fredrikryden.github.io/scalable-vector-audio/#HYyxCsJAEER_ZdgqCRFCSHWCWGqhNnbG4vCWGIh74W4NxJh_l7MamDdvFlIbOlYytFcvnN2qEnW851SSeMeRzEIJkKEtTt7xEA28MKKydTOapsLhgzTBF2fuBn5oNLAClokHP3IJi2A1pTjwxGGG1ycHTL5_JO14Mcg0x2YH-xqHXt8u1VfbRfO_biX2ktXF2BdNUxWat0Lr-gM "@tone([0, 2s])"). Rendering samples an equation at any rate, so the sound is a scalable vector.
 
 ## The equation for a chord
 
 ### In the time domain
 
-$`\cos(2\pi\,\mathbf{C_4}\,t) + \cos(2\pi\,\mathbf{E_4}\,t) + \cos(2\pi\,\mathbf{G_4}\,t)`$
+$`\cos(2\pi\,\mathbf{C_4}\,t) + \cos(2\pi\,\mathbf{E_4}\,t) + \cos(2\pi\,\mathbf{G_4}\,t)`$ [Play](https://fredrikryden.github.io/scalable-vector-audio/#q1YqSSxKTy1RslJySC0sTSzJzM_TiDbQUTAqjtVU0lHKy09JLVayqlaCSSpZKSXnF2sYaRVkajmbaJVoKmgrwAVc0QXcQQIxeUq1tQA "cos(2*pi*C4*t) + cos(2*pi*E4*t) + cos(2*pi*G4*t)")
 
 $t$ is seconds, the value is amplitude, and $`\mathbf{C_4}`$ is the note C4.
 
 ### In the frequency domain
 
-$`\tfrac{1}{2}\delta(f - \mathbf{C_4}) + \tfrac{1}{2}\delta(f + \mathbf{C_4}) + \tfrac{1}{2}\delta(f - \mathbf{E_4}) + \tfrac{1}{2}\delta(f + \mathbf{E_4}) + \tfrac{1}{2}\delta(f - \mathbf{G_4}) + \tfrac{1}{2}\delta(f + \mathbf{G_4})`$
+$`\tfrac{1}{2}\delta(f - \mathbf{C_4}) + \tfrac{1}{2}\delta(f + \mathbf{C_4}) + \tfrac{1}{2}\delta(f - \mathbf{E_4}) + \tfrac{1}{2}\delta(f + \mathbf{E_4}) + \tfrac{1}{2}\delta(f - \mathbf{G_4}) + \tfrac{1}{2}\delta(f + \mathbf{G_4})`$ [Play](https://fredrikryden.github.io/scalable-vector-audio/#q1YqSSxKTy1RslJySC0sTSzJzM_TiDbQUTAqjtVU0lHKy09JLVayqlaCSSpZKWWm5ZcWZaYWaRjomWqlpOaUJGqkKegqOJtoKmgrIItpYxHTVXDFog5TTFfBHYs6dxNNzZg8pdpaAA "ifourier(0.5*delta(f - C4) + 0.5*delta(f + C4) + 0.5*delta(f - E4) + 0.5*delta(f + E4) + 0.5*delta(f - G4) + 0.5*delta(f + G4))")
 
 Each $\delta$ is a spectral line at half the amplitude, paired with its conjugate at the negative
 frequency, which is what a cosine is; $\delta$ is the builtin `delta`. `ifourier` of that node is
@@ -25,7 +25,7 @@ the cosine sum, `fourier` crosses a term from `t` to `f`, and an expression hold
 ## Each equation is stored in a file
 
 A file holds one equation spelled in ASCII: one `;` comment stating what it models and neglects,
-then `name = value` defaults, then the expression. The 440 Hz tone from the opening, as a file:
+then `name = value` defaults, then the expression. The 440 Hz tone from the opening, as a file: [Play](https://fredrikryden.github.io/scalable-vector-audio/#HYyxCsJAEER_ZdgqCRFCSHWCWGqhNnbG4vCWGIh74W4NxJh_l7MamDdvFlIbOlYytFcvnN2qEnW851SSeMeRzEIJkKEtTt7xEA28MKKydTOapsLhgzTBF2fuBn5oNLAClokHP3IJi2A1pTjwxGGG1ycHTL5_JO14Mcg0x2YH-xqHXt8u1VfbRfO_biX2ktXF2BdNUxWat0Lr-gM "@tone([0, 2s])")
 
 ```
 ; Models: one steady 440 Hz tone | Neglects: an envelope, a rate, and every other voice | IO: (t) -> amplitude | Tags: tone
@@ -40,7 +40,7 @@ my-composition/
 └── chord
 ```
 
-`voice` might contain:
+`voice` might contain: [Play](https://fredrikryden.github.io/scalable-vector-audio/#Jc2xTsMwFEbhV_nlKYncYFVkMWqFxMQALIxZjH2TWDKOlXsLVE3fHaUdz7ecixK3jCTKquefOXpSWuU5ECt7UXew6glvc6DEFnMm3FTDQbY65UALHAJ5d8aKdxoTeWELmQglip8QBZFRkjtTgBON3ynemOFdSrTgK-bAWPH6YVGJxmBq7I5w3yVFOQXCik83sr3P-zwYHPDy2Ge_zKWiv1Lt5MG0-45rDcMapu1YY4lMB9Mas8XgUtqi4xoNOOZq35TYDKaRus_qev0H "@voice")
 
 ```
 ; Models: one voice, a tone under a decay | Neglects: the pitch it is played at, which its caller binds | IO: (t, f0) -> amplitude | Tags: voice
@@ -48,7 +48,7 @@ f0 = C4
 crop(exp(-t/0.25s), 0s, 0.5s, rise=0.005s, fall=0.05s) * sin(2*pi*f0*t)
 ```
 
-`chord` might contain:
+`chord` might contain: [Play](https://fredrikryden.github.io/scalable-vector-audio/#dY9BSwMxFIT_ypDT7prWUNrLSqVQRDyoF497icnbbiBNluS1urT977KrCEU8zneYme8kWKcdsajFxnQxWSFFiJayqE_iG9TiDs_Rks81uCNwctpKcJeIcIzOUIZmxGAIZ7zQzpPhXCN1A3d7CR0s6EhpQIhM0C1TmopalzLjjKfXGgWXmN1D73vv-GDHpje9yzWmD03YTEMFS7RqvV2WuMEVeviLHpdlE4QUE7uyiOHnuIQGj-kQLCVoWDJ6uLIYj_aOTQfHcBm91wNZaJb46NyEM4z2nhLeXbD5V2g88Y_UNN6EVmGN7bIJJsW-oM--mPGtmi9WuZRQWULNV1kiuUxrNVdqDK32fgyrXKJCdqFYVL2rWlXxqHu5fAE "@chord")
 
 ```
 ; Models: the triad, three voices at once | Neglects: rhythm, and every note after the first | IO: (t) -> amplitude | Tags: chord
@@ -60,7 +60,7 @@ crop(exp(-t/0.25s), 0s, 0.5s, rise=0.005s, fall=0.05s) * sin(2*pi*f0*t)
 ## A master, with fx
 
 A third file in `my-composition/`, `master`, masters `chord`: the triad fed back one sample $T$ later, over $0 \le t < 2$,
-$y(t) = \tfrac{1}{2}(\mathrm{chord}(t) + 0.3 y(t - T))$:
+$y(t) = \tfrac{1}{2}(\mathrm{chord}(t) + 0.3 y(t - T))$: [Play](https://fredrikryden.github.io/scalable-vector-audio/#hdBPj9MwEAXwr_LkUxKywZT2ElRUaYUQB-DCjXJw7UlikdqRZ7o02t3vjpxWSOWPOM6T9WZ-flRiUk-iWrU7GhZKqlYhOmLVPio7xORUq97gY3Q0cgsZCJK8cTVkSER4iN4SwwhisIQnfKJ-JCvcIg2zDMcaJjjQA6UZIQrBdEJpKep8YsETPnxuUUiJu7cwx2n0cnK56YvpucVywz7slkWF1Oj09n5d4gVuond_Ru_X5T6oWl1df2VkRTz1A2Ig8BCToCNyB2O_w9Fo5huRAZONweFg0sVlwoyjP-NA7B0tvb3x4X-oy0n7YFOcCt1sqoLzIyp2C7eQMmt087piGruv3p2XKrz6VtbQXGPFF9vivaFlyJLWMJA8nYKjBANH9jdPPnfyYgd4gWdMo5nJwUiNH4NfYoY140gJBx8c_3LlD_6HbVm-D53GFvfrq5HOU3EnL3Wz2vCVoJsN10ieaasbrfPQmXHMw4ZLVGAfilU1-arTlWTu8_NP "@master")
 
 ```
 ; Models: the triad through one short feedback delay | Neglects: a second bar, and any mix beside the gain | IO: (t) -> amplitude | Tags: master
@@ -78,7 +78,7 @@ root. `1b` is a bar against the composition's own bpm and meter, and `1sp` is on
 rate a render samples at: 1/44100 s by default, 1/48000 s at `--rate 48000`. The rest are
 `ms`, `m`, `h`, `khz` and `db`.
 
-`saw(hz)`, `square(hz)` and `triangle(hz)` are band-limited series on the fundamental `hz`. An optional second argument is the fundamental's phase in radians, and the nth harmonic turns n times as far: `saw(hz, phase)` is `saw(hz)` read `phase/(2*pi*hz)` seconds later, and a moving phase, as in `saw(220, 0.3*sin(2*pi*5*t))`, bends every harmonic by the same ratio, which is vibrato.
+`saw(hz)`, `square(hz)` and `triangle(hz)` are band-limited series on the fundamental `hz`. An optional second argument is the fundamental's phase in radians, and the nth harmonic turns n times as far: `saw(hz, phase)` is `saw(hz)` read `phase/(2*pi*hz)` seconds later, and a moving phase, as in `saw(220, 0.3*sin(2*pi*5*t))`, bends every harmonic by the same ratio, which is vibrato. [Play](https://fredrikryden.github.io/scalable-vector-audio/#q1YqSSxKTy1RslJySC0sTSzJzM_TiDbQUTAqjtVU0lHKy09JLVayqlaCSSpZKRUnlmsYGRnoKBjoGWsVZ-ZpGGkVZGqZapVoasbkKdXWAgA "saw(220, 0.3*sin(2*pi*5*t))")
 
 ## Reading a sample by index
 

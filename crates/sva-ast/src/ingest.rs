@@ -19,10 +19,7 @@ pub struct Parsed {
 /// Everything after the last one is the body, read exactly as a file with no defaults is.
 pub fn parse_file(base_name: &str, content: &str) -> Result<Parsed, Diag> {
     let rows = crate::tsv::code_rows(content);
-    let split = rows
-        .iter()
-        .position(|(_, line)| !is_default_line(line))
-        .unwrap_or(rows.len());
+    let split = default_rows(&rows);
     let (heads, _) = rows.split_at(split);
     let body_at = rows.get(split).map_or(content.len(), |(at, _)| *at);
     let defaults = read_defaults(heads)?;
@@ -50,6 +47,19 @@ pub fn parse_file(base_name: &str, content: &str) -> Result<Parsed, Diag> {
     }
     parsed.defaults = defaults;
     Ok(parsed)
+}
+
+/// The byte the body starts at: past the comment and default lines that lead a node's text.
+pub fn body_at(content: &str) -> usize {
+    let rows = crate::tsv::code_rows(content);
+    rows.get(default_rows(&rows))
+        .map_or(content.len(), |(at, _)| *at)
+}
+
+fn default_rows(rows: &[(usize, &str)]) -> usize {
+    rows.iter()
+        .position(|(_, line)| !is_default_line(line))
+        .unwrap_or(rows.len())
 }
 
 /// A grid row never opens with one: a cell is an expression, never an assignment.

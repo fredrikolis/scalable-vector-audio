@@ -1,4 +1,4 @@
-# Concern: the whole release — tag, GH release, binaries, crates.io, npm | Non-concern: the checks a commit must clear | IO: (dispatch) -> tag, release, assets, crates, npm packages
+# Concern: the whole release — tag, GH release, binaries, crates.io, npm, the play page on Pages | Non-concern: the checks a commit must clear | IO: (dispatch) -> tag, release, crates, npm, Pages
 name: Release
 
 on:
@@ -322,3 +322,55 @@ jobs:
       # A scoped name publishes restricted unless told otherwise.
       - name: Publish to npm
         run: wasm-pack publish --access public --target web --pkg-dir target/wasm-web-pkg crates/sva-wasm
+
+  # The README's [Play] page, on the sva-wasm this release published, installed from npm as any app would.
+  pages:
+    needs: [release, npm-wasm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release.outputs.ref }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      # The registry can lag a publish by minutes; an install before it serves the tarball fails with E404.
+      - name: Install the sva-wasm this release published
+        working-directory: play
+        env:
+          REF: ${{ needs.release.outputs.ref }}
+        run: |
+          set -euo pipefail
+          V="${REF#refs/tags/v}"
+          echo '{ "private": true }' > package.json
+          for attempt in $(seq 1 60); do
+            if npm install --no-audit --no-fund "@scalable-vector-audio/sva-wasm@$V"; then
+              exit 0
+            fi
+            echo "attempt $attempt of 60: npm does not serve @scalable-vector-audio/sva-wasm@$V yet"
+            sleep 10
+          done
+          echo "::error::npm did not serve @scalable-vector-audio/sva-wasm@$V within 10 minutes; rerun this job once it does"
+          exit 1
+      - name: Stage the page
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/site/node_modules/@scalable-vector-audio"
+          cp play/index.html play/play.js play/payload.mjs "$RUNNER_TEMP/site/"
+          cp -r play/node_modules/@scalable-vector-audio/sva-wasm "$RUNNER_TEMP/site/node_modules/@scalable-vector-audio/"
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/site
+      - id: deployment
+        uses: actions/deploy-pages@v4

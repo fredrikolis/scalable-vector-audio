@@ -1,0 +1,73 @@
+<!-- Concern: lays out the page that plays one README example and shows what the engine answered | Non-concern: rendering and drawing (play.js) | IO: none -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SVA Play</title>
+<link rel="icon" href="data:,">
+<script type="importmap">
+{ "imports": { "@scalable-vector-audio/sva-wasm": "./node_modules/@scalable-vector-audio/sva-wasm/sva_wasm.js" } }
+</script>
+<style>
+  :root { color-scheme: light dark; --ink: #1d1d1f; --muted: #6b6b70; --line: #d6d6db; --surface: #ffffff; --mark: #2a5bd7; --bad: #b3261e; }
+  @media (prefers-color-scheme: dark) { :root { --ink: #ececf0; --muted: #a0a0a8; --line: #3a3a40; --surface: #161618; --mark: #7aa2ff; --bad: #ff8a80; } }
+  body { margin: 0 auto; max-width: 1000px; padding: 16px; font: 15px/1.45 system-ui, sans-serif; color: var(--ink); background: var(--surface); }
+  h1 { font-size: 1.5em; margin: 0 0 4px; }
+  h2 { font-size: 1.15em; margin: 28px 0 8px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  h3 { font-size: 1em; margin: 16px 0 6px; }
+  p { margin: 6px 0; }
+  code, pre { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { margin: 0; padding: 8px; border: 1px solid var(--line); border-radius: 4px; overflow: auto; max-height: 24em; white-space: pre; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0; }
+  th, td { text-align: left; vertical-align: top; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+  th { font-weight: 600; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .bad { color: var(--bad); }
+  pre.bad { white-space: pre-wrap; }
+  .scroll { overflow-x: auto; }
+  canvas { display: block; width: 100%; height: 160px; border: 1px solid var(--line); border-radius: 4px; }
+  canvas.tall { height: 240px; }
+  button { font: inherit; padding: 4px 16px; }
+</style>
+</head>
+<body>
+<h1>SVA Play</h1>
+<p class="muted">One example from the <a href="https://github.com/fredrikryden/scalable-vector-audio#readme">README</a>, rendered in this browser by <a href="https://www.npmjs.com/package/@scalable-vector-audio/sva-wasm">sva-wasm</a>, with what the engine reports about rendering it.</p>
+<p id="status">Loading.</p>
+
+<h2>Example</h2>
+<p>Target: <code id="target"></code></p>
+<div id="nodes"></div>
+
+<h2>Sound</h2>
+<p><button id="play" disabled>Play</button> <output id="playback" class="muted"></output></p>
+<div id="sound"></div>
+
+<h2>Engine</h2>
+<table id="engine"></table>
+
+<h2>Render calls</h2>
+<p class="muted">One row per call, from the engine-stats hook's last report of it; ms is wall-clock in this page.</p>
+<div class="scroll"><table id="calls"></table></div>
+
+<h3>Timeline of the samples render</h3>
+<p class="muted">Every engine-stats report of the call, as heard.</p>
+<div class="scroll"><table id="timeline"></table></div>
+
+<h3>The samples render's answer</h3>
+<p class="muted"><code>representations()</code> without the samples, <code>stats()</code> and <code>work()</code>.</p>
+<pre id="answer"></pre>
+
+<h2>Parse trees</h2>
+<p class="muted"><code>outline(text)</code> of each node: kind, then the text it was written as.</p>
+<div id="outlines"></div>
+
+<h2>Readings</h2>
+<p class="muted">Each reading <code>readings()</code> lists, asked of the target in its own render; a refusal is the engine's answer.</p>
+<div class="scroll"><table id="readings"></table></div>
+
+<script type="module" src="play.js"></script>
+</body>
+</html>

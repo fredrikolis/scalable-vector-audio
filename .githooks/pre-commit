@@ -9,4 +9,5 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --quiet -- -D warnings
 comment-crusher --config .comment-crusher.toml .
 annotated-tree --strict-check --include-tests --hidden .
+node play/links.mjs --check
 cargo test --workspace --quiet
